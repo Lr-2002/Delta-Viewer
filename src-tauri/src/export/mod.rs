@@ -8,6 +8,7 @@ use crate::{source, storage};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Instant;
 use tauri::AppHandle;
 use walkdir::WalkDir;
@@ -17,7 +18,7 @@ pub struct ExportContext<'a> {
     pub destination_parent: &'a Path,
     pub data: &'a EpisodeData,
     pub app: Option<&'a AppHandle>,
-    pub cancelled: &'a AtomicBool,
+    pub cancelled: Arc<AtomicBool>,
 }
 
 trait ExportAdapter {
@@ -31,7 +32,7 @@ pub fn export_episode(
     validation_report: &ValidationReport,
     acknowledge_warnings: bool,
     app: Option<&AppHandle>,
-    cancelled: &AtomicBool,
+    cancelled: &Arc<AtomicBool>,
 ) -> AppResult<ExportResult> {
     ensure_export_allowed(validation_report, acknowledge_warnings)?;
     if !destination_parent.exists() {
@@ -51,7 +52,7 @@ pub fn export_episode(
         destination_parent,
         data: &data,
         app,
-        cancelled,
+        cancelled: cancelled.clone(),
     };
     let output = match format {
         ExportFormat::Mcap => mcap::McapAdapter.export(&context)?,
@@ -159,6 +160,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -168,7 +170,7 @@ mod tests {
             PathBuf::from(std::env::var("DOHC_SAMPLE_ROOT").expect("DOHC_SAMPLE_ROOT must be set"));
         let output = test_output("exports");
         fs::create_dir_all(&output).unwrap();
-        let cancelled = AtomicBool::new(false);
+        let cancelled = Arc::new(AtomicBool::new(false));
 
         let report = validation::validate_episode(&sample, None, &cancelled).unwrap();
         assert!(!report
@@ -274,7 +276,8 @@ mod tests {
         )
         .unwrap();
 
-        let report = validation::validate_episode(&source, None, &AtomicBool::new(false)).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let report = validation::validate_episode(&source, None, &cancelled).unwrap();
         let error = export_episode(
             ExportFormat::Mcap,
             &source,
@@ -282,7 +285,7 @@ mod tests {
             &report,
             true,
             None,
-            &AtomicBool::new(false),
+            &cancelled,
         )
         .unwrap_err();
         assert!(error

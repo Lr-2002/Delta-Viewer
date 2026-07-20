@@ -1,0 +1,1674 @@
+//! Builder types for HDF5 datatypes, attributes, datasets, and groups.
+//!
+//! Extracted from `file_writer.rs` to keep modules under the line limit.
+
+#[cfg(not(feature = "std"))]
+use alloc::{boxed::Box, string::String, string::ToString, vec, vec::Vec};
+
+use crate::attribute::AttributeMessage;
+use crate::chunked_write::{ChunkMeta, ChunkOptions, ChunkProvider};
+use crate::compound::CompoundType;
+use crate::convert::TryToUsize;
+use crate::dataspace::{Dataspace, DataspaceType};
+use crate::datatype::{
+    CharacterSet, CompoundMember, Datatype, DatatypeByteOrder, EnumMember, StringPadding,
+};
+use crate::scaleoffset::ScaleOffset;
+
+// ---- Datatype constructors ----
+
+pub fn make_f64_type() -> Datatype {
+    Datatype::FloatingPoint {
+        size: 8,
+        byte_order: DatatypeByteOrder::LittleEndian,
+        bit_offset: 0,
+        bit_precision: 64,
+        exponent_location: 52,
+        exponent_size: 11,
+        mantissa_location: 0,
+        mantissa_size: 52,
+        exponent_bias: 1023,
+    }
+}
+
+pub fn make_f32_type() -> Datatype {
+    Datatype::FloatingPoint {
+        size: 4,
+        byte_order: DatatypeByteOrder::LittleEndian,
+        bit_offset: 0,
+        bit_precision: 32,
+        exponent_location: 23,
+        exponent_size: 8,
+        mantissa_location: 0,
+        mantissa_size: 23,
+        exponent_bias: 127,
+    }
+}
+
+pub fn make_i32_type() -> Datatype {
+    Datatype::FixedPoint {
+        size: 4,
+        byte_order: DatatypeByteOrder::LittleEndian,
+        signed: true,
+        bit_offset: 0,
+        bit_precision: 32,
+    }
+}
+
+pub fn make_i64_type() -> Datatype {
+    Datatype::FixedPoint {
+        size: 8,
+        byte_order: DatatypeByteOrder::LittleEndian,
+        signed: true,
+        bit_offset: 0,
+        bit_precision: 64,
+    }
+}
+
+pub fn make_u8_type() -> Datatype {
+    Datatype::FixedPoint {
+        size: 1,
+        byte_order: DatatypeByteOrder::LittleEndian,
+        signed: false,
+        bit_offset: 0,
+        bit_precision: 8,
+    }
+}
+
+pub fn make_i8_type() -> Datatype {
+    Datatype::FixedPoint {
+        size: 1,
+        byte_order: DatatypeByteOrder::LittleEndian,
+        signed: true,
+        bit_offset: 0,
+        bit_precision: 8,
+    }
+}
+
+pub fn make_i16_type() -> Datatype {
+    Datatype::FixedPoint {
+        size: 2,
+        byte_order: DatatypeByteOrder::LittleEndian,
+        signed: true,
+        bit_offset: 0,
+        bit_precision: 16,
+    }
+}
+
+pub fn make_u16_type() -> Datatype {
+    Datatype::FixedPoint {
+        size: 2,
+        byte_order: DatatypeByteOrder::LittleEndian,
+        signed: false,
+        bit_offset: 0,
+        bit_precision: 16,
+    }
+}
+
+pub fn make_u32_type() -> Datatype {
+    Datatype::FixedPoint {
+        size: 4,
+        byte_order: DatatypeByteOrder::LittleEndian,
+        signed: false,
+        bit_offset: 0,
+        bit_precision: 32,
+    }
+}
+
+pub fn make_u64_type() -> Datatype {
+    Datatype::FixedPoint {
+        size: 8,
+        byte_order: DatatypeByteOrder::LittleEndian,
+        signed: false,
+        bit_offset: 0,
+        bit_precision: 64,
+    }
+}
+
+pub fn make_object_reference_type() -> Datatype {
+    Datatype::Reference {
+        size: 8,
+        ref_type: crate::datatype::ReferenceType::Object,
+    }
+}
+
+/// A variable-length string datatype with the given character set and
+/// null-terminated padding.
+///
+/// The character set and padding live in the variable-length datatype's own
+/// bitfields; the base element type is an 8-bit unsigned integer
+/// (`H5T_STD_U8LE`), exactly the shape the reference C library and h5py emit for
+/// a VL string (`H5Tvlen_create(H5T_C_S1)` stores the base as a 1-byte
+/// integer). Matching it byte-for-byte is what lets the C library read these
+/// datasets back into `VarLenUnicode`/`VarLenAscii` without a conversion-path
+/// error.
+pub fn make_vlen_string_type(charset: CharacterSet) -> Datatype {
+    Datatype::VariableLength {
+        is_string: true,
+        padding: Some(StringPadding::NullTerminate),
+        charset: Some(charset),
+        base_type: Box::new(make_u8_type()),
+    }
+}
+
+// ---- Compound / Enum type builders ----
+
+/// Builder for constructing HDF5 compound (struct) datatypes.
+pub struct CompoundTypeBuilder {
+    fields: Vec<(String, Datatype)>,
+}
+
+impl CompoundTypeBuilder {
+    pub fn new() -> Self {
+        Self { fields: Vec::new() }
+    }
+
+    /// Add a named field with the given datatype.
+    pub fn field(mut self, name: &str, datatype: Datatype) -> Self {
+        self.fields.push((name.to_string(), datatype));
+        self
+    }
+
+    /// Add an f64 field.
+    pub fn f64_field(self, name: &str) -> Self {
+        self.field(name, make_f64_type())
+    }
+    /// Add an f32 field.
+    pub fn f32_field(self, name: &str) -> Self {
+        self.field(name, make_f32_type())
+    }
+    /// Add an i32 field.
+    pub fn i32_field(self, name: &str) -> Self {
+        self.field(name, make_i32_type())
+    }
+    /// Add an i64 field.
+    pub fn i64_field(self, name: &str) -> Self {
+        self.field(name, make_i64_type())
+    }
+    /// Add a u8 field.
+    pub fn u8_field(self, name: &str) -> Self {
+        self.field(name, make_u8_type())
+    }
+    /// Add an i8 field.
+    pub fn i8_field(self, name: &str) -> Self {
+        self.field(name, make_i8_type())
+    }
+    /// Add an i16 field.
+    pub fn i16_field(self, name: &str) -> Self {
+        self.field(name, make_i16_type())
+    }
+    /// Add a u16 field.
+    pub fn u16_field(self, name: &str) -> Self {
+        self.field(name, make_u16_type())
+    }
+    /// Add a u32 field.
+    pub fn u32_field(self, name: &str) -> Self {
+        self.field(name, make_u32_type())
+    }
+    /// Add a u64 field.
+    pub fn u64_field(self, name: &str) -> Self {
+        self.field(name, make_u64_type())
+    }
+
+    /// Build the compound datatype.
+    pub fn build(self) -> Datatype {
+        let mut offset = 0u64;
+        let mut members = Vec::with_capacity(self.fields.len());
+        for (name, dt) in self.fields {
+            let sz = dt.type_size();
+            members.push(CompoundMember {
+                name,
+                byte_offset: offset,
+                datatype: dt,
+            });
+            offset += sz as u64;
+        }
+        Datatype::Compound {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "accumulated compound size is stored in the 4-byte datatype size field"
+            )]
+            size: offset as u32,
+            members,
+        }
+    }
+}
+
+impl Default for CompoundTypeBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Builder for an HDF5 compound datatype with explicit field offsets and size.
+///
+/// This is the pure-Rust equivalent of creating an `H5T_COMPOUND` type and
+/// inserting fields with `H5Tinsert`. [`build`](Self::build) validates field
+/// names, bounds, and overlap before returning a datatype.
+pub struct ExplicitCompoundTypeBuilder {
+    size: u32,
+    fields: Vec<CompoundMember>,
+}
+
+impl ExplicitCompoundTypeBuilder {
+    /// Add a field at an explicit byte offset.
+    pub fn field(mut self, name: &str, byte_offset: u64, datatype: Datatype) -> Self {
+        self.fields.push(CompoundMember {
+            name: name.to_string(),
+            byte_offset,
+            datatype,
+        });
+        self
+    }
+
+    /// Add an f64 field at an explicit byte offset.
+    pub fn f64_field(self, name: &str, byte_offset: u64) -> Self {
+        self.field(name, byte_offset, make_f64_type())
+    }
+
+    /// Add an f32 field at an explicit byte offset.
+    pub fn f32_field(self, name: &str, byte_offset: u64) -> Self {
+        self.field(name, byte_offset, make_f32_type())
+    }
+
+    /// Add an i32 field at an explicit byte offset.
+    pub fn i32_field(self, name: &str, byte_offset: u64) -> Self {
+        self.field(name, byte_offset, make_i32_type())
+    }
+
+    /// Add an i64 field at an explicit byte offset.
+    pub fn i64_field(self, name: &str, byte_offset: u64) -> Self {
+        self.field(name, byte_offset, make_i64_type())
+    }
+
+    /// Add a u8 field at an explicit byte offset.
+    pub fn u8_field(self, name: &str, byte_offset: u64) -> Self {
+        self.field(name, byte_offset, make_u8_type())
+    }
+
+    /// Add an i8 field at an explicit byte offset.
+    pub fn i8_field(self, name: &str, byte_offset: u64) -> Self {
+        self.field(name, byte_offset, make_i8_type())
+    }
+
+    /// Add an i16 field at an explicit byte offset.
+    pub fn i16_field(self, name: &str, byte_offset: u64) -> Self {
+        self.field(name, byte_offset, make_i16_type())
+    }
+
+    /// Add a u16 field at an explicit byte offset.
+    pub fn u16_field(self, name: &str, byte_offset: u64) -> Self {
+        self.field(name, byte_offset, make_u16_type())
+    }
+
+    /// Add a u32 field at an explicit byte offset.
+    pub fn u32_field(self, name: &str, byte_offset: u64) -> Self {
+        self.field(name, byte_offset, make_u32_type())
+    }
+
+    /// Add a u64 field at an explicit byte offset.
+    pub fn u64_field(self, name: &str, byte_offset: u64) -> Self {
+        self.field(name, byte_offset, make_u64_type())
+    }
+
+    /// Validate and build the compound datatype.
+    pub fn build(mut self) -> Result<Datatype, crate::error::FormatError> {
+        use crate::error::FormatError;
+
+        if self.size == 0 {
+            return Err(FormatError::InvalidCompoundSize);
+        }
+        if self.fields.is_empty() {
+            return Err(FormatError::EmptyCompoundType);
+        }
+
+        for (index, field) in self.fields.iter().enumerate() {
+            if self.fields[..index]
+                .iter()
+                .any(|earlier| earlier.name == field.name)
+            {
+                return Err(FormatError::DuplicateCompoundField(field.name.clone()));
+            }
+            let field_size = field.datatype.type_size();
+            let end = field.byte_offset.checked_add(u64::from(field_size));
+            if field_size == 0 || end.is_none_or(|end| end > u64::from(self.size)) {
+                return Err(FormatError::CompoundFieldOutOfBounds {
+                    name: field.name.clone(),
+                    offset: field.byte_offset,
+                    field_size,
+                    compound_size: self.size,
+                });
+            }
+        }
+
+        self.fields.sort_by_key(|field| field.byte_offset);
+        for fields in self.fields.windows(2) {
+            let first_end = fields[0].byte_offset + u64::from(fields[0].datatype.type_size());
+            if first_end > fields[1].byte_offset {
+                return Err(FormatError::CompoundFieldOverlap {
+                    first: fields[0].name.clone(),
+                    second: fields[1].name.clone(),
+                });
+            }
+        }
+
+        Ok(Datatype::Compound {
+            size: self.size,
+            members: self.fields,
+        })
+    }
+}
+
+impl CompoundTypeBuilder {
+    /// Create a compound builder with an explicit total size and field offsets.
+    pub fn with_size(size: u32) -> ExplicitCompoundTypeBuilder {
+        ExplicitCompoundTypeBuilder {
+            size,
+            fields: Vec::new(),
+        }
+    }
+}
+
+/// Builder for constructing HDF5 enumeration datatypes.
+pub struct EnumTypeBuilder {
+    base_type: Datatype,
+    members: Vec<EnumMember>,
+}
+
+impl EnumTypeBuilder {
+    /// Create a new enum builder with i32 base type.
+    pub fn i32_based() -> Self {
+        Self {
+            base_type: make_i32_type(),
+            members: Vec::new(),
+        }
+    }
+
+    /// Create a new enum builder with u8 base type.
+    pub fn u8_based() -> Self {
+        Self {
+            base_type: make_u8_type(),
+            members: Vec::new(),
+        }
+    }
+
+    /// Add a named value.
+    pub fn value(mut self, name: &str, val: i32) -> Self {
+        self.members.push(EnumMember {
+            name: name.to_string(),
+            value: val.to_le_bytes().to_vec(),
+        });
+        self
+    }
+
+    /// Add a named u8 value.
+    pub fn u8_value(mut self, name: &str, val: u8) -> Self {
+        self.members.push(EnumMember {
+            name: name.to_string(),
+            value: vec![val],
+        });
+        self
+    }
+
+    /// Build the enumeration datatype.
+    pub fn build(self) -> Datatype {
+        let size = self.base_type.type_size();
+        Datatype::Enumeration {
+            size,
+            base_type: Box::new(self.base_type),
+            members: self.members,
+        }
+    }
+}
+
+// ---- Attribute helper ----
+
+pub(crate) fn build_attr_message(name: &str, value: &AttrValue) -> AttributeMessage {
+    match value {
+        AttrValue::F64(v) => AttributeMessage {
+            name: name.to_string(),
+            datatype: make_f64_type(),
+            dataspace: scalar_ds(),
+            raw_data: v.to_le_bytes().to_vec(),
+        },
+        AttrValue::F64Array(arr) => {
+            let mut raw = Vec::with_capacity(arr.len() * 8);
+            for v in arr {
+                raw.extend_from_slice(&v.to_le_bytes());
+            }
+            AttributeMessage {
+                name: name.to_string(),
+                datatype: make_f64_type(),
+                dataspace: simple_1d(arr.len() as u64),
+                raw_data: raw,
+            }
+        }
+        AttrValue::I64(v) => AttributeMessage {
+            name: name.to_string(),
+            datatype: make_i64_type(),
+            dataspace: scalar_ds(),
+            raw_data: v.to_le_bytes().to_vec(),
+        },
+        AttrValue::I64Array(arr) => {
+            let mut raw = Vec::with_capacity(arr.len() * 8);
+            for v in arr {
+                raw.extend_from_slice(&v.to_le_bytes());
+            }
+            AttributeMessage {
+                name: name.to_string(),
+                datatype: make_i64_type(),
+                dataspace: simple_1d(arr.len() as u64),
+                raw_data: raw,
+            }
+        }
+        AttrValue::I32(v) => AttributeMessage {
+            name: name.to_string(),
+            datatype: make_i32_type(),
+            dataspace: scalar_ds(),
+            raw_data: v.to_le_bytes().to_vec(),
+        },
+        AttrValue::U32(v) => AttributeMessage {
+            name: name.to_string(),
+            datatype: make_u32_type(),
+            dataspace: scalar_ds(),
+            raw_data: v.to_le_bytes().to_vec(),
+        },
+        AttrValue::U64(v) => AttributeMessage {
+            name: name.to_string(),
+            datatype: make_u64_type(),
+            dataspace: scalar_ds(),
+            raw_data: v.to_le_bytes().to_vec(),
+        },
+        AttrValue::String(s) => {
+            let bytes = s.as_bytes();
+            AttributeMessage {
+                name: name.to_string(),
+                datatype: Datatype::String {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "string byte length is stored in the 4-byte fixed-string datatype size field"
+                    )]
+                    size: bytes.len() as u32,
+                    padding: StringPadding::NullPad,
+                    charset: CharacterSet::Utf8,
+                },
+                dataspace: scalar_ds(),
+                raw_data: bytes.to_vec(),
+            }
+        }
+        AttrValue::StringArray(arr) => {
+            let max_len = arr.iter().map(|s| s.len()).max().unwrap_or(0);
+            let mut raw = Vec::new();
+            for s in arr {
+                let mut b = s.as_bytes().to_vec();
+                b.resize(max_len, 0);
+                raw.extend_from_slice(&b);
+            }
+            AttributeMessage {
+                name: name.to_string(),
+                datatype: Datatype::String {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "max string byte length is stored in the 4-byte fixed-string datatype size field"
+                    )]
+                    size: max_len as u32,
+                    padding: StringPadding::NullPad,
+                    charset: CharacterSet::Utf8,
+                },
+                dataspace: simple_1d(arr.len() as u64),
+                raw_data: raw,
+            }
+        }
+        AttrValue::AsciiString(s) => {
+            let bytes = s.as_bytes();
+            AttributeMessage {
+                name: name.to_string(),
+                datatype: Datatype::String {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "string byte length is stored in the 4-byte fixed-string datatype size field"
+                    )]
+                    size: bytes.len() as u32,
+                    padding: StringPadding::NullPad,
+                    charset: CharacterSet::Ascii,
+                },
+                dataspace: scalar_ds(),
+                raw_data: bytes.to_vec(),
+            }
+        }
+        AttrValue::AsciiStringArray(arr) => {
+            let max_len = arr.iter().map(|s| s.len()).max().unwrap_or(0);
+            let mut raw = Vec::new();
+            for s in arr {
+                let mut b = s.as_bytes().to_vec();
+                b.resize(max_len, 0);
+                raw.extend_from_slice(&b);
+            }
+            AttributeMessage {
+                name: name.to_string(),
+                datatype: Datatype::String {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "max string byte length is stored in the 4-byte fixed-string datatype size field"
+                    )]
+                    size: max_len as u32,
+                    padding: StringPadding::NullPad,
+                    charset: CharacterSet::Ascii,
+                },
+                dataspace: simple_1d(arr.len() as u64),
+                raw_data: raw,
+            }
+        }
+        AttrValue::VarLenAsciiArray(strings) => {
+            // MATLAB v7.3 (and matio) expect MATLAB_fields and similar
+            // variable-length ASCII arrays encoded as:
+            //   H5T_VLEN { H5T_STRING { STRSIZE=1, NULLTERM, ASCII } }
+            // — a VLEN sequence of 1-byte fixed strings. The on-disk byte
+            // layout is identical to H5T_STRING{STRSIZE=VAR} (length + heap
+            // address + object index per element; heap object holds raw
+            // bytes without null terminator), so only the datatype
+            // descriptor changes.
+            let vl_ref_size = 16usize; // 4 + 8 + 4 for offset_size=8
+            let mut raw = Vec::with_capacity(strings.len() * vl_ref_size);
+            for (i, s) in strings.iter().enumerate() {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "VLEN string length is written into the 4-byte length prefix of the variable-length reference"
+                )]
+                raw.extend_from_slice(&(s.len() as u32).to_le_bytes());
+                raw.extend_from_slice(&0u64.to_le_bytes()); // patched later
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "1-based heap object index is written into the 4-byte object-index field of the variable-length reference"
+                )]
+                raw.extend_from_slice(&((i + 1) as u32).to_le_bytes());
+            }
+            AttributeMessage {
+                name: name.to_string(),
+                datatype: Datatype::VariableLength {
+                    is_string: false,
+                    padding: None,
+                    charset: None,
+                    base_type: Box::new(Datatype::String {
+                        size: 1,
+                        padding: StringPadding::NullTerminate,
+                        charset: CharacterSet::Ascii,
+                    }),
+                },
+                dataspace: simple_1d(strings.len() as u64),
+                raw_data: raw,
+            }
+        }
+    }
+}
+
+/// Build a global heap collection containing the given byte sequences.
+/// Returns the serialized collection bytes.
+pub(crate) fn build_global_heap_collection(strings: &[&str]) -> Vec<u8> {
+    let objects: Vec<&[u8]> = strings.iter().map(|s| s.as_bytes()).collect();
+    build_global_heap_collection_bytes(&objects)
+}
+
+/// Build a global heap collection from raw byte objects (no UTF-8 requirement),
+/// assigning 1-based object indices in order. Mirrors
+/// [`build_global_heap_collection`] but accepts arbitrary bytes so a faithful
+/// rewrite can carry embedded-NUL or non-UTF-8 VL-string payloads.
+pub(crate) fn build_global_heap_collection_bytes(objects: &[&[u8]]) -> Vec<u8> {
+    let length_size = 8usize;
+    let header_size = 8 + length_size; // sig(4) + ver(1) + reserved(3) + collection_size
+
+    // Calculate total size
+    let mut obj_size_total = 0usize;
+    for obj in objects {
+        let obj_header = 8 + length_size; // index(2) + refcount(2) + reserved(4) + size
+        let padded_data_len = (obj.len() + 7) & !7; // pad to 8 bytes
+        obj_size_total += obj_header + padded_data_len;
+    }
+    obj_size_total += 8 + length_size; // free space marker (full object header size)
+    let collection_size = header_size + obj_size_total;
+    // The C HDF5 library enforces a minimum collection size of 4096 bytes.
+    let min_collection_size = 4096;
+    let padded_collection = ((collection_size.max(min_collection_size)) + 7) & !7;
+
+    let mut buf = Vec::with_capacity(padded_collection);
+    // Header
+    buf.extend_from_slice(b"GCOL");
+    buf.push(1); // version
+    buf.extend_from_slice(&[0u8; 3]); // reserved
+    buf.extend_from_slice(&(padded_collection as u64).to_le_bytes());
+
+    // Objects (1-based indices)
+    for (i, obj) in objects.iter().enumerate() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "1-based heap object index is written into the 2-byte heap-object index field"
+        )]
+        let index = (i + 1) as u16;
+        buf.extend_from_slice(&index.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes()); // ref_count
+        buf.extend_from_slice(&[0u8; 4]); // reserved
+        buf.extend_from_slice(&(obj.len() as u64).to_le_bytes());
+        buf.extend_from_slice(obj);
+        // Pad to 8-byte boundary
+        let padded = (obj.len() + 7) & !7;
+        for _ in obj.len()..padded {
+            buf.push(0);
+        }
+    }
+
+    // Free space marker (index 0): the C library uses this size as the total
+    // skip distance from the start of the object (including its header), so
+    // it must equal the remaining bytes in the collection from this point.
+    let free_total_size = padded_collection - buf.len();
+    buf.extend_from_slice(&0u16.to_le_bytes()); // index 0
+    buf.extend_from_slice(&0u16.to_le_bytes()); // ref_count
+    buf.extend_from_slice(&[0u8; 4]); // reserved
+    buf.extend_from_slice(&(free_total_size as u64).to_le_bytes()); // size
+
+    // Pad collection to full size
+    buf.resize(padded_collection, 0);
+
+    buf
+}
+
+/// Patch VL attribute references with the actual global heap collection address.
+/// The raw_data contains VL references with placeholder addresses (0).
+pub(crate) fn patch_vl_refs(raw_data: &mut [u8], collection_address: u64) {
+    let vl_ref_size = 16; // 4 + 8 + 4
+    let count = raw_data.len() / vl_ref_size;
+    for i in 0..count {
+        let addr_offset = i * vl_ref_size + 4; // skip sequence_length
+        raw_data[addr_offset..addr_offset + 8].copy_from_slice(&collection_address.to_le_bytes());
+    }
+}
+
+/// A single element of a VL-string dataset being written: either a null
+/// reference (no heap object) or a heap object carrying these exact bytes.
+///
+/// The two are distinct in the HDF5 model: a null reference reads back as a
+/// null/empty element with no heap object, whereas a zero-length heap object
+/// reads back as an empty string `""`. Carrying both lets a faithful rewrite
+/// reproduce the source byte-for-byte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VlStringElement {
+    /// A null reference: length 0, undefined heap address, no heap object.
+    Null,
+    /// A heap object holding these exact bytes (possibly empty).
+    Bytes(Vec<u8>),
+}
+
+/// 16-byte size of a single VL global-heap reference (offset_size = 8):
+/// length(4) + collection address(8) + object index(4).
+pub(crate) const VL_REF_SIZE: usize = 16;
+
+/// Staged VL-string dataset/attribute element data: the per-element 16-byte
+/// references (with placeholder heap addresses) plus the global heap collection
+/// holding the non-null elements' bytes.
+///
+/// Object indices are assigned 1-based and contiguous over the non-null
+/// elements in order, matching [`build_global_heap_collection_bytes`]. Null
+/// elements carry an undefined address and object index 0, and are never
+/// patched so they read back as null.
+pub(crate) struct VlStringStaging {
+    /// The dataset/attribute element bytes: one 16-byte reference per element.
+    pub refs: Vec<u8>,
+    /// The serialized global heap collection holding the non-null objects.
+    pub collection_bytes: Vec<u8>,
+    /// `true` for each element that references a heap object and must have its
+    /// address patched; `false` for a null element that must stay undefined.
+    pub patch_mask: Vec<bool>,
+}
+
+/// Stage the references and global-heap collection for a variable-length
+/// dataset/attribute from its per-element byte payloads.
+///
+/// `element_size` is the byte width of the VL base type. A VL string's base type
+/// is a single byte (`element_size == 1`), so the reference's stored `length`
+/// equals the payload's byte count. A non-string VL sequence stores an element
+/// *count* in that field, so the length written is `bytes.len() / element_size`,
+/// while the heap object still holds the exact bytes.
+pub(crate) fn stage_vl_elements(
+    elements: &[VlStringElement],
+    element_size: usize,
+) -> VlStringStaging {
+    let element_size = element_size.max(1);
+    // Collect the non-null payloads in order; their 1-based positions become
+    // the heap object indices.
+    let mut objects: Vec<&[u8]> = Vec::new();
+    let mut refs = Vec::with_capacity(elements.len() * VL_REF_SIZE);
+    let mut patch_mask = Vec::with_capacity(elements.len());
+    for element in elements {
+        match element {
+            VlStringElement::Null => {
+                // A null VL reference: HDF5 marks "no heap object" with a zero
+                // heap address (`H5T__vlen_disk_isnull` tests addr == 0), not the
+                // all-ones "undefined address" sentinel — the reference C library
+                // rejects the latter as a bad heap index when reading.
+                refs.extend_from_slice(&0u32.to_le_bytes()); // length 0
+                refs.extend_from_slice(&0u64.to_le_bytes()); // null heap address
+                refs.extend_from_slice(&0u32.to_le_bytes()); // object index 0
+                patch_mask.push(false);
+            }
+            VlStringElement::Bytes(bytes) => {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "VL element length (element count) is written into the 4-byte \
+                              length prefix of the variable-length reference"
+                )]
+                refs.extend_from_slice(&((bytes.len() / element_size) as u32).to_le_bytes());
+                refs.extend_from_slice(&0u64.to_le_bytes()); // patched later
+                let index = objects.len() + 1; // 1-based heap object index
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "1-based heap object index is written into the 4-byte object-index \
+                              field of the variable-length reference"
+                )]
+                refs.extend_from_slice(&(index as u32).to_le_bytes());
+                objects.push(bytes);
+                patch_mask.push(true);
+            }
+        }
+    }
+    // A dataset of only null elements (or an empty dataset) references no heap
+    // object, so emit no collection — there is nothing to patch and a 4096-byte
+    // empty GCOL would be dead weight.
+    let collection_bytes = if objects.is_empty() {
+        Vec::new()
+    } else {
+        build_global_heap_collection_bytes(&objects)
+    };
+    VlStringStaging {
+        refs,
+        collection_bytes,
+        patch_mask,
+    }
+}
+
+/// Patch the heap address of each VL reference flagged in `patch_mask`, leaving
+/// null references (mask `false`) with their undefined address. Mirrors
+/// [`patch_vl_refs`] but skips null elements so they read back as null.
+pub(crate) fn patch_vl_refs_masked(
+    raw_data: &mut [u8],
+    patch_mask: &[bool],
+    collection_address: u64,
+) {
+    for (i, &patch) in patch_mask.iter().enumerate() {
+        if !patch {
+            continue;
+        }
+        let addr_offset = i * VL_REF_SIZE + 4; // skip sequence_length
+        raw_data[addr_offset..addr_offset + 8].copy_from_slice(&collection_address.to_le_bytes());
+    }
+}
+
+pub(crate) fn scalar_ds() -> Dataspace {
+    Dataspace {
+        space_type: DataspaceType::Scalar,
+        rank: 0,
+        dimensions: vec![],
+        max_dimensions: None,
+    }
+}
+
+pub(crate) fn simple_1d(n: u64) -> Dataspace {
+    Dataspace {
+        space_type: DataspaceType::Simple,
+        rank: 1,
+        dimensions: vec![n],
+        max_dimensions: None,
+    }
+}
+
+// ---- Attribute values ----
+
+/// Convenient attribute values for the write API.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttrValue {
+    F64(f64),
+    F64Array(Vec<f64>),
+    I32(i32),
+    I64(i64),
+    I64Array(Vec<i64>),
+    U32(u32),
+    U64(u64),
+    /// UTF-8 string attribute (null-padded).
+    String(String),
+    StringArray(Vec<String>),
+    /// Fixed-width ASCII string attribute (charset = ASCII).
+    AsciiString(String),
+    /// Array of fixed-width ASCII strings (null-padded to the longest element).
+    /// Compatible with MATLAB `MATLAB_fields` and matio.
+    AsciiStringArray(Vec<String>),
+    /// Array of variable-length ASCII strings (MATLAB_fields pattern).
+    /// Each element is a variable-length sequence of ASCII bytes.
+    /// Requires a global heap collection in the file.
+    VarLenAsciiArray(Vec<String>),
+}
+
+// ---- Dataset builder ----
+
+/// Configuration for SHINES provenance metadata.
+#[cfg(feature = "provenance")]
+#[derive(Debug, Clone)]
+pub struct ProvenanceConfig {
+    pub creator: String,
+    pub timestamp: String,
+    pub source: Option<String>,
+}
+
+/// Everything [`DatasetBuilder::with_raw_chunks_lazy`] needs to re-emit a chunked
+/// dataset by copying its source chunks verbatim (no decode/re-encode): the
+/// per-chunk sizes/masks (enough to plan the destination layout without reading
+/// any bytes), a provider that yields each chunk's bytes on demand at write time,
+/// the source filter-pipeline message, and the chunk geometry. Built by repack
+/// from a source [`Dataset`].
+pub(crate) struct RawChunkPayload {
+    /// Logical chunk dimensions (rank entries, not the trailing element size).
+    pub(crate) chunk_dims: Vec<u64>,
+    /// Datatype element size in bytes.
+    pub(crate) element_size: usize,
+    /// Full uncompressed byte size of one chunk
+    /// (`product(chunk_dims) * element_size`), identical for every chunk.
+    pub(crate) raw_size: u64,
+    /// The verbatim source `FilterPipeline` message bytes, if the source had one.
+    pub(crate) pipeline_message: Option<Vec<u8>>,
+    /// Per-chunk sizes + filter masks in dense row-major grid order, one per slot.
+    pub(crate) meta: Vec<ChunkMeta>,
+    /// Yields each chunk's compressed bytes on demand during the write, so no
+    /// more than one chunk's bytes are resident. Owns its source (e.g. an
+    /// `Arc<File>`), so it carries no borrowed lifetime.
+    ///
+    /// Wrapped in [`AssertUnwindSafe`](core::panic::AssertUnwindSafe) so the
+    /// boxed trait object does not strip the `UnwindSafe`/`RefUnwindSafe`
+    /// auto-traits from the public builder types that transitively hold it
+    /// (removing an auto-trait impl is a semver break). The assertion is sound:
+    /// the provider performs only immutable reads and leaves no broken state on
+    /// a panic. `ChunkProvider: Send + Sync` keeps the other two auto-traits.
+    pub(crate) provider: core::panic::AssertUnwindSafe<Box<dyn ChunkProvider>>,
+}
+
+/// One element of an object-reference dataset written through the builder.
+///
+/// A reference either names an object by path (resolved to that object's
+/// destination address during serialization) or carries a raw address verbatim.
+/// The raw form preserves a null reference (address 0) or an undefined reference
+/// (`HADDR_UNDEF`, all-ones) exactly, which a faithful rewrite (repack) needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ObjectRefTarget {
+    /// Resolve to the destination address of the object at this path.
+    Path(String),
+    /// Write this exact 8-byte address (e.g. 0 for null, `u64::MAX` for
+    /// undefined).
+    Raw(u64),
+}
+
+/// Builder for datasets.
+pub struct DatasetBuilder {
+    pub(crate) name: String,
+    pub(crate) datatype: Option<Datatype>,
+    pub(crate) shape: Option<Vec<u64>>,
+    pub(crate) maxshape: Option<Vec<u64>>,
+    pub(crate) data: Option<Vec<u8>>,
+    pub(crate) attrs: Vec<(String, AttrValue)>,
+    pub(crate) chunk_options: ChunkOptions,
+    /// When set, this dataset's chunks are copied verbatim from a source file
+    /// (repack's verbatim path): the already-compressed chunk bytes, the source
+    /// filter-pipeline message, and the geometry needed to lay them out. This
+    /// takes precedence over `data` / `chunk_options` for chunked storage.
+    pub(crate) raw_chunks: Option<RawChunkPayload>,
+    /// When set, this dataset is an object-reference dataset whose element
+    /// addresses are resolved (per-element by path, or written raw) during file
+    /// serialization once every object's destination address is known.
+    pub(crate) reference_targets: Option<Vec<ObjectRefTarget>>,
+    /// When set, this dataset stores variable-length strings: `data` holds the
+    /// 16-byte references with placeholder heap addresses, and this staging
+    /// carries the global heap collection plus the mask of references to patch
+    /// once the post-data cursor is known.
+    pub(crate) vl_string_staging: Option<VlStringStaging>,
+    #[cfg(feature = "provenance")]
+    pub(crate) provenance: Option<ProvenanceConfig>,
+}
+
+impl DatasetBuilder {
+    pub(crate) fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            datatype: None,
+            shape: None,
+            maxshape: None,
+            data: None,
+            attrs: Vec::new(),
+            chunk_options: ChunkOptions::default(),
+            raw_chunks: None,
+            reference_targets: None,
+            vl_string_staging: None,
+            #[cfg(feature = "provenance")]
+            provenance: None,
+        }
+    }
+
+    pub fn with_f64_data(&mut self, data: &[f64]) -> &mut Self {
+        self.datatype = Some(make_f64_type());
+        let mut b = Vec::with_capacity(data.len() * 8);
+        for &v in data {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        self.data = Some(b);
+        if self.shape.is_none() {
+            self.shape = Some(vec![data.len() as u64]);
+        }
+        self
+    }
+
+    pub fn with_f32_data(&mut self, data: &[f32]) -> &mut Self {
+        self.datatype = Some(make_f32_type());
+        let mut b = Vec::with_capacity(data.len() * 4);
+        for &v in data {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        self.data = Some(b);
+        if self.shape.is_none() {
+            self.shape = Some(vec![data.len() as u64]);
+        }
+        self
+    }
+
+    pub fn with_i32_data(&mut self, data: &[i32]) -> &mut Self {
+        self.datatype = Some(make_i32_type());
+        let mut b = Vec::with_capacity(data.len() * 4);
+        for &v in data {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        self.data = Some(b);
+        if self.shape.is_none() {
+            self.shape = Some(vec![data.len() as u64]);
+        }
+        self
+    }
+
+    pub fn with_i64_data(&mut self, data: &[i64]) -> &mut Self {
+        self.datatype = Some(make_i64_type());
+        let mut b = Vec::with_capacity(data.len() * 8);
+        for &v in data {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        self.data = Some(b);
+        if self.shape.is_none() {
+            self.shape = Some(vec![data.len() as u64]);
+        }
+        self
+    }
+
+    pub fn with_u8_data(&mut self, data: &[u8]) -> &mut Self {
+        self.datatype = Some(make_u8_type());
+        self.data = Some(data.to_vec());
+        if self.shape.is_none() {
+            self.shape = Some(vec![data.len() as u64]);
+        }
+        self
+    }
+
+    /// Stream a one-dimensional `u8` dataset one fixed-size chunk at a time.
+    ///
+    /// The provider is called once for each chunk in ascending order while
+    /// [`FileBuilder::write`](crate::FileBuilder::write) serializes the file.
+    /// Every returned buffer must contain exactly `chunk_size` bytes. The final
+    /// chunk may be zero-padded; readers only expose the first `num_elements`
+    /// bytes described by the dataset shape.
+    ///
+    /// This path keeps payload memory bounded by one chunk. It is intended for
+    /// large byte streams whose complete contents cannot be staged in a `Vec`.
+    pub fn with_streamed_u8_data(
+        &mut self,
+        num_elements: u64,
+        chunk_size: u64,
+        provider: Box<dyn ChunkProvider>,
+    ) -> Result<&mut Self, crate::error::FormatError> {
+        if chunk_size == 0 {
+            return Err(crate::error::FormatError::InvalidChunkGeometry(
+                "streamed chunk size must be non-zero",
+            ));
+        }
+        if chunk_size > u64::from(u32::MAX) {
+            return Err(crate::error::FormatError::InvalidChunkGeometry(
+                "streamed chunk size must fit the HDF5 u32 dimension field",
+            ));
+        }
+        if num_elements == 0 {
+            self.shape = Some(vec![0]);
+            self.raw_chunks = None;
+            return Ok(self.with_u8_data(&[]));
+        }
+
+        let chunk_count = num_elements.div_ceil(chunk_size).to_usize()?;
+        let meta = vec![
+            ChunkMeta {
+                compressed_size: chunk_size,
+                filter_mask: 0,
+            };
+            chunk_count
+        ];
+        self.data = None;
+        self.shape = Some(vec![num_elements]);
+        self.maxshape = None;
+        Ok(self.with_raw_chunks_lazy(
+            make_u8_type(),
+            &[num_elements],
+            None,
+            &[chunk_size],
+            1,
+            None,
+            meta,
+            provider,
+        ))
+    }
+
+    pub fn with_i8_data(&mut self, data: &[i8]) -> &mut Self {
+        self.datatype = Some(make_i8_type());
+        let mut b = Vec::with_capacity(data.len());
+        for &v in data {
+            b.push(v as u8);
+        }
+        self.data = Some(b);
+        if self.shape.is_none() {
+            self.shape = Some(vec![data.len() as u64]);
+        }
+        self
+    }
+
+    pub fn with_i16_data(&mut self, data: &[i16]) -> &mut Self {
+        self.datatype = Some(make_i16_type());
+        let mut b = Vec::with_capacity(data.len() * 2);
+        for &v in data {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        self.data = Some(b);
+        if self.shape.is_none() {
+            self.shape = Some(vec![data.len() as u64]);
+        }
+        self
+    }
+
+    pub fn with_u16_data(&mut self, data: &[u16]) -> &mut Self {
+        self.datatype = Some(make_u16_type());
+        let mut b = Vec::with_capacity(data.len() * 2);
+        for &v in data {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        self.data = Some(b);
+        if self.shape.is_none() {
+            self.shape = Some(vec![data.len() as u64]);
+        }
+        self
+    }
+
+    pub fn with_u32_data(&mut self, data: &[u32]) -> &mut Self {
+        self.datatype = Some(make_u32_type());
+        let mut b = Vec::with_capacity(data.len() * 4);
+        for &v in data {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        self.data = Some(b);
+        if self.shape.is_none() {
+            self.shape = Some(vec![data.len() as u64]);
+        }
+        self
+    }
+
+    pub fn with_u64_data(&mut self, data: &[u64]) -> &mut Self {
+        self.datatype = Some(make_u64_type());
+        let mut b = Vec::with_capacity(data.len() * 8);
+        for &v in data {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        self.data = Some(b);
+        if self.shape.is_none() {
+            self.shape = Some(vec![data.len() as u64]);
+        }
+        self
+    }
+
+    /// Write an object reference dataset. Each address is an 8-byte absolute
+    /// address pointing to an object header in the file.
+    pub fn with_reference_data(&mut self, addresses: &[u64]) -> &mut Self {
+        self.datatype = Some(make_object_reference_type());
+        let mut b = Vec::with_capacity(addresses.len() * 8);
+        for &addr in addresses {
+            b.extend_from_slice(&addr.to_le_bytes());
+        }
+        self.data = Some(b);
+        if self.shape.is_none() {
+            self.shape = Some(vec![addresses.len() as u64]);
+        }
+        self
+    }
+
+    /// Write an object reference dataset by path. During file serialization,
+    /// each path is resolved to the absolute address of the named object.
+    /// Paths use `/` separators (e.g., `"#refs#/child1"`).
+    pub fn with_path_references(&mut self, paths: &[&str]) -> &mut Self {
+        let targets = paths
+            .iter()
+            .map(|s| ObjectRefTarget::Path(s.to_string()))
+            .collect();
+        self.with_object_references(targets)
+    }
+
+    /// Write an object-reference dataset from explicit per-element targets,
+    /// preserving null/undefined references verbatim. The datatype is set to the
+    /// 8-byte object-reference type; each [`ObjectRefTarget::Path`] is resolved to
+    /// its destination address during serialization, while
+    /// [`ObjectRefTarget::Raw`] is written as-is. This is the faithful re-emit
+    /// path used by repack. The shape defaults to `[targets.len()]` unless
+    /// [`with_shape`](Self::with_shape) sets it.
+    pub(crate) fn with_object_references(&mut self, targets: Vec<ObjectRefTarget>) -> &mut Self {
+        self.datatype = Some(make_object_reference_type());
+        // Placeholder zeros — patched once all destination addresses are known.
+        self.data = Some(vec![0u8; targets.len() * 8]);
+        if self.shape.is_none() {
+            self.shape = Some(vec![targets.len() as u64]);
+        }
+        self.reference_targets = Some(targets);
+        self
+    }
+
+    /// Write a complex32 (f32 real/imag pair) dataset.
+    pub fn with_complex32_data(&mut self, data: &[(f32, f32)]) -> &mut Self {
+        let ct = CompoundTypeBuilder::new()
+            .f32_field("real")
+            .f32_field("imag")
+            .build();
+        let mut raw = Vec::with_capacity(data.len() * 8);
+        for &(r, i) in data {
+            raw.extend_from_slice(&r.to_le_bytes());
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        self.with_compound_data(ct, raw, data.len() as u64)
+    }
+
+    /// Write a complex64 (f64 real/imag pair) dataset.
+    pub fn with_complex64_data(&mut self, data: &[(f64, f64)]) -> &mut Self {
+        let ct = CompoundTypeBuilder::new()
+            .f64_field("real")
+            .f64_field("imag")
+            .build();
+        let mut raw = Vec::with_capacity(data.len() * 16);
+        for &(r, i) in data {
+            raw.extend_from_slice(&r.to_le_bytes());
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        self.with_compound_data(ct, raw, data.len() as u64)
+    }
+
+    /// Write a compound (struct) dataset.
+    pub fn with_compound_data(
+        &mut self,
+        datatype: Datatype,
+        raw_data: Vec<u8>,
+        num_elements: u64,
+    ) -> &mut Self {
+        self.with_raw_data(datatype, raw_data, num_elements)
+    }
+
+    /// Write a dataset from an explicit datatype and its raw element bytes.
+    ///
+    /// The lowest-level data entry point: `raw_data` is written verbatim as the
+    /// dataset's storage, interpreted by `datatype`, so the caller is
+    /// responsible for the bytes matching the datatype's on-disk layout (little
+    /// endian, `num_elements` elements each of the datatype's size). It underpins
+    /// the typed helpers and lets a captured `(datatype, bytes)` pair — for
+    /// example from reading an existing dataset — be re-emitted without a typed
+    /// helper. The shape defaults to `[num_elements]` unless
+    /// [`with_shape`](Self::with_shape) sets it.
+    pub fn with_raw_data(
+        &mut self,
+        datatype: Datatype,
+        raw_data: Vec<u8>,
+        num_elements: u64,
+    ) -> &mut Self {
+        self.datatype = Some(datatype);
+        self.data = Some(raw_data);
+        if self.shape.is_none() {
+            self.shape = Some(vec![num_elements]);
+        }
+        self
+    }
+
+    /// Stage a chunked dataset whose chunks are streamed verbatim from a source
+    /// file one at a time, without decoding or re-encoding any chunk and without
+    /// holding more than one chunk's bytes in memory.
+    ///
+    /// Repack's out-of-core verbatim path: `meta` is the per-chunk sizes + filter
+    /// masks in dense row-major chunk-grid order (one per slot), and `provider`
+    /// yields each chunk's already-compressed bytes on demand at write time. The
+    /// destination layout is computed from `meta` alone, so the chunks are never
+    /// all resident at once. `pipeline_message` is the source's `FilterPipeline`
+    /// message bytes, reused as-is so every filter — including ones this crate
+    /// cannot itself apply (ZFP, SZIP, unknown) — is reproduced byte-for-byte.
+    /// `dims`/`maxshape`/`chunk_dims`/`element_size` describe the geometry. The
+    /// shape defaults to `dims` and the chunk dimensions to `chunk_dims`. The
+    /// provider owns its source (e.g. an `Arc<File>`), so this carries no
+    /// borrowed lifetime.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_raw_chunks_lazy(
+        &mut self,
+        datatype: Datatype,
+        dims: &[u64],
+        maxshape: Option<&[u64]>,
+        chunk_dims: &[u64],
+        element_size: usize,
+        pipeline_message: Option<Vec<u8>>,
+        meta: Vec<ChunkMeta>,
+        provider: Box<dyn ChunkProvider>,
+    ) -> &mut Self {
+        // Full uncompressed bytes of one chunk (drives the fixed/extensible-array
+        // chunk-size encoding width). Saturating arithmetic matches the writer's
+        // overflow discipline; the values come from an already-validated source
+        // file, so this only guards against an absurd input rather than a real case.
+        let raw_size: u64 = chunk_dims
+            .iter()
+            .copied()
+            .product::<u64>()
+            .saturating_mul(element_size as u64);
+        self.datatype = Some(datatype);
+        if self.shape.is_none() {
+            self.shape = Some(dims.to_vec());
+        }
+        if let Some(ms) = maxshape {
+            self.maxshape = Some(ms.to_vec());
+        }
+        self.chunk_options.chunk_dims = Some(chunk_dims.to_vec());
+        self.raw_chunks = Some(RawChunkPayload {
+            chunk_dims: chunk_dims.to_vec(),
+            element_size,
+            raw_size,
+            pipeline_message,
+            meta,
+            provider: core::panic::AssertUnwindSafe(provider),
+        });
+        self
+    }
+
+    /// Safely encode a slice of compound values field by field.
+    ///
+    /// Built-in implementations support numeric tuples with one through twelve
+    /// fields. No Rust struct or tuple padding is copied into the file.
+    pub fn with_compound_values<T: CompoundType>(
+        &mut self,
+        values: &[T],
+    ) -> Result<&mut Self, crate::error::FormatError> {
+        let datatype = T::datatype()?;
+        if !matches!(datatype, Datatype::Compound { .. }) {
+            return Err(crate::error::FormatError::TypeMismatch {
+                expected: "Compound",
+                actual: "non-Compound",
+            });
+        }
+        let element_size = datatype.type_size().to_usize()?;
+        if element_size == 0 {
+            return Err(crate::error::FormatError::InvalidCompoundSize);
+        }
+        let mut raw = Vec::with_capacity(values.len().saturating_mul(element_size));
+        for value in values {
+            let start = raw.len();
+            value.encode(&mut raw);
+            let actual = raw.len() - start;
+            if actual != element_size {
+                return Err(crate::error::FormatError::DataSizeMismatch {
+                    expected: element_size,
+                    actual,
+                });
+            }
+        }
+        Ok(self.with_compound_data(datatype, raw, values.len() as u64))
+    }
+
+    /// Write an enum dataset with i32 values.
+    pub fn with_enum_i32_data(&mut self, datatype: Datatype, values: &[i32]) -> &mut Self {
+        self.datatype = Some(datatype);
+        let mut raw = Vec::with_capacity(values.len() * 4);
+        for &v in values {
+            raw.extend_from_slice(&v.to_le_bytes());
+        }
+        self.data = Some(raw);
+        if self.shape.is_none() {
+            self.shape = Some(vec![values.len() as u64]);
+        }
+        self
+    }
+
+    /// Write an enum dataset with u8 values.
+    pub fn with_enum_u8_data(&mut self, datatype: Datatype, values: &[u8]) -> &mut Self {
+        self.datatype = Some(datatype);
+        self.data = Some(values.to_vec());
+        if self.shape.is_none() {
+            self.shape = Some(vec![values.len() as u64]);
+        }
+        self
+    }
+
+    /// Write a variable-length UTF-8 string dataset.
+    ///
+    /// Each element is stored as a global-heap object holding the string's
+    /// bytes; the datatype is `H5T_VLEN { H5T_STRING { STRSIZE=VAR, ASCII or
+    /// UTF-8 } }`. The shape defaults to `[values.len()]` unless
+    /// [`with_shape`](Self::with_shape) sets it (use that for ND VL strings,
+    /// passing `values` in row-major order).
+    ///
+    /// Empty strings become zero-length heap objects (reading back as `""`).
+    /// For full fidelity over null-vs-empty elements, embedded NULs, non-UTF-8
+    /// payloads, or a specific charset/padding, use
+    /// [`with_vlen_string_elements`](Self::with_vlen_string_elements).
+    pub fn with_vlen_strings(&mut self, values: &[&str]) -> &mut Self {
+        let datatype = make_vlen_string_type(CharacterSet::Utf8);
+        let elements: Vec<VlStringElement> = values
+            .iter()
+            .map(|s| VlStringElement::Bytes(s.as_bytes().to_vec()))
+            .collect();
+        self.stage_vlen_strings(datatype, &elements);
+        self
+    }
+
+    /// Write a variable-length string dataset from an explicit source datatype
+    /// and per-element byte payloads, preserving the null-vs-empty distinction.
+    ///
+    /// `datatype` must be a string-shaped variable-length datatype
+    /// (`is_string: true`, or the MATLAB `H5T_VLEN { H5T_STRING { STRSIZE=1 } }`
+    /// shape); its charset, padding, and base type are reproduced verbatim. Each
+    /// [`VlStringElement`] is either a null reference or a heap object holding
+    /// exact bytes. This is the faithful re-emit path used by repack. Returns a
+    /// [`TypeMismatch`](crate::FormatError::TypeMismatch) if `datatype` is not a
+    /// VL-string datatype. The shape defaults to `[elements.len()]` unless
+    /// [`with_shape`](Self::with_shape) sets it.
+    pub(crate) fn with_vlen_string_elements(
+        &mut self,
+        datatype: Datatype,
+        elements: &[VlStringElement],
+    ) -> Result<&mut Self, crate::error::FormatError> {
+        if !crate::vl_data::is_vlen_string_datatype(&datatype) {
+            return Err(crate::error::FormatError::TypeMismatch {
+                expected: "VariableLength string",
+                actual: "non-VariableLength string",
+            });
+        }
+        self.stage_vlen_strings(datatype, elements);
+        Ok(self)
+    }
+
+    /// Shared body of the VL-string write entry points: stage the references
+    /// and global heap collection and record them on the builder.
+    fn stage_vlen_strings(&mut self, datatype: Datatype, elements: &[VlStringElement]) {
+        // A VL string's base type is one byte, so the reference length is the
+        // byte count (element_size = 1).
+        self.stage_vlen_elements(datatype, elements, 1);
+    }
+
+    /// Write a *non-string* variable-length (sequence) dataset from an explicit
+    /// source datatype and per-element byte payloads.
+    ///
+    /// `datatype` must be a non-string VL datatype (e.g. `H5T_VLEN
+    /// { H5T_NATIVE_DOUBLE }`); its base type is reproduced verbatim. Each
+    /// element's exact heap bytes are re-staged through a fresh global heap, and
+    /// the per-element reference stores the base-type element count. This is the
+    /// faithful re-emit path used by repack. Returns a
+    /// [`TypeMismatch`](crate::FormatError::TypeMismatch) if `datatype` is a
+    /// string-shaped VL datatype or not variable-length at all. The shape
+    /// defaults to `[elements.len()]` unless [`with_shape`](Self::with_shape)
+    /// sets it.
+    pub(crate) fn with_vlen_sequence_elements(
+        &mut self,
+        datatype: Datatype,
+        elements: &[VlStringElement],
+    ) -> Result<&mut Self, crate::error::FormatError> {
+        let Datatype::VariableLength { base_type, .. } = &datatype else {
+            return Err(crate::error::FormatError::TypeMismatch {
+                expected: "non-string VariableLength",
+                actual: "non-VariableLength",
+            });
+        };
+        if crate::vl_data::is_vlen_string_datatype(&datatype) {
+            return Err(crate::error::FormatError::TypeMismatch {
+                expected: "non-string VariableLength",
+                actual: "VariableLength string",
+            });
+        }
+        let element_size = base_type.type_size() as usize;
+        if element_size == 0 {
+            return Err(crate::error::FormatError::VlDataError(
+                "non-string VL base type has zero size".into(),
+            ));
+        }
+        self.stage_vlen_elements(datatype, elements, element_size);
+        Ok(self)
+    }
+
+    /// Shared body of the VL write entry points (string and sequence): stage the
+    /// references and global heap collection and record them on the builder.
+    fn stage_vlen_elements(
+        &mut self,
+        datatype: Datatype,
+        elements: &[VlStringElement],
+        element_size: usize,
+    ) {
+        let n = elements.len() as u64;
+        let staging = stage_vl_elements(elements, element_size);
+        self.datatype = Some(datatype);
+        self.data = Some(staging.refs.clone());
+        self.vl_string_staging = Some(staging);
+        if self.shape.is_none() {
+            self.shape = Some(vec![n]);
+        }
+    }
+
+    /// Write an array-typed dataset.
+    pub fn with_array_data(
+        &mut self,
+        base_type: Datatype,
+        array_dims: &[u32],
+        raw_data: Vec<u8>,
+        num_elements: u64,
+    ) -> &mut Self {
+        self.datatype = Some(Datatype::Array {
+            base_type: Box::new(base_type),
+            dimensions: array_dims.to_vec(),
+        });
+        self.data = Some(raw_data);
+        if self.shape.is_none() {
+            self.shape = Some(vec![num_elements]);
+        }
+        self
+    }
+
+    pub fn with_shape(&mut self, shape: &[u64]) -> &mut Self {
+        self.shape = Some(shape.to_vec());
+        self
+    }
+
+    /// Set the datatype without providing data.
+    /// Use with `with_shape` for empty/zero-dimension datasets.
+    pub fn with_dtype(&mut self, dt: Datatype) -> &mut Self {
+        self.datatype = Some(dt);
+        self
+    }
+
+    /// Set maximum dimensions for a resizable dataset.
+    /// Use `u64::MAX` for unlimited dimensions.
+    pub fn with_maxshape(&mut self, maxshape: &[u64]) -> &mut Self {
+        self.maxshape = Some(maxshape.to_vec());
+        self
+    }
+
+    pub fn set_attr(&mut self, name: &str, value: AttrValue) -> &mut Self {
+        self.attrs.push((name.to_string(), value));
+        self
+    }
+
+    /// Enable chunked storage with given chunk dimensions.
+    pub fn with_chunks(&mut self, chunk_dims: &[u64]) -> &mut Self {
+        self.chunk_options.chunk_dims = Some(chunk_dims.to_vec());
+        self
+    }
+
+    /// Enable deflate compression (implies chunked if not already set).
+    pub fn with_deflate(&mut self, level: u32) -> &mut Self {
+        self.chunk_options.deflate_level = Some(level);
+        self
+    }
+
+    /// Enable shuffle filter (usually combined with deflate).
+    pub fn with_shuffle(&mut self) -> &mut Self {
+        self.chunk_options.shuffle = true;
+        self
+    }
+
+    /// Enable fletcher32 checksum.
+    pub fn with_fletcher32(&mut self) -> &mut Self {
+        self.chunk_options.fletcher32 = true;
+        self
+    }
+
+    /// Enable scale-offset compression (implies chunked if not already set).
+    ///
+    /// Scale-offset stores each chunk's values as offsets from the chunk
+    /// minimum, packed into the fewest bits the chunk's range needs:
+    ///
+    /// * [`ScaleOffset::Integer`] is **lossless** for integer datasets. Pass
+    ///   `0` to let the encoder choose the bit width per chunk (the usual
+    ///   choice).
+    /// * [`ScaleOffset::FloatDScale`] is **lossy** for float datasets: values
+    ///   are rounded to the given number of decimal digits before packing.
+    ///
+    /// The datatype class/sign/byte-order are derived from the dataset's
+    /// datatype when the file is written, so the mode must match the data
+    /// (integer mode on `with_i*`/`with_u*` data, float mode on
+    /// `with_f32`/`with_f64` data) or `finish()` / `write()` returns a
+    /// [`FormatError`](crate::FormatError). Scale-offset is mutually exclusive
+    /// with ZFP and replaces shuffle, but may be combined with
+    /// [`with_deflate`](Self::with_deflate). Files are readable by the
+    /// reference HDF5 library (filter id 6) and vice versa.
+    pub fn with_scale_offset(&mut self, mode: ScaleOffset) -> &mut Self {
+        self.chunk_options.scale_offset = Some(mode);
+        self
+    }
+
+    /// Enable ZFP fixed-rate compression (implies chunked if not already set).
+    ///
+    /// `rate` is the number of compressed bits per value. Supports f32, f64,
+    /// i32, and i64 datasets in 1D–4D. When ZFP is active it replaces shuffle
+    /// and deflate on the same dataset.
+    ///
+    /// The scalar type is derived from the dataset's datatype when the file
+    /// is written, so any of `with_{f32,f64,i32,i64}_data` or an explicit
+    /// `with_dtype` establishes it. `finish()` / `write()` returns
+    /// [`FormatError::UnsupportedZfp`](crate::FormatError::UnsupportedZfp) if
+    /// the dataset's datatype isn't one of the four supported scalar types,
+    /// or if the chunk rank is outside 1..=4.
+    ///
+    /// The resulting file is byte-compatible with the reference H5Z-ZFP
+    /// plugin (HDF5 filter ID 32013): other tools like h5py + hdf5plugin
+    /// will read and decompress it, and vice versa.
+    #[cfg(feature = "zfp")]
+    pub fn with_zfp(&mut self, rate: f64) -> &mut Self {
+        self.chunk_options.zfp_rate = Some(rate);
+        self
+    }
+
+    /// Attach SHINES provenance metadata (SHA-256, creator, timestamp).
+    ///
+    /// The SHA-256 hash of the raw dataset bytes is computed automatically
+    /// during file serialization and stored as `_provenance_sha256`.
+    #[cfg(feature = "provenance")]
+    pub fn with_provenance(
+        &mut self,
+        creator: &str,
+        timestamp: &str,
+        source: Option<&str>,
+    ) -> &mut Self {
+        self.provenance = Some(ProvenanceConfig {
+            creator: creator.to_string(),
+            timestamp: timestamp.to_string(),
+            source: source.map(|s| s.to_string()),
+        });
+        self
+    }
+}
+
+// ---- Group builder ----
+
+/// Builder for HDF5 groups.
+///
+/// Datasets, sub-groups, and attributes can be added in any order before
+/// calling [`finish()`](GroupBuilder::finish). This is useful when the full
+/// set of attributes is not known up front — for example, building a
+/// MATLAB struct where `MATLAB_fields` lists every child dataset name:
+///
+/// ```rust
+/// # use hdf5_pure::{FileBuilder, AttrValue};
+/// let mut builder = FileBuilder::new();
+/// let mut grp = builder.create_group("my_struct");
+///
+/// let mut fields = Vec::new();
+/// for name in &["x", "y", "z"] {
+///     fields.push(name.to_string());
+///     grp.create_dataset(name).with_f64_data(&[0.0]);
+/// }
+///
+/// // Attribute set after all children are created
+/// grp.set_attr("MATLAB_fields", AttrValue::VarLenAsciiArray(fields));
+/// builder.add_group(grp.finish());
+/// ```
+pub struct GroupBuilder {
+    pub(crate) name: String,
+    pub(crate) datasets: Vec<DatasetBuilder>,
+    pub(crate) sub_groups: Vec<FinishedGroup>,
+    pub(crate) attrs: Vec<(String, AttrValue)>,
+}
+
+impl GroupBuilder {
+    pub(crate) fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            datasets: Vec::new(),
+            sub_groups: Vec::new(),
+            attrs: Vec::new(),
+        }
+    }
+
+    pub fn create_dataset(&mut self, name: &str) -> &mut DatasetBuilder {
+        self.datasets.push(DatasetBuilder::new(name));
+        self.datasets.last_mut().unwrap()
+    }
+
+    /// Create a nested group builder. Call `.finish()` on it and then
+    /// `add_group()` to add it to this group.
+    pub fn create_group(&mut self, name: &str) -> GroupBuilder {
+        GroupBuilder::new(name)
+    }
+
+    /// Add a finished sub-group to this group.
+    pub fn add_group(&mut self, group: FinishedGroup) {
+        self.sub_groups.push(group);
+    }
+
+    pub fn set_attr(&mut self, name: &str, value: AttrValue) {
+        self.attrs.push((name.to_string(), value));
+    }
+
+    /// Consume the builder, returning a FinishedGroup to add to FileWriter.
+    pub fn finish(self) -> FinishedGroup {
+        FinishedGroup {
+            name: self.name,
+            datasets: self.datasets,
+            sub_groups: self.sub_groups,
+            attrs: self.attrs,
+        }
+    }
+}
+
+/// A finished group ready for the file writer.
+pub struct FinishedGroup {
+    pub(crate) name: String,
+    pub(crate) datasets: Vec<DatasetBuilder>,
+    pub(crate) sub_groups: Vec<FinishedGroup>,
+    pub(crate) attrs: Vec<(String, AttrValue)>,
+}

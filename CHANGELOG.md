@@ -2,6 +2,21 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.6.0 - 2026-07-21
+
+- Replaced whole-stream HDF5 JPEG staging and the 512 MiB rejection ceiling
+  with cancellable fixed-size 1 MiB chunk streaming.
+- Pinned and vendored `hdf5-pure` 0.21.2 with a documented minimal API patch
+  exposing its existing lazy chunk writer; no native HDF5 DLL was introduced.
+- Added HDF5 progress during payload writes, source-size drift detection,
+  failure/cancellation partial cleanup, and stronger frame-index and byte-shape
+  readback checks.
+- Added tests for cross-file chunks, padded final chunks, cancellation, and a
+  100 GiB logical dataset without payload allocation; the 80.5 MB private
+  sample still passes all three adapter readbacks in 69.65 seconds.
+- Kept the physical 100 GB/100,000-file performance run as an open release gate;
+  logical staging coverage is not recorded as field-test completion.
+
 ## 0.5.0 - 2026-07-21
 
 - Added cross-platform quick, full, and debug-bundle verification profiles with

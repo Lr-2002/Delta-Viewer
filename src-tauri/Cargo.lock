@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "dohc-viewer"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "arrow-array",
  "base64 0.22.1",
@@ -1725,8 +1725,6 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 [[package]]
 name = "hdf5-pure"
 version = "0.21.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ae0690844254fb750baa400ad696e909d7402b2e663440b9233a3775bc85dcc"
 dependencies = [
  "byteorder",
  "flate2",

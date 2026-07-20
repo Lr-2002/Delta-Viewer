@@ -71,10 +71,13 @@ paths would collide after Windows case folding or filename replacement. The
 manifest keeps `sourcePath` for the original relative path and `path` for the
 local Windows-safe path; the stable dataset BLAKE3 remains based on source paths.
 
-The current pure-Rust HDF5 writer stages JPEG payloads in memory. HDF5 export is
-therefore blocked with `HDF5_STREAMING_REQUIRED` above 512 MiB of JPEG data;
-MCAP and LeRobot are unaffected. A streaming HDF5 writer and the 100 GB stress
-gate remain release work.
+The HDF5 adapter streams concatenated JPEG payloads through fixed 1 MiB chunks;
+it retains frame paths and index metadata but never stages a complete camera
+stream in memory. The repository pins `hdf5-pure` 0.21.2 and carries a narrow,
+documented patch that exposes its existing lazy chunk writer. Cross-file reads,
+tail padding, cancellation, a 100 GiB logical staging case, and the private
+80.5 MB sample are covered. A physical 100 GB/100,000-file stress run remains a
+release gate and must not be inferred from the logical-size test.
 
 ## exFAT decision
 

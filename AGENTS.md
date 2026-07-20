@@ -50,6 +50,7 @@ DOHC_Viewer/
   scripts/make-dmg.sh            macOS 无头 DMG 内容打包
   scripts/stage-ffmpeg.sh        macOS FFmpeg 受控 staging
   scripts/stage-ffmpeg.ps1       Windows FFmpeg 受控 staging
+  vendor/hdf5-pure/              固定的纯 Rust HDF5 依赖和最小流式 API 补丁
   data/README.md                 私有样例清单，不含原始数据
 ```
 
@@ -198,7 +199,9 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 
 - MCAP 使用原始 `capture_time_ns` 作为 log/publish time。
 - HDF5 使用 `hdf5-pure`；不要引入需要用户安装的 HDF5 DLL。
-- 当前 `hdf5-pure` writer 会暂存 JPEG；超过 512 MiB 必须保持 `HDF5_STREAMING_REQUIRED` 阻断，直到有经过 100 GB 压测的真正流式 writer。禁止仅提高阈值规避问题。
+- HDF5 JPEG 必须经 `with_streamed_u8_data` 按固定 1 MiB chunk 写入；禁止退回 `with_u8_data` 暂存完整流或重新引入按 JPEG 总量增长的内存缓冲。
+- `vendor/hdf5-pure` 固定 0.21.2，只公开其已有 lazy chunk writer 的最小接口；修改或升级前必须阅读 `DOHC_PATCH.md`，重跑跨文件/尾块测试和真实三格式回读。
+- 100 GiB 逻辑 staging 测试只证明 builder 不分配等量 payload；它不能替代真实 100 GB/100,000 文件的扫描、导入、检查、三格式导出和内存基线。
 - LeRobot 标准 `timestamp` 必须与恒定 FPS 视频一致；原始时钟写入 `observation.capture_time_ns`。
 - LeRobot 没有源 action 时保持没有 action，不能填零数组伪装真实数据。
 - FFmpeg 错误必须包含 stderr 摘要；取消时先 kill/wait 子进程。
@@ -245,7 +248,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 pnpm check
 ```
 
-真实样例会读取私有数据，因此保持 `#[ignore]`。常规 Rust suite 当前为 28 项（26 通过、2 个真实样例测试 ignored）；debug 构建的三格式完整 smoke test 约需 69 秒。任何 import/validation/export 行为改动都必须显式运行对应真实样例测试。
+真实样例会读取私有数据，因此保持 `#[ignore]`。常规 Rust suite 当前为 31 项（29 通过、2 个真实样例测试 ignored）；debug 构建的三格式完整 smoke test 约需 69 秒。任何 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 
 ## 10. 发布检查与 FFmpeg 暂存
 
@@ -324,6 +327,7 @@ pnpm tauri:build
 - 增加依赖前说明它解决的具体问题、二进制大小、许可证和 Windows 支持。
 - 解析 JSON、Parquet、MCAP、HDF5 时使用结构化库，不写 ad-hoc string parser。
 - `pnpm-lock.yaml` 和 `Cargo.lock` 是可重复构建的一部分，依赖变更必须同步提交 lockfile。
+- vendored 依赖必须保留上游版本、checksum、Git revision、许可证和本地 patch 清单；不得把未说明来源的源码复制进 `vendor/`。
 - 不进行无关的大版本升级；格式库升级必须重跑真实 export/readback。
 - FFmpeg 是受控 sidecar，不假设用户 PATH 中存在。
 - `tauri-plugin-opener` 只开放 `opener:allow-reveal-item-in-dir`；不得开放 URL 或任意程序启动权限。
