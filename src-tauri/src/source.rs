@@ -15,6 +15,12 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
 
+pub struct StreamFiles {
+    pub frames: Vec<(u64, PathBuf)>,
+    pub invalid_names: Vec<String>,
+    pub duplicate_ids: Vec<u64>,
+}
+
 pub fn scan_source(
     root: &Path,
     app: Option<&AppHandle>,
@@ -32,7 +38,7 @@ pub fn scan_source(
 
     let volume = storage::volume_info(root)?;
     storage::ensure_local_source(&volume)?;
-    let episodes = discover_episode_roots(root)?;
+    let episodes = discover_episode_roots(root, cancelled)?;
     if episodes.is_empty() {
         return Err(AppError::NoEpisodes(root.display().to_string()));
     }
@@ -90,7 +96,7 @@ pub fn load_episode(
 ) -> AppResult<EpisodeData> {
     let summary = scan_episode(root, app, cancelled)?;
     let states_path = root.join("states.jsonl");
-    let states = read_states(&states_path)?;
+    let states = read_states(&states_path, cancelled)?;
     Ok(EpisodeData { summary, states })
 }
 
@@ -98,7 +104,14 @@ pub fn read_frame(root: &Path, stream: &str, frame_id: u64) -> AppResult<(String
     if !STREAM_NAMES.contains(&stream) {
         return Err(AppError::InvalidStream(stream.to_string()));
     }
-    let path = root.join(stream).join(format!("{frame_id}.jpg"));
+    let stream_root = root.join(stream);
+    if !is_regular_directory(&stream_root) {
+        return Err(AppError::MissingPath(stream_root.display().to_string()));
+    }
+    let path = stream_root.join(format!("{frame_id}.jpg"));
+    if !is_regular_file(&path) {
+        return Err(AppError::MissingPath(path.display().to_string()));
+    }
     let bytes = fs::read(&path)?;
     Ok(("image/jpeg".into(), bytes))
 }
@@ -112,21 +125,23 @@ pub fn scan_episode(
         return Err(AppError::MissingPath(root.display().to_string()));
     }
 
-    let all_files = collect_files(root)?;
+    storage::ensure_local_source(&storage::volume_info(root)?)?;
+    let all_files = collect_files(root, cancelled)?;
     let total_files = all_files.len() as u64;
-    let total_bytes = all_files
-        .iter()
-        .filter_map(|path| fs::metadata(path).ok().map(|metadata| metadata.len()))
-        .sum();
+    let mut total_bytes = 0_u64;
+    for path in &all_files {
+        check_cancelled(cancelled)?;
+        total_bytes = total_bytes.saturating_add(fs::metadata(path)?.len());
+    }
     let states_path = root.join("states.jsonl");
-    let (state_count, start_time_ns, end_time_ns) = summarize_states(&states_path)?;
+    let (state_count, start_time_ns, end_time_ns) = summarize_states(&states_path, cancelled)?;
 
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
     for (index, stream_name) in STREAM_NAMES.iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Err(AppError::Cancelled);
         }
-        streams.push(scan_stream(root, stream_name)?);
+        streams.push(scan_stream(root, stream_name, cancelled)?);
         emit_progress(
             app,
             ProgressPayload {
@@ -158,9 +173,10 @@ pub fn scan_episode(
     })
 }
 
-pub fn collect_files(root: &Path) -> AppResult<Vec<PathBuf>> {
+pub fn collect_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in WalkDir::new(root).follow_links(false) {
+        check_cancelled(cancelled)?;
         let entry = entry.map_err(|error| AppError::Message(error.to_string()))?;
         if entry.file_type().is_file() {
             files.push(entry.path().to_path_buf());
@@ -176,7 +192,8 @@ pub fn collect_files(root: &Path) -> AppResult<Vec<PathBuf>> {
 }
 
 pub fn episode_fingerprint(root: &Path, cancelled: &AtomicBool) -> AppResult<String> {
-    let files = collect_files(root)?;
+    storage::ensure_local_source(&storage::volume_info(root)?)?;
+    let files = collect_files(root, cancelled)?;
     let mut hasher = Hasher::new();
     for path in files {
         if cancelled.load(Ordering::Relaxed) {
@@ -202,16 +219,17 @@ pub fn episode_fingerprint(root: &Path, cancelled: &AtomicBool) -> AppResult<Str
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn discover_episode_roots(root: &Path) -> AppResult<Vec<PathBuf>> {
+fn discover_episode_roots(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathBuf>> {
     if is_episode_marker(root) {
         return Ok(vec![root.to_path_buf()]);
     }
 
     let mut roots = Vec::new();
     for entry in fs::read_dir(root)? {
+        check_cancelled(cancelled)?;
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() && is_episode_marker(&path) {
+        if entry.file_type()?.is_dir() && is_episode_marker(&path) {
             roots.push(path);
         }
     }
@@ -220,13 +238,15 @@ fn discover_episode_roots(root: &Path) -> AppResult<Vec<PathBuf>> {
 }
 
 fn is_episode_marker(root: &Path) -> bool {
-    if root.join("states.jsonl").is_file() {
+    if is_regular_file(&root.join("states.jsonl")) {
         return true;
     }
-    STREAM_NAMES.iter().any(|name| root.join(name).is_dir())
+    STREAM_NAMES
+        .iter()
+        .any(|name| is_regular_directory(&root.join(name)))
 }
 
-fn scan_stream(root: &Path, stream_name: &str) -> AppResult<StreamSummary> {
+fn scan_stream(root: &Path, stream_name: &str, cancelled: &AtomicBool) -> AppResult<StreamSummary> {
     let stream_root = root.join(stream_name);
     let label = match stream_name {
         "cam0" => "Camera 0",
@@ -236,7 +256,7 @@ fn scan_stream(root: &Path, stream_name: &str) -> AppResult<StreamSummary> {
         "t265_right" => "T265 Right",
         _ => stream_name,
     };
-    if !stream_root.is_dir() {
+    if !is_regular_directory(&stream_root) {
         return Ok(StreamSummary {
             name: stream_name.to_string(),
             label: label.to_string(),
@@ -244,6 +264,7 @@ fn scan_stream(root: &Path, stream_name: &str) -> AppResult<StreamSummary> {
             first_frame: None,
             last_frame: None,
             missing_frames: Vec::new(),
+            missing_frame_count: 0,
             total_bytes: 0,
             width: None,
             height: None,
@@ -251,31 +272,23 @@ fn scan_stream(root: &Path, stream_name: &str) -> AppResult<StreamSummary> {
         });
     }
 
+    let stream_files = collect_stream_files(root, stream_name, cancelled)?;
     let mut frames = BTreeMap::<u64, PathBuf>::new();
-    let mut total_bytes = 0;
-    for entry in fs::read_dir(&stream_root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file()
-            || !path
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("jpg"))
-        {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        let Ok(frame_id) = stem.parse::<u64>() else {
-            continue;
-        };
-        total_bytes += entry.metadata()?.len();
-        frames.insert(frame_id, path);
+    let mut total_bytes = 0_u64;
+    for (frame_id, path) in stream_files.frames {
+        check_cancelled(cancelled)?;
+        total_bytes = total_bytes.saturating_add(fs::metadata(&path)?.len());
+        frames.entry(frame_id).or_insert(path);
     }
 
     let first_frame = frames.keys().next().copied();
     let last_frame = frames.keys().next_back().copied();
+    let missing_frame_count = match (first_frame, last_frame) {
+        (Some(first), Some(last)) => (u128::from(last) - u128::from(first) + 1)
+            .saturating_sub(frames.len() as u128)
+            .min(u128::from(u64::MAX)) as u64,
+        _ => 0,
+    };
     let missing_frames = match (first_frame, last_frame) {
         (Some(first), Some(last)) if last >= first => {
             let frame_set: BTreeSet<u64> = frames.keys().copied().collect();
@@ -307,6 +320,7 @@ fn scan_stream(root: &Path, stream_name: &str) -> AppResult<StreamSummary> {
         first_frame,
         last_frame,
         missing_frames,
+        missing_frame_count,
         total_bytes,
         width,
         height,
@@ -314,8 +328,11 @@ fn scan_stream(root: &Path, stream_name: &str) -> AppResult<StreamSummary> {
     })
 }
 
-fn summarize_states(path: &Path) -> AppResult<(u64, Option<String>, Option<String>)> {
-    if !path.is_file() {
+fn summarize_states(
+    path: &Path,
+    cancelled: &AtomicBool,
+) -> AppResult<(u64, Option<String>, Option<String>)> {
+    if !is_regular_file(path) {
         return Ok((0, None, None));
     }
     let file = File::open(path)?;
@@ -324,6 +341,7 @@ fn summarize_states(path: &Path) -> AppResult<(u64, Option<String>, Option<Strin
     let mut first = None;
     let mut last = None;
     for line in reader.lines() {
+        check_cancelled(cancelled)?;
         let line = line?;
         if line.trim().is_empty() {
             continue;
@@ -340,14 +358,15 @@ fn summarize_states(path: &Path) -> AppResult<(u64, Option<String>, Option<Strin
     Ok((count, first, last))
 }
 
-fn read_states(path: &Path) -> AppResult<Vec<StateRecord>> {
-    if !path.is_file() {
+fn read_states(path: &Path, cancelled: &AtomicBool) -> AppResult<Vec<StateRecord>> {
+    if !is_regular_file(path) {
         return Ok(Vec::new());
     }
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut states = Vec::new();
     for line in reader.lines() {
+        check_cancelled(cancelled)?;
         let line = line?;
         if line.trim().is_empty() {
             continue;
@@ -359,6 +378,83 @@ fn read_states(path: &Path) -> AppResult<Vec<StateRecord>> {
     Ok(states)
 }
 
+pub fn collect_stream_files(
+    root: &Path,
+    stream_name: &str,
+    cancelled: &AtomicBool,
+) -> AppResult<StreamFiles> {
+    let stream_root = root.join(stream_name);
+    if !is_regular_directory(&stream_root) {
+        return Ok(StreamFiles {
+            frames: Vec::new(),
+            invalid_names: Vec::new(),
+            duplicate_ids: Vec::new(),
+        });
+    }
+
+    let mut frames = Vec::new();
+    let mut invalid_names = Vec::new();
+    for entry in fs::read_dir(stream_root)? {
+        check_cancelled(cancelled)?;
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if !path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("jpg"))
+        {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            invalid_names.push(entry.file_name().to_string_lossy().into_owned());
+            continue;
+        };
+        match stem.parse::<u64>() {
+            Ok(frame_id) => frames.push((frame_id, path)),
+            Err(_) => invalid_names.push(entry.file_name().to_string_lossy().into_owned()),
+        }
+    }
+    frames.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.as_os_str().cmp(right.1.as_os_str()))
+    });
+    invalid_names.sort();
+    let mut duplicate_ids = frames
+        .windows(2)
+        .filter_map(|pair| (pair[0].0 == pair[1].0).then_some(pair[0].0))
+        .collect::<Vec<_>>();
+    duplicate_ids.dedup();
+    Ok(StreamFiles {
+        frames,
+        invalid_names,
+        duplicate_ids,
+    })
+}
+
+pub fn is_regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false)
+}
+
+fn is_regular_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_dir())
+        .unwrap_or(false)
+}
+
+fn check_cancelled(cancelled: &AtomicBool) -> AppResult<()> {
+    if cancelled.load(Ordering::Relaxed) {
+        Err(AppError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
     if let Some(app) = app {
         let _ = app.emit("task-progress", payload);
@@ -367,7 +463,7 @@ pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
 
 #[cfg(test)]
 mod tests {
-    use super::{episode_fingerprint, read_states};
+    use super::{collect_files, episode_fingerprint, read_states, scan_episode};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -390,7 +486,7 @@ mod tests {
         )
         .unwrap();
 
-        let states = read_states(&path).unwrap();
+        let states = read_states(&path, &AtomicBool::new(false)).unwrap();
         assert_eq!(states.len(), 2);
         assert_eq!(states[0].frame_id, 0);
         assert_eq!(states[1].frame_id, 2);
@@ -410,6 +506,31 @@ mod tests {
         let after = episode_fingerprint(&root, &cancelled).unwrap();
         assert_ne!(before, after);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_does_not_follow_file_or_stream_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_output("symlinks");
+        let outside = test_output("symlinks-outside");
+        fs::create_dir_all(root.join("cam0")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(root.join("states.jsonl"), b"\n").unwrap();
+        fs::write(outside.join("0.jpg"), b"external").unwrap();
+        symlink(outside.join("0.jpg"), root.join("cam0/0.jpg")).unwrap();
+        symlink(&outside, root.join("cam1")).unwrap();
+        let cancelled = AtomicBool::new(false);
+
+        let files = collect_files(&root, &cancelled).unwrap();
+        assert_eq!(files.len(), 1);
+        let summary = scan_episode(&root, None, &cancelled).unwrap();
+        assert_eq!(summary.streams[0].frame_count, 0);
+        assert_eq!(summary.streams[1].frame_count, 0);
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 
     fn test_output(label: &str) -> PathBuf {

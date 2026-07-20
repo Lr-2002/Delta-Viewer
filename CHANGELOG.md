@@ -2,6 +2,24 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.4.0 - 2026-07-20
+
+- Made source traversal cancellable and read-only, ignored file/directory
+  symlinks, bounded sparse-frame reporting, and added macOS volume details.
+- Upgraded import manifests to format v2 with original-to-Windows-safe path
+  mappings, collision detection, source-change detection, and target readback
+  checks that catch same-size corruption.
+- Added atomic no-overwrite publication on Windows, macOS, and Linux and
+  tightened Tauri dialog permissions to the two required operations.
+- Added validation for negative timestamps, invalid/duplicate frame names, and
+  equal-count frame-ID mismatches, with exact missing-frame totals.
+- Strengthened MCAP, HDF5, and LeRobot readback checks and made FFmpeg encoding
+  cancellation responsive without blocking on child-process pipes.
+- Prevented stale frames and stale telemetry from representing the selected
+  frame, and bounded chart rendering work for long recordings.
+- Added a 512 MiB HDF5 JPEG safety ceiling until the large-data adapter can use
+  a genuinely streaming writer.
+
 ## 0.3.0 - 2026-07-20
 
 - Added trusted in-process validation records bound to source directory

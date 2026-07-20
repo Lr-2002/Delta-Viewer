@@ -58,6 +58,22 @@ impl Drop for TaskGuard {
     }
 }
 
+fn emit_task_start(app: &AppHandle, task: &str, phase: &str, path: &str) {
+    source::emit_progress(
+        Some(app),
+        ProgressPayload {
+            task: task.into(),
+            phase: phase.into(),
+            current: 0,
+            total: 1,
+            bytes_done: 0,
+            total_bytes: 0,
+            current_path: path.into(),
+            elapsed_ms: 0,
+        },
+    );
+}
+
 #[tauri::command]
 async fn scan_source(
     app: AppHandle,
@@ -66,6 +82,7 @@ async fn scan_source(
 ) -> Result<ScanResult, String> {
     let task = control.start()?;
     let cancelled = control.cancelled.clone();
+    emit_task_start(&app, "scan", "准备扫描", &path);
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
         source::scan_source(Path::new(&path), Some(&app), &cancelled)
@@ -83,6 +100,7 @@ async fn load_episode(
 ) -> Result<EpisodeData, String> {
     let task = control.start()?;
     let cancelled = control.cancelled.clone();
+    emit_task_start(&app, "scan", "准备加载记录", &path);
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
         source::load_episode(Path::new(&path), Some(&app), &cancelled)
@@ -102,19 +120,7 @@ async fn validate_episode(
     let task = control.start()?;
     let cancelled = control.cancelled.clone();
     let cache = cache.inner().clone();
-    source::emit_progress(
-        Some(&app),
-        ProgressPayload {
-            task: "validate".into(),
-            phase: "准备数据检查".into(),
-            current: 0,
-            total: 1,
-            bytes_done: 0,
-            total_bytes: 0,
-            current_path: path.clone(),
-            elapsed_ms: 0,
-        },
-    );
+    emit_task_start(&app, "validate", "准备数据检查", &path);
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ValidationReport> {
         let _task = task;
         let root = Path::new(&path);
@@ -143,19 +149,7 @@ async fn import_episode(
 ) -> Result<ImportResult, String> {
     let task = control.start()?;
     let cancelled = control.cancelled.clone();
-    source::emit_progress(
-        Some(&app),
-        ProgressPayload {
-            task: "import".into(),
-            phase: "导入预检".into(),
-            current: 0,
-            total: 1,
-            bytes_done: 0,
-            total_bytes: 0,
-            current_path: destination_parent.clone(),
-            elapsed_ms: 0,
-        },
-    );
+    emit_task_start(&app, "import", "导入预检", &destination_parent);
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
         importer::import_episode(
@@ -178,22 +172,15 @@ async fn inspect_import_destination(
     destination_parent: String,
 ) -> Result<ImportPreflight, String> {
     let task = control.start()?;
-    source::emit_progress(
-        Some(&app),
-        ProgressPayload {
-            task: "import".into(),
-            phase: "检查导入目标".into(),
-            current: 0,
-            total: 1,
-            bytes_done: 0,
-            total_bytes: 0,
-            current_path: destination_parent.clone(),
-            elapsed_ms: 0,
-        },
-    );
+    let cancelled = control.cancelled.clone();
+    emit_task_start(&app, "import", "检查导入目标", &destination_parent);
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
-        storage::inspect_import(Path::new(&source_path), Path::new(&destination_parent))
+        storage::inspect_import(
+            Path::new(&source_path),
+            Path::new(&destination_parent),
+            &cancelled,
+        )
     })
     .await
     .map_err(|error| error.to_string())?
@@ -238,6 +225,7 @@ async fn export_episode(
     let task = control.start()?;
     let cancelled = control.cancelled.clone();
     let cache = cache.inner().clone();
+    emit_task_start(&app, "export", "准备导出", &source_path);
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ExportResult> {
         let _task = task;
         let root = Path::new(&source_path);
@@ -269,6 +257,7 @@ async fn export_validation_report(
     let task = control.start()?;
     let cancelled = control.cancelled.clone();
     let cache = cache.inner().clone();
+    emit_task_start(&app, "export", "准备导出检查报告", &source_path);
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ReportExportResult> {
         let _task = task;
         let root = Path::new(&source_path);

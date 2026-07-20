@@ -4,6 +4,7 @@ use crate::source::collect_files;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const PARTIAL_MARKER_SUFFIX: &str = ".dohc-partial.json";
@@ -47,7 +48,19 @@ pub fn ensure_local_source(volume: &VolumeInfo) -> AppResult<()> {
     Ok(())
 }
 
-pub fn inspect_import(source: &Path, destination_parent: &Path) -> AppResult<ImportPreflight> {
+pub fn inspect_import(
+    source: &Path,
+    destination_parent: &Path,
+    cancelled: &AtomicBool,
+) -> AppResult<ImportPreflight> {
+    inspect_import_with_files(source, destination_parent, cancelled).map(|(preflight, _)| preflight)
+}
+
+pub fn inspect_import_with_files(
+    source: &Path,
+    destination_parent: &Path,
+    cancelled: &AtomicBool,
+) -> AppResult<(ImportPreflight, Vec<PathBuf>)> {
     if !source.is_dir() {
         return Err(AppError::MissingPath(source.display().to_string()));
     }
@@ -59,13 +72,15 @@ pub fn inspect_import(source: &Path, destination_parent: &Path) -> AppResult<Imp
 
     let source = fs::canonicalize(source)?;
     let destination_parent = fs::canonicalize(destination_parent)?;
-    let files = collect_files(&source)?;
+    ensure_local_source(&volume_info(&source)?)?;
+    let files = collect_files(&source, cancelled)?;
     if files.is_empty() {
         return Err(AppError::Message("源目录没有可导入文件".into()));
     }
     let mut source_bytes = 0_u64;
     let mut largest_file_bytes = 0_u64;
     for path in &files {
+        check_cancelled(cancelled)?;
         let size = fs::metadata(path)?.len();
         source_bytes = source_bytes.saturating_add(size);
         largest_file_bytes = largest_file_bytes.max(size);
@@ -106,15 +121,18 @@ pub fn inspect_import(source: &Path, destination_parent: &Path) -> AppResult<Imp
         ));
     }
 
-    Ok(ImportPreflight {
-        can_import: issues.is_empty(),
-        source_bytes,
-        required_bytes,
-        largest_file_bytes,
-        volume,
-        issues,
-        partials,
-    })
+    Ok((
+        ImportPreflight {
+            can_import: issues.is_empty(),
+            source_bytes,
+            required_bytes,
+            largest_file_bytes,
+            volume,
+            issues,
+            partials,
+        },
+        files,
+    ))
 }
 
 pub fn require_import_preflight(preflight: &ImportPreflight) -> AppResult<()> {
@@ -211,9 +229,15 @@ pub fn create_import_partial(
     Ok(partial)
 }
 
-pub fn finalize_import_partial(partial: &Path) -> AppResult<()> {
+pub fn publish_import_partial(partial: &Path, output: &Path) -> AppResult<()> {
     verified_partial(partial)?;
-    fs::remove_file(partial_marker_path(partial)?)?;
+    publish_noreplace(partial, output)?;
+    let _ = fs::remove_file(partial_marker_path(partial)?);
+    Ok(())
+}
+
+pub fn publish_noreplace(source: &Path, destination: &Path) -> AppResult<()> {
+    publish_noreplace_platform(source, destination)?;
     Ok(())
 }
 
@@ -304,6 +328,89 @@ fn preflight_issue(code: &str, message: &str) -> PreflightIssue {
     }
 }
 
+fn check_cancelled(cancelled: &AtomicBool) -> AppResult<()> {
+    if cancelled.load(Ordering::Relaxed) {
+        Err(AppError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn publish_noreplace_platform(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn publish_noreplace_platform(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let destination = CString::new(destination.as_os_str().as_bytes())?;
+    let moved =
+        unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+    if moved == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn publish_noreplace_platform(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let destination = CString::new(destination.as_os_str().as_bytes())?;
+    let moved = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if moved == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+fn publish_noreplace_platform(source: &Path, destination: &Path) -> std::io::Result<()> {
+    if destination.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "destination already exists",
+        ));
+    }
+    fs::rename(source, destination)
+}
+
 fn is_unsupported_fat(filesystem: &str) -> bool {
     let normalized = filesystem.trim().to_ascii_uppercase();
     normalized.starts_with("FAT") && normalized != "EXFAT"
@@ -387,7 +494,42 @@ fn platform_volume_details(path: &Path) -> (String, Option<String>, String) {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn platform_volume_details(path: &Path) -> (String, Option<String>, String) {
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+        return (path.to_string_lossy().into_owned(), None, "unknown".into());
+    };
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    let found = unsafe { libc::statfs(path.as_ptr(), stats.as_mut_ptr()) };
+    if found != 0 {
+        return (path.to_string_lossy().into_owned(), None, "unknown".into());
+    }
+    let stats = unsafe { stats.assume_init() };
+    let filesystem = unsafe { CStr::from_ptr(stats.f_fstypename.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    let root = unsafe { CStr::from_ptr(stats.f_mntonname.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    let local = stats.f_flags & libc::MNT_LOCAL as u32 != 0;
+    let drive_type = if !local {
+        "remote"
+    } else if root.starts_with("/Volumes/") {
+        "removable"
+    } else {
+        "fixed"
+    };
+    (
+        root,
+        (!filesystem.is_empty()).then_some(filesystem),
+        drive_type.into(),
+    )
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn platform_volume_details(path: &Path) -> (String, Option<String>, String) {
     (path.display().to_string(), None, "unknown".into())
 }
@@ -396,10 +538,11 @@ fn platform_volume_details(path: &Path) -> (String, Option<String>, String) {
 mod tests {
     use super::{
         cleanup_partial_import, create_import_partial, inspect_import, is_unsupported_fat,
-        list_partial_imports,
+        list_partial_imports, publish_import_partial, publish_noreplace, volume_info,
     };
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -408,6 +551,17 @@ mod tests {
         assert!(is_unsupported_fat("fat16"));
         assert!(!is_unsupported_fat("exFAT"));
         assert!(!is_unsupported_fat("NTFS"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reports_macos_volume_details() {
+        let volume = volume_info(std::env::temp_dir().as_path()).unwrap();
+        assert!(volume.filesystem.is_some());
+        assert!(matches!(
+            volume.drive_type.as_str(),
+            "fixed" | "removable" | "remote"
+        ));
     }
 
     #[test]
@@ -431,13 +585,45 @@ mod tests {
     }
 
     #[test]
+    fn publishes_without_leaving_the_partial_marker() {
+        let root = test_output("publish-partial");
+        fs::create_dir_all(&root).unwrap();
+        let partial = create_import_partial(&root, "episode", "source").unwrap();
+        fs::write(partial.join("copied.bin"), b"data").unwrap();
+        let output = root.join("episode");
+
+        publish_import_partial(&partial, &output).unwrap();
+
+        assert!(output.join("copied.bin").is_file());
+        assert!(!partial.exists());
+        assert!(list_partial_imports(&root).unwrap().is_empty());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_publish_never_replaces_an_existing_output() {
+        let root = test_output("publish-noreplace");
+        fs::create_dir_all(&root).unwrap();
+        let partial = root.join(".result.partial");
+        let output = root.join("result");
+        fs::write(&partial, b"new").unwrap();
+        fs::write(&output, b"existing").unwrap();
+
+        assert!(publish_noreplace(&partial, &output).is_err());
+        assert_eq!(fs::read(&output).unwrap(), b"existing");
+        assert_eq!(fs::read(&partial).unwrap(), b"new");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn import_preflight_rejects_destination_inside_source() {
         let source = test_output("nested-source");
         let destination = source.join("destination");
         fs::create_dir_all(&destination).unwrap();
         fs::write(source.join("states.jsonl"), b"{}\n").unwrap();
 
-        let preflight = inspect_import(&source, &destination).unwrap();
+        let preflight = inspect_import(&source, &destination, &AtomicBool::new(false)).unwrap();
         assert!(!preflight.can_import);
         assert!(preflight
             .issues

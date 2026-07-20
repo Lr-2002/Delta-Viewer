@@ -10,24 +10,26 @@ interface FramePanelProps {
   className?: string;
 }
 export function FramePanel({ root, stream, frameId, className = "" }: FramePanelProps) {
-  const [source, setSource] = useState("");
-  const [failed, setFailed] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const requestKey = `${root}\0${stream.name}\0${frameId}`;
+  const [frame, setFrame] = useState<{
+    key: string;
+    source: string;
+    status: "loading" | "ready" | "failed";
+  }>(() => ({ key: requestKey, source: "", status: "loading" }));
+  const current = frame.key === requestKey
+    ? frame
+    : { key: requestKey, source: "", status: "loading" as const };
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setFailed(false);
+    const key = `${root}\0${stream.name}\0${frameId}`;
+    setFrame({ key, source: "", status: "loading" });
     frameUrl(root, stream.name, frameId)
       .then((url) => {
-        if (active) setSource(url);
+        if (active) setFrame({ key, source: url, status: "loading" });
       })
       .catch(() => {
-        if (active) {
-          setSource("");
-          setFailed(true);
-          setLoading(false);
-        }
+        if (active) setFrame({ key, source: "", status: "failed" });
       });
     return () => {
       active = false;
@@ -36,15 +38,16 @@ export function FramePanel({ root, stream, frameId, className = "" }: FramePanel
 
   return (
     <figure className={`frame-panel ${className}`}>
-      {source && !failed ? (
+      {current.source && current.status !== "failed" ? (
         <img
-          src={source}
+          src={current.source}
           alt={`${stream.label} frame ${frameId}`}
-          onLoad={() => setLoading(false)}
-          onError={() => {
-            setFailed(true);
-            setLoading(false);
-          }}
+          onLoad={() => setFrame((value) => value.key === requestKey
+            ? { ...value, status: "ready" }
+            : value)}
+          onError={() => setFrame((value) => value.key === requestKey
+            ? { key: requestKey, source: "", status: "failed" }
+            : value)}
         />
       ) : null}
       <figcaption>
@@ -53,8 +56,8 @@ export function FramePanel({ root, stream, frameId, className = "" }: FramePanel
           {stream.width && stream.height ? `${stream.width}×${stream.height}` : "—"}
         </span>
       </figcaption>
-      {loading && !failed ? <span className="frame-loading">解码中</span> : null}
-      {failed ? (
+      {current.status === "loading" ? <span className="frame-loading">解码中</span> : null}
+      {current.status === "failed" ? (
         <span className="frame-error">
           <ImageOff size={18} aria-hidden="true" />
           帧不可用

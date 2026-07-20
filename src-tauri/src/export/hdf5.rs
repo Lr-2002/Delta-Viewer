@@ -1,20 +1,31 @@
 use super::{map_error, partial_sibling, unique_file, ExportAdapter, ExportContext};
 use crate::error::{AppError, AppResult};
 use crate::model::ProgressPayload;
-use crate::source::emit_progress;
+use crate::source::{collect_stream_files, emit_progress};
+use crate::storage;
 use hdf5_pure::{AttrValue, File as HdfFile, FileBuilder};
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::Read;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 pub struct Hdf5Adapter;
 
+const MAX_IN_MEMORY_JPEG_BYTES: u64 = 512 * 1024 * 1024;
+
 impl ExportAdapter for Hdf5Adapter {
     fn export(&self, context: &ExportContext<'_>) -> AppResult<std::path::PathBuf> {
         if context.data.states.is_empty() {
             return Err(AppError::Message("状态数据为空，无法导出 HDF5".into()));
         }
+        let jpeg_bytes = context
+            .data
+            .summary
+            .streams
+            .iter()
+            .map(|stream| stream.total_bytes)
+            .fold(0_u64, u64::saturating_add);
+        ensure_memory_budget(jpeg_bytes)?;
         let stem = crate::importer::sanitize_name(&context.data.summary.name);
         let output = unique_file(context.destination_parent, &stem, "h5");
         let partial = partial_sibling(&output);
@@ -116,42 +127,45 @@ impl ExportAdapter for Hdf5Adapter {
             let mut offsets = Vec::with_capacity(stream.frame_count as usize);
             let mut sizes = Vec::with_capacity(stream.frame_count as usize);
             let mut stream_frame_ids = Vec::with_capacity(stream.frame_count as usize);
-            if let (Some(first), Some(last)) = (stream.first_frame, stream.last_frame) {
-                for frame_id in first..=last {
+            let stream_files =
+                collect_stream_files(context.source, &stream.name, context.cancelled)?;
+            for (frame_id, path) in stream_files.frames {
+                if context.cancelled.load(Ordering::Relaxed) {
+                    return Err(AppError::Cancelled);
+                }
+                offsets.push(jpeg_data.len() as u64);
+                let mut file = File::open(&path)?;
+                let before = jpeg_data.len();
+                let mut buffer = vec![0_u8; 1024 * 1024];
+                loop {
                     if context.cancelled.load(Ordering::Relaxed) {
                         return Err(AppError::Cancelled);
                     }
-                    let path = context
-                        .source
-                        .join(&stream.name)
-                        .join(format!("{frame_id}.jpg"));
-                    if !path.is_file() {
-                        continue;
+                    let read = file.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
                     }
-                    offsets.push(jpeg_data.len() as u64);
-                    let mut file = File::open(&path)?;
-                    let before = jpeg_data.len();
-                    file.read_to_end(&mut jpeg_data)?;
-                    let frame_bytes = (jpeg_data.len() - before) as u64;
-                    sizes.push(frame_bytes);
-                    processed_bytes += frame_bytes;
-                    stream_frame_ids.push(frame_id);
-                    processed_frames += 1;
-                    if processed_frames.is_multiple_of(16) || processed_frames == total_frames {
-                        emit_progress(
-                            context.app,
-                            ProgressPayload {
-                                task: "export".into(),
-                                phase: "构建 HDF5".into(),
-                                current: processed_frames,
-                                total: total_frames,
-                                bytes_done: processed_bytes,
-                                total_bytes: context.data.summary.total_bytes,
-                                current_path: path.display().to_string(),
-                                elapsed_ms: started.elapsed().as_millis(),
-                            },
-                        );
-                    }
+                    jpeg_data.extend_from_slice(&buffer[..read]);
+                }
+                let frame_bytes = (jpeg_data.len() - before) as u64;
+                sizes.push(frame_bytes);
+                processed_bytes += frame_bytes;
+                stream_frame_ids.push(frame_id);
+                processed_frames += 1;
+                if processed_frames.is_multiple_of(16) || processed_frames == total_frames {
+                    emit_progress(
+                        context.app,
+                        ProgressPayload {
+                            task: "export".into(),
+                            phase: "构建 HDF5".into(),
+                            current: processed_frames,
+                            total: total_frames,
+                            bytes_done: processed_bytes,
+                            total_bytes: context.data.summary.total_bytes,
+                            current_path: path.display().to_string(),
+                            elapsed_ms: started.elapsed().as_millis(),
+                        },
+                    );
                 }
             }
             stream_group
@@ -185,10 +199,33 @@ impl ExportAdapter for Hdf5Adapter {
         if shape.first().copied() != Some(context.data.states.len() as u64) {
             return Err(AppError::Message("HDF5 回读验证失败".into()));
         }
+        for stream in &context.data.summary.streams {
+            let shape = file
+                .dataset(&format!("images/{}/frame_id", stream.name))
+                .map_err(map_error)?
+                .shape()
+                .map_err(map_error)?;
+            if shape.first().copied() != Some(stream.frame_count) {
+                return Err(AppError::Message(format!(
+                    "HDF5 回读验证失败: {} 帧数不匹配",
+                    stream.name
+                )));
+            }
+        }
         drop(file);
-        fs::rename(&partial, &output)?;
+        storage::publish_noreplace(&partial, &output)?;
         Ok(output)
     }
+}
+
+fn ensure_memory_budget(jpeg_bytes: u64) -> AppResult<()> {
+    if jpeg_bytes > MAX_IN_MEMORY_JPEG_BYTES {
+        return Err(AppError::Message(format!(
+            "HDF5_STREAMING_REQUIRED: 图像数据 {} 字节超过当前安全内存上限 {} 字节",
+            jpeg_bytes, MAX_IN_MEMORY_JPEG_BYTES
+        )));
+    }
+    Ok(())
 }
 
 fn add_vector_dataset(
@@ -203,4 +240,15 @@ fn add_vector_dataset(
         .create_dataset(name)
         .with_f64_data(&values)
         .with_shape(&[rows as u64, columns]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ensure_memory_budget, MAX_IN_MEMORY_JPEG_BYTES};
+
+    #[test]
+    fn blocks_unbounded_in_memory_hdf5_exports() {
+        assert!(ensure_memory_budget(MAX_IN_MEMORY_JPEG_BYTES).is_ok());
+        assert!(ensure_memory_budget(MAX_IN_MEMORY_JPEG_BYTES + 1).is_err());
+    }
 }

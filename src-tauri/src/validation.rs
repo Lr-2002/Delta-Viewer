@@ -3,9 +3,10 @@ use crate::model::{
     ProgressPayload, RawStateRecord, ReportExportResult, Severity, StreamValidation,
     ValidationIssue, ValidationReport, STREAM_NAMES,
 };
-use crate::source::{emit_progress, scan_episode};
+use crate::source::{collect_stream_files, emit_progress, is_regular_file, scan_episode};
 use crate::{importer, storage};
 use image::ImageReader;
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -25,7 +26,7 @@ pub fn validate_episode(
     let mut states = Vec::new();
 
     let states_path = root.join("states.jsonl");
-    if !states_path.is_file() {
+    if !is_regular_file(&states_path) {
         issues.push(issue(
             Severity::Error,
             "MISSING_STATES",
@@ -60,6 +61,15 @@ pub fn validate_episode(
                             &format!("第 {} 行的 frame_id 为负数", line_number + 1),
                         ));
                     }
+                    if state.capture_time_ns < 0 {
+                        issues.push(issue_at(
+                            Severity::Error,
+                            "INVALID_TIMESTAMP",
+                            "states",
+                            &format!("第 {} 行的 capture_time_ns 为负数", line_number + 1),
+                            state.frame_id,
+                        ));
+                    }
                     if !state_is_finite(&state) {
                         issues.push(issue_at(
                             Severity::Error,
@@ -71,17 +81,30 @@ pub fn validate_episode(
                     }
                     states.push(state);
                 }
-                Err(error) => issues.push(issue(
-                    Severity::Error,
-                    "INVALID_STATE_JSON",
-                    "states",
-                    &format!("第 {} 行无法解析: {}", line_number + 1, error),
-                )),
+                Err(error) => {
+                    let code = if contains_non_finite_token(&line)
+                        || error.to_string().contains("number out of range")
+                    {
+                        "NON_FINITE_STATE"
+                    } else {
+                        "INVALID_STATE_JSON"
+                    };
+                    issues.push(issue(
+                        Severity::Error,
+                        code,
+                        "states",
+                        &format!("第 {} 行无法解析: {}", line_number + 1, error),
+                    ));
+                }
             }
         }
     }
 
     check_state_sequence(&states, &mut issues);
+    let state_frame_ids = states
+        .iter()
+        .filter_map(|state| u64::try_from(state.frame_id).ok())
+        .collect::<BTreeSet<_>>();
     let total_frames: u64 = summary
         .streams
         .iter()
@@ -93,7 +116,8 @@ pub fn validate_episode(
         let mut decode_failures = 0;
         let mut dimension_mismatches = 0;
         let mut checked_frames = 0;
-        let stream_path = root.join(&stream.name);
+        let stream_files = collect_stream_files(root, &stream.name, cancelled)?;
+        let mut stream_has_error = false;
         if stream.frame_count == 0 {
             issues.push(issue(
                 Severity::Error,
@@ -101,13 +125,14 @@ pub fn validate_episode(
                 &stream.name,
                 "数据流为空或目录不存在",
             ));
+            stream_has_error = true;
         }
-        if !stream.missing_frames.is_empty() {
+        if stream.missing_frame_count > 0 {
             issues.push(issue_at(
                 Severity::Warning,
                 "MISSING_FRAMES",
                 &stream.name,
-                &format!("缺少 {} 个连续帧位置", stream.missing_frames.len()),
+                &format!("缺少 {} 个连续帧位置", stream.missing_frame_count),
                 stream
                     .missing_frames
                     .first()
@@ -115,77 +140,119 @@ pub fn validate_episode(
                     .unwrap_or_default(),
             ));
         }
+        if let Some(name) = stream_files.invalid_names.first() {
+            issues.push(issue(
+                Severity::Error,
+                "INVALID_FRAME_FILENAME",
+                &stream.name,
+                &format!("图像文件名不能映射为非负十进制帧号: {name}"),
+            ));
+            stream_has_error = true;
+        }
+        if let Some(frame_id) = stream_files.duplicate_ids.first().copied() {
+            issues.push(issue_at(
+                Severity::Error,
+                "DUPLICATE_FRAME_ID",
+                &stream.name,
+                &format!("多个图像文件映射到帧 {frame_id}"),
+                i64::try_from(frame_id).unwrap_or(i64::MAX),
+            ));
+            stream_has_error = true;
+        }
 
-        if let (Some(first), Some(last)) = (stream.first_frame, stream.last_frame) {
-            for frame_id in first..=last {
-                if cancelled.load(Ordering::Relaxed) {
-                    return Err(AppError::Cancelled);
-                }
-                let path = stream_path.join(format!("{frame_id}.jpg"));
-                if !path.is_file() {
-                    continue;
-                }
-                checked_files += 1;
-                checked_frames += 1;
-                total_checked_frames += 1;
-                match ImageReader::open(&path)
-                    .map_err(image::ImageError::IoError)
-                    .and_then(|reader| {
-                        reader
-                            .with_guessed_format()
-                            .map_err(image::ImageError::IoError)?
-                            .decode()
-                    }) {
-                    Ok(image) => {
-                        if stream.width.is_some_and(|width| width != image.width())
-                            || stream.height.is_some_and(|height| height != image.height())
-                        {
+        let stream_frame_ids = stream_files
+            .frames
+            .iter()
+            .map(|(frame_id, _)| *frame_id)
+            .collect::<BTreeSet<_>>();
+        if !state_frame_ids.is_empty()
+            && state_frame_ids.len() == stream_frame_ids.len()
+            && state_frame_ids != stream_frame_ids
+        {
+            if let Some(frame_id) = state_frame_ids
+                .symmetric_difference(&stream_frame_ids)
+                .next()
+                .copied()
+            {
+                issues.push(issue_at(
+                    Severity::Error,
+                    "FRAME_ID_MISMATCH",
+                    &stream.name,
+                    "图像帧号集合与状态帧号集合不一致",
+                    i64::try_from(frame_id).unwrap_or(i64::MAX),
+                ));
+                stream_has_error = true;
+            }
+        }
+
+        let mut expected_dimensions: Option<(u32, u32)> = None;
+        for (frame_id, path) in &stream_files.frames {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(AppError::Cancelled);
+            }
+            checked_files += 1;
+            checked_frames += 1;
+            total_checked_frames += 1;
+            match ImageReader::open(path)
+                .map_err(image::ImageError::IoError)
+                .and_then(|reader| {
+                    reader
+                        .with_guessed_format()
+                        .map_err(image::ImageError::IoError)?
+                        .decode()
+                }) {
+                Ok(image) => {
+                    let dimensions = (image.width(), image.height());
+                    if let Some(expected) = expected_dimensions {
+                        if expected != dimensions {
                             dimension_mismatches += 1;
                             issues.push(issue_at(
                                 Severity::Error,
                                 "DIMENSION_MISMATCH",
                                 &stream.name,
                                 &format!(
-                                    "帧 {} 的分辨率为 {}×{}",
-                                    frame_id,
-                                    image.width(),
-                                    image.height()
+                                    "帧 {} 的分辨率为 {}×{}，预期 {}×{}",
+                                    frame_id, dimensions.0, dimensions.1, expected.0, expected.1
                                 ),
-                                i64::try_from(frame_id).unwrap_or(i64::MAX),
+                                i64::try_from(*frame_id).unwrap_or(i64::MAX),
                             ));
+                            stream_has_error = true;
                         }
-                    }
-                    Err(error) => {
-                        decode_failures += 1;
-                        issues.push(issue_at(
-                            Severity::Error,
-                            "DECODE_FAILED",
-                            &stream.name,
-                            &format!("帧 {} 无法解码: {}", frame_id, error),
-                            i64::try_from(frame_id).unwrap_or(i64::MAX),
-                        ));
+                    } else {
+                        expected_dimensions = Some(dimensions);
                     }
                 }
-                if checked_frames % 8 == 0 || checked_frames == stream.frame_count {
-                    emit_progress(
-                        app,
-                        crate::model::ProgressPayload {
-                            task: "validate".into(),
-                            phase: "校验图像".into(),
-                            current: total_checked_frames,
-                            total: total_frames,
-                            bytes_done: 0,
-                            total_bytes: summary.total_bytes,
-                            current_path: path.display().to_string(),
-                            elapsed_ms: started.elapsed().as_millis(),
-                        },
-                    );
+                Err(error) => {
+                    decode_failures += 1;
+                    stream_has_error = true;
+                    issues.push(issue_at(
+                        Severity::Error,
+                        "DECODE_FAILED",
+                        &stream.name,
+                        &format!("帧 {} 无法解码: {}", frame_id, error),
+                        i64::try_from(*frame_id).unwrap_or(i64::MAX),
+                    ));
                 }
             }
+            if checked_frames % 8 == 0 || checked_frames == stream_files.frames.len() as u64 {
+                emit_progress(
+                    app,
+                    crate::model::ProgressPayload {
+                        task: "validate".into(),
+                        phase: "校验图像".into(),
+                        current: total_checked_frames,
+                        total: total_frames,
+                        bytes_done: 0,
+                        total_bytes: summary.total_bytes,
+                        current_path: path.display().to_string(),
+                        elapsed_ms: started.elapsed().as_millis(),
+                    },
+                );
+            }
         }
-        let status = if decode_failures > 0 || dimension_mismatches > 0 || stream.frame_count == 0 {
+        let status = if stream_has_error || decode_failures > 0 || dimension_mismatches > 0 {
             "error"
-        } else if !stream.missing_frames.is_empty() {
+        } else if stream.missing_frame_count > 0 {
             "warning"
         } else {
             "ok"
@@ -285,7 +352,7 @@ pub fn export_report(
         {
             return Err(AppError::Message("检查报告回读验证失败".into()));
         }
-        fs::rename(&partial, &output)?;
+        storage::publish_noreplace(&partial, &output)?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -360,6 +427,48 @@ fn state_is_finite(state: &RawStateRecord) -> bool {
         .all(f64::is_finite)
 }
 
+fn contains_non_finite_token(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            index += 1;
+            continue;
+        }
+        for token in [b"NaN".as_slice(), b"Infinity".as_slice()] {
+            if bytes[index..].starts_with(token) {
+                let before = index
+                    .checked_sub(1)
+                    .and_then(|position| bytes.get(position));
+                let after = bytes.get(index + token.len());
+                let boundary = |value: Option<&u8>| {
+                    value.is_none_or(|value| !value.is_ascii_alphanumeric() && *value != b'_')
+                };
+                if boundary(before) && boundary(after) {
+                    return true;
+                }
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
 fn check_state_sequence(states: &[RawStateRecord], issues: &mut Vec<ValidationIssue>) {
     if states.is_empty() {
         issues.push(issue(
@@ -371,7 +480,7 @@ fn check_state_sequence(states: &[RawStateRecord], issues: &mut Vec<ValidationIs
         return;
     }
     for pair in states.windows(2) {
-        if pair[1].frame_id != pair[0].frame_id + 1 {
+        if pair[0].frame_id.checked_add(1) != Some(pair[1].frame_id) {
             issues.push(issue_at(
                 Severity::Warning,
                 "STATE_FRAME_GAP",
@@ -392,7 +501,11 @@ fn check_state_sequence(states: &[RawStateRecord], issues: &mut Vec<ValidationIs
     }
     let deltas: Vec<i64> = states
         .windows(2)
-        .map(|pair| pair[1].capture_time_ns - pair[0].capture_time_ns)
+        .map(|pair| {
+            pair[1]
+                .capture_time_ns
+                .saturating_sub(pair[0].capture_time_ns)
+        })
         .filter(|delta| *delta > 0)
         .collect();
     if deltas.len() >= 3 {
@@ -401,7 +514,10 @@ fn check_state_sequence(states: &[RawStateRecord], issues: &mut Vec<ValidationIs
         let median = sorted[sorted.len() / 2];
         if median > 0 {
             let gap = states.windows(2).find(|pair| {
-                pair[1].capture_time_ns - pair[0].capture_time_ns > median.saturating_mul(3)
+                pair[1]
+                    .capture_time_ns
+                    .saturating_sub(pair[0].capture_time_ns)
+                    > median.saturating_mul(3)
             });
             if let Some(pair) = gap {
                 issues.push(issue_at(
@@ -444,8 +560,10 @@ fn issue_at(
 
 #[cfg(test)]
 mod tests {
-    use super::{check_state_sequence, export_report};
-    use crate::model::{RawStateRecord, ValidationReport};
+    use super::{check_state_sequence, export_report, validate_episode};
+    use crate::model::{RawStateRecord, ValidationReport, STREAM_NAMES};
+    use image::codecs::jpeg::JpegEncoder;
+    use image::ExtendedColorType;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -508,6 +626,145 @@ mod tests {
         assert_eq!(frame_gap.frame_id, Some(2));
     }
 
+    #[test]
+    fn detects_every_state_issue_code() {
+        let missing = valid_episode("missing-states", &[0, 1, 2, 3]);
+        fs::remove_file(missing.join("states.jsonl")).unwrap();
+        assert_codes(&missing, &["MISSING_STATES", "EMPTY_STATES"]);
+        fs::remove_dir_all(missing).unwrap();
+
+        let empty = valid_episode("empty-states", &[0]);
+        fs::write(empty.join("states.jsonl"), b"\n").unwrap();
+        assert_codes(&empty, &["EMPTY_STATE_LINE", "EMPTY_STATES"]);
+        fs::remove_dir_all(empty).unwrap();
+
+        let invalid = valid_episode("invalid-state", &[0]);
+        fs::write(invalid.join("states.jsonl"), b"not json\n").unwrap();
+        assert_codes(&invalid, &["INVALID_STATE_JSON", "EMPTY_STATES"]);
+        fs::remove_dir_all(invalid).unwrap();
+
+        let non_finite = valid_episode("non-finite", &[0]);
+        fs::write(non_finite.join("states.jsonl"), state_line(0, 0, "NaN")).unwrap();
+        assert_codes(&non_finite, &["NON_FINITE_STATE", "EMPTY_STATES"]);
+        fs::remove_dir_all(non_finite).unwrap();
+
+        let negative = valid_episode("negative-frame", &[0]);
+        fs::write(negative.join("states.jsonl"), state_line(-1, 0, "1.0")).unwrap();
+        assert_codes(&negative, &["INVALID_FRAME_ID"]);
+        fs::remove_dir_all(negative).unwrap();
+
+        let negative_time = valid_episode("negative-time", &[0]);
+        fs::write(negative_time.join("states.jsonl"), state_line(0, -1, "1.0")).unwrap();
+        assert_codes(&negative_time, &["INVALID_TIMESTAMP"]);
+        fs::remove_dir_all(negative_time).unwrap();
+
+        let sequence = valid_episode("sequence", &[0, 1, 2, 3]);
+        fs::write(
+            sequence.join("states.jsonl"),
+            [
+                state_line(0, 0, "1.0"),
+                state_line(2, 10, "1.0"),
+                state_line(3, 5, "1.0"),
+                state_line(4, 15, "1.0"),
+                state_line(5, 105, "1.0"),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_codes(
+            &sequence,
+            &[
+                "STATE_FRAME_GAP",
+                "TIMESTAMP_NOT_MONOTONIC",
+                "TIMESTAMP_GAP",
+            ],
+        );
+        fs::remove_dir_all(sequence).unwrap();
+    }
+
+    #[test]
+    fn detects_every_image_issue_code() {
+        let empty = valid_episode("empty-stream", &[0]);
+        fs::remove_dir_all(empty.join("cam0")).unwrap();
+        assert_codes(&empty, &["EMPTY_STREAM"]);
+        fs::remove_dir_all(empty).unwrap();
+
+        let missing = valid_episode("missing-frame", &[0, 1, 2]);
+        fs::remove_file(missing.join("cam0/1.jpg")).unwrap();
+        let report = report(&missing);
+        assert!(has_code(&report, "MISSING_FRAMES"));
+        assert_eq!(
+            report
+                .issues
+                .iter()
+                .find(|issue| issue.code == "MISSING_FRAMES")
+                .and_then(|issue| issue.frame_id),
+            Some(1)
+        );
+        fs::remove_dir_all(missing).unwrap();
+
+        let corrupt = valid_episode("decode", &[0]);
+        fs::write(corrupt.join("cam0/0.jpg"), b"not jpeg").unwrap();
+        assert_codes(&corrupt, &["DECODE_FAILED"]);
+        fs::remove_dir_all(corrupt).unwrap();
+
+        let dimensions = valid_episode("dimensions", &[0, 1]);
+        write_jpeg(&dimensions.join("cam0/1.jpg"), 2, 1);
+        assert_codes(&dimensions, &["DIMENSION_MISMATCH"]);
+        fs::remove_dir_all(dimensions).unwrap();
+
+        let count = valid_episode("count", &[0, 1]);
+        fs::remove_file(count.join("cam0/1.jpg")).unwrap();
+        assert_codes(&count, &["COUNT_MISMATCH"]);
+        fs::remove_dir_all(count).unwrap();
+
+        let invalid_name = valid_episode("invalid-name", &[0]);
+        write_jpeg(&invalid_name.join("cam0/not-a-frame.jpg"), 1, 1);
+        assert_codes(&invalid_name, &["INVALID_FRAME_FILENAME"]);
+        fs::remove_dir_all(invalid_name).unwrap();
+
+        let duplicate = valid_episode("duplicate", &[0]);
+        write_jpeg(&duplicate.join("cam0/00.jpg"), 1, 1);
+        assert_codes(&duplicate, &["DUPLICATE_FRAME_ID"]);
+        fs::remove_dir_all(duplicate).unwrap();
+
+        let mismatch = valid_episode("frame-mismatch", &[0, 1]);
+        fs::rename(mismatch.join("cam0/0.jpg"), mismatch.join("cam0/10.jpg")).unwrap();
+        fs::rename(mismatch.join("cam0/1.jpg"), mismatch.join("cam0/11.jpg")).unwrap();
+        assert_codes(&mismatch, &["FRAME_ID_MISMATCH"]);
+        fs::remove_dir_all(mismatch).unwrap();
+    }
+
+    #[test]
+    fn scans_sparse_extreme_frame_ranges_without_expanding_them() {
+        let root = valid_episode("sparse-range", &[0]);
+        write_jpeg(&root.join("cam0/1000000.jpg"), 1, 1);
+        let summary = crate::source::scan_episode(&root, None, &AtomicBool::new(false)).unwrap();
+        let cam0 = summary
+            .streams
+            .iter()
+            .find(|stream| stream.name == "cam0")
+            .unwrap();
+        assert_eq!(cam0.missing_frame_count, 999_999);
+        assert_eq!(cam0.missing_frames.len(), 2048);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_load_and_validation_leave_the_source_unchanged() {
+        let root = valid_episode("source-read-only", &[0, 1]);
+        let cancelled = AtomicBool::new(false);
+        let before = tree_digest(&root);
+
+        crate::source::scan_source(&root, None, &cancelled).unwrap();
+        crate::source::load_episode(&root, None, &cancelled).unwrap();
+        validate_episode(&root, None, &cancelled).unwrap();
+        crate::source::episode_fingerprint(&root, &cancelled).unwrap();
+
+        assert_eq!(tree_digest(&root), before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn state(frame_id: i64, capture_time_ns: i64) -> RawStateRecord {
         RawStateRecord {
             frame_id,
@@ -519,6 +776,76 @@ mod tests {
             omega: [0.0; 3],
             confidence: 1.0,
         }
+    }
+
+    fn report(root: &std::path::Path) -> ValidationReport {
+        validate_episode(root, None, &AtomicBool::new(false)).unwrap()
+    }
+
+    fn assert_codes(root: &std::path::Path, expected: &[&str]) {
+        let report = report(root);
+        for code in expected {
+            assert!(
+                has_code(&report, code),
+                "missing {code}; got {:?}",
+                report
+                    .issues
+                    .iter()
+                    .map(|issue| issue.code.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    fn has_code(report: &ValidationReport, code: &str) -> bool {
+        report.issues.iter().any(|issue| issue.code == code)
+    }
+
+    fn valid_episode(label: &str, frame_ids: &[u64]) -> PathBuf {
+        let root = test_output(label);
+        fs::create_dir_all(&root).unwrap();
+        for stream in STREAM_NAMES {
+            let stream_root = root.join(stream);
+            fs::create_dir(&stream_root).unwrap();
+            for frame_id in frame_ids {
+                write_jpeg(&stream_root.join(format!("{frame_id}.jpg")), 1, 1);
+            }
+        }
+        let states = frame_ids
+            .iter()
+            .enumerate()
+            .map(|(index, frame_id)| state_line(*frame_id as i64, index as i64 * 10, "1.0"))
+            .collect::<String>();
+        fs::write(root.join("states.jsonl"), states).unwrap();
+        root
+    }
+
+    fn state_line(frame_id: i64, capture_time_ns: i64, confidence: &str) -> String {
+        format!(
+            "{{\"frame_id\":{frame_id},\"capture_time_ns\":{capture_time_ns},\"position\":[0,0,0],\"velocity\":[0,0,0],\"quaternion\":[0,0,0,1],\"euler\":[0,0,0],\"omega\":[0,0,0],\"confidence\":{confidence}}}\n"
+        )
+    }
+
+    fn write_jpeg(path: &std::path::Path, width: u32, height: u32) {
+        let pixels = vec![127_u8; width as usize * height as usize * 3];
+        let mut bytes = Vec::new();
+        JpegEncoder::new(&mut bytes)
+            .encode(&pixels, width, height, ExtendedColorType::Rgb8)
+            .unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
+    fn tree_digest(root: &std::path::Path) -> String {
+        let cancelled = AtomicBool::new(false);
+        let files = crate::source::collect_files(root, &cancelled).unwrap();
+        let mut hasher = blake3::Hasher::new();
+        for path in files {
+            let relative = path.strip_prefix(root).unwrap().to_string_lossy();
+            hasher.update(relative.as_bytes());
+            hasher.update(&[0]);
+            hasher.update(&fs::read(path).unwrap());
+        }
+        hasher.finalize().to_hex().to_string()
     }
 
     fn test_output(label: &str) -> PathBuf {

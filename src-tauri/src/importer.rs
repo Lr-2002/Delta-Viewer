@@ -1,11 +1,12 @@
 use crate::error::{AppError, AppResult};
 use crate::model::{ImportManifest, ImportResult, ManifestEntry, ProgressPayload};
-use crate::source::{collect_files, emit_progress};
+use crate::source::emit_progress;
 use crate::storage;
 use blake3::Hasher;
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tauri::AppHandle;
@@ -28,12 +29,14 @@ pub fn import_episode(
             destination_parent.display()
         )));
     }
-    let preflight = storage::inspect_import(source, destination_parent)?;
+    let source = fs::canonicalize(source)?;
+    let (preflight, files) =
+        storage::inspect_import_with_files(&source, destination_parent, cancelled)?;
     storage::require_import_preflight(&preflight)?;
-    let files = collect_files(source)?;
     if files.is_empty() {
         return Err(AppError::Message("源目录没有可导入文件".into()));
     }
+    let planned_files = plan_import_files(&source, files)?;
     let total_bytes = preflight.source_bytes;
     let source_name = source
         .file_name()
@@ -43,19 +46,17 @@ pub fn import_episode(
     let partial = storage::create_import_partial(destination_parent, &safe_name, source_name)?;
     let started = Instant::now();
 
-    let mut manifest_entries = Vec::with_capacity(files.len());
+    let mut manifest_entries = Vec::with_capacity(planned_files.len());
     let mut bytes_done = 0_u64;
     let mut dataset_hasher = Hasher::new();
-    for (index, source_path) in files.iter().enumerate() {
+    for (index, planned) in planned_files.iter().enumerate() {
         check_cancelled(cancelled)?;
-        let relative = source_path
-            .strip_prefix(source)
-            .map_err(|error| AppError::Message(error.to_string()))?;
-        let destination_path = partial.join(relative);
+        let destination_path = partial.join(&planned.destination_relative);
         if let Some(parent) = destination_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut input = File::open(source_path)?;
+        let mut input = File::open(&planned.source_path)?;
+        let source_before = input.metadata()?;
         let mut output = OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -78,25 +79,34 @@ pub fn import_episode(
                         task: "import".into(),
                         phase: "复制文件".into(),
                         current: index as u64,
-                        total: files.len() as u64,
+                        total: planned_files.len() as u64,
                         bytes_done,
                         total_bytes,
-                        current_path: relative.display().to_string(),
+                        current_path: planned.destination_path.clone(),
                         elapsed_ms: started.elapsed().as_millis(),
                     },
                 );
             }
         }
         output.flush()?;
+        let source_after = input.metadata()?;
+        if source_before.len() != source_after.len()
+            || source_before.modified().ok() != source_after.modified().ok()
+        {
+            return Err(AppError::Message(format!(
+                "SOURCE_CHANGED_DURING_IMPORT: {}",
+                planned.source_path_text
+            )));
+        }
         let digest = hasher.finalize().to_hex().to_string();
-        let relative_string = relative.to_string_lossy().replace('\\', "/");
-        dataset_hasher.update(relative_string.as_bytes());
+        dataset_hasher.update(planned.source_path_text.as_bytes());
         dataset_hasher.update(&[0]);
-        dataset_hasher.update(&fs::metadata(source_path)?.len().to_le_bytes());
+        dataset_hasher.update(&source_after.len().to_le_bytes());
         dataset_hasher.update(digest.as_bytes());
         manifest_entries.push(ManifestEntry {
-            path: relative_string,
-            size: fs::metadata(source_path)?.len(),
+            path: planned.destination_path.clone(),
+            source_path: planned.source_path_text.clone(),
+            size: source_after.len(),
             blake3: digest,
         });
     }
@@ -106,32 +116,11 @@ pub fn import_episode(
     for (index, entry) in manifest_entries.iter().enumerate() {
         check_cancelled(cancelled)?;
         let destination_path = partial.join(Path::new(&entry.path));
-        let destination_size = fs::metadata(&destination_path)?.len();
-        if destination_size != entry.size {
-            return Err(AppError::Message(format!(
-                "目标文件大小不匹配: {} ({} != {})",
-                entry.path, destination_size, entry.size
-            )));
-        }
-        let mut file = File::open(&destination_path)?;
-        let mut hasher = Hasher::new();
-        let mut buffer = vec![0_u8; 1024 * 1024];
-        loop {
-            check_cancelled(cancelled)?;
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-            verified_bytes += read as u64;
-        }
-        let destination_hash = hasher.finalize().to_hex().to_string();
-        if destination_hash != entry.blake3 {
-            return Err(AppError::Message(format!(
-                "目标文件 BLAKE3 不匹配: {}",
-                entry.path
-            )));
-        }
+        verified_bytes = verified_bytes.saturating_add(verify_destination_file(
+            &destination_path,
+            entry,
+            cancelled,
+        )?);
         if index % 8 == 0 || index + 1 == manifest_entries.len() {
             emit_progress(
                 app,
@@ -149,9 +138,9 @@ pub fn import_episode(
         }
     }
     let manifest = ImportManifest {
-        format_version: 1,
+        format_version: 2,
         source_name: source_name.into(),
-        total_files: files.len() as u64,
+        total_files: planned_files.len() as u64,
         total_bytes,
         dataset_blake3: dataset_blake3.clone(),
         files: manifest_entries,
@@ -160,17 +149,19 @@ pub fn import_episode(
     let mut manifest_file = File::create(&manifest_path)?;
     serde_json::to_writer_pretty(&mut manifest_file, &manifest)?;
     manifest_file.write_all(b"\n")?;
+    manifest_file.flush()?;
+    manifest_file.sync_all()?;
+    drop(manifest_file);
 
     let final_path = unique_destination(destination_parent, &safe_name);
-    fs::rename(&partial, &final_path)?;
-    let _ = storage::finalize_import_partial(&partial);
+    storage::publish_import_partial(&partial, &final_path)?;
     emit_progress(
         app,
         ProgressPayload {
             task: "import".into(),
             phase: "导入完成".into(),
-            current: files.len() as u64,
-            total: files.len() as u64,
+            current: planned_files.len() as u64,
+            total: planned_files.len() as u64,
             bytes_done: total_bytes,
             total_bytes,
             current_path: final_path.display().to_string(),
@@ -179,11 +170,123 @@ pub fn import_episode(
     );
     Ok(ImportResult {
         destination: final_path.display().to_string(),
-        total_files: files.len() as u64,
+        total_files: planned_files.len() as u64,
         total_bytes,
         dataset_blake3,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+struct PlannedImportFile {
+    source_path: PathBuf,
+    source_path_text: String,
+    destination_relative: PathBuf,
+    destination_path: String,
+}
+
+fn plan_import_files(source: &Path, files: Vec<PathBuf>) -> AppResult<Vec<PlannedImportFile>> {
+    let mut seen_paths = BTreeMap::<String, String>::new();
+    let mut planned = Vec::with_capacity(files.len());
+    for source_path in files {
+        let relative = source_path
+            .strip_prefix(source)
+            .map_err(|error| AppError::Message(error.to_string()))?;
+        let source_path_text = relative_path_text(relative)?;
+        let mut source_prefix = PathBuf::new();
+        let mut destination_relative = PathBuf::new();
+        for component in relative.components() {
+            let Component::Normal(component) = component else {
+                return Err(AppError::Message(format!(
+                    "INVALID_SOURCE_PATH: {}",
+                    relative.display()
+                )));
+            };
+            let component = component.to_str().ok_or_else(|| {
+                AppError::Message(format!(
+                    "UNSUPPORTED_FILENAME_ENCODING: {}",
+                    relative.display()
+                ))
+            })?;
+            source_prefix.push(component);
+            destination_relative.push(sanitize_name(component));
+            let collision_key = destination_relative
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase();
+            let source_key = source_prefix.to_string_lossy().replace('\\', "/");
+            if let Some(existing) = seen_paths.get(&collision_key) {
+                if existing != &source_key {
+                    return Err(AppError::Message(format!(
+                        "SANITIZED_PATH_COLLISION: {existing} 与 {source_key} 会映射到同一路径"
+                    )));
+                }
+            } else {
+                seen_paths.insert(collision_key, source_key);
+            }
+        }
+        let destination_path = destination_relative.to_string_lossy().replace('\\', "/");
+        planned.push(PlannedImportFile {
+            source_path,
+            source_path_text,
+            destination_relative,
+            destination_path,
+        });
+    }
+    Ok(planned)
+}
+
+fn relative_path_text(path: &Path) -> AppResult<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(component) = component else {
+            return Err(AppError::Message(format!(
+                "INVALID_SOURCE_PATH: {}",
+                path.display()
+            )));
+        };
+        parts.push(
+            component
+                .to_str()
+                .ok_or_else(|| {
+                    AppError::Message(format!("UNSUPPORTED_FILENAME_ENCODING: {}", path.display()))
+                })?
+                .to_string(),
+        );
+    }
+    Ok(parts.join("/"))
+}
+
+fn verify_destination_file(
+    destination_path: &Path,
+    entry: &ManifestEntry,
+    cancelled: &AtomicBool,
+) -> AppResult<u64> {
+    let destination_size = fs::metadata(destination_path)?.len();
+    if destination_size != entry.size {
+        return Err(AppError::Message(format!(
+            "目标文件大小不匹配: {} ({} != {})",
+            entry.path, destination_size, entry.size
+        )));
+    }
+    let mut file = File::open(destination_path)?;
+    let mut hasher = Hasher::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        check_cancelled(cancelled)?;
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let destination_hash = hasher.finalize().to_hex().to_string();
+    if destination_hash != entry.blake3 {
+        return Err(AppError::Message(format!(
+            "目标文件 BLAKE3 不匹配: {}",
+            entry.path
+        )));
+    }
+    Ok(destination_size)
 }
 
 fn check_cancelled(cancelled: &AtomicBool) -> AppResult<()> {
@@ -240,8 +343,9 @@ pub fn sanitize_name(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{import_episode, sanitize_name};
-    use crate::storage::{cleanup_partial_import, list_partial_imports};
+    use super::{import_episode, plan_import_files, sanitize_name, verify_destination_file};
+    use crate::model::{ImportManifest, ManifestEntry};
+    use crate::storage::list_partial_imports;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -256,7 +360,48 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_import_leaves_only_a_marked_cleanable_partial() {
+    fn plans_windows_safe_relative_paths() {
+        let source = PathBuf::from("source");
+        let planned =
+            plan_import_files(&source, vec![source.join("AUX").join("2026:state?.bin")]).unwrap();
+        assert_eq!(planned[0].source_path_text, "AUX/2026:state?.bin");
+        assert_eq!(planned[0].destination_path, "_AUX/2026-state-.bin");
+    }
+
+    #[test]
+    fn rejects_case_or_sanitization_path_collisions() {
+        let source = PathBuf::from("source");
+        let error = plan_import_files(&source, vec![source.join("a:b/x"), source.join("A?B/y")])
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("SANITIZED_PATH_COLLISION"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn manifest_v2_records_source_to_destination_mapping() {
+        let source = test_output("safe-path-source");
+        let output = test_output("safe-path-output");
+        fs::create_dir_all(source.join("AUX")).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        fs::write(source.join("AUX/2026:state?.bin"), b"data").unwrap();
+
+        let result = import_episode(&source, &output, None, &AtomicBool::new(false)).unwrap();
+        let imported = PathBuf::from(result.destination);
+        assert!(imported.join("_AUX/2026-state-.bin").is_file());
+        let manifest: ImportManifest =
+            serde_json::from_reader(fs::File::open(imported.join(".dohc-manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest.format_version, 2);
+        assert_eq!(manifest.files[0].source_path, "AUX/2026:state?.bin");
+        assert_eq!(manifest.files[0].path, "_AUX/2026-state-.bin");
+
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn preflight_cancellation_creates_no_output() {
         let source = test_output("cancel-source");
         let output = test_output("cancel-output");
         fs::create_dir_all(&source).unwrap();
@@ -266,12 +411,28 @@ mod tests {
         let error = import_episode(&source, &output, None, &AtomicBool::new(true)).unwrap_err();
         assert!(error.to_string().contains("任务已取消"));
         let partials = list_partial_imports(&output).unwrap();
-        assert_eq!(partials.len(), 1);
-        cleanup_partial_import(&output, PathBuf::from(&partials[0].path).as_path()).unwrap();
+        assert!(partials.is_empty());
         assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
 
         fs::remove_dir_all(source).unwrap();
         fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn target_readback_detects_same_size_tampering() {
+        let path = test_output("tampered-target");
+        fs::write(&path, b"original").unwrap();
+        let entry = ManifestEntry {
+            path: "states.jsonl".into(),
+            source_path: "states.jsonl".into(),
+            size: 8,
+            blake3: blake3::hash(b"original").to_hex().to_string(),
+        };
+        fs::write(&path, b"tampered").unwrap();
+
+        let error = verify_destination_file(&path, &entry, &AtomicBool::new(false)).unwrap_err();
+        assert!(error.to_string().contains("BLAKE3"));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -289,6 +450,14 @@ mod tests {
         let imported = PathBuf::from(&result.destination);
         assert!(imported.join(".dohc-manifest.json").is_file());
         assert!(imported.join("cam0/195.jpg").is_file());
+        let manifest: ImportManifest =
+            serde_json::from_reader(fs::File::open(imported.join(".dohc-manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest.format_version, 2);
+        assert!(manifest
+            .files
+            .iter()
+            .all(|entry| entry.path == entry.source_path));
         fs::remove_dir_all(output).unwrap();
     }
 

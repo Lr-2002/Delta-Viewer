@@ -283,6 +283,7 @@ function demoStream(
     firstFrame: 0,
     lastFrame: 195,
     missingFrames: [],
+    missingFrameCount: 0,
     totalBytes,
     width,
     height,

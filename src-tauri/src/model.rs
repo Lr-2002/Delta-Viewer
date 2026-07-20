@@ -11,6 +11,7 @@ pub struct StreamSummary {
     pub first_frame: Option<u64>,
     pub last_frame: Option<u64>,
     pub missing_frames: Vec<u64>,
+    pub missing_frame_count: u64,
     pub total_bytes: u64,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -189,6 +190,7 @@ pub struct ProgressPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ManifestEntry {
     pub path: String,
+    pub source_path: String,
     pub size: u64,
     pub blake3: String,
 }

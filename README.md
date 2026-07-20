@@ -21,8 +21,8 @@ Project documentation:
 3. Copy the selected episode to local storage.
 4. Preflight local capacity and filesystem support, then identify any safely
    cleanable incomplete imports.
-5. Verify every destination file by size and BLAKE3, then write
-   `.dohc-manifest.json`.
+5. Verify every destination file by size and BLAKE3, then write a format-v2
+   `.dohc-manifest.json` with original and Windows-safe relative paths.
 6. Decode-check all JPEG frames, validate stream continuity, parse every state,
    and check state frame IDs and timestamps.
 7. Review five synchronized image streams and state telemetry.
@@ -64,6 +64,16 @@ nanosecond clock is retained separately as `observation.capture_time_ns`.
 Playback estimates the recorded FPS from the median positive state timestamp
 delta and supports explicit 15, 24, 30, or 60 FPS overrides. Health issues that
 identify a frame can jump directly back to synchronized playback.
+
+Import sanitizes every path component and stops before copying when two source
+paths would collide after Windows case folding or filename replacement. The
+manifest keeps `sourcePath` for the original relative path and `path` for the
+local Windows-safe path; the stable dataset BLAKE3 remains based on source paths.
+
+The current pure-Rust HDF5 writer stages JPEG payloads in memory. HDF5 export is
+therefore blocked with `HDF5_STREAMING_REQUIRED` above 512 MiB of JPEG data;
+MCAP and LeRobot are unaffected. A streaming HDF5 writer and the 100 GB stress
+gate remain release work.
 
 ## exFAT decision
 

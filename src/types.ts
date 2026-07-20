@@ -7,6 +7,7 @@ export interface StreamSummary {
   firstFrame: number | null;
   lastFrame: number | null;
   missingFrames: number[];
+  missingFrameCount: number;
   totalBytes: number;
   width: number | null;
   height: number | null;
@@ -78,7 +79,7 @@ export interface EpisodeData {
   states: StateRecord[];
 }
 
-export type Severity = "info" | "warning" | "error";
+export type Severity = "warning" | "error";
 
 export interface ValidationIssue {
   severity: Severity;

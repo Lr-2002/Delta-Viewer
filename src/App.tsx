@@ -227,7 +227,7 @@ function App() {
 
   function moveFrame(delta: number) {
     if (!data) return;
-    const next = Math.max(0, Math.min(getMaxFrame(data), currentFrame + delta));
+    const next = Math.max(getMinFrame(data), Math.min(getMaxFrame(data), currentFrame + delta));
     frameRef.current = next;
     setCurrentFrame(next);
   }
@@ -308,7 +308,7 @@ function App() {
 
   function locateIssue(frameId: number) {
     if (!data) return;
-    const target = Math.max(0, Math.min(getMaxFrame(data), frameId));
+    const target = Math.max(getMinFrame(data), Math.min(getMaxFrame(data), frameId));
     setPlaying(false);
     frameRef.current = target;
     setCurrentFrame(target);
@@ -316,10 +316,11 @@ function App() {
   }
 
   const currentState = useMemo(
-    () => data?.states.find((state) => state.frameId === currentFrame) ?? data?.states[0] ?? null,
+    () => data?.states.find((state) => state.frameId === currentFrame) ?? null,
     [currentFrame, data],
   );
   const maxFrame = data ? getMaxFrame(data) : 0;
+  const minFrame = data ? getMinFrame(data) : 0;
   const status = report?.status ?? (data ? "warning" : "idle");
 
   return (
@@ -470,7 +471,7 @@ function App() {
                       <input
                         className="timeline-slider"
                         type="range"
-                        min={0}
+                        min={minFrame}
                         max={maxFrame}
                         value={currentFrame}
                         onChange={(event) => {
@@ -616,8 +617,21 @@ function StatusBadge({ status }: { status: "ok" | "warning" | "error" | "idle" }
 }
 
 function getMaxFrame(data: EpisodeData): number {
-  const streamMax = Math.max(...data.summary.streams.map((stream) => stream.lastFrame ?? 0), 0);
-  return Math.max(streamMax, data.states.at(-1)?.frameId ?? 0);
+  let maximum = 0;
+  for (const stream of data.summary.streams) maximum = Math.max(maximum, stream.lastFrame ?? 0);
+  for (const state of data.states) maximum = Math.max(maximum, state.frameId);
+  return maximum;
+}
+
+function getMinFrame(data: EpisodeData): number {
+  let minimum = Number.POSITIVE_INFINITY;
+  for (const stream of data.summary.streams) {
+    if (stream.firstFrame !== null) minimum = Math.min(minimum, stream.firstFrame);
+  }
+  for (const state of data.states) {
+    if (state.frameId >= 0) minimum = Math.min(minimum, state.frameId);
+  }
+  return Number.isFinite(minimum) ? minimum : 0;
 }
 
 function formatStateTime(data: EpisodeData, captureTimeNs: string): string {

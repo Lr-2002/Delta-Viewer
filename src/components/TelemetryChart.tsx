@@ -42,10 +42,16 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
       const padding = { top: 18, right: 18, bottom: 28, left: 54 };
       const plotWidth = width - padding.left - padding.right;
       const plotHeight = height - padding.top - padding.bottom;
-      const flat = values.flat().filter(Number.isFinite);
-      if (!flat.length) return;
-      let minimum = Math.min(...flat);
-      let maximum = Math.max(...flat);
+      let minimum = Number.POSITIVE_INFINITY;
+      let maximum = Number.NEGATIVE_INFINITY;
+      for (const row of values) {
+        for (const value of row) {
+          if (!Number.isFinite(value)) continue;
+          minimum = Math.min(minimum, value);
+          maximum = Math.max(maximum, value);
+        }
+      }
+      if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) return;
       if (minimum === maximum) {
         minimum -= 1;
         maximum += 1;
@@ -70,8 +76,14 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
         context.fillText(formatAxis(value), padding.left - 8, y);
       }
 
-      const pointCount = Math.max(states.length - 1, 1);
-      const xFor = (index: number) => padding.left + (index / pointCount) * plotWidth;
+      let firstFrame = Number.POSITIVE_INFINITY;
+      let lastFrame = Number.NEGATIVE_INFINITY;
+      for (const state of states) {
+        firstFrame = Math.min(firstFrame, state.frameId);
+        lastFrame = Math.max(lastFrame, state.frameId);
+      }
+      const frameSpan = Math.max(lastFrame - firstFrame, 1);
+      const xFor = (frame: number) => padding.left + ((frame - firstFrame) / frameSpan) * plotWidth;
       const yFor = (value: number) =>
         padding.top + ((maximum - value) / (maximum - minimum)) * plotHeight;
       const dimensions = values[0]?.length ?? 0;
@@ -79,17 +91,23 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
         context.strokeStyle = COLORS[dimension];
         context.lineWidth = 1.5;
         context.beginPath();
-        values.forEach((row, index) => {
-          const x = xFor(index);
-          const y = yFor(row[dimension]);
-          if (index === 0) context.moveTo(x, y);
-          else context.lineTo(x, y);
-        });
+        let started = false;
+        for (const index of sampledIndexes(values, dimension, Math.max(1, Math.floor(plotWidth)))) {
+          const value = values[index][dimension];
+          if (!Number.isFinite(value)) continue;
+          const x = xFor(states[index].frameId);
+          const y = yFor(value);
+          if (!started) {
+            context.moveTo(x, y);
+            started = true;
+          } else {
+            context.lineTo(x, y);
+          }
+        }
         context.stroke();
       }
 
-      const selectedIndex = Math.max(0, states.findIndex((state) => state.frameId >= frameId));
-      const markerX = xFor(selectedIndex);
+      const markerX = xFor(Math.max(firstFrame, Math.min(lastFrame, frameId)));
       context.strokeStyle = "#151a17";
       context.lineWidth = 1;
       context.beginPath();
@@ -111,20 +129,42 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
     return () => observer.disconnect();
   }, [frameId, states, values]);
 
-  const selected = states.find((state) => state.frameId === frameId)?.[metric] ?? values[0] ?? [];
+  const selected = states.find((state) => state.frameId === frameId)?.[metric] ?? null;
   return (
     <section className="telemetry-chart" aria-label={`${METRIC_LABELS[metric]}曲线`}>
       <canvas ref={canvasRef} />
-      <div className="chart-legend" aria-hidden="true">
-        {selected.map((value, index) => (
-          <span key={index}>
-            <i style={{ backgroundColor: COLORS[index] }} />
-            {index < 3 ? ["X", "Y", "Z"][index] : "W"} {value.toFixed(4)}
-          </span>
-        ))}
+      <div className="chart-legend">
+        {selected ? selected.map((value, index) => (
+            <span key={index}>
+              <i style={{ backgroundColor: COLORS[index] }} />
+              {index < 3 ? ["X", "Y", "Z"][index] : "W"} {value.toFixed(4)}
+            </span>
+          )) : <span className="telemetry-unavailable">当前帧无状态数据</span>}
       </div>
     </section>
   );
+}
+
+function sampledIndexes(values: number[][], dimension: number, bucketCount: number): number[] {
+  if (values.length <= bucketCount * 2) return values.map((_, index) => index);
+  const bucketSize = Math.ceil(values.length / bucketCount);
+  const indexes: number[] = [];
+  for (let start = 0; start < values.length; start += bucketSize) {
+    const end = Math.min(values.length, start + bucketSize);
+    let minimumIndex = start;
+    let maximumIndex = start;
+    for (let index = start + 1; index < end; index += 1) {
+      if (values[index][dimension] < values[minimumIndex][dimension]) minimumIndex = index;
+      if (values[index][dimension] > values[maximumIndex][dimension]) maximumIndex = index;
+    }
+    if (minimumIndex <= maximumIndex) {
+      indexes.push(minimumIndex);
+      if (maximumIndex !== minimumIndex) indexes.push(maximumIndex);
+    } else {
+      indexes.push(maximumIndex, minimumIndex);
+    }
+  }
+  return indexes;
 }
 
 function formatAxis(value: number): string {

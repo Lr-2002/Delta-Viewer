@@ -4,6 +4,7 @@ use crate::model::{ProgressPayload, StateRecord};
 use crate::source::emit_progress;
 use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
 use arrow_array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, RecordBatch};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
@@ -13,8 +14,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 pub struct LeRobotV2Adapter;
@@ -125,7 +128,8 @@ impl ExportAdapter for LeRobotV2Adapter {
             ),
         )?;
 
-        fs::rename(&partial, &output)?;
+        verify_lerobot_output(&partial, context, fps)?;
+        crate::storage::publish_noreplace(&partial, &output)?;
         Ok(output)
     }
 }
@@ -143,8 +147,76 @@ fn validate_lerobot_source(context: &ExportContext<'_>) -> AppResult<()> {
                 context.data.states.len()
             )));
         }
-        if !stream.missing_frames.is_empty() {
+        if stream.missing_frame_count > 0 {
             return Err(AppError::Message(format!("{} 存在缺帧", stream.name)));
+        }
+    }
+    Ok(())
+}
+
+fn verify_lerobot_output(root: &Path, context: &ExportContext<'_>, fps: u32) -> AppResult<()> {
+    let meta_dir = root.join("meta");
+    for name in [
+        "info.json",
+        "tasks.jsonl",
+        "episodes.jsonl",
+        "stats.json",
+        "episodes_stats.jsonl",
+    ] {
+        let path = meta_dir.join(name);
+        if !crate::source::is_regular_file(&path) || fs::metadata(&path)?.len() == 0 {
+            return Err(AppError::Message(format!(
+                "LeRobot 回读验证失败: 缺少 {name}"
+            )));
+        }
+    }
+    let info: Value = serde_json::from_reader(File::open(meta_dir.join("info.json"))?)?;
+    if info["codebase_version"] != "v2.1"
+        || info["fps"] != fps
+        || info["total_frames"] != context.data.states.len()
+    {
+        return Err(AppError::Message(
+            "LeRobot 回读验证失败: info.json 不匹配".into(),
+        ));
+    }
+
+    let parquet_path = root.join("data/chunk-000/episode_000000.parquet");
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(File::open(&parquet_path)?).map_err(map_error)?;
+    if builder
+        .schema()
+        .field_with_name("observation.capture_time_ns")
+        .is_err()
+        || builder.schema().field_with_name("action").is_ok()
+    {
+        return Err(AppError::Message(
+            "LeRobot 回读验证失败: Parquet 字段不匹配".into(),
+        ));
+    }
+    let mut rows = 0_usize;
+    for batch in builder.build().map_err(map_error)? {
+        if context.cancelled.load(Ordering::Relaxed) {
+            return Err(AppError::Cancelled);
+        }
+        rows = rows.saturating_add(batch.map_err(map_error)?.num_rows());
+    }
+    if rows != context.data.states.len() {
+        return Err(AppError::Message(format!(
+            "LeRobot 回读验证失败: Parquet {rows} 行，预期 {} 行",
+            context.data.states.len()
+        )));
+    }
+
+    for stream in &context.data.summary.streams {
+        let video = root
+            .join("videos/chunk-000")
+            .join(format!("observation.images.{}", stream.name))
+            .join("episode_000000.mp4");
+        if !crate::source::is_regular_file(&video) || fs::metadata(&video)?.len() == 0 {
+            return Err(AppError::Message(format!(
+                "LeRobot 回读验证失败: {} 视频为空",
+                stream.name
+            )));
         }
     }
     Ok(())
@@ -275,18 +347,47 @@ fn encode_video(job: VideoEncodeJob<'_>, context: &ExportContext<'_>) -> AppResu
         .stdout
         .take()
         .ok_or_else(|| AppError::Message("无法读取 FFmpeg 进度".into()))?;
-    for line in BufReader::new(stdout).lines() {
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Message("无法读取 FFmpeg 错误输出".into()))?;
+    let (sender, receiver) = mpsc::channel();
+    let stdout_thread = thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            match line {
+                Ok(line) => {
+                    if let Some(frame) = line
+                        .strip_prefix("frame=")
+                        .and_then(|value| value.parse::<u64>().ok())
+                    {
+                        if sender.send(EncodeEvent::Frame(frame)).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(EncodeEvent::ReadError(error.to_string()));
+                    return;
+                }
+            }
+        }
+        let _ = sender.send(EncodeEvent::Done);
+    });
+    let stderr_thread = thread::spawn(move || {
+        let mut stderr = BufReader::new(stderr);
+        let mut message = String::new();
+        stderr.read_to_string(&mut message).map(|_| message)
+    });
+
+    let mut stdout_error = None;
+    let status = loop {
         if context.cancelled.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(AppError::Cancelled);
+            break None;
         }
-        let line = line?;
-        if let Some(frame) = line
-            .strip_prefix("frame=")
-            .and_then(|value| value.parse::<u64>().ok())
-        {
-            emit_progress(
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(EncodeEvent::Frame(frame)) => emit_progress(
                 context.app,
                 ProgressPayload {
                     task: "export".into(),
@@ -298,15 +399,28 @@ fn encode_video(job: VideoEncodeJob<'_>, context: &ExportContext<'_>) -> AppResu
                     current_path: job.destination.display().to_string(),
                     elapsed_ms: job.started.elapsed().as_millis(),
                 },
-            );
+            ),
+            Ok(EncodeEvent::ReadError(error)) => stdout_error = Some(error),
+            Ok(EncodeEvent::Done) | Err(RecvTimeoutError::Disconnected) => {}
+            Err(RecvTimeoutError::Timeout) => {}
         }
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+    };
+    stdout_thread
+        .join()
+        .map_err(|_| AppError::Message("FFmpeg 进度线程异常退出".into()))?;
+    let stderr = stderr_thread
+        .join()
+        .map_err(|_| AppError::Message("FFmpeg 错误线程异常退出".into()))??;
+    let Some(status) = status else {
+        return Err(AppError::Cancelled);
+    };
+    if let Some(error) = stdout_error {
+        return Err(AppError::Message(format!("读取 FFmpeg 进度失败: {error}")));
     }
-    let status = child.wait()?;
     if !status.success() {
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.stderr.take() {
-            let _ = pipe.read_to_string(&mut stderr);
-        }
         return Err(AppError::Message(format!(
             "FFmpeg 编码失败: {}",
             stderr.trim()
@@ -319,6 +433,12 @@ fn encode_video(job: VideoEncodeJob<'_>, context: &ExportContext<'_>) -> AppResu
         )));
     }
     Ok(())
+}
+
+enum EncodeEvent {
+    Frame(u64),
+    ReadError(String),
+    Done,
 }
 
 fn find_ffmpeg(app: Option<&AppHandle>) -> AppResult<PathBuf> {

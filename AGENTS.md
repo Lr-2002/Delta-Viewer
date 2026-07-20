@@ -64,6 +64,7 @@ React component
 - 同一时间只允许一个长任务；所有新增长任务必须通过 `TaskControl` 获取 guard。
 - 导出 IPC 只能使用 `ValidationCache` 中与当前源目录指纹匹配的 Rust 报告；不得接受前端回传的报告或 status 作为授权。
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
+- 源目录遍历统一使用可取消的 no-follow 路径；不要重新引入会隐式跟随 symlink 的文件判断。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
 - Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。它不能被当作后端验收。
 
@@ -141,7 +142,9 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 写入前确认目标位于用户选择的 destination 下。
 - 中间结果使用唯一 `.partial-{nonce}`，完成后 rename。
 - 使用 `create_new` 防止意外覆盖。
-- 名称必须经过 `importer::sanitize_name`；保持 Windows 保留名测试。
+- 最终发布必须调用 `storage::publish_noreplace`，保持 Windows/macOS/Linux 原子 no-replace；不能退回 `exists + rename` 的竞态组合。
+- 导入的每个路径组件必须经过 `importer::sanitize_name`；保持 Windows 保留名、大小写折叠和清理后碰撞测试。
+- Manifest 当前为 format v2：`sourcePath` 是原始相对路径，`path` 是 Windows 安全目标路径；数据集 BLAKE3 仍基于原始 `sourcePath`。
 - 取消或失败时不得出现正式输出名。
 - 如果新增自动清理，只能删除本应用可证明创建的 partial 路径，不能使用宽泛 glob 或递归删除用户目录。
 
@@ -161,6 +164,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 新检查必须说明 severity、scope、code、消息和导出影响。
 - 保持全量 JPEG 解码；仅读 header 不能满足编码损坏检查。
 - 导出后端必须最终具备 error hard gate，不能只依赖按钮 disabled。
+- 当前稳定 issue code 还包括 `INVALID_TIMESTAMP`、`INVALID_FRAME_FILENAME`、`DUPLICATE_FRAME_ID` 和 `FRAME_ID_MISMATCH`；改变其 severity 属于契约变更。
 
 ## 7. 新增或修改导出 Adapter
 
@@ -180,6 +184,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 
 - MCAP 使用原始 `capture_time_ns` 作为 log/publish time。
 - HDF5 使用 `hdf5-pure`；不要引入需要用户安装的 HDF5 DLL。
+- 当前 `hdf5-pure` writer 会暂存 JPEG；超过 512 MiB 必须保持 `HDF5_STREAMING_REQUIRED` 阻断，直到有经过 100 GB 压测的真正流式 writer。禁止仅提高阈值规避问题。
 - LeRobot 标准 `timestamp` 必须与恒定 FPS 视频一致；原始时钟写入 `observation.capture_time_ns`。
 - LeRobot 没有源 action 时保持没有 action，不能填零数组伪装真实数据。
 - FFmpeg 错误必须包含 stderr 摘要；取消时先 kill/wait 子进程。
@@ -227,7 +232,7 @@ pnpm check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-真实样例会读取私有数据，因此保持 `#[ignore]`。当前 debug 构建的三格式完整 smoke test 约需 70 秒；任何 import/validation/export 行为改动都必须显式运行。
+真实样例会读取私有数据，因此保持 `#[ignore]`。常规 Rust suite 当前为 28 项（26 通过、2 个真实样例测试 ignored）；debug 构建的三格式完整 smoke test 约需 69 秒。任何 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 
 ## 10. Windows 发布指南
 
@@ -262,6 +267,7 @@ pnpm tauri:build
 - 不进行无关的大版本升级；格式库升级必须重跑真实 export/readback。
 - FFmpeg 是受控 sidecar，不假设用户 PATH 中存在。
 - `tauri-plugin-opener` 只开放 `opener:allow-reveal-item-in-dir`；不得开放 URL 或任意程序启动权限。
+- Dialog capability 只开放目录选择和消息框；新增 capability 必须对应明确的用户操作。
 - `tauri-plugin-opener 2.5.4` 为 MIT/Apache-2.0 双许可的官方跨平台实现。`v0.3.0` 全部变更使 macOS ARM debug 二进制增加 1,239,152 bytes（约 2.2%）；Windows release 体积必须在目标构建机另行记录。
 
 ## 12. Git 与工作区纪律
