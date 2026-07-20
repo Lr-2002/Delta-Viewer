@@ -34,6 +34,7 @@ DOHC_Viewer/
     src/source.rs                episode 发现、扫描、状态/帧读取
     src/storage.rs               卷信息、容量预检和 partial 安全清理
     src/importer.rs              复制、BLAKE3、manifest、命名清理
+    src/stress.rs                exFAT/大容量正式验收与 JSON 证据
     src/validation.rs            数据健康检查和 issue code
     src/validation_cache.rs      与源目录指纹绑定的可信检查记录
     src/export/                  导出 adapter
@@ -46,6 +47,7 @@ DOHC_Viewer/
     tauri.macos.conf.json        macOS app/DMG 和 FFmpeg 资源配置
     tauri.windows.conf.json      Win10+/NSIS/离线依赖配置
     windows/installer-hooks.nsh  Win10 最低版本检查
+    examples/stress-check.rs     压力验收 CLI；正式模式默认开启
   scripts/release-check.mjs      跨平台 quick/full/bundle 发布检查
   scripts/make-dmg.sh            macOS 无头 DMG 内容打包
   scripts/stage-ffmpeg.sh        macOS FFmpeg 受控 staging
@@ -100,7 +102,7 @@ Rust 单独检查：
 ```bash
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 pnpm tauri build --debug --no-bundle
 ```
 
@@ -248,7 +250,56 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 pnpm check
 ```
 
-真实样例会读取私有数据，因此保持 `#[ignore]`。常规 Rust suite 当前为 31 项（29 通过、2 个真实样例测试 ignored）；debug 构建的三格式完整 smoke test 约需 69 秒。任何 import/validation/export 行为改动都必须显式运行对应真实样例测试。
+真实样例会读取私有数据，因此保持 `#[ignore]`。`--all-targets` 常规 Rust suite
+当前为 37 项（35 通过、2 个真实样例测试 ignored），其中包含压力 CLI 参数测试；
+debug 构建的三格式完整 smoke test 约需 69 秒。任何
+import/validation/export 行为改动都必须显式运行对应真实样例测试。
+
+### 9.1 exFAT 与大容量正式验收
+
+`stress-check` 默认是 formal 模式；只有本地开发样本可以显式传
+`--development-fixture`。正式运行必须同时满足：
+
+1. 使用 `cargo run --release`，仓库 clean，HEAD 精确位于与应用版本一致的 annotated tag。
+2. `DOHC_FFMPEG` 是绝对路径，指向普通文件；报告记录版本、大小和 BLAKE3。
+3. `--source` 是 exFAT 上的单个 episode，至少 100,000 个文件且至少 100,000,000,000 字节。
+4. `--work-root` 不得已存在，必须位于源卡之外的另一个本地卷；可用空间至少为源大小四倍加 `max(25%, 64 MiB)`。
+5. 保留完整 work root 和其中原子生成的 `stress-report.json`；不要只截取终端成功文本。
+
+macOS 命令：
+
+```bash
+export DOHC_FFMPEG=/absolute/path/to/reviewed/ffmpeg
+cargo run --release --manifest-path src-tauri/Cargo.toml --example stress-check -- \
+  --source /Volumes/DOHC_CARD/episode \
+  --work-root /Volumes/LOCAL_WORK/dohc-stress-v0.7.0
+```
+
+Windows PowerShell 命令：
+
+```powershell
+$env:DOHC_FFMPEG = "C:\reviewed\ffmpeg.exe"
+cargo run --release --manifest-path src-tauri/Cargo.toml --example stress-check -- `
+  --source "E:\episode" `
+  --work-root "D:\dohc-stress-v0.7.0"
+```
+
+runner 依次执行环境门禁、扫描、卷/规模/空间门禁、源元数据指纹、import
+取消探针、复制与目标 BLAKE3 回读、完整检查、三 adapter 生成/回读、源端逐文件
+BLAKE3 和最终元数据指纹。取消探针只在检测到受控 partial 后置位，要求 1 秒内
+返回、没有正式输出，并通过 marker 校验后清理 partial。报告 schemaVersion=1，
+包含平台/profile/Git、两个卷、阈值、FFmpeg、各阶段耗时/逻辑吞吐/峰值 RSS、
+validation、输出大小、取消延迟以及源前后 hash。formal 失败、报告缺失或
+`formal:false` 均不能关闭 GAP-003/GAP-007。
+
+开发样本命令允许 APFS 和小数据，仅用于快速验证 runner 本身：
+
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml --example stress-check -- \
+  --source "$PWD/data/raw/2026-07-13_07-34-12" \
+  --work-root /tmp/dohc-stress-development \
+  --development-fixture
+```
 
 ## 10. 发布检查与 FFmpeg 暂存
 
@@ -352,6 +403,10 @@ pnpm tauri:build
 5. 在 release commit 上运行 `node scripts/release-check.mjs --quick --require-clean`，确认版本一致且工作区干净。
 6. 在该 commit 上创建 annotated tag，例如 `git tag -a v0.2.0 -m "DOHC Viewer v0.2.0"`。
 7. 测试失败、报告 failed、版本不一致或工作区混入无关文件时不得打 tag。
+
+正式实盘验收是 tag 后的资格测试，因为 runner 会核对 exact tag。它失败时不得
+移动、覆盖或重建已有 tag；修复进入下一个版本。没有实盘条件时可以发布明确标注
+GAP-003/GAP-007 未关闭的 Alpha tag，但不得据此发布 v1.0 或宣称现场验收通过。
 
 ## 13. 完成工作时的报告格式
 

@@ -6,6 +6,7 @@ mod importer;
 mod model;
 mod source;
 mod storage;
+pub mod stress;
 mod validation;
 mod validation_cache;
 

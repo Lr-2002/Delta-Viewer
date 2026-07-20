@@ -129,6 +129,39 @@ headless environment it uses `scripts/make-dmg.sh` to create a content-equivalen
 DMG without Finder window cosmetics. It is build verification, not a signed
 release.
 
+## Large-data qualification
+
+The stress runner executes the production data path in order: source scan,
+cancel-and-clean import probe, verified local import, full validation, MCAP,
+HDF5 and LeRobot export/readback, then a fresh BLAKE3 pass over the source. A
+development fixture run is explicit and cannot qualify a release:
+
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml --example stress-check -- \
+  --source "$PWD/data/raw/2026-07-13_07-34-12" \
+  --work-root /tmp/dohc-viewer-stress-development \
+  --development-fixture
+```
+
+Formal mode is the default. Run it from a clean, exactly tagged release build
+with an explicit reviewed FFmpeg path. The source episode must be on exFAT,
+contain at least 100,000 files and 100,000,000,000 bytes, and be on a different
+volume from the new work directory. The work volume needs four source copies
+plus a 25% reserve (425 GB for a 100 GB source).
+
+```bash
+export DOHC_FFMPEG=/absolute/path/to/reviewed/ffmpeg
+cargo run --release --manifest-path src-tauri/Cargo.toml --example stress-check -- \
+  --source /Volumes/DOHC_CARD/episode \
+  --work-root /Volumes/LOCAL_WORK/dohc-stress-v0.7.0
+```
+
+On Windows, set `$env:DOHC_FFMPEG` to an absolute reviewed `ffmpeg.exe`, use the
+SD card episode as `--source`, and place `--work-root` on a different local NTFS
+or exFAT volume. The work directory must not already exist. Every started run
+writes `stress-report.json` atomically inside it; a nonzero exit or
+`"formal": false` is not release evidence.
+
 ## Controlled FFmpeg staging
 
 Do not copy FFmpeg into `src-tauri/resources` manually. Both staging scripts

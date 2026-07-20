@@ -653,6 +653,7 @@ async function main() {
       "test",
       "--manifest-path",
       cargoManifest,
+      "--all-targets",
     ]);
 
     if (options.profile === "full") {

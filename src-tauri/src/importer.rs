@@ -99,10 +99,12 @@ pub fn import_episode(
             )));
         }
         let digest = hasher.finalize().to_hex().to_string();
-        dataset_hasher.update(planned.source_path_text.as_bytes());
-        dataset_hasher.update(&[0]);
-        dataset_hasher.update(&source_after.len().to_le_bytes());
-        dataset_hasher.update(digest.as_bytes());
+        update_dataset_hasher(
+            &mut dataset_hasher,
+            &planned.source_path_text,
+            source_after.len(),
+            &digest,
+        );
         manifest_entries.push(ManifestEntry {
             path: planned.destination_path.clone(),
             source_path: planned.source_path_text.clone(),
@@ -175,6 +177,79 @@ pub fn import_episode(
         dataset_blake3,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+pub fn verify_source_against_manifest(
+    source: &Path,
+    manifest: &ImportManifest,
+    cancelled: &AtomicBool,
+) -> AppResult<String> {
+    if manifest.format_version != 2 {
+        return Err(AppError::Message(format!(
+            "UNSUPPORTED_MANIFEST_VERSION: {}",
+            manifest.format_version
+        )));
+    }
+    let source = fs::canonicalize(source)?;
+    let mut dataset_hasher = Hasher::new();
+    let mut verified_bytes = 0_u64;
+    for entry in &manifest.files {
+        check_cancelled(cancelled)?;
+        let relative = checked_manifest_source_path(&entry.source_path)?;
+        let path = source.join(relative);
+        let metadata_before = fs::symlink_metadata(&path)?;
+        if !metadata_before.file_type().is_file() {
+            return Err(AppError::Message(format!(
+                "SOURCE_MANIFEST_PATH_NOT_FILE: {}",
+                entry.source_path
+            )));
+        }
+        if metadata_before.len() != entry.size {
+            return Err(AppError::Message(format!(
+                "SOURCE_MANIFEST_SIZE_MISMATCH: {}",
+                entry.source_path
+            )));
+        }
+        let mut file = File::open(&path)?;
+        let digest = hash_reader(&mut file, cancelled)?;
+        let metadata_after = file.metadata()?;
+        if metadata_before.len() != metadata_after.len()
+            || metadata_before.modified().ok() != metadata_after.modified().ok()
+        {
+            return Err(AppError::Message(format!(
+                "SOURCE_CHANGED_DURING_VERIFY: {}",
+                entry.source_path
+            )));
+        }
+        if digest != entry.blake3 {
+            return Err(AppError::Message(format!(
+                "SOURCE_MANIFEST_BLAKE3_MISMATCH: {}",
+                entry.source_path
+            )));
+        }
+        verified_bytes = verified_bytes
+            .checked_add(metadata_after.len())
+            .ok_or_else(|| AppError::Message("源数据验证字节数溢出".into()))?;
+        update_dataset_hasher(
+            &mut dataset_hasher,
+            &entry.source_path,
+            metadata_after.len(),
+            &digest,
+        );
+    }
+    if manifest.files.len() as u64 != manifest.total_files || verified_bytes != manifest.total_bytes
+    {
+        return Err(AppError::Message(
+            "SOURCE_MANIFEST_TOTAL_MISMATCH: 文件数或总字节数不匹配".into(),
+        ));
+    }
+    let dataset_blake3 = dataset_hasher.finalize().to_hex().to_string();
+    if dataset_blake3 != manifest.dataset_blake3 {
+        return Err(AppError::Message(
+            "SOURCE_MANIFEST_DATASET_BLAKE3_MISMATCH".into(),
+        ));
+    }
+    Ok(dataset_blake3)
 }
 
 struct PlannedImportFile {
@@ -269,6 +344,34 @@ fn verify_destination_file(
         )));
     }
     let mut file = File::open(destination_path)?;
+    let destination_hash = hash_reader(&mut file, cancelled)?;
+    if destination_hash != entry.blake3 {
+        return Err(AppError::Message(format!(
+            "目标文件 BLAKE3 不匹配: {}",
+            entry.path
+        )));
+    }
+    Ok(destination_size)
+}
+
+fn checked_manifest_source_path(value: &str) -> AppResult<PathBuf> {
+    let path = Path::new(value);
+    if value.is_empty() {
+        return Err(AppError::Message(
+            "INVALID_MANIFEST_SOURCE_PATH: empty".into(),
+        ));
+    }
+    for component in path.components() {
+        if !matches!(component, Component::Normal(_)) {
+            return Err(AppError::Message(format!(
+                "INVALID_MANIFEST_SOURCE_PATH: {value}"
+            )));
+        }
+    }
+    Ok(path.to_path_buf())
+}
+
+fn hash_reader(file: &mut File, cancelled: &AtomicBool) -> AppResult<String> {
     let mut hasher = Hasher::new();
     let mut buffer = vec![0_u8; 1024 * 1024];
     loop {
@@ -279,14 +382,14 @@ fn verify_destination_file(
         }
         hasher.update(&buffer[..read]);
     }
-    let destination_hash = hasher.finalize().to_hex().to_string();
-    if destination_hash != entry.blake3 {
-        return Err(AppError::Message(format!(
-            "目标文件 BLAKE3 不匹配: {}",
-            entry.path
-        )));
-    }
-    Ok(destination_size)
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn update_dataset_hasher(hasher: &mut Hasher, path: &str, size: u64, digest: &str) {
+    hasher.update(path.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(&size.to_le_bytes());
+    hasher.update(digest.as_bytes());
 }
 
 fn check_cancelled(cancelled: &AtomicBool) -> AppResult<()> {
@@ -343,7 +446,10 @@ pub fn sanitize_name(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{import_episode, plan_import_files, sanitize_name, verify_destination_file};
+    use super::{
+        import_episode, plan_import_files, sanitize_name, verify_destination_file,
+        verify_source_against_manifest,
+    };
     use crate::model::{ImportManifest, ManifestEntry};
     use crate::storage::list_partial_imports;
     use std::fs;
@@ -433,6 +539,34 @@ mod tests {
         let error = verify_destination_file(&path, &entry, &AtomicBool::new(false)).unwrap_err();
         assert!(error.to_string().contains("BLAKE3"));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn source_manifest_rehash_detects_same_size_tampering() {
+        let source = test_output("source-rehash-source");
+        let output = test_output("source-rehash-output");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        fs::write(source.join("states.jsonl"), b"original").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let result = import_episode(&source, &output, None, &cancelled).unwrap();
+        let imported = PathBuf::from(result.destination);
+        let manifest: ImportManifest =
+            serde_json::from_reader(fs::File::open(imported.join(".dohc-manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            verify_source_against_manifest(&source, &manifest, &cancelled).unwrap(),
+            manifest.dataset_blake3
+        );
+
+        fs::write(source.join("states.jsonl"), b"tampered").unwrap();
+        let error = verify_source_against_manifest(&source, &manifest, &cancelled).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("SOURCE_MANIFEST_BLAKE3_MISMATCH"));
+
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]

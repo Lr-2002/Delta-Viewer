@@ -2,6 +2,26 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.7.0 - 2026-07-21
+
+- Added a cross-platform `stress-check` CLI that drives source scan, cancellable
+  import, verified local copy, full validation, all three adapter readbacks, and
+  a final source-side BLAKE3 pass through the production Rust implementations.
+- Made formal mode require a release build, clean exact annotated version tag, explicit
+  reviewed FFmpeg, an exFAT source on a separate volume, at least 100 GB and
+  100,000 files, and a conservative local-work capacity budget.
+- Added an import cancellation probe that waits for a marked partial, requires
+  cancellation within one second, rejects published output, and uses guarded
+  partial cleanup.
+- Added atomic schema-v1 stress reports with host, Git, volume, FFmpeg hash,
+  threshold, validation, output, phase duration/throughput, cancellation, and
+  peak-RSS evidence on macOS/Linux/Windows.
+- Re-read every source file against the format-v2 import manifest after the
+  workflow, with a regression test for same-size source tampering.
+- The 80.5 MB APFS development fixture passed in 72.551 seconds with 1 ms
+  cancellation and 27,394,048-byte peak RSS. It is deliberately recorded as
+  `formal:false`; physical exFAT/100 GB and Windows gates remain open.
+
 ## 0.6.0 - 2026-07-21
 
 - Replaced whole-stream HDF5 JPEG staging and the 512 MiB rejection ceiling
