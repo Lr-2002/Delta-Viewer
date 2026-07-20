@@ -1,19 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import type {
   EpisodeData,
   EpisodeSummary,
   ExportFormat,
   ExportResult,
+  ImportPreflight,
   ImportResult,
+  PartialImport,
   ScanResult,
   StateRecord,
   TaskProgress,
   ValidationReport,
 } from "../types";
 
-export const DEMO_ROOT = "/Users/w/Projects/dohc_viewer/data/raw/2026-07-13_07-34-12";
+export const DEMO_ROOT = "/Users/w/Projects/DOHC_Viewer/data/raw/2026-07-13_07-34-12";
 
 export function isTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in window;
@@ -25,6 +27,16 @@ export async function chooseDirectory(title: string): Promise<string | null> {
   return typeof selection === "string" ? selection : null;
 }
 
+export async function confirmAction(message: string, title: string): Promise<boolean> {
+  if (!isTauriRuntime()) return window.confirm(message);
+  return confirm(message, {
+    title,
+    kind: "warning",
+    okLabel: "确认",
+    cancelLabel: "取消",
+  });
+}
+
 export async function scanSource(path: string): Promise<ScanResult> {
   if (isTauriRuntime()) return invoke<ScanResult>("scan_source", { path });
   const episode = await buildDemoSummary(path);
@@ -33,7 +45,54 @@ export async function scanSource(path: string): Promise<ScanResult> {
     episodes: [episode],
     totalFiles: episode.totalFiles,
     totalBytes: episode.totalBytes,
+    volume: {
+      root: path,
+      filesystem: "exFAT",
+      driveType: "removable",
+      totalBytes: 256_000_000_000,
+      availableBytes: 174_000_000_000,
+    },
   };
+}
+
+export async function inspectImportDestination(
+  sourcePath: string,
+  destinationParent: string,
+): Promise<ImportPreflight> {
+  if (!isTauriRuntime()) {
+    return {
+      canImport: true,
+      sourceBytes: 80_531_730,
+      requiredBytes: 81_580_306,
+      largestFileBytes: 1_024_000,
+      volume: {
+        root: destinationParent,
+        filesystem: "NTFS",
+        driveType: "fixed",
+        totalBytes: 1_000_000_000_000,
+        availableBytes: 600_000_000_000,
+      },
+      issues: [],
+      partials: [],
+    };
+  }
+  return invoke<ImportPreflight>("inspect_import_destination", {
+    sourcePath,
+    destinationParent,
+  });
+}
+
+export async function listPartialImports(destinationParent: string): Promise<PartialImport[]> {
+  if (!isTauriRuntime()) return [];
+  return invoke<PartialImport[]>("list_partial_imports", { destinationParent });
+}
+
+export async function cleanupPartialImport(
+  destinationParent: string,
+  partialPath: string,
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("cleanup_partial_import", { destinationParent, partialPath });
 }
 
 export async function importEpisode(
@@ -85,9 +144,15 @@ export async function exportEpisode(
   sourcePath: string,
   destinationParent: string,
   format: ExportFormat,
+  acknowledgeWarnings: boolean,
 ): Promise<ExportResult> {
   if (isTauriRuntime()) {
-    return invoke<ExportResult>("export_episode", { sourcePath, destinationParent, format });
+    return invoke<ExportResult>("export_episode", {
+      sourcePath,
+      destinationParent,
+      format,
+      acknowledgeWarnings,
+    });
   }
   const names: Record<ExportFormat, string> = {
     mcap: "2026-07-13_07-34-12.mcap",

@@ -29,6 +29,37 @@ export interface ScanResult {
   episodes: EpisodeSummary[];
   totalFiles: number;
   totalBytes: number;
+  volume: VolumeInfo;
+}
+
+export interface VolumeInfo {
+  root: string;
+  filesystem: string | null;
+  driveType: "removable" | "fixed" | "remote" | "optical" | "ramdisk" | "unknown";
+  totalBytes: number;
+  availableBytes: number;
+}
+
+export interface PreflightIssue {
+  code: string;
+  message: string;
+}
+
+export interface PartialImport {
+  path: string;
+  name: string;
+  sourceName: string;
+  createdAtMs: number;
+}
+
+export interface ImportPreflight {
+  canImport: boolean;
+  sourceBytes: number;
+  requiredBytes: number;
+  largestFileBytes: number;
+  volume: VolumeInfo;
+  issues: PreflightIssue[];
+  partials: PartialImport[];
 }
 
 export interface StateRecord {

@@ -3,6 +3,7 @@ use crate::model::{
     EpisodeData, EpisodeSummary, ProgressPayload, RawStateRecord, ScanResult, StateRecord,
     StreamSummary, STREAM_NAMES,
 };
+use crate::storage;
 use image::ImageReader;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -28,6 +29,8 @@ pub fn scan_source(
         )));
     }
 
+    let volume = storage::volume_info(root)?;
+    storage::ensure_local_source(&volume)?;
     let episodes = discover_episode_roots(root)?;
     if episodes.is_empty() {
         return Err(AppError::NoEpisodes(root.display().to_string()));
@@ -75,6 +78,7 @@ pub fn scan_source(
         episodes: summaries,
         total_files,
         total_bytes,
+        volume,
     })
 }
 

@@ -37,6 +37,45 @@ pub struct ScanResult {
     pub episodes: Vec<EpisodeSummary>,
     pub total_files: u64,
     pub total_bytes: u64,
+    pub volume: VolumeInfo,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumeInfo {
+    pub root: String,
+    pub filesystem: Option<String>,
+    pub drive_type: String,
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreflightIssue {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartialImport {
+    pub path: String,
+    pub name: String,
+    pub source_name: String,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPreflight {
+    pub can_import: bool,
+    pub source_bytes: u64,
+    pub required_bytes: u64,
+    pub largest_file_bytes: u64,
+    pub volume: VolumeInfo,
+    pub issues: Vec<PreflightIssue>,
+    pub partials: Vec<PartialImport>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -12,18 +12,22 @@ Project documentation:
 
 - [Product requirements](prd.md)
 - [Development and agent guide](AGENTS.md)
+- [Version history](CHANGELOG.md)
 
 ## Workflow
 
 1. Select an SD card or a recording directory.
 2. Scan one or more episodes without modifying the source card.
 3. Copy the selected episode to local storage.
-4. Verify every destination file by size and BLAKE3, then write
+4. Preflight local capacity and filesystem support, then identify any safely
+   cleanable incomplete imports.
+5. Verify every destination file by size and BLAKE3, then write
    `.dohc-manifest.json`.
-5. Decode-check all JPEG frames, validate stream continuity, parse every state,
+6. Decode-check all JPEG frames, validate stream continuity, parse every state,
    and check state frame IDs and timestamps.
-6. Review five synchronized image streams and state telemetry.
-7. Export MCAP, HDF5, or LeRobot v2.1.
+7. Review five synchronized image streams and state telemetry.
+8. Export MCAP, HDF5, or LeRobot v2.1. Errors are blocked in Rust; warnings
+   require explicit confirmation.
 
 The runtime has no SSH or other network data path. SSH was used only once to
 retrieve the development sample from the current ext4 card.

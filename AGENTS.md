@@ -20,6 +20,7 @@
 ```text
 DOHC_Viewer/
   prd.md                         产品需求和验收基线
+  CHANGELOG.md                   按 tag 记录的版本历史
   README.md                      用户/构建入口
   AGENTS.md                      本开发指南
   src/                           React/TypeScript UI
@@ -31,6 +32,7 @@ DOHC_Viewer/
     src/lib.rs                   Tauri commands 和长任务调度
     src/model.rs                 Rust/IPC 数据模型
     src/source.rs                episode 发现、扫描、状态/帧读取
+    src/storage.rs               卷信息、容量预检和 partial 安全清理
     src/importer.rs              复制、BLAKE3、manifest、命名清理
     src/validation.rs            数据健康检查和 issue code
     src/export/                  导出 adapter
@@ -58,6 +60,7 @@ React component
 
 - React 组件不得直接调用 `invoke()`；统一经 `src/lib/backend.ts`。
 - `lib.rs` 只负责 command 参数、任务状态和 blocking worker 调度，不放格式逻辑。
+- 同一时间只允许一个长任务；所有新增长任务必须通过 `TaskControl` 获取 guard。
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
 - Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。它不能被当作后端验收。
@@ -221,7 +224,7 @@ pnpm check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-真实样例 smoke test约 70 秒且读取私有数据，因此保持 `#[ignore]`，但任何 import/validation/export 行为改动都必须显式运行。
+真实样例会读取私有数据，因此保持 `#[ignore]`。当前 debug 构建的三格式完整 smoke test 约需 5 分钟；任何 import/validation/export 行为改动都必须显式运行。
 
 ## 10. Windows 发布指南
 
@@ -264,6 +267,15 @@ pnpm tauri:build
 - 不提交 `dist/`、`node_modules/`、`src-tauri/target/`、generated schemas 或临时截图。
 - 除非任务明确要求，不自动创建 commit、tag 或 release。
 - 修改行为时同步更新相关文档；不要把“已实现”状态提前写入 PRD。
+
+当前产品开发明确要求每个应用版本都有独立 commit 和 annotated tag。创建版本时必须：
+
+1. 保持 `package.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 的 semver 一致。
+2. 更新 `CHANGELOG.md` 和 PRD 实现状态。
+3. 运行该变更类型要求的全部测试，并确认私有数据和构建产物未暂存。
+4. 创建一个包含完整版本内容的 release commit，例如 `release: v0.2.0`。
+5. 在该 commit 上创建 annotated tag，例如 `git tag -a v0.2.0 -m "DOHC Viewer v0.2.0"`。
+6. 测试失败、版本不一致或工作区混入无关文件时不得打 tag。
 
 ## 13. 完成工作时的报告格式
 

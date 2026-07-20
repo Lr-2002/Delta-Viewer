@@ -1,12 +1,13 @@
 use crate::error::{AppError, AppResult};
 use crate::model::{ImportManifest, ImportResult, ManifestEntry, ProgressPayload};
 use crate::source::{collect_files, emit_progress};
+use crate::storage;
 use blake3::Hasher;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 use tauri::AppHandle;
 
 pub fn import_episode(
@@ -21,27 +22,25 @@ pub fn import_episode(
     if !destination_parent.exists() {
         fs::create_dir_all(destination_parent)?;
     }
+    if !destination_parent.is_dir() {
+        return Err(AppError::Message(format!(
+            "导入位置不是目录: {}",
+            destination_parent.display()
+        )));
+    }
+    let preflight = storage::inspect_import(source, destination_parent)?;
+    storage::require_import_preflight(&preflight)?;
     let files = collect_files(source)?;
     if files.is_empty() {
         return Err(AppError::Message("源目录没有可导入文件".into()));
     }
-    let total_bytes: u64 = files
-        .iter()
-        .map(|path| fs::metadata(path).map(|metadata| metadata.len()))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .sum();
+    let total_bytes = preflight.source_bytes;
     let source_name = source
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("episode");
     let safe_name = sanitize_name(source_name);
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let partial = destination_parent.join(format!("{safe_name}.partial-{nonce}"));
-    fs::create_dir_all(&partial)?;
+    let partial = storage::create_import_partial(destination_parent, &safe_name, source_name)?;
     let started = Instant::now();
 
     let mut manifest_entries = Vec::with_capacity(files.len());
@@ -164,6 +163,7 @@ pub fn import_episode(
 
     let final_path = unique_destination(destination_parent, &safe_name);
     fs::rename(&partial, &final_path)?;
+    let _ = storage::finalize_import_partial(&partial);
     emit_progress(
         app,
         ProgressPayload {
@@ -241,6 +241,7 @@ pub fn sanitize_name(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{import_episode, sanitize_name};
+    use crate::storage::{cleanup_partial_import, list_partial_imports};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -252,6 +253,25 @@ mod tests {
         assert_eq!(sanitize_name("CON"), "_CON");
         assert_eq!(sanitize_name("LPT1.log"), "_LPT1.log");
         assert_eq!(sanitize_name("name. "), "name");
+    }
+
+    #[test]
+    fn cancelled_import_leaves_only_a_marked_cleanable_partial() {
+        let source = test_output("cancel-source");
+        let output = test_output("cancel-output");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        fs::write(source.join("states.jsonl"), b"{}\n").unwrap();
+
+        let error = import_episode(&source, &output, None, &AtomicBool::new(true)).unwrap_err();
+        assert!(error.to_string().contains("任务已取消"));
+        let partials = list_partial_imports(&output).unwrap();
+        assert_eq!(partials.len(), 1);
+        cleanup_partial_import(&output, PathBuf::from(&partials[0].path).as_path()).unwrap();
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]

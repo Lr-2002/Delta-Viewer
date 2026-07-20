@@ -3,8 +3,8 @@ mod lerobot;
 mod mcap;
 
 use crate::error::{AppError, AppResult};
-use crate::model::{EpisodeData, ExportFormat, ExportResult};
-use crate::source;
+use crate::model::{EpisodeData, ExportFormat, ExportResult, ValidationReport};
+use crate::{source, storage, validation};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -28,6 +28,7 @@ pub fn export_episode(
     format: ExportFormat,
     source_path: &Path,
     destination_parent: &Path,
+    acknowledge_warnings: bool,
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<ExportResult> {
@@ -41,7 +42,10 @@ pub fn export_episode(
         )));
     }
     let started = Instant::now();
+    let validation_report = validation::validate_episode(source_path, app, cancelled)?;
+    ensure_export_allowed(&validation_report, acknowledge_warnings)?;
     let data = source::load_episode(source_path, app, cancelled)?;
+    storage::require_export_destination(source_path, destination_parent, data.summary.total_bytes)?;
     let context = ExportContext {
         source: source_path,
         destination_parent,
@@ -62,6 +66,27 @@ pub fn export_episode(
         total_bytes,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+fn ensure_export_allowed(report: &ValidationReport, acknowledge_warnings: bool) -> AppResult<()> {
+    if report.status == "error" {
+        let codes = report
+            .issues
+            .iter()
+            .filter(|issue| issue.severity == crate::model::Severity::Error)
+            .map(|issue| issue.code.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(AppError::Message(format!(
+            "EXPORT_BLOCKED_VALIDATION_ERROR: 数据检查存在错误（{codes}）"
+        )));
+    }
+    if report.status == "warning" && !acknowledge_warnings {
+        return Err(AppError::Message(
+            "EXPORT_WARNING_CONFIRMATION_REQUIRED: 请确认数据警告后再导出".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn unique_file(parent: &Path, stem: &str, extension: &str) -> PathBuf {
@@ -126,8 +151,8 @@ fn output_size(path: &Path) -> AppResult<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::export_episode;
-    use crate::model::{ExportFormat, Severity};
+    use super::{ensure_export_allowed, export_episode};
+    use crate::model::{ExportFormat, Severity, ValidationIssue, ValidationReport};
     use crate::validation;
     use hdf5_pure::File as HdfFile;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -156,16 +181,78 @@ mod tests {
             .any(|issue| issue.code == "TIMESTAMP_GAP"));
         assert_eq!(report.checked_files, 981);
 
-        let mcap = export_episode(ExportFormat::Mcap, &sample, &output, None, &cancelled).unwrap();
+        let mcap =
+            export_episode(ExportFormat::Mcap, &sample, &output, true, None, &cancelled).unwrap();
         verify_mcap(Path::new(&mcap.output_path));
 
-        let hdf5 = export_episode(ExportFormat::Hdf5, &sample, &output, None, &cancelled).unwrap();
+        let hdf5 =
+            export_episode(ExportFormat::Hdf5, &sample, &output, true, None, &cancelled).unwrap();
         verify_hdf5(Path::new(&hdf5.output_path));
 
-        let lerobot =
-            export_episode(ExportFormat::LerobotV2, &sample, &output, None, &cancelled).unwrap();
+        let lerobot = export_episode(
+            ExportFormat::LerobotV2,
+            &sample,
+            &output,
+            true,
+            None,
+            &cancelled,
+        )
+        .unwrap();
         verify_lerobot(Path::new(&lerobot.output_path));
 
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn requires_warning_acknowledgement() {
+        let report = ValidationReport {
+            status: "warning".into(),
+            checked_files: 1,
+            elapsed_ms: 0,
+            issues: vec![ValidationIssue {
+                severity: Severity::Warning,
+                code: "TIMESTAMP_GAP".into(),
+                scope: "states".into(),
+                message: "gap".into(),
+            }],
+            streams: Vec::new(),
+        };
+        assert!(ensure_export_allowed(&report, false).is_err());
+        assert!(ensure_export_allowed(&report, true).is_ok());
+    }
+
+    #[test]
+    fn backend_blocks_export_for_invalid_episode() {
+        let source = test_output("invalid-source");
+        let output = test_output("blocked-export");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            source.join("states.jsonl"),
+            concat!(
+                "{\"frame_id\":0,\"capture_time_ns\":1,",
+                "\"position\":[0,0,0],\"velocity\":[0,0,0],",
+                "\"quaternion\":[0,0,0,1],\"euler\":[0,0,0],",
+                "\"omega\":[0,0,0],\"confidence\":1}\n"
+            ),
+        )
+        .unwrap();
+
+        let error = export_episode(
+            ExportFormat::Mcap,
+            &source,
+            &output,
+            true,
+            None,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("EXPORT_BLOCKED_VALIDATION_ERROR"));
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+
+        fs::remove_dir_all(source).unwrap();
         fs::remove_dir_all(output).unwrap();
     }
 

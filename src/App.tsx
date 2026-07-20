@@ -28,9 +28,13 @@ import {
   DEMO_ROOT,
   cancelTask,
   chooseDirectory,
+  cleanupPartialImport,
+  confirmAction,
   exportEpisode,
   importEpisode,
+  inspectImportDestination,
   isTauriRuntime,
+  listPartialImports,
   loadEpisode,
   onTaskProgress,
   scanSource,
@@ -43,12 +47,14 @@ import type {
   ExportFormat,
   ExportResult,
   MetricKey,
+  PartialImport,
   ScanResult,
   TaskProgress,
   ValidationReport,
 } from "./types";
 
 type View = "review" | "checks" | "export";
+const LAST_IMPORT_DESTINATION = "dohc-viewer:last-import-destination";
 
 const METRICS: { key: MetricKey; label: string }[] = [
   { key: "position", label: "位置" },
@@ -76,6 +82,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const frameRef = useRef(0);
   const didAutoLoad = useRef(false);
+  const didCheckPartials = useRef(false);
 
   useEffect(() => {
     frameRef.current = currentFrame;
@@ -93,6 +100,21 @@ function App() {
     if (didAutoLoad.current || isTauriRuntime()) return;
     didAutoLoad.current = true;
     void openSource(DEMO_ROOT, true);
+  }, []);
+
+  useEffect(() => {
+    if (didCheckPartials.current || !isTauriRuntime()) return;
+    didCheckPartials.current = true;
+    const destination = window.localStorage.getItem(LAST_IMPORT_DESTINATION);
+    if (!destination) return;
+    void (async () => {
+      try {
+        const partials = await listPartialImports(destination);
+        if (partials.length) await maybeCleanupPartials(destination, partials);
+      } catch (reason) {
+        setError(`检查未完成导入失败：${toMessage(reason)}`);
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -144,6 +166,18 @@ function App() {
       if (isTauriRuntime()) {
         const destinationParent = await chooseDirectory("选择本地导入目录");
         if (!destinationParent) return;
+        window.localStorage.setItem(LAST_IMPORT_DESTINATION, destinationParent);
+        const preflight = await inspectImportDestination(selectedEpisode.root, destinationParent);
+        if (!preflight.canImport) {
+          setError(preflight.issues.map((issue) => `${issue.code}: ${issue.message}`).join("；"));
+          return;
+        }
+        if (preflight.partials.length) {
+          await maybeCleanupPartials(destinationParent, preflight.partials);
+        }
+        setNotice(
+          `导入预检通过：${preflight.volume.filesystem ?? "未知文件系统"}，可用 ${formatBytes(preflight.volume.availableBytes)}`,
+        );
         const imported = await importEpisode(selectedEpisode.root, destinationParent);
         root = imported.destination;
         setNotice(`已导入本地，BLAKE3 ${imported.datasetBlake3.slice(0, 16)}…`);
@@ -189,6 +223,14 @@ function App() {
 
   async function runExport() {
     if (!data || report?.status === "error") return;
+    let acknowledgeWarnings = false;
+    if (report?.status === "warning") {
+      acknowledgeWarnings = await confirmAction(
+        `该记录包含 ${report.issues.filter((issue) => issue.severity === "warning").length} 条数据警告。导出不会修复这些问题，是否继续？`,
+        "确认带警告导出",
+      );
+      if (!acknowledgeWarnings) return;
+    }
     const destinationParent = await chooseDirectory(`选择 ${exportFormatLabel(exportFormat)} 导出目录`);
     if (!destinationParent) return;
     setError("");
@@ -196,7 +238,12 @@ function App() {
     setBusy(true);
     setExportResult(null);
     try {
-      const result = await exportEpisode(data.summary.root, destinationParent, exportFormat);
+      const result = await exportEpisode(
+        data.summary.root,
+        destinationParent,
+        exportFormat,
+        acknowledgeWarnings,
+      );
       setExportResult(result);
       setNotice(`已导出 ${exportFormatLabel(exportFormat)}：${shortPath(result.outputPath, 72)}`);
     } catch (reason) {
@@ -205,6 +252,21 @@ function App() {
       setBusy(false);
       setProgress(null);
     }
+  }
+
+  async function maybeCleanupPartials(
+    destinationParent: string,
+    partials: PartialImport[],
+  ): Promise<void> {
+    const confirmed = await confirmAction(
+      `在该目录发现 ${partials.length} 个由 DOHC Viewer 标记的未完成导入。是否安全清理？`,
+      "清理未完成导入",
+    );
+    if (!confirmed) return;
+    for (const partial of partials) {
+      await cleanupPartialImport(destinationParent, partial.path);
+    }
+    setNotice(`已清理 ${partials.length} 个未完成导入`);
   }
 
   const currentState = useMemo(
@@ -307,6 +369,8 @@ function App() {
           <div className="sidebar-footer">
             <div><span>文件</span><strong>{selectedEpisode?.totalFiles ?? "—"}</strong></div>
             <div><span>容量</span><strong>{selectedEpisode ? formatBytes(selectedEpisode.totalBytes) : "—"}</strong></div>
+            <div><span>介质</span><strong>{scan ? driveTypeLabel(scan.volume.driveType) : "—"}</strong></div>
+            <div><span>文件系统</span><strong>{scan?.volume.filesystem ?? "未知"}</strong></div>
           </div>
         </aside>
 
@@ -504,6 +568,18 @@ function toMessage(reason: unknown): string {
 
 function exportFormatLabel(format: ExportFormat): string {
   return format === "mcap" ? "MCAP" : format === "hdf5" ? "HDF5" : "LeRobot v2.1";
+}
+
+function driveTypeLabel(driveType: ScanResult["volume"]["driveType"]): string {
+  const labels = {
+    removable: "可移动",
+    fixed: "本地磁盘",
+    remote: "网络磁盘",
+    optical: "光盘",
+    ramdisk: "内存盘",
+    unknown: "未知",
+  };
+  return labels[driveType];
 }
 
 export default App;
