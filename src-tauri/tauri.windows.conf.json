@@ -3,7 +3,9 @@
   "bundle": {
     "targets": ["nsis"],
     "resources": {
-      "resources/bin/ffmpeg.exe": "bin/ffmpeg.exe"
+      "resources/bin/ffmpeg.exe": "bin/ffmpeg.exe",
+      "resources/licenses/FFmpeg.txt": "licenses/FFmpeg.txt",
+      "resources/ffmpeg-manifest.json": "ffmpeg-manifest.json"
     },
     "windows": {
       "allowDowngrades": false,

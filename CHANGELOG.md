@@ -2,6 +2,24 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.5.0 - 2026-07-21
+
+- Added cross-platform quick, full, and debug-bundle verification profiles with
+  atomic machine-readable JSON evidence reports.
+- Made the default check include frontend build, Rust formatting, Clippy with
+  warnings denied, and the regular Rust test suite; the full profile also runs
+  both private-sample tests and a Tauri application build.
+- Hardened Windows FFmpeg staging with expected SHA-256, PE x64, `mpeg4`
+  encoder, nonfree-build, source, build-ID, portability-review, and license
+  gates.
+- Added equivalent macOS FFmpeg staging with architecture and dynamic-library
+  portability inspection, plus explicit local-only non-portable debug mode.
+- Added platform resource manifests so app/DMG and NSIS packages carry the
+  exact staged FFmpeg binary, combined notices, and provenance metadata; normal
+  bundle checks reject hash drift and non-portable dependencies.
+- Added repeatable headless macOS DMG generation and read-only mount validation
+  for CI environments where Finder AppleScript is unavailable.
+
 ## 0.4.0 - 2026-07-20
 
 - Made source traversal cancellable and read-only, ignored file/directory

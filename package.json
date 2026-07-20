@@ -1,12 +1,14 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
-    "check": "pnpm build && cargo test --manifest-path src-tauri/Cargo.toml",
+    "check": "node scripts/release-check.mjs --quick",
+    "check:full": "node scripts/release-check.mjs --full",
+    "check:bundle": "node scripts/release-check.mjs --full --bundle",
     "preview": "vite preview --host 0.0.0.0",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

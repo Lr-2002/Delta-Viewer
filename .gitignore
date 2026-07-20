@@ -9,4 +9,11 @@ data/raw/
 data/imports/
 
 # Staged per-release dependency. Keep the binary and its license bundle out of source control.
+src-tauri/resources/bin/ffmpeg
 src-tauri/resources/bin/ffmpeg.exe
+src-tauri/resources/licenses/
+src-tauri/resources/ffmpeg-manifest.json
+src-tauri/resources/.ffmpeg-stage.*
+
+# Machine-readable local verification evidence and unsigned debug packages.
+artifacts/release-check/

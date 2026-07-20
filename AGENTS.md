@@ -43,9 +43,13 @@ DOHC_Viewer/
       lerobot.rs                 LeRobot v2.1 和 FFmpeg
     capabilities/default.json    Tauri 权限
     tauri.conf.json              通用桌面配置
+    tauri.macos.conf.json        macOS app/DMG 和 FFmpeg 资源配置
     tauri.windows.conf.json      Win10+/NSIS/离线依赖配置
     windows/installer-hooks.nsh  Win10 最低版本检查
-  scripts/stage-ffmpeg.ps1       Windows FFmpeg staging
+  scripts/release-check.mjs      跨平台 quick/full/bundle 发布检查
+  scripts/make-dmg.sh            macOS 无头 DMG 内容打包
+  scripts/stage-ffmpeg.sh        macOS FFmpeg 受控 staging
+  scripts/stage-ffmpeg.ps1       Windows FFmpeg 受控 staging
   data/README.md                 私有样例清单，不含原始数据
 ```
 
@@ -78,7 +82,17 @@ pnpm dev
 pnpm tauri:dev
 pnpm build
 pnpm check
+pnpm check:full
+pnpm check:bundle
 ```
+
+`pnpm check` 是快速门禁，包含前端 production build、Rust format、Clippy
+`-D warnings` 和常规 Rust tests。`check:full` 额外运行两个私有样例测试和
+Tauri debug no-bundle build；`check:bundle` 再生成当前平台 unsigned debug
+bundle；macOS 无头环境使用 `scripts/make-dmg.sh` 生成内容等价的 DMG，避免
+依赖 Finder AppleScript。三者均通过 `scripts/release-check.mjs` 写入 ignored 的
+`artifacts/release-check/*.json`，报告 schemaVersion 当前为 1。debug bundle
+成功不能替代签名发布和目标机器验收。
 
 Rust 单独检查：
 
@@ -229,34 +243,80 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 
 ```bash
 pnpm check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
 真实样例会读取私有数据，因此保持 `#[ignore]`。常规 Rust suite 当前为 28 项（26 通过、2 个真实样例测试 ignored）；debug 构建的三格式完整 smoke test 约需 69 秒。任何 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 
-## 10. Windows 发布指南
+## 10. 发布检查与 FFmpeg 暂存
+
+### 10.1 共同约束
+
+不要手工复制 FFmpeg 到 `src-tauri/resources`。平台脚本必须先验证：
+
+1. 调用者提供的 SHA-256 与源二进制一致，复制后 hash 回读仍一致。
+2. 二进制架构与目标平台一致，并可运行 `-version` 和 `-encoders`。
+3. 存在 native `mpeg4` encoder，configuration 不含 `--enable-nonfree`。
+4. 来源为 HTTPS，build ID 非空，并提供至少一个非空许可证文件。
+5. macOS 二进制只依赖系统库；Windows x64 由 `-ReviewedPortable` 显式确认已审查为便携构建。
+
+成功 staging 会生成三个 ignored 资源：平台 FFmpeg 二进制、
+`licenses/FFmpeg.txt` 和 `ffmpeg-manifest.json`。manifest schemaVersion 当前为
+1，记录平台、相对资源路径、来源、build ID、SHA-256、版本、configuration、
+encoder、架构、许可证文件名、portable 和 UTC 暂存时间。bundle 检查必须回读
+manifest 和二进制 hash；`portable:false` 默认阻止打包。
+
+### 10.2 macOS 验证
+
+```bash
+scripts/stage-ffmpeg.sh \
+  --source /path/to/ffmpeg \
+  --expected-sha256 "$FFMPEG_SHA256" \
+  --license /path/to/LICENSE \
+  --source-url https://publisher.example/ffmpeg \
+  --build-id reviewed-build-id
+pnpm check:bundle
+```
+
+Homebrew FFmpeg 通常引用 `/opt/homebrew` 下的动态库，不能作为可分发 sidecar。
+本机 debug 可在 staging 时显式传 `--allow-nonportable`，并用以下命令验证：
+
+```bash
+node scripts/release-check.mjs --full --bundle --allow-nonportable-bundle
+```
+
+该例外只允许验证本机 `.app`/`.dmg` 结构和运行路径，产物不得发布，也不能关闭
+FFmpeg 分发审核缺口。
+
+### 10.3 Windows 发布
 
 Windows 正式构建只能在 Windows x64 构建机完成。macOS 构建成功不能替代 Windows 验收。
 
 ```powershell
 pnpm install --frozen-lockfile
-.\scripts\stage-ffmpeg.ps1 -Source C:\path\to\ffmpeg.exe
-pnpm check
-cargo clippy --manifest-path src-tauri\Cargo.toml --all-targets -- -D warnings
+$env:DOHC_SAMPLE_ROOT = "C:\path\to\2026-07-13_07-34-12"
+.\scripts\stage-ffmpeg.ps1 `
+  -Source C:\path\to\ffmpeg.exe `
+  -ExpectedSha256 $FfmpegSha256 `
+  -LicenseFile C:\path\to\COPYING.txt `
+  -SourceUrl https://publisher.example/ffmpeg `
+  -BuildId reviewed-build-id `
+  -ReviewedPortable
+pnpm check:full
+pnpm check:bundle
 pnpm tauri:build
 ```
 
 发布检查：
 
-1. `src-tauri/resources/bin/ffmpeg.exe` 存在且 `-version` 可执行。
-2. 记录 FFmpeg 下载来源、版本、SHA-256、构建选项和许可证。
+1. `check:bundle` 报告中的 staged FFmpeg、全部命令和 NSIS debug artifact 均为 passed。
+2. 归档 FFmpeg 下载来源、版本、SHA-256、构建选项、许可证和 manifest。
 3. NSIS 包含离线 WebView2，不依赖安装时网络。
 4. Installer hook 在 Win10 以下中止安装。
 5. 应用和安装器完成代码签名和时间戳。
 6. 在断网的干净 Win10/Win11 x64 VM 中运行完整 smoke test。
 7. 确认安装包不包含 `data/raw`、`data/imports`、测试输出或开发路径。
 
-不要把 staging 的 `ffmpeg.exe` 或签名材料加入 Git。
+不要把 staging 的 FFmpeg、许可证 bundle、manifest、JSON 检查报告或签名材料加入 Git。
 
 ## 11. 依赖管理
 
@@ -283,10 +343,11 @@ pnpm tauri:build
 
 1. 保持 `package.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 的 semver 一致。
 2. 更新 `CHANGELOG.md` 和 PRD 实现状态。
-3. 运行该变更类型要求的全部测试，并确认私有数据和构建产物未暂存。
+3. 至少运行 `pnpm check:full`；平台包变更还要运行相应 bundle 检查，并确认私有数据、staged FFmpeg、报告和构建产物未暂存。
 4. 创建一个包含完整版本内容的 release commit，例如 `release: v0.2.0`。
-5. 在该 commit 上创建 annotated tag，例如 `git tag -a v0.2.0 -m "DOHC Viewer v0.2.0"`。
-6. 测试失败、版本不一致或工作区混入无关文件时不得打 tag。
+5. 在 release commit 上运行 `node scripts/release-check.mjs --quick --require-clean`，确认版本一致且工作区干净。
+6. 在该 commit 上创建 annotated tag，例如 `git tag -a v0.2.0 -m "DOHC Viewer v0.2.0"`。
+7. 测试失败、报告 failed、版本不一致或工作区混入无关文件时不得打 tag。
 
 ## 13. 完成工作时的报告格式
 

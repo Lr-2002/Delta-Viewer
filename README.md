@@ -4,9 +4,10 @@ DOHC Viewer is a Tauri 2 desktop application for importing DOHC recordings from
 an SD card, verifying the local copy, reviewing synchronized sensor data, and
 exporting it through independent format adapters.
 
-The first supported release target is Windows 10 or later. The frontend is
-React/TypeScript and the data path is implemented in Rust so directory scans,
-hashing, image checks, and exports do not block the UI.
+Development and packaging prioritize macOS and Windows; the first formal
+release target remains Windows 10 or later. The frontend is React/TypeScript
+and the data path is implemented in Rust so directory scans, hashing, image
+checks, and exports do not block the UI.
 
 Project documentation:
 
@@ -103,33 +104,74 @@ Frontend-only development uses the local sample automatically:
 pnpm dev
 ```
 
-Run the normal checks with:
+Run the fast local gate with:
 
 ```bash
 pnpm check
 ```
 
-The private sample is excluded from Git. Its full smoke tests are explicit:
+This runs the frontend production build, Rust format check, Clippy with warnings
+denied, and the regular Rust suite. Every run writes an ignored JSON evidence
+report under `artifacts/release-check/`.
+
+The private sample is excluded from Git. Run both real-data tests plus a Tauri
+debug application build with:
 
 ```bash
-export DOHC_SAMPLE_ROOT="$PWD/data/raw/2026-07-13_07-34-12"
-cargo test --manifest-path src-tauri/Cargo.toml \
-  imports_real_sample_and_verifies_hashes -- --ignored
-cargo test --manifest-path src-tauri/Cargo.toml \
-  validates_and_exports_real_sample -- --ignored
+DOHC_SAMPLE_ROOT="$PWD/data/raw/2026-07-13_07-34-12" pnpm check:full
 ```
+
+`pnpm check:bundle` adds an unsigned debug platform package. On macOS in a
+headless environment it uses `scripts/make-dmg.sh` to create a content-equivalent
+DMG without Finder window cosmetics. It is build verification, not a signed
+release.
+
+## Controlled FFmpeg staging
+
+Do not copy FFmpeg into `src-tauri/resources` manually. Both staging scripts
+require an expected SHA-256, HTTPS source, build ID, one or more license files,
+the native `mpeg4` encoder, and a build without `--enable-nonfree`. They publish
+the ignored binary, combined notices, and `ffmpeg-manifest.json` only after all
+checks pass.
+
+On macOS, use a reviewed binary that links only system libraries:
+
+```bash
+scripts/stage-ffmpeg.sh \
+  --source /path/to/ffmpeg \
+  --expected-sha256 "$FFMPEG_SHA256" \
+  --license /path/to/LICENSE \
+  --source-url https://publisher.example/ffmpeg \
+  --build-id reviewed-build-id
+pnpm check:bundle
+```
+
+Homebrew FFmpeg is dynamically linked to Homebrew libraries and is therefore
+not portable. `--allow-nonportable` together with release-check's
+`--allow-nonportable-bundle` may be used for a local debug package only; the
+normal bundle gate rejects that manifest.
 
 ## Windows package
 
 Build on Windows x64. Stage a reviewed FFmpeg build and its matching notices,
-then build the offline NSIS installer:
+run the full gate, and then build the offline NSIS installer:
 
 ```powershell
 pnpm install --frozen-lockfile
-.\scripts\stage-ffmpeg.ps1 -Source C:\path\to\ffmpeg.exe
+$env:DOHC_SAMPLE_ROOT = "C:\path\to\2026-07-13_07-34-12"
+.\scripts\stage-ffmpeg.ps1 `
+  -Source C:\path\to\ffmpeg.exe `
+  -ExpectedSha256 $FfmpegSha256 `
+  -LicenseFile C:\path\to\COPYING.txt `
+  -SourceUrl https://publisher.example/ffmpeg `
+  -BuildId reviewed-build-id `
+  -ReviewedPortable
+pnpm check:full
 pnpm tauri:build
 ```
 
-The Windows-specific Tauri config bundles `ffmpeg.exe`, embeds the offline
-WebView2 installer, blocks downgrades, and refuses installation below Windows
-10. Code signing credentials are intentionally not stored in this repository.
+The Windows-specific Tauri config bundles the verified FFmpeg resources,
+embeds the offline WebView2 installer, blocks downgrades, and refuses
+installation below Windows 10. The final NSIS application and installer must be
+signed and tested offline on clean Win10/Win11 x64 systems. Code signing
+credentials are intentionally not stored in this repository.
