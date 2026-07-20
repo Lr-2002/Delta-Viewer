@@ -1,0 +1,21 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "targets": ["nsis"],
+    "resources": {
+      "resources/bin/ffmpeg.exe": "bin/ffmpeg.exe"
+    },
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "installerHooks": "windows/installer-hooks.nsh"
+      }
+    }
+  }
+}
