@@ -49,6 +49,8 @@ DOHC_Viewer/
     windows/installer-hooks.nsh  Win10 最低版本检查
     examples/stress-check.rs     压力验收 CLI；正式模式默认开启
   scripts/release-check.mjs      跨平台 quick/full/bundle 发布检查
+  scripts/windows-cross-check.mjs macOS/Linux 到 Windows x64 MSVC 条件编译检查
+  scripts/exfat-smoke-macos.mjs  macOS 只读虚拟 ExFAT 全链路 smoke
   scripts/make-dmg.sh            macOS 无头 DMG 内容打包
   scripts/stage-ffmpeg.sh        macOS FFmpeg 受控 staging
   scripts/stage-ffmpeg.ps1       Windows FFmpeg 受控 staging
@@ -85,6 +87,8 @@ pnpm dev
 pnpm tauri:dev
 pnpm build
 pnpm check
+pnpm check:windows-cross
+pnpm check:exfat-macos
 pnpm check:full
 pnpm check:bundle
 ```
@@ -96,6 +100,15 @@ bundle；macOS 无头环境使用 `scripts/make-dmg.sh` 生成内容等价的 DM
 依赖 Finder AppleScript。三者均通过 `scripts/release-check.mjs` 写入 ignored 的
 `artifacts/release-check/*.json`，报告 schemaVersion 当前为 1。debug bundle
 成功不能替代签名发布和目标机器验收。
+
+`check:windows-cross` 是非 Windows 宿主上的附加预检，需要 rustup 的
+`x86_64-pc-windows-msvc` target 和 `llvm-rc`。它通过 opt-in
+`windows-cross-check` feature 避免调用宿主不存在的 `ml64.exe`，并仅在本次
+Cargo check 中移除 Tauri bundle resources；不得把它写成链接、安装包或 Windows
+运行时通过。`check:exfat-macos` 会创建真正的 ExFAT 稀疏镜像，写入私有样例后
+只读重挂载并执行完整 development stress；它只能清理带本次 marker 的临时根，
+报告必须保持 `physicalSdCard:false`、`formalStress:false`。两条命令分别写入
+`artifacts/windows-cross-check/` 和 `artifacts/exfat-smoke/`。
 
 Rust 单独检查：
 
@@ -242,6 +255,8 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 | Validation | fixture 测试 + 真实全量 JPEG smoke test |
 | Export adapter | Clippy + 三格式真实 export/readback smoke test |
 | Tauri config | `pnpm tauri build --debug --no-bundle`；平台配置在目标平台验证 |
+| Windows 条件源码 | `pnpm check:windows-cross`；仍需 Windows 本机构建和运行 |
+| macOS ExFAT 路径 | `pnpm check:exfat-macos`；仍需真实 SD 卡和大容量 formal run |
 | Windows release | Win10/Win11 x64 断网安装、导入、检查、回放、三导出、卸载 |
 
 提交前默认运行：
@@ -272,7 +287,7 @@ macOS 命令：
 export DOHC_FFMPEG=/absolute/path/to/reviewed/ffmpeg
 cargo run --release --manifest-path src-tauri/Cargo.toml --example stress-check -- \
   --source /Volumes/DOHC_CARD/episode \
-  --work-root /Volumes/LOCAL_WORK/dohc-stress-v0.7.0
+  --work-root /Volumes/LOCAL_WORK/dohc-stress-v0.8.0
 ```
 
 Windows PowerShell 命令：
@@ -281,7 +296,7 @@ Windows PowerShell 命令：
 $env:DOHC_FFMPEG = "C:\reviewed\ffmpeg.exe"
 cargo run --release --manifest-path src-tauri/Cargo.toml --example stress-check -- `
   --source "E:\episode" `
-  --work-root "D:\dohc-stress-v0.7.0"
+  --work-root "D:\dohc-stress-v0.8.0"
 ```
 
 runner 依次执行环境门禁、扫描、卷/规模/空间门禁、源元数据指纹、import
@@ -299,6 +314,9 @@ cargo run --manifest-path src-tauri/Cargo.toml --example stress-check -- \
   --source "$PWD/data/raw/2026-07-13_07-34-12" \
   --work-root /tmp/dohc-stress-development \
   --development-fixture
+
+DOHC_SAMPLE_ROOT="$PWD/data/raw/2026-07-13_07-34-12" \
+  pnpm check:exfat-macos
 ```
 
 ## 10. 发布检查与 FFmpeg 暂存

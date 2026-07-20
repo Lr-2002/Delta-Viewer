@@ -463,7 +463,9 @@ pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_files, episode_fingerprint, read_states, scan_episode};
+    #[cfg(unix)]
+    use super::{collect_files, scan_episode};
+    use super::{episode_fingerprint, read_states};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;

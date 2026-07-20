@@ -2,6 +2,22 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.8.0 - 2026-07-21
+
+- Added a repeatable macOS-hosted Windows x64 MSVC all-target compile check with
+  rustup toolchain consistency, LLVM resource compilation, and atomic JSON
+  evidence that explicitly excludes linking, packaging, and Windows runtime.
+- Added an opt-in BLAKE3 intrinsic feature for that cross-host check so the
+  normal Windows release build retains BLAKE3's default optimized backend.
+- Added a macOS ExFAT smoke command that creates a sparse image, stages the
+  private fixture, remounts the source read-only, runs the full production
+  stress workflow, and only removes marker-verified temporary data after detach.
+- The read-only virtual ExFAT fixture passed all 981 files and 80,531,730 bytes
+  in 75.662 seconds of stress execution with 5 ms cancellation and 27,213,824
+  bytes peak RSS; all three adapters read back and source hashes remained stable.
+- Kept signed Windows packaging, clean Win10/Win11 offline runtime, a physical
+  ExFAT SD card, and the 100 GB/100,000-file run as explicit release gates.
+
 ## 0.7.0 - 2026-07-21
 
 - Added a cross-platform `stress-check` CLI that drives source scan, cancellable

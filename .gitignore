@@ -17,4 +17,6 @@ src-tauri/resources/.ffmpeg-stage.*
 
 # Machine-readable local verification evidence and unsigned debug packages.
 artifacts/release-check/
+artifacts/exfat-smoke/
 artifacts/stress-check/
+artifacts/windows-cross-check/

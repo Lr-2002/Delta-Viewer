@@ -536,9 +536,11 @@ fn platform_volume_details(path: &Path) -> (String, Option<String>, String) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::volume_info;
     use super::{
         cleanup_partial_import, create_import_partial, inspect_import, is_unsupported_fat,
-        list_partial_imports, publish_import_partial, publish_noreplace, volume_info,
+        list_partial_imports, publish_import_partial, publish_noreplace,
     };
     use std::fs;
     use std::path::PathBuf;

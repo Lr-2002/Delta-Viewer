@@ -129,6 +129,34 @@ headless environment it uses `scripts/make-dmg.sh` to create a content-equivalen
 DMG without Finder window cosmetics. It is build verification, not a signed
 release.
 
+Two optional platform preflight commands provide narrower evidence. From macOS,
+install the MSVC Rust target once and run the all-target conditional compile:
+
+```bash
+rustup target add x86_64-pc-windows-msvc --toolchain stable
+pnpm check:windows-cross
+```
+
+The command requires `llvm-rc` on `PATH`, `DOHC_LLVM_RC`, or the Homebrew LLVM
+prefix. It uses a single rustup-resolved toolchain and writes an ignored report
+under `artifacts/windows-cross-check/`. It does not link an executable, include
+bundle resources, build an installer, or run on Windows.
+
+On macOS, exercise the production data path from an actual read-only ExFAT
+filesystem with the private fixture:
+
+```bash
+DOHC_SAMPLE_ROOT="$PWD/data/raw/2026-07-13_07-34-12" \
+DOHC_FFMPEG=/absolute/path/to/ffmpeg \
+pnpm check:exfat-macos
+```
+
+This creates a temporary sparse image, copies the fixture while writable,
+remounts it read-only, runs the development stress profile, verifies all three
+adapter readbacks and source hashes, then detaches and cleans marker-owned
+temporary data. Its ignored `artifacts/exfat-smoke/` report identifies the
+source as a virtual volume and cannot qualify a physical SD-card release gate.
+
 ## Large-data qualification
 
 The stress runner executes the production data path in order: source scan,
@@ -153,7 +181,7 @@ plus a 25% reserve (425 GB for a 100 GB source).
 export DOHC_FFMPEG=/absolute/path/to/reviewed/ffmpeg
 cargo run --release --manifest-path src-tauri/Cargo.toml --example stress-check -- \
   --source /Volumes/DOHC_CARD/episode \
-  --work-root /Volumes/LOCAL_WORK/dohc-stress-v0.7.0
+  --work-root /Volumes/LOCAL_WORK/dohc-stress-v0.8.0
 ```
 
 On Windows, set `$env:DOHC_FFMPEG` to an absolute reviewed `ffmpeg.exe`, use the
