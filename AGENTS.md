@@ -35,6 +35,7 @@ DOHC_Viewer/
     src/storage.rs               卷信息、容量预检和 partial 安全清理
     src/importer.rs              复制、BLAKE3、manifest、命名清理
     src/validation.rs            数据健康检查和 issue code
+    src/validation_cache.rs      与源目录指纹绑定的可信检查记录
     src/export/                  导出 adapter
       mod.rs                     adapter dispatch 和公共输出规则
       mcap.rs                    MCAP
@@ -61,6 +62,7 @@ React component
 - React 组件不得直接调用 `invoke()`；统一经 `src/lib/backend.ts`。
 - `lib.rs` 只负责 command 参数、任务状态和 blocking worker 调度，不放格式逻辑。
 - 同一时间只允许一个长任务；所有新增长任务必须通过 `TaskControl` 获取 guard。
+- 导出 IPC 只能使用 `ValidationCache` 中与当前源目录指纹匹配的 Rust 报告；不得接受前端回传的报告或 status 作为授权。
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
 - Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。它不能被当作后端验收。
@@ -149,6 +151,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 原始 `capture_time_ns` 可用 `i64` 解析，`StateRecord` 对前端必须是 `String`。
 - 数组宽度是契约的一部分，不要把固定数组改成无约束 `Vec`。
 - 新 issue code 必须稳定、全大写下划线，并同步更新 `prd.md`、前端显示和 fixture 测试。
+- 可定位的 issue 必须设置 `frameId`；新增 JSON 报告字段或破坏语义时提高 `formatVersion`。
 - 破坏 manifest/HDF5 schema 时提高对应格式版本，不能只提高应用版本。
 
 ### 6.4 Validation
@@ -224,7 +227,7 @@ pnpm check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-真实样例会读取私有数据，因此保持 `#[ignore]`。当前 debug 构建的三格式完整 smoke test 约需 5 分钟；任何 import/validation/export 行为改动都必须显式运行。
+真实样例会读取私有数据，因此保持 `#[ignore]`。当前 debug 构建的三格式完整 smoke test 约需 70 秒；任何 import/validation/export 行为改动都必须显式运行。
 
 ## 10. Windows 发布指南
 
@@ -258,6 +261,8 @@ pnpm tauri:build
 - `pnpm-lock.yaml` 和 `Cargo.lock` 是可重复构建的一部分，依赖变更必须同步提交 lockfile。
 - 不进行无关的大版本升级；格式库升级必须重跑真实 export/readback。
 - FFmpeg 是受控 sidecar，不假设用户 PATH 中存在。
+- `tauri-plugin-opener` 只开放 `opener:allow-reveal-item-in-dir`；不得开放 URL 或任意程序启动权限。
+- `tauri-plugin-opener 2.5.4` 为 MIT/Apache-2.0 双许可的官方跨平台实现。`v0.3.0` 全部变更使 macOS ARM debug 二进制增加 1,239,152 bytes（约 2.2%）；Windows release 体积必须在目标构建机另行记录。
 
 ## 12. Git 与工作区纪律
 

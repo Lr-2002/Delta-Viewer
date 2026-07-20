@@ -135,6 +135,22 @@ pub fn require_export_destination(
     destination_parent: &Path,
     source_bytes: u64,
 ) -> AppResult<()> {
+    let volume = require_local_destination(source, destination_parent)?;
+    let reserve = (source_bytes / 20).max(EXPORT_MIN_RESERVE);
+    let required_bytes = source_bytes.saturating_add(reserve);
+    if volume.available_bytes < required_bytes {
+        return Err(AppError::Message(format!(
+            "INSUFFICIENT_SPACE: 目标可用空间 {} 字节，小于导出预估所需 {} 字节",
+            volume.available_bytes, required_bytes
+        )));
+    }
+    Ok(())
+}
+
+pub fn require_local_destination(
+    source: &Path,
+    destination_parent: &Path,
+) -> AppResult<VolumeInfo> {
     let source = fs::canonicalize(source)?;
     let destination_parent = fs::canonicalize(destination_parent)?;
     if destination_parent.starts_with(&source) {
@@ -153,15 +169,7 @@ pub fn require_export_destination(
             "UNSUPPORTED_FILESYSTEM: FAT/FAT32 不支持导出目标，请使用 NTFS 或 exFAT".into(),
         ));
     }
-    let reserve = (source_bytes / 20).max(EXPORT_MIN_RESERVE);
-    let required_bytes = source_bytes.saturating_add(reserve);
-    if volume.available_bytes < required_bytes {
-        return Err(AppError::Message(format!(
-            "INSUFFICIENT_SPACE: 目标可用空间 {} 字节，小于导出预估所需 {} 字节",
-            volume.available_bytes, required_bytes
-        )));
-    }
-    Ok(())
+    Ok(volume)
 }
 
 pub fn create_import_partial(

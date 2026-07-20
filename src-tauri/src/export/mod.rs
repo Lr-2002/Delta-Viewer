@@ -4,7 +4,7 @@ mod mcap;
 
 use crate::error::{AppError, AppResult};
 use crate::model::{EpisodeData, ExportFormat, ExportResult, ValidationReport};
-use crate::{source, storage, validation};
+use crate::{source, storage};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -28,10 +28,12 @@ pub fn export_episode(
     format: ExportFormat,
     source_path: &Path,
     destination_parent: &Path,
+    validation_report: &ValidationReport,
     acknowledge_warnings: bool,
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<ExportResult> {
+    ensure_export_allowed(validation_report, acknowledge_warnings)?;
     if !destination_parent.exists() {
         fs::create_dir_all(destination_parent)?;
     }
@@ -42,8 +44,6 @@ pub fn export_episode(
         )));
     }
     let started = Instant::now();
-    let validation_report = validation::validate_episode(source_path, app, cancelled)?;
-    ensure_export_allowed(&validation_report, acknowledge_warnings)?;
     let data = source::load_episode(source_path, app, cancelled)?;
     storage::require_export_destination(source_path, destination_parent, data.summary.total_bytes)?;
     let context = ExportContext {
@@ -179,20 +179,52 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "TIMESTAMP_GAP"));
+        assert_eq!(
+            report
+                .issues
+                .iter()
+                .find(|issue| issue.code == "TIMESTAMP_GAP")
+                .and_then(|issue| issue.frame_id),
+            Some(180)
+        );
         assert_eq!(report.checked_files, 981);
 
-        let mcap =
-            export_episode(ExportFormat::Mcap, &sample, &output, true, None, &cancelled).unwrap();
+        let health =
+            validation::export_report(&report, &sample, &output, None, &cancelled).unwrap();
+        let health_report: crate::model::ValidationReport =
+            serde_json::from_slice(&fs::read(health.output_path).unwrap()).unwrap();
+        assert_eq!(health_report.format_version, 1);
+        assert_eq!(health_report.parsed_state_count, 196);
+
+        let mcap = export_episode(
+            ExportFormat::Mcap,
+            &sample,
+            &output,
+            &report,
+            true,
+            None,
+            &cancelled,
+        )
+        .unwrap();
         verify_mcap(Path::new(&mcap.output_path));
 
-        let hdf5 =
-            export_episode(ExportFormat::Hdf5, &sample, &output, true, None, &cancelled).unwrap();
+        let hdf5 = export_episode(
+            ExportFormat::Hdf5,
+            &sample,
+            &output,
+            &report,
+            true,
+            None,
+            &cancelled,
+        )
+        .unwrap();
         verify_hdf5(Path::new(&hdf5.output_path));
 
         let lerobot = export_episode(
             ExportFormat::LerobotV2,
             &sample,
             &output,
+            &report,
             true,
             None,
             &cancelled,
@@ -206,6 +238,9 @@ mod tests {
     #[test]
     fn requires_warning_acknowledgement() {
         let report = ValidationReport {
+            format_version: 1,
+            episode_root: "fixture".into(),
+            parsed_state_count: 1,
             status: "warning".into(),
             checked_files: 1,
             elapsed_ms: 0,
@@ -214,6 +249,7 @@ mod tests {
                 code: "TIMESTAMP_GAP".into(),
                 scope: "states".into(),
                 message: "gap".into(),
+                frame_id: Some(1),
             }],
             streams: Vec::new(),
         };
@@ -238,10 +274,12 @@ mod tests {
         )
         .unwrap();
 
+        let report = validation::validate_episode(&source, None, &AtomicBool::new(false)).unwrap();
         let error = export_episode(
             ExportFormat::Mcap,
             &source,
             &output,
+            &report,
             true,
             None,
             &AtomicBool::new(false),

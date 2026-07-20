@@ -1,12 +1,29 @@
-import { CircleCheck, CircleX, Clock3, FileCheck2, TriangleAlert } from "lucide-react";
+import {
+  CircleCheck,
+  CircleX,
+  Clock3,
+  FileCheck2,
+  FileJson,
+  LocateFixed,
+  TriangleAlert,
+} from "lucide-react";
 import { formatDuration } from "../lib/format";
 import type { EpisodeData, ValidationReport } from "../types";
 
 interface ChecksPanelProps {
   data: EpisodeData;
   report: ValidationReport | null;
+  busy: boolean;
+  onExportReport: () => void;
+  onLocateIssue: (frameId: number) => void;
 }
-export function ChecksPanel({ data, report }: ChecksPanelProps) {
+export function ChecksPanel({
+  data,
+  report,
+  busy,
+  onExportReport,
+  onLocateIssue,
+}: ChecksPanelProps) {
   const stateStatus = data.states.length ? "ok" : "error";
   return (
     <div className="checks-view">
@@ -15,7 +32,18 @@ export function ChecksPanel({ data, report }: ChecksPanelProps) {
           <span className="section-kicker">DATA HEALTH</span>
           <h2>数据检查</h2>
         </div>
-        {report ? <StatusMark status={report.status} /> : null}
+        <div className="check-heading-actions">
+          <button
+            className="button button-secondary"
+            type="button"
+            onClick={onExportReport}
+            disabled={!report || busy}
+          >
+            <FileJson size={16} />
+            导出 JSON
+          </button>
+          {report ? <StatusMark status={report.status} /> : null}
+        </div>
       </header>
 
       <section className="check-summary-band">
@@ -83,6 +111,17 @@ export function ChecksPanel({ data, report }: ChecksPanelProps) {
               <span className="issue-scope">{issue.scope}</span>
               <span>{issue.message}</span>
               <code>{issue.code}</code>
+              {issue.frameId !== null ? (
+                <button
+                  className="icon-button issue-locate"
+                  type="button"
+                  onClick={() => onLocateIssue(issue.frameId as number)}
+                  title={`定位到帧 ${issue.frameId}`}
+                  aria-label={`定位到帧 ${issue.frameId}`}
+                >
+                  <LocateFixed size={15} />
+                </button>
+              ) : <span />}
             </div>
           ))
         ) : (

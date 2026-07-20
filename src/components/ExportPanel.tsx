@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   Database,
   FileArchive,
+  FolderOpen,
   FolderOutput,
   LoaderCircle,
 } from "lucide-react";
@@ -52,6 +53,7 @@ export function ExportPanel({
   busy,
   onSelectFormat,
   onExport,
+  onReveal,
 }: {
   data: EpisodeData;
   report: ValidationReport | null;
@@ -60,6 +62,7 @@ export function ExportPanel({
   busy: boolean;
   onSelectFormat: (format: ExportFormat) => void;
   onExport: () => void;
+  onReveal: (path: string) => void;
 }) {
   const blocked = report?.status === "error";
   const selected = FORMATS.find((format) => format.id === selectedFormat) ?? FORMATS[0];
@@ -149,6 +152,15 @@ export function ExportPanel({
             <span>{formatBytes(result.totalBytes)}</span>
             <span>{(result.elapsedMs / 1000).toFixed(1)} s</span>
           </div>
+          <button
+            className="icon-button export-reveal"
+            type="button"
+            onClick={() => onReveal(result.outputPath)}
+            title="在文件管理器中显示"
+            aria-label="在文件管理器中显示"
+          >
+            <FolderOpen size={17} />
+          </button>
         </div>
       ) : null}
 

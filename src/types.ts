@@ -85,6 +85,7 @@ export interface ValidationIssue {
   code: string;
   scope: string;
   message: string;
+  frameId: number | null;
 }
 
 export interface StreamValidation {
@@ -95,11 +96,20 @@ export interface StreamValidation {
 }
 
 export interface ValidationReport {
+  formatVersion: number;
+  episodeRoot: string;
+  parsedStateCount: number;
   status: "ok" | "warning" | "error";
   checkedFiles: number;
   elapsedMs: number;
   issues: ValidationIssue[];
   streams: StreamValidation[];
+}
+
+export interface ReportExportResult {
+  outputPath: string;
+  totalBytes: number;
+  elapsedMs: number;
 }
 
 export interface TaskProgress {

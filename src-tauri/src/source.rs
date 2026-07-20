@@ -4,6 +4,7 @@ use crate::model::{
     StreamSummary, STREAM_NAMES,
 };
 use crate::storage;
+use blake3::Hasher;
 use image::ImageReader;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -174,6 +175,33 @@ pub fn collect_files(root: &Path) -> AppResult<Vec<PathBuf>> {
     Ok(files)
 }
 
+pub fn episode_fingerprint(root: &Path, cancelled: &AtomicBool) -> AppResult<String> {
+    let files = collect_files(root)?;
+    let mut hasher = Hasher::new();
+    for path in files {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(AppError::Cancelled);
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| AppError::Message(error.to_string()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let metadata = fs::metadata(&path)?;
+        let modified_ns = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        hasher.update(relative.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(&metadata.len().to_le_bytes());
+        hasher.update(&modified_ns.to_le_bytes());
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 fn discover_episode_roots(root: &Path) -> AppResult<Vec<PathBuf>> {
     if is_episode_marker(root) {
         return Ok(vec![root.to_path_buf()]);
@@ -319,19 +347,14 @@ fn read_states(path: &Path) -> AppResult<Vec<StateRecord>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut states = Vec::new();
-    for (line_number, line) in reader.lines().enumerate() {
+    for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let raw = serde_json::from_str::<RawStateRecord>(&line).map_err(|error| {
-            AppError::Message(format!(
-                "states.jsonl 第 {} 行无效: {}",
-                line_number + 1,
-                error
-            ))
-        })?;
-        states.push(raw.into());
+        if let Ok(raw) = serde_json::from_str::<RawStateRecord>(&line) {
+            states.push(raw.into());
+        }
     }
     Ok(states)
 }
@@ -339,5 +362,61 @@ fn read_states(path: &Path) -> AppResult<Vec<StateRecord>> {
 pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
     if let Some(app) = app {
         let _ = app.emit("task-progress", payload);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{episode_fingerprint, read_states};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn loads_valid_states_around_a_corrupt_line() {
+        let path = test_output("states");
+        fs::write(
+            &path,
+            concat!(
+                "{\"frame_id\":0,\"capture_time_ns\":1,\"position\":[0,0,0],",
+                "\"velocity\":[0,0,0],\"quaternion\":[0,0,0,1],\"euler\":[0,0,0],",
+                "\"omega\":[0,0,0],\"confidence\":1}\n",
+                "not json\n",
+                "{\"frame_id\":2,\"capture_time_ns\":3,\"position\":[0,0,0],",
+                "\"velocity\":[0,0,0],\"quaternion\":[0,0,0,1],\"euler\":[0,0,0],",
+                "\"omega\":[0,0,0],\"confidence\":1}\n"
+            ),
+        )
+        .unwrap();
+
+        let states = read_states(&path).unwrap();
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0].frame_id, 0);
+        assert_eq!(states[1].frame_id, 2);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_changes_when_episode_files_change() {
+        let root = test_output("fingerprint");
+        fs::create_dir(&root).unwrap();
+        let path = root.join("states.jsonl");
+        fs::write(&path, b"one").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let before = episode_fingerprint(&root, &cancelled).unwrap();
+        fs::write(path, b"different length").unwrap();
+        let after = episode_fingerprint(&root, &cancelled).unwrap();
+        assert_ne!(before, after);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn test_output(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("dohc-viewer-{label}-{nonce}"))
     }
 }

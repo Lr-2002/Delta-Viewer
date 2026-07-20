@@ -125,23 +125,24 @@ pub struct EpisodeData {
     pub states: Vec<StateRecord>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Warning,
     Error,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationIssue {
     pub severity: Severity,
     pub code: String,
     pub scope: String,
     pub message: String,
+    pub frame_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamValidation {
     pub name: String,
@@ -150,14 +151,25 @@ pub struct StreamValidation {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationReport {
+    pub format_version: u32,
+    pub episode_root: String,
+    pub parsed_state_count: u64,
     pub status: String,
     pub checked_files: u64,
     pub elapsed_ms: u128,
     pub issues: Vec<ValidationIssue>,
     pub streams: Vec<StreamValidation>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportExportResult {
+    pub output_path: String,
+    pub total_bytes: u64,
+    pub elapsed_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize)]

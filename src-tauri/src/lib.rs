@@ -7,17 +7,19 @@ mod model;
 mod source;
 mod storage;
 mod validation;
+mod validation_cache;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use model::{
     EpisodeData, ExportFormat, ExportResult, FramePayload, ImportPreflight, ImportResult,
-    PartialImport, ProgressPayload, ScanResult, ValidationReport,
+    PartialImport, ProgressPayload, ReportExportResult, ScanResult, ValidationReport,
 };
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
+use validation_cache::ValidationCache;
 
 #[derive(Clone)]
 pub struct TaskControl {
@@ -94,13 +96,38 @@ async fn load_episode(
 async fn validate_episode(
     app: AppHandle,
     control: State<'_, TaskControl>,
+    cache: State<'_, ValidationCache>,
     path: String,
 ) -> Result<ValidationReport, String> {
     let task = control.start()?;
     let cancelled = control.cancelled.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let cache = cache.inner().clone();
+    source::emit_progress(
+        Some(&app),
+        ProgressPayload {
+            task: "validate".into(),
+            phase: "准备数据检查".into(),
+            current: 0,
+            total: 1,
+            bytes_done: 0,
+            total_bytes: 0,
+            current_path: path.clone(),
+            elapsed_ms: 0,
+        },
+    );
+    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ValidationReport> {
         let _task = task;
-        validation::validate_episode(Path::new(&path), Some(&app), &cancelled)
+        let root = Path::new(&path);
+        let before = source::episode_fingerprint(root, &cancelled)?;
+        let report = validation::validate_episode(root, Some(&app), &cancelled)?;
+        let after = source::episode_fingerprint(root, &cancelled)?;
+        if before != after {
+            return Err(error::AppError::Message(
+                "数据在检查过程中发生变化，请重新检查".into(),
+            ));
+        }
+        cache.store(root, after, report.clone())?;
+        Ok(report)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -202,6 +229,7 @@ async fn list_partial_imports(destination_parent: String) -> Result<Vec<PartialI
 async fn export_episode(
     app: AppHandle,
     control: State<'_, TaskControl>,
+    cache: State<'_, ValidationCache>,
     source_path: String,
     destination_parent: String,
     format: ExportFormat,
@@ -209,13 +237,47 @@ async fn export_episode(
 ) -> Result<ExportResult, String> {
     let task = control.start()?;
     let cancelled = control.cancelled.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let cache = cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ExportResult> {
         let _task = task;
+        let root = Path::new(&source_path);
+        let fingerprint = source::episode_fingerprint(root, &cancelled)?;
+        let report = cache.report_for(root, &fingerprint)?;
         export::export_episode(
             format,
-            Path::new(&source_path),
+            root,
             Path::new(&destination_parent),
+            &report,
             acknowledge_warnings,
+            Some(&app),
+            &cancelled,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn export_validation_report(
+    app: AppHandle,
+    control: State<'_, TaskControl>,
+    cache: State<'_, ValidationCache>,
+    source_path: String,
+    destination_parent: String,
+) -> Result<ReportExportResult, String> {
+    let task = control.start()?;
+    let cancelled = control.cancelled.clone();
+    let cache = cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ReportExportResult> {
+        let _task = task;
+        let root = Path::new(&source_path);
+        let fingerprint = source::episode_fingerprint(root, &cancelled)?;
+        let report = cache.report_for(root, &fingerprint)?;
+        validation::export_report(
+            &report,
+            root,
+            Path::new(&destination_parent),
             Some(&app),
             &cancelled,
         )
@@ -247,7 +309,9 @@ async fn read_frame(root: String, stream: String, frame_id: u64) -> Result<Frame
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(TaskControl::default())
+        .manage(ValidationCache::default())
         .invoke_handler(tauri::generate_handler![
             scan_source,
             load_episode,
@@ -257,6 +321,7 @@ pub fn run() {
             list_partial_imports,
             cleanup_partial_import,
             export_episode,
+            export_validation_report,
             cancel_task,
             read_frame
         ])

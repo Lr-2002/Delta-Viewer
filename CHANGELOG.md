@@ -2,6 +2,20 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.3.0 - 2026-07-20
+
+- Added trusted in-process validation records bound to source directory
+  fingerprints; stale or missing validation blocks export.
+- Reduced the real three-adapter debug smoke test from 276.01 seconds to 70.00
+  seconds by reusing an unchanged Rust validation result.
+- Added versioned JSON health report export with partial write, readback, and
+  no-overwrite publication.
+- Added issue-to-frame navigation and tolerant loading of valid states around
+  malformed JSON lines while validation retains the blocking error.
+- Added timestamp-derived playback FPS with 15/24/30/60 FPS overrides.
+- Added reveal-in-file-manager for completed exports using a local-path-only
+  Tauri capability.
+
 ## 0.2.0 - 2026-07-20
 
 - Added import capacity and filesystem preflight with Windows volume detection.

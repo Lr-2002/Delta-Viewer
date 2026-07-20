@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   SkipBack,
   SkipForward,
+  Timer,
 } from "lucide-react";
 import { ChecksPanel } from "./components/ChecksPanel";
 import { ExportPanel } from "./components/ExportPanel";
@@ -31,12 +32,14 @@ import {
   cleanupPartialImport,
   confirmAction,
   exportEpisode,
+  exportValidationReport,
   importEpisode,
   inspectImportDestination,
   isTauriRuntime,
   listPartialImports,
   loadEpisode,
   onTaskProgress,
+  revealOutput,
   scanSource,
   validateEpisode,
 } from "./lib/backend";
@@ -75,6 +78,7 @@ function App() {
   const [metric, setMetric] = useState<MetricKey>("position");
   const [currentFrame, setCurrentFrame] = useState(0);
   const [speed, setSpeed] = useState(1);
+  const [fpsOverride, setFpsOverride] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<TaskProgress | null>(null);
@@ -83,6 +87,8 @@ function App() {
   const frameRef = useRef(0);
   const didAutoLoad = useRef(false);
   const didCheckPartials = useRef(false);
+  const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
+  const playbackFps = fpsOverride ?? estimatedFps;
 
   useEffect(() => {
     frameRef.current = currentFrame;
@@ -128,9 +134,9 @@ function App() {
       }
       frameRef.current = next;
       setCurrentFrame(next);
-    }, Math.max(16, Math.round(1000 / (30 * speed))));
+    }, Math.max(4, Math.round(1000 / (playbackFps * speed))));
     return () => window.clearInterval(interval);
-  }, [data, playing, speed]);
+  }, [data, playbackFps, playing, speed]);
 
   async function openSource(path: string, autoLoad = false) {
     setError("");
@@ -197,8 +203,13 @@ function App() {
     setData(loaded);
     setReport(checked);
     setExportResult(null);
-    setCurrentFrame(loaded.states[0]?.frameId ?? loaded.summary.streams[0]?.firstFrame ?? 0);
-    frameRef.current = loaded.states[0]?.frameId ?? 0;
+    setFpsOverride(null);
+    const initialFrame = Math.max(
+      0,
+      loaded.states[0]?.frameId ?? loaded.summary.streams[0]?.firstFrame ?? 0,
+    );
+    setCurrentFrame(initialFrame);
+    frameRef.current = initialFrame;
     setView("review");
     if (updateSelection) {
       setSelectedEpisode(loaded.summary);
@@ -254,6 +265,32 @@ function App() {
     }
   }
 
+  async function runReportExport() {
+    if (!data || !report) return;
+    const destinationParent = await chooseDirectory("选择检查报告导出目录");
+    if (!destinationParent) return;
+    setError("");
+    setNotice("");
+    setBusy(true);
+    try {
+      const result = await exportValidationReport(data.summary.root, destinationParent);
+      setNotice(`检查报告已导出：${shortPath(result.outputPath, 72)}`);
+    } catch (reason) {
+      setError(toMessage(reason));
+    } finally {
+      setBusy(false);
+      setProgress(null);
+    }
+  }
+
+  async function revealExport(path: string) {
+    try {
+      await revealOutput(path);
+    } catch (reason) {
+      setError(`无法打开导出位置：${toMessage(reason)}`);
+    }
+  }
+
   async function maybeCleanupPartials(
     destinationParent: string,
     partials: PartialImport[],
@@ -267,6 +304,15 @@ function App() {
       await cleanupPartialImport(destinationParent, partial.path);
     }
     setNotice(`已清理 ${partials.length} 个未完成导入`);
+  }
+
+  function locateIssue(frameId: number) {
+    if (!data) return;
+    const target = Math.max(0, Math.min(getMaxFrame(data), frameId));
+    setPlaying(false);
+    frameRef.current = target;
+    setCurrentFrame(target);
+    setView("review");
   }
 
   const currentState = useMemo(
@@ -444,6 +490,22 @@ function App() {
                           <option value={2}>2×</option>
                         </select>
                       </label>
+                      <label className="fps-control" title="播放帧率">
+                        <Timer size={16} />
+                        <select
+                          value={fpsOverride ?? "auto"}
+                          onChange={(event) => {
+                            setFpsOverride(event.target.value === "auto" ? null : Number(event.target.value));
+                          }}
+                          aria-label="播放帧率"
+                        >
+                          <option value="auto">自动 {estimatedFps.toFixed(1)} FPS</option>
+                          <option value={15}>15 FPS</option>
+                          <option value={24}>24 FPS</option>
+                          <option value={30}>30 FPS</option>
+                          <option value={60}>60 FPS</option>
+                        </select>
+                      </label>
                     </div>
                   </section>
 
@@ -465,7 +527,13 @@ function App() {
                   </section>
                 </div>
               ) : view === "checks" ? (
-                <ChecksPanel data={data} report={report} />
+                <ChecksPanel
+                  data={data}
+                  report={report}
+                  busy={busy}
+                  onExportReport={() => void runReportExport()}
+                  onLocateIssue={locateIssue}
+                />
               ) : (
                 <ExportPanel
                   data={data}
@@ -478,6 +546,7 @@ function App() {
                     setExportResult(null);
                   }}
                   onExport={() => void runExport()}
+                  onReveal={(path) => void revealExport(path)}
                 />
               )}
             </>
@@ -580,6 +649,23 @@ function driveTypeLabel(driveType: ScanResult["volume"]["driveType"]): string {
     unknown: "未知",
   };
   return labels[driveType];
+}
+
+function estimateFrameRate(states: EpisodeData["states"]): number {
+  const deltas: bigint[] = [];
+  for (let index = 1; index < states.length; index += 1) {
+    try {
+      const delta = BigInt(states[index].captureTimeNs) - BigInt(states[index - 1].captureTimeNs);
+      if (delta > 0n) deltas.push(delta);
+    } catch {
+      // Validation reports invalid timestamps; playback falls back to 30 FPS.
+    }
+  }
+  if (!deltas.length) return 30;
+  deltas.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  const medianNs = deltas[Math.floor(deltas.length / 2)];
+  const fps = 1_000_000_000 / Number(medianNs);
+  return Number.isFinite(fps) ? Math.max(1, Math.min(240, fps)) : 30;
 }
 
 export default App;

@@ -28,6 +28,8 @@ Project documentation:
 7. Review five synchronized image streams and state telemetry.
 8. Export MCAP, HDF5, or LeRobot v2.1. Errors are blocked in Rust; warnings
    require explicit confirmation.
+9. Export a versioned JSON health report or reveal completed adapter output in
+   the system file manager.
 
 The runtime has no SSH or other network data path. SSH was used only once to
 retrieve the development sample from the current ext4 card.
@@ -58,6 +60,10 @@ The source has no robot action field, so the LeRobot adapter exports the
 available observation/state fields and images without inventing an action.
 Its standard `timestamp` follows the constant-rate video timeline; the original
 nanosecond clock is retained separately as `observation.capture_time_ns`.
+
+Playback estimates the recorded FPS from the median positive state timestamp
+delta and supports explicit 15, 24, 30, or 60 FPS overrides. Health issues that
+identify a frame can jump directly back to synchronized playback.
 
 ## exFAT decision
 

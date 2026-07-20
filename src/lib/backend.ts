@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type {
   EpisodeData,
   EpisodeSummary,
@@ -9,6 +10,7 @@ import type {
   ImportPreflight,
   ImportResult,
   PartialImport,
+  ReportExportResult,
   ScanResult,
   StateRecord,
   TaskProgress,
@@ -35,6 +37,10 @@ export async function confirmAction(message: string, title: string): Promise<boo
     okLabel: "确认",
     cancelLabel: "取消",
   });
+}
+
+export async function revealOutput(path: string): Promise<void> {
+  if (isTauriRuntime()) await revealItemInDir(path);
 }
 
 export async function scanSource(path: string): Promise<ScanResult> {
@@ -120,6 +126,9 @@ export async function loadEpisode(path: string): Promise<EpisodeData> {
 export async function validateEpisode(path: string): Promise<ValidationReport> {
   if (isTauriRuntime()) return invoke<ValidationReport>("validate_episode", { path });
   return {
+    formatVersion: 1,
+    episodeRoot: path,
+    parsedStateCount: 196,
     status: "warning",
     checkedFiles: 981,
     elapsedMs: 7021,
@@ -129,6 +138,7 @@ export async function validateEpisode(path: string): Promise<ValidationReport> {
         code: "TIMESTAMP_GAP",
         scope: "states",
         message: "末尾状态帧检测到明显的时间戳间隔异常",
+        frameId: 180,
       },
     ],
     streams: ["cam0", "cam1", "cam2", "t265_left", "t265_right"].map((name) => ({
@@ -137,6 +147,23 @@ export async function validateEpisode(path: string): Promise<ValidationReport> {
       decodeFailures: 0,
       status: "ok" as const,
     })),
+  };
+}
+
+export async function exportValidationReport(
+  sourcePath: string,
+  destinationParent: string,
+): Promise<ReportExportResult> {
+  if (isTauriRuntime()) {
+    return invoke<ReportExportResult>("export_validation_report", {
+      sourcePath,
+      destinationParent,
+    });
+  }
+  return {
+    outputPath: `${destinationParent}/2026-07-13_07-34-12.health.json`,
+    totalBytes: 4_096,
+    elapsedMs: 12,
   };
 }
 
