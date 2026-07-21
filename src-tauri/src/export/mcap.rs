@@ -75,18 +75,35 @@ impl ExportAdapter for McapAdapter {
                 .map_err(map_error)?;
             image_channels.insert(stream.name.clone(), channel);
         }
+        let mut dataset_metadata = BTreeMap::from([
+            ("source_name".into(), context.data.summary.name.clone()),
+            ("state_count".into(), context.data.states.len().to_string()),
+            (
+                "clip_start_frame".into(),
+                context.range.start_frame.to_string(),
+            ),
+            ("clip_end_frame".into(), context.range.end_frame.to_string()),
+        ]);
+        if let Some(annotation) = context.annotation {
+            dataset_metadata.insert("trajectory_code".into(), annotation.trajectory_code.clone());
+            dataset_metadata.insert("task_id".into(), annotation.task_id.clone());
+            dataset_metadata.insert(
+                "task_description".into(),
+                annotation.task_description.clone(),
+            );
+            dataset_metadata.insert(
+                "processed_by_username".into(),
+                annotation.processed_by.username.clone(),
+            );
+            dataset_metadata.insert(
+                "processed_by_display_name".into(),
+                annotation.processed_by.display_name.clone(),
+            );
+        }
         writer
             .write_metadata(&Metadata {
                 name: "dohc.dataset".into(),
-                metadata: BTreeMap::from([
-                    ("source_name".into(), context.data.summary.name.clone()),
-                    ("state_count".into(), context.data.states.len().to_string()),
-                    (
-                        "clip_start_frame".into(),
-                        context.range.start_frame.to_string(),
-                    ),
-                    ("clip_end_frame".into(), context.range.end_frame.to_string()),
-                ]),
+                metadata: dataset_metadata,
             })
             .map_err(map_error)?;
 

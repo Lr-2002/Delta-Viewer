@@ -3,7 +3,9 @@ mod lerobot;
 mod mcap;
 
 use crate::error::{AppError, AppResult};
-use crate::model::{EpisodeData, ExportFormat, ExportRange, ExportResult, ValidationReport};
+use crate::model::{
+    EpisodeAnnotation, EpisodeData, ExportFormat, ExportRange, ExportResult, ValidationReport,
+};
 use crate::{source, storage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -20,6 +22,7 @@ pub struct ExportContext<'a> {
     pub data: &'a EpisodeData,
     pub range: ExportRange,
     pub full_range: bool,
+    pub annotation: Option<&'a EpisodeAnnotation>,
     frame_ids: BTreeSet<u64>,
     pub app: Option<&'a AppHandle>,
     pub cancelled: Arc<AtomicBool>,
@@ -40,6 +43,7 @@ pub(crate) struct ExportJob<'a> {
     pub source_path: &'a Path,
     pub destination_parent: &'a Path,
     pub validation_report: &'a ValidationReport,
+    pub annotation: Option<&'a EpisodeAnnotation>,
     pub acknowledge_warnings: bool,
     pub requested_range: Option<ExportRange>,
     pub app: Option<&'a AppHandle>,
@@ -52,6 +56,7 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         source_path,
         destination_parent,
         validation_report,
+        annotation,
         acknowledge_warnings,
         requested_range,
         app,
@@ -89,6 +94,7 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         data: &data,
         range,
         full_range: range == full_range,
+        annotation,
         frame_ids,
         app,
         cancelled: cancelled.clone(),
@@ -102,6 +108,7 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
     Ok(ExportResult {
         format: format.as_str().into(),
         output_path: output.display().to_string(),
+        trajectory_code: annotation.map(|record| record.trajectory_code.clone()),
         total_files,
         total_bytes,
         elapsed_ms: started.elapsed().as_millis(),
@@ -259,7 +266,10 @@ fn select_episode_data(
 }
 
 pub(super) fn output_stem(context: &ExportContext<'_>) -> String {
-    let base = crate::importer::sanitize_name(&context.data.summary.name);
+    let base = context
+        .annotation
+        .map(|record| record.trajectory_code.clone())
+        .unwrap_or_else(|| crate::importer::sanitize_name(&context.data.summary.name));
     if context.full_range {
         base
     } else {
@@ -334,9 +344,9 @@ fn output_size(path: &Path) -> AppResult<(u64, u64)> {
 mod tests {
     use super::{ensure_export_allowed, export_episode, select_episode_data, ExportJob};
     use crate::model::{
-        EpisodeData, EpisodeSummary, ExportFormat, ExportRange, ImageValidationMode, Severity,
-        StreamSummary, ValidationIssue, ValidationReport, STREAM_NAMES,
-        VALIDATION_REPORT_FORMAT_VERSION,
+        EpisodeAnnotation, EpisodeData, EpisodeSummary, ExportFormat, ExportRange,
+        ImageValidationMode, Severity, StreamSummary, UserIdentity, ValidationIssue,
+        ValidationReport, STREAM_NAMES, VALIDATION_REPORT_FORMAT_VERSION,
     };
     use crate::validation;
     use foxglove::messages::{CompressedImage, PoseInFrame};
@@ -412,12 +422,30 @@ mod tests {
             start_frame: 10,
             end_frame: 19,
         };
+        let annotation = EpisodeAnnotation {
+            format_version: crate::annotations::ANNOTATION_FORMAT_VERSION,
+            episode_id: "test-episode".into(),
+            episode_root: sample.display().to_string(),
+            episode_fingerprint: "1111111111111111111111111111111111111111111111111111111111111111"
+                .into(),
+            trajectory_code: "oven-001".into(),
+            task_id: "close_oven".into(),
+            task_description: "关闭烤箱门并确认完全闭合".into(),
+            processed_by: UserIdentity {
+                username: "operator".into(),
+                display_name: "测试操作员".into(),
+            },
+            revision: 1,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
 
         let mcap = export_episode(ExportJob {
             format: ExportFormat::Mcap,
             source_path: &sample,
             destination_parent: &output,
             validation_report: &report,
+            annotation: Some(&annotation),
             acknowledge_warnings: true,
             requested_range: Some(clip),
             app: None,
@@ -426,33 +454,41 @@ mod tests {
         .unwrap();
         assert_eq!(mcap.range, clip);
         assert_eq!(mcap.state_count, 10);
-        verify_mcap(Path::new(&mcap.output_path), 10);
+        assert_eq!(mcap.trajectory_code.as_deref(), Some("oven-001"));
+        assert!(Path::new(&mcap.output_path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("oven-001_frames_10-19"));
+        verify_mcap(Path::new(&mcap.output_path), 10, Some(&annotation));
 
         let hdf5 = export_episode(ExportJob {
             format: ExportFormat::Hdf5,
             source_path: &sample,
             destination_parent: &output,
             validation_report: &report,
+            annotation: Some(&annotation),
             acknowledge_warnings: true,
             requested_range: Some(clip),
             app: None,
             cancelled: &cancelled,
         })
         .unwrap();
-        verify_hdf5(Path::new(&hdf5.output_path), 10);
+        verify_hdf5(Path::new(&hdf5.output_path), 10, Some(&annotation));
 
         let lerobot = export_episode(ExportJob {
             format: ExportFormat::LerobotV2,
             source_path: &sample,
             destination_parent: &output,
             validation_report: &report,
+            annotation: Some(&annotation),
             acknowledge_warnings: true,
             requested_range: Some(clip),
             app: None,
             cancelled: &cancelled,
         })
         .unwrap();
-        verify_lerobot(Path::new(&lerobot.output_path), 10);
+        verify_lerobot(Path::new(&lerobot.output_path), 10, Some(&annotation));
 
         fs::remove_dir_all(output).unwrap();
     }
@@ -557,6 +593,7 @@ mod tests {
             source_path: &source,
             destination_parent: &output,
             validation_report: &report,
+            annotation: None,
             acknowledge_warnings: true,
             requested_range: None,
             app: None,
@@ -572,7 +609,7 @@ mod tests {
         fs::remove_dir_all(output).unwrap();
     }
 
-    fn verify_mcap(path: &Path, state_count: usize) {
+    fn verify_mcap(path: &Path, state_count: usize, annotation: Option<&EpisodeAnnotation>) {
         let bytes = fs::read(path).unwrap();
         let summary = mcap::Summary::read(&bytes).unwrap().unwrap();
         assert_eq!(summary.channels.len(), 7);
@@ -593,6 +630,30 @@ mod tests {
             .collect()
         );
         assert_eq!(summary.stats.unwrap().message_count, state_count as u64 * 7);
+        if let Some(annotation) = annotation {
+            let metadata = mcap::read::LinearReader::new(&bytes)
+                .unwrap()
+                .find_map(|record| match record.unwrap() {
+                    mcap::records::Record::Metadata(metadata)
+                        if metadata.name == "dohc.dataset" =>
+                    {
+                        Some(metadata)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                metadata.metadata.get("trajectory_code").map(String::as_str),
+                Some(annotation.trajectory_code.as_str())
+            );
+            assert_eq!(
+                metadata
+                    .metadata
+                    .get("processed_by_username")
+                    .map(String::as_str),
+                Some(annotation.processed_by.username.as_str())
+            );
+        }
 
         let mut state_messages = 0;
         let mut pose_messages = 0;
@@ -626,7 +687,7 @@ mod tests {
         assert_eq!(image_messages, state_count * 5);
     }
 
-    fn verify_hdf5(path: &Path, state_count: usize) {
+    fn verify_hdf5(path: &Path, state_count: usize, annotation: Option<&EpisodeAnnotation>) {
         let file = HdfFile::open_streaming(path).unwrap();
         assert_eq!(
             file.dataset("states/frame_id").unwrap().shape().unwrap(),
@@ -639,14 +700,32 @@ mod tests {
                 .unwrap(),
             vec![state_count as u64]
         );
+        if let Some(annotation) = annotation {
+            assert_eq!(
+                file.dataset("annotation/task_description_utf8")
+                    .unwrap()
+                    .read_u8()
+                    .unwrap(),
+                annotation.task_description.as_bytes()
+            );
+        }
     }
 
-    fn verify_lerobot(path: &Path, state_count: usize) {
+    fn verify_lerobot(path: &Path, state_count: usize, annotation: Option<&EpisodeAnnotation>) {
         let info: serde_json::Value =
             serde_json::from_slice(&fs::read(path.join("meta/info.json")).unwrap()).unwrap();
         assert_eq!(info["codebase_version"], "v2.1");
         assert_eq!(info["total_frames"], state_count);
         assert_eq!(info["fps"], 30);
+        if let Some(annotation) = annotation {
+            assert_eq!(
+                info["dohc_annotation"]["trajectory_code"],
+                annotation.trajectory_code
+            );
+            let task: serde_json::Value =
+                serde_json::from_slice(&fs::read(path.join("meta/tasks.jsonl")).unwrap()).unwrap();
+            assert_eq!(task["task"], annotation.task_description);
+        }
         let parquet_path = path.join("data/chunk-000/episode_000000.parquet");
         let builder =
             ParquetRecordBatchReaderBuilder::try_new(fs::File::open(parquet_path).unwrap())

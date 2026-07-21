@@ -10,6 +10,7 @@ import {
   HardDrive,
   Images,
   LoaderCircle,
+  LogOut,
   Pause,
   Play,
   PackageOpen,
@@ -18,7 +19,10 @@ import {
   SkipBack,
   SkipForward,
   Timer,
+  UserRound,
 } from "lucide-react";
+import { AnnotationPanel } from "./components/AnnotationPanel";
+import { AuthScreen } from "./components/AuthScreen";
 import { ChecksPanel } from "./components/ChecksPanel";
 import { ExportPanel } from "./components/ExportPanel";
 import { FramePanel } from "./components/FramePanel";
@@ -33,11 +37,15 @@ import {
   confirmAction,
   exportEpisode,
   exportValidationReport,
+  getAuthStatus,
   importEpisode,
   inspectImportDestination,
   isTauriRuntime,
   listPartialImports,
+  listTaskDefinitions,
+  loadEpisodeAnnotation,
   loadEpisode,
+  logoutLocalAccount,
   onTaskProgress,
   revealOutput,
   scanSource,
@@ -45,6 +53,8 @@ import {
 } from "./lib/backend";
 import { formatBytes, shortPath } from "./lib/format";
 import type {
+  AuthStatus,
+  EpisodeAnnotation,
   EpisodeData,
   EpisodeSummary,
   ExportFormat,
@@ -54,6 +64,7 @@ import type {
   PartialImport,
   ScanResult,
   TaskProgress,
+  TaskDefinition,
   ValidationReport,
 } from "./types";
 
@@ -68,6 +79,10 @@ const METRICS: { key: MetricKey; label: string }[] = [
 ];
 
 function App() {
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const [authStartupError, setAuthStartupError] = useState("");
+  const [tasks, setTasks] = useState<TaskDefinition[]>([]);
+  const [annotation, setAnnotation] = useState<EpisodeAnnotation | null>(null);
   const [sourcePath, setSourcePath] = useState("");
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeSummary | null>(null);
@@ -95,6 +110,20 @@ function App() {
   const playbackFps = fpsOverride ?? estimatedFps;
 
   useEffect(() => {
+    void refreshAuthStatus();
+  }, []);
+
+  useEffect(() => {
+    if (!authStatus?.currentUser) {
+      setTasks([]);
+      return;
+    }
+    void listTaskDefinitions()
+      .then(setTasks)
+      .catch((reason) => setError(`无法加载任务目录：${toMessage(reason)}`));
+  }, [authStatus?.currentUser?.username]);
+
+  useEffect(() => {
     frameRef.current = currentFrame;
   }, [currentFrame]);
 
@@ -107,13 +136,13 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (didAutoLoad.current || isTauriRuntime()) return;
+    if (didAutoLoad.current || isTauriRuntime() || !authStatus?.currentUser) return;
     didAutoLoad.current = true;
     void openSource(DEMO_ROOT, true);
-  }, []);
+  }, [authStatus?.currentUser?.username]);
 
   useEffect(() => {
-    if (didCheckPartials.current || !isTauriRuntime()) return;
+    if (didCheckPartials.current || !isTauriRuntime() || !authStatus?.currentUser) return;
     didCheckPartials.current = true;
     const destination = window.localStorage.getItem(LAST_IMPORT_DESTINATION);
     if (!destination) return;
@@ -125,7 +154,7 @@ function App() {
         setError(`检查未完成导入失败：${toMessage(reason)}`);
       }
     })();
-  }, []);
+  }, [authStatus?.currentUser?.username]);
 
   useEffect(() => {
     if (!playing || !data) return;
@@ -212,8 +241,10 @@ function App() {
   async function loadAndValidate(root: string, sourceEpisodeRoot: string) {
     const loaded = await loadEpisode(root);
     const checked = await validateEpisode(root);
+    const savedAnnotation = await loadEpisodeAnnotation(root);
     setData(loaded);
     setReport(checked);
+    setAnnotation(savedAnnotation);
     setLoadedEpisodeSourceRoot(sourceEpisodeRoot);
     setExportResult(null);
     setFpsOverride(null);
@@ -229,12 +260,44 @@ function App() {
   function resetLoadedData() {
     setData(null);
     setReport(null);
+    setAnnotation(null);
     setPlaying(false);
     setExportResult(null);
     setCurrentFrame(0);
     setClipStartFrame(0);
     setClipEndFrame(0);
     setLoadedEpisodeSourceRoot(null);
+  }
+
+  async function refreshAuthStatus() {
+    setAuthStartupError("");
+    try {
+      setAuthStatus(await getAuthStatus());
+    } catch (reason) {
+      setAuthStartupError(toMessage(reason));
+    }
+  }
+
+  async function logout() {
+    if (busy) return;
+    try {
+      await logoutLocalAccount();
+      resetLoadedData();
+      setSourcePath("");
+      setScan(null);
+      setSelectedEpisode(null);
+      setTasks([]);
+      setError("");
+      setNotice("");
+      didAutoLoad.current = false;
+      didCheckPartials.current = false;
+      setAuthStatus((current) => ({
+        hasAccounts: current?.hasAccounts ?? true,
+        currentUser: null,
+      }));
+    } catch (reason) {
+      setError(`退出登录失败：${toMessage(reason)}`);
+    }
   }
 
   function moveFrame(delta: number) {
@@ -405,6 +468,32 @@ function App() {
     [clipEndFrame, clipStartFrame, report],
   );
 
+  if (!authStatus) {
+    return (
+      <main className="auth-shell auth-loading">
+        <LoaderCircle className={authStartupError ? undefined : "spin"} size={24} />
+        <strong>{authStartupError ? "无法载入本地账号" : "正在载入本地账号"}</strong>
+        {authStartupError ? <span>{authStartupError}</span> : null}
+        {authStartupError ? (
+          <button className="button button-secondary" type="button" onClick={() => void refreshAuthStatus()}>
+            重试
+          </button>
+        ) : null}
+      </main>
+    );
+  }
+
+  if (!authStatus.currentUser) {
+    return (
+      <AuthScreen
+        hasAccounts={authStatus.hasAccounts}
+        onAuthenticated={(user) => setAuthStatus({ hasAccounts: true, currentUser: user })}
+      />
+    );
+  }
+
+  const currentUser = authStatus.currentUser;
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -425,6 +514,13 @@ function App() {
           <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy}>
             <FolderOpen size={16} />
             选择 SD 卡
+          </button>
+          <div className="account-summary" title={`@${currentUser.username}`}>
+            <UserRound size={16} />
+            <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
+          </div>
+          <button className="icon-button" type="button" onClick={() => void logout()} disabled={busy} title="退出登录" aria-label="退出登录">
+            <LogOut size={16} />
           </button>
         </div>
       </header>
@@ -523,6 +619,16 @@ function App() {
 
               {view === "review" ? (
                 <div className="review-view">
+                  <AnnotationPanel
+                    sourcePath={data.summary.root}
+                    tasks={tasks}
+                    annotation={annotation}
+                    currentUser={currentUser}
+                    busy={busy}
+                    onSaved={setAnnotation}
+                    onError={setError}
+                    onNotice={setNotice}
+                  />
                   <section className="camera-section">
                     <div className="section-heading compact-heading">
                       <div>
@@ -634,6 +740,7 @@ function App() {
               ) : (
                 <ExportPanel
                   data={data}
+                  annotation={annotation}
                   range={clipRange}
                   rangeStatus={clipStatus}
                   rangeStateCount={clipStateCount}

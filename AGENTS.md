@@ -15,6 +15,7 @@
 9. 正式输出必须先写 partial 路径，成功后再原子 rename；不得覆盖已有输出。
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
 11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录或本地导入副本，三个 adapter 必须使用同一范围。
+12. 账号、登录会话和 episode 标注是纯本地能力。不得把账号、密码、处理人或标注发送到网络；所有数据 command 必须在 Rust 中验证当前登录会话。
 
 ## 2. 仓库结构
 
@@ -27,11 +28,15 @@ DOHC_Viewer/
   src/                           React/TypeScript UI
     App.tsx                      顶层工作流和视图状态
     components/                  回放、检查、进度和导出组件
+      AuthScreen.tsx             本地账号注册和登录
+      AnnotationPanel.tsx        episode 任务、描述、轨迹码和处理人
     lib/backend.ts               所有 Tauri IPC/browser demo 适配
     types.ts                     前端共享数据类型
   src-tauri/
     src/lib.rs                   Tauri commands 和长任务调度
     src/model.rs                 Rust/IPC 数据模型
+    src/identity.rs              本地账号、Argon2id 密码哈希和进程内会话
+    src/annotations.rs           任务目录、轨迹占号和追加式标注修订
     src/source.rs                episode 发现、扫描、状态/帧读取
     src/storage.rs               卷信息、容量预检和 partial 安全清理
     src/importer.rs              复制、BLAKE3、manifest、命名清理
@@ -76,7 +81,9 @@ React component
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
 - 源目录遍历统一使用可取消的 no-follow 路径；不要重新引入会隐式跟随 symlink 的文件判断。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
-- Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。交互抽检基线是报告 format v3、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]` 和非空 `autoReportPath`；它不能被当作后端验收。
+- 未登录时只允许账号状态、注册、登录和退出 commands；扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁。前端隐藏工作区不能替代后端门禁。
+- 任务目录以 `src-tauri/src/annotations.rs` 为唯一真源。新增任务必须同时定义稳定 task ID、显示名称、轨迹前缀和默认描述，并增加轨迹冲突/adapter 回读测试。
+- Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。其账号和标注只保存在当前页面进程内，刷新后重置；交互抽检基线是报告 format v3、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]` 和非空 `autoReportPath`。它不能被当作账号安全、后端门禁或数据验收。
 
 ## 4. 环境与常用命令
 
@@ -180,6 +187,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 取消或失败时不得出现正式输出名。
 - 如果新增自动清理，只能删除本应用可证明创建的 partial 路径，不能使用宽泛 glob 或递归删除用户目录。
 - warning/error 后台报告只能写入 Tauri `appLocalData` 下的应用专属 `reports` 目录；不得写入源卡或 episode。保持 partial、回读和原子 no-replace，同一 episode 路径/指纹/报告版本稳定去重；不得把“后台汇报”实现为网络上传。
+- 账号写入 `appLocalData/accounts`，轨迹占号写入 `appLocalData/trajectory-codes`，标注修订写入 `appLocalData/annotations/{episodeId}`。全部使用 `create_new`、回读和原子 no-replace；Unix 新文件权限为 `0600`。不得写入源 SD 卡或导入 episode。
 
 ### 6.3 数据模型
 
@@ -189,6 +197,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 新 issue code 必须稳定、全大写下划线，并同步更新 `prd.md`、前端显示和 fixture 测试。
 - 可定位的 issue 必须设置 `frameId`；新增 JSON 报告字段或破坏语义时提高 `formatVersion`。
 - 破坏 manifest/HDF5 schema 时提高对应格式版本，不能只提高应用版本。
+- 密码只能作为注册/登录请求的瞬时输入，不得进入 `UserIdentity`、日志、报告、标注或导出。标注必须绑定规范化 episode 路径和数据指纹，并保留不可覆盖的修订号、处理账号和时间。
 
 ### 6.4 Validation
 
@@ -215,6 +224,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 7. 在 `backend.ts`、`ExportPanel.tsx` 和 browser demo 同步格式。
 8. 增加真实样例 smoke test，并检查输出不是仅“文件存在”。
 9. 更新 `prd.md` 的数据契约和 README。
+10. 已标注 episode 必须以统一轨迹码作为三种格式的基础输出名，并在格式 metadata 中保存任务与处理人；未标注 episode 保持历史命名兼容。
 
 格式专属约束：
 
@@ -230,6 +240,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - LeRobot 标准 `timestamp` 必须与恒定 FPS 视频一致；原始时钟写入 `observation.capture_time_ns`。
 - LeRobot 没有源 action 时保持没有 action，不能填零数组伪装真实数据。
 - FFmpeg 错误必须包含 stderr 摘要；取消时先 kill/wait 子进程。
+- 标注 metadata 契约为：MCAP `dohc.dataset` metadata，HDF5 根属性和 `/annotation`，LeRobot `info.json.dohc_annotation` 与 task 文本。新增字段必须同步生产回读与真实样例回读。
 
 ## 8. Frontend 开发规则
 
@@ -240,6 +251,8 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 进度、错误、warning 和成功结果都必须有可见状态，不能只写 console。
 - 图像面板使用稳定尺寸；加载或错误不能改变 grid 布局。
 - 选择 SD 卡后自动扫描并加载第一条 session，不保留额外“导入并检查”按钮。左侧 episode 列表仍以源路径作为 session 身份：单击只选择，双击才进入回放；本地导入路径不得覆盖源 session 的选中身份。
+- 登录页是唯一的工作区入口；顶栏显示当前账号并提供退出。退出必须清空当前 episode、检查和标注状态，不能让未登录用户继续调用数据 IPC。
+- 回放首页顶部固定提供 episode 级数据标注。选择任务时自动填充默认描述和该任务前缀的下一个轨迹码；描述可编辑，轨迹码只读；保存结果显示修订号和最近处理人。
 - 检查结果固定使用“错误/警告/通过”文本，错误优先、警告其次、通过最后；`states.jsonl` 必须从 scope 为 `states` 的 issue 推导结果。手动报告按钮使用“导出报告”，不暴露存储格式作为主标签。
 - 应用 UI 色彩系统固定为黑、白和中性灰；原始相机画面保留源颜色。状态不得只靠色相表达，必须同时使用文字、图标、边框和明度层级。
 - 图标使用当前 Lucide 库，陌生图标按钮提供 `title`/`aria-label`。
@@ -279,7 +292,7 @@ pnpm check
 ```
 
 真实样例会读取私有数据，因此保持 `#[ignore]`。`--all-targets` 常规 Rust suite
-当前为 41 项（39 通过、2 个真实样例测试 ignored），其中包含压力 CLI 参数测试；
+当前为 46 项（44 通过、2 个真实样例测试 ignored），其中包含本地账号、轨迹占号、标注修订、HDF5 属性回读、adapter 元数据和压力 CLI 参数测试；
 debug 构建的三格式完整 smoke test 约需 69 秒。任何
 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 
@@ -414,6 +427,7 @@ pnpm tauri:build
 - FFmpeg 是受控 sidecar，不假设用户 PATH 中存在。
 - `tauri-plugin-opener` 只开放 `opener:allow-reveal-item-in-dir`；不得开放 URL 或任意程序启动权限。
 - Dialog capability 只开放目录选择和消息框；新增 capability 必须对应明确的用户操作。
+- `argon2 0.5.3`（MIT/Apache-2.0）及其纯 Rust `password-hash`/`blake2` 依赖用于本地 Argon2id PHC 密码哈希，`rand_core` 的操作系统 CSPRNG 生成独立盐；该路径支持 Windows/macOS/Linux，不得降级为明文或快速通用哈希。`v0.14.0` macOS ARM debug 主程序相对已安装的 `v0.13.0` 增加 2,431,504 bytes（约 3.1%，包含本版本全部账号/标注代码和依赖）；Windows release 体积仍需目标构建机记录。
 - `tauri-plugin-opener 2.5.4` 为 MIT/Apache-2.0 双许可的官方跨平台实现。`v0.3.0` 全部变更使 macOS ARM debug 二进制增加 1,239,152 bytes（约 2.2%）；Windows release 体积必须在目标构建机另行记录。
 - `foxglove 0.26.0`（MIT）、`prost 0.14.4`（Apache-2.0）和 `bytes 1.12.1`（MIT）用于生成官方 Foxglove protobuf schema/消息；Foxglove 默认 features 保持关闭。`v0.9.0` macOS ARM debug 主程序相对 `v0.8.0` 增加 383,472 bytes（约 0.5%），Windows x64 MSVC all-target 条件编译已通过，目标机 release 体积仍需另行记录。
 

@@ -2,6 +2,20 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.14.0 - 2026-07-21
+
+- Added offline local account creation, login, and logout so every annotation
+  revision records the operator who processed the episode.
+- Stored passwords only as Argon2id PHC hashes with random salts, kept sessions
+  process-local, and gated data commands in Rust when no account is signed in.
+- Added episode-level task annotation with an editable auto-filled description,
+  starting with `close_oven`, plus globally reserved codes such as `oven-001`.
+- Preserved append-only annotation revisions outside the SD card, bound to the
+  canonical episode path and fingerprint.
+- Made annotated MCAP, HDF5, and LeRobot exports use the trajectory code as the
+  base name and carry task and processor metadata, while preserving legacy names
+  for unannotated recordings.
+
 ## 0.13.0 - 2026-07-21
 
 - Added offline background reports for warning and error validation results in

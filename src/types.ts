@@ -1,5 +1,43 @@
 export type TaskName = "scan" | "import" | "validate" | "export";
 
+export interface UserIdentity {
+  username: string;
+  displayName: string;
+}
+
+export interface AuthStatus {
+  hasAccounts: boolean;
+  currentUser: UserIdentity | null;
+}
+
+export interface TaskDefinition {
+  id: string;
+  label: string;
+  codePrefix: string;
+  defaultDescription: string;
+}
+
+export interface EpisodeAnnotation {
+  formatVersion: number;
+  episodeId: string;
+  episodeRoot: string;
+  episodeFingerprint: string;
+  trajectoryCode: string;
+  taskId: string;
+  taskDescription: string;
+  processedBy: UserIdentity;
+  revision: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface SaveAnnotationRequest {
+  sourcePath: string;
+  trajectoryCode: string;
+  taskId: string;
+  taskDescription: string;
+}
+
 export interface StreamSummary {
   name: string;
   label: string;
@@ -145,6 +183,7 @@ export interface ExportRange {
 export interface ExportResult {
   format: ExportFormat;
   outputPath: string;
+  trajectoryCode: string | null;
   totalFiles: number;
   totalBytes: number;
   elapsedMs: number;

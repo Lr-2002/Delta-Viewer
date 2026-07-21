@@ -89,7 +89,11 @@ impl ExportAdapter for LeRobotV2Adapter {
         let meta_dir = partial.join("meta");
         fs::create_dir_all(&meta_dir)?;
         let features = build_features(context, fps);
-        let info = json!({
+        let task_text = context
+            .annotation
+            .map(|annotation| annotation.task_description.as_str())
+            .unwrap_or("DOHC recording");
+        let mut info = json!({
             "codebase_version": "v2.1",
             "robot_type": "dohc",
             "total_episodes": 1,
@@ -106,14 +110,23 @@ impl ExportAdapter for LeRobotV2Adapter {
             "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
             "features": features
         });
+        if let Some(annotation) = context.annotation {
+            info["dohc_annotation"] = json!({
+                "trajectory_code": annotation.trajectory_code,
+                "task_id": annotation.task_id,
+                "task_description": annotation.task_description,
+                "processed_by": annotation.processed_by,
+                "revision": annotation.revision
+            });
+        }
         write_json(&meta_dir.join("info.json"), &info)?;
         write_json_line(
             &meta_dir.join("tasks.jsonl"),
-            &json!({"task_index": 0, "task": "DOHC recording"}),
+            &json!({"task_index": 0, "task": task_text}),
         )?;
         write_json_line(
             &meta_dir.join("episodes.jsonl"),
-            &json!({"episode_index": 0, "tasks": ["DOHC recording"], "length": context.data.states.len()}),
+            &json!({"episode_index": 0, "tasks": [task_text], "length": context.data.states.len()}),
         )?;
         let stats = build_stats(&context.data.states, fps);
         write_json(&meta_dir.join("stats.json"), &stats)?;
@@ -124,8 +137,23 @@ impl ExportAdapter for LeRobotV2Adapter {
         fs::write(
             partial.join("README.md"),
             format!(
-                "# {}\n\nLeRobot v2.1 dataset exported by DOHC Viewer.\n\nFrame range: {}-{}.\n",
-                context.data.summary.name, context.range.start_frame, context.range.end_frame
+                "# {}\n\nLeRobot v2.1 dataset exported by DOHC Viewer.\n\nFrame range: {}-{}.\n{}",
+                context
+                    .annotation
+                    .map(|annotation| annotation.trajectory_code.as_str())
+                    .unwrap_or(context.data.summary.name.as_str()),
+                context.range.start_frame,
+                context.range.end_frame,
+                context
+                    .annotation
+                    .map(|annotation| format!(
+                        "\nTask: {} ({})\nProcessed by: {} (@{})\n",
+                        annotation.task_description,
+                        annotation.task_id,
+                        annotation.processed_by.display_name,
+                        annotation.processed_by.username
+                    ))
+                    .unwrap_or_default()
             ),
         )?;
 
@@ -207,6 +235,31 @@ fn verify_lerobot_output(root: &Path, context: &ExportContext<'_>, fps: u32) -> 
         return Err(AppError::Message(
             "LeRobot 回读验证失败: info.json 不匹配".into(),
         ));
+    }
+    let task: Value = serde_json::from_reader(File::open(meta_dir.join("tasks.jsonl"))?)?;
+    let expected_task = context
+        .annotation
+        .map(|annotation| annotation.task_description.as_str())
+        .unwrap_or("DOHC recording");
+    if task["task"] != expected_task {
+        return Err(AppError::Message(
+            "LeRobot 回读验证失败: task 标注不匹配".into(),
+        ));
+    }
+    if let Some(annotation) = context.annotation {
+        if info["dohc_annotation"]["trajectory_code"] != annotation.trajectory_code
+            || info["dohc_annotation"]["task_id"] != annotation.task_id
+            || info["dohc_annotation"]["task_description"] != annotation.task_description
+            || info["dohc_annotation"]["processed_by"]["username"]
+                != annotation.processed_by.username
+            || info["dohc_annotation"]["processed_by"]["displayName"]
+                != annotation.processed_by.display_name
+            || info["dohc_annotation"]["revision"] != annotation.revision
+        {
+            return Err(AppError::Message(
+                "LeRobot 回读验证失败: 数据标注不匹配".into(),
+            ));
+        }
     }
 
     let parquet_path = root.join("data/chunk-000/episode_000000.parquet");

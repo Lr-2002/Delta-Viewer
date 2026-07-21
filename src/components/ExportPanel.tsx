@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { formatBytes, shortPath } from "../lib/format";
 import type {
+  EpisodeAnnotation,
   EpisodeData,
   ExportFormat,
   ExportRange,
@@ -47,6 +48,7 @@ const FORMATS: Array<{
 
 export function ExportPanel({
   data,
+  annotation,
   range,
   rangeStatus,
   rangeStateCount,
@@ -59,6 +61,7 @@ export function ExportPanel({
   onReveal,
 }: {
   data: EpisodeData;
+  annotation: EpisodeAnnotation | null;
   range: ExportRange;
   rangeStatus: "ok" | "warning" | "error";
   rangeStateCount: number;
@@ -87,8 +90,8 @@ export function ExportPanel({
 
       <div className="export-source-band">
         <div>
-          <span>记录</span>
-          <strong>{data.summary.name}</strong>
+          <span>{annotation ? "轨迹编码" : "记录"}</span>
+          <strong>{annotation?.trajectoryCode ?? data.summary.name}</strong>
         </div>
         <div>
           <span>裁剪范围</span>
@@ -99,8 +102,8 @@ export function ExportPanel({
           <strong>{rangeStateCount} 条 · {formatDuration(rangeDurationMs)}</strong>
         </div>
         <div>
-          <span>视频流</span>
-          <strong>{data.summary.streams.length}</strong>
+          <span>任务</span>
+          <strong>{annotation?.taskId ?? "未标注"}</strong>
         </div>
       </div>
 

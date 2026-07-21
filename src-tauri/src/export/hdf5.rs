@@ -244,6 +244,28 @@ impl ExportAdapter for Hdf5Adapter {
             "clip_end_frame",
             AttrValue::I64(context.range.end_frame as i64),
         );
+        if let Some(annotation) = context.annotation {
+            builder.set_attr(
+                "trajectory_code",
+                AttrValue::AsciiString(annotation.trajectory_code.clone()),
+            );
+            builder.set_attr(
+                "task_id",
+                AttrValue::AsciiString(annotation.task_id.clone()),
+            );
+            builder.set_attr(
+                "processed_by_username",
+                AttrValue::AsciiString(annotation.processed_by.username.clone()),
+            );
+            let mut annotation_group = builder.create_group("annotation");
+            annotation_group
+                .create_dataset("task_description_utf8")
+                .with_u8_data(annotation.task_description.as_bytes());
+            annotation_group
+                .create_dataset("processed_by_display_name_utf8")
+                .with_u8_data(annotation.processed_by.display_name.as_bytes());
+            builder.add_group(annotation_group.finish());
+        }
 
         let mut states_group = builder.create_group("states");
         let frame_ids: Vec<i64> = context
@@ -455,6 +477,31 @@ fn verify_hdf5(path: &Path, context: &ExportContext<'_>) -> AppResult<()> {
             "HDF5 回读验证失败: 裁剪范围属性不匹配".into(),
         ));
     }
+    if let Some(annotation) = context.annotation {
+        if !attr_string_matches(attrs.get("trajectory_code"), &annotation.trajectory_code)
+            || !attr_string_matches(attrs.get("task_id"), &annotation.task_id)
+            || !attr_string_matches(
+                attrs.get("processed_by_username"),
+                &annotation.processed_by.username,
+            )
+            || file
+                .dataset("annotation/task_description_utf8")
+                .map_err(map_error)?
+                .read_u8()
+                .map_err(map_error)?
+                != annotation.task_description.as_bytes()
+            || file
+                .dataset("annotation/processed_by_display_name_utf8")
+                .map_err(map_error)?
+                .read_u8()
+                .map_err(map_error)?
+                != annotation.processed_by.display_name.as_bytes()
+        {
+            return Err(AppError::Message(
+                "HDF5 回读验证失败: 数据标注不匹配".into(),
+            ));
+        }
+    }
     let shape = file
         .dataset("states/frame_id")
         .map_err(map_error)?
@@ -516,6 +563,13 @@ fn verify_hdf5(path: &Path, context: &ExportContext<'_>) -> AppResult<()> {
     Ok(())
 }
 
+fn attr_string_matches(value: Option<&AttrValue>, expected: &str) -> bool {
+    matches!(
+        value,
+        Some(AttrValue::String(actual) | AttrValue::AsciiString(actual)) if actual == expected
+    )
+}
+
 fn add_vector_dataset(
     group: &mut hdf5_pure::GroupBuilder,
     name: &str,
@@ -559,9 +613,11 @@ fn remove_partial(path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{plan_jpeg_stream, write_builder, JpegChunkProvider, JPEG_CHUNK_BYTES};
+    use super::{
+        attr_string_matches, plan_jpeg_stream, write_builder, JpegChunkProvider, JPEG_CHUNK_BYTES,
+    };
     use crate::error::AppError;
-    use hdf5_pure::{ChunkProvider, File as HdfFile, FileBuilder, FormatError};
+    use hdf5_pure::{AttrValue, ChunkProvider, File as HdfFile, FileBuilder, FormatError};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -574,6 +630,40 @@ mod tests {
         fn chunk_bytes(&self, _index: usize) -> Result<Vec<u8>, FormatError> {
             panic!("logical-size test must not read payload chunks")
         }
+    }
+
+    #[test]
+    fn verifies_ascii_attributes_after_reader_normalization() {
+        let root = test_output("ascii-attribute-roundtrip");
+        fs::create_dir_all(&root).unwrap();
+        let output = root.join("attributes.h5");
+        let mut builder = FileBuilder::new();
+        builder.set_attr("trajectory_code", AttrValue::AsciiString("oven-001".into()));
+        let mut annotation = builder.create_group("annotation");
+        annotation
+            .create_dataset("task_description_utf8")
+            .with_u8_data("关闭烤箱门".as_bytes());
+        builder.add_group(annotation.finish());
+        builder.write(&output).unwrap();
+
+        let file = HdfFile::open_streaming(&output).unwrap();
+        let attrs = file.root().attrs().unwrap();
+        assert!(attr_string_matches(
+            attrs.get("trajectory_code"),
+            "oven-001"
+        ));
+        assert!(!attr_string_matches(
+            attrs.get("trajectory_code"),
+            "oven-002"
+        ));
+        assert_eq!(
+            file.dataset("annotation/task_description_utf8")
+                .unwrap()
+                .read_u8()
+                .unwrap(),
+            "关闭烤箱门".as_bytes()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

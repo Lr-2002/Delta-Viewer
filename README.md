@@ -17,25 +17,30 @@ Project documentation:
 
 ## Workflow
 
-1. Select an SD card or a recording directory.
-2. Scan one or more episodes without modifying the source card, automatically
+1. Create or sign in to a local account. The account identifies who last
+   processed an episode; it is not a cloud account or a remote permission system.
+2. Select an SD card or a recording directory.
+3. Scan one or more episodes without modifying the source card, automatically
    select the first session, and continue loading it without a separate import
    button. The left list selects other sessions with one click and opens one
    with a double click.
-3. Immediately choose local storage and copy an unloaded session before opening
+4. Immediately choose local storage and copy an unloaded session before opening
    playback; an already loaded session opens playback directly.
-4. Preflight local capacity and filesystem support, then identify any safely
+5. Preflight local capacity and filesystem support, then identify any safely
    cleanable incomplete imports.
-5. Verify every destination file by size and BLAKE3, then write a format-v2
+6. Verify every destination file by size and BLAKE3, then write a format-v2
    `.dohc-manifest.json` with original and Windows-safe relative paths.
-6. Decode-check each stream at fixed 1%, 25%, 50%, 73%, and 99% positions,
+7. Decode-check each stream at fixed 1%, 25%, 50%, 73%, and 99% positions,
    validate the complete stream structure, parse every state, and check state
    frame IDs and timestamps.
-7. Review five synchronized image streams and state telemetry, and optionally
+8. Assign an episode task, editable task description, and a globally reserved
+   trajectory code. The initial `close_oven` task defaults to `oven-001`, then
+   increments for later trajectories.
+9. Review five synchronized image streams and state telemetry, and optionally
    select one continuous inclusive frame range for playback and export.
-8. Export the selected range as MCAP, HDF5, or LeRobot v2.1. Errors in that
+10. Export the selected range as MCAP, HDF5, or LeRobot v2.1. Errors in that
    range are blocked in Rust; warnings require explicit confirmation.
-9. Automatically persist warning/error health reports in the app-local data
+11. Automatically persist warning/error health reports in the app-local data
    directory, or use **Export report** to choose another destination. Passing
    checks do not create a background report.
 
@@ -45,6 +50,13 @@ strictly local and never writes to the SD card or imported episode; repeated
 checks of the same episode path and fingerprint reuse one report. Formal stress
 and release smoke tests still decode every JPEG; a sampled result does not claim
 that unsampled frames are free of encoding damage.
+
+Accounts, trajectory reservations, and append-only annotation revisions are
+stored under the operating system's application-local data directory. Passwords
+are stored as Argon2id PHC hashes with random salts, never as plaintext. Login
+sessions last only for the current application process. This identity layer is
+for processing attribution; it does not encrypt local files, provide roles,
+recover forgotten passwords, or synchronize between computers.
 
 The runtime has no SSH or other network data path. SSH was used only once to
 retrieve the development sample from the current ext4 card.
@@ -71,6 +83,12 @@ Adapter output:
 | HDF5 | Typed state datasets and per-stream concatenated JPEG bytes, offsets, sizes, and frame IDs |
 | LeRobot v2.1 | Parquet data, five MP4 streams, tasks/episodes/stats metadata, and `info.json` |
 
+For an annotated episode, all adapters use its trajectory code as the output
+base name and embed the task and processor identity in format-native metadata.
+MCAP uses `dohc.dataset` metadata, HDF5 uses root attributes plus `/annotation`,
+and LeRobot uses `info.json.dohc_annotation` plus its task text. Unannotated
+episodes retain their original recording-based names.
+
 The source has no robot action field, so the LeRobot adapter exports the
 available observation/state fields and images without inventing an action.
 Its standard `timestamp` follows the constant-rate video timeline; the original
@@ -78,8 +96,8 @@ nanosecond clock is retained separately as `observation.capture_time_ns`.
 
 Trim ranges are inclusive: a range of frames 10-19 contains ten states and the
 matching frames from all five streams. Trimming never changes the imported
-episode. Clipped output names include `_frames_10-19`, and each adapter records
-the bounds in its metadata.
+episode. Clipped output names include `_frames_10-19` after either the trajectory
+code or legacy recording name, and each adapter records the bounds in metadata.
 
 The MCAP adapter has been exercised with Foxglove Desktop 2.57.0: all five
 image topics decode in Image panels, `/dohc/pose` is recognized as
@@ -128,7 +146,9 @@ pnpm install
 pnpm tauri:dev
 ```
 
-Frontend-only development uses the local sample automatically:
+Frontend-only development uses an in-memory demo account and the local sample.
+Create the demo account on the login screen; refreshing the page resets demo
+accounts and annotations:
 
 ```bash
 pnpm dev

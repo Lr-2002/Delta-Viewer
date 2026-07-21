@@ -3,6 +3,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type {
+  AuthStatus,
+  EpisodeAnnotation,
   EpisodeData,
   EpisodeSummary,
   ExportFormat,
@@ -12,13 +14,118 @@ import type {
   ImportResult,
   PartialImport,
   ReportExportResult,
+  SaveAnnotationRequest,
   ScanResult,
   StateRecord,
   TaskProgress,
+  TaskDefinition,
+  UserIdentity,
   ValidationReport,
 } from "../types";
 
 export const DEMO_ROOT = "/Users/w/Projects/DOHC_Viewer/data/raw/2026-07-13_07-34-12";
+
+const demoAccounts = new Map<string, { displayName: string; password: string }>();
+const demoAnnotations = new Map<string, EpisodeAnnotation>();
+let demoCurrentUser: UserIdentity | null = null;
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  if (isTauriRuntime()) return invoke<AuthStatus>("get_auth_status");
+  return { hasAccounts: demoAccounts.size > 0, currentUser: demoCurrentUser };
+}
+
+export async function registerLocalAccount(
+  username: string,
+  displayName: string,
+  password: string,
+): Promise<UserIdentity> {
+  if (isTauriRuntime()) {
+    return invoke<UserIdentity>("register_account", {
+      request: { username, displayName, password },
+    });
+  }
+  const normalized = username.trim().toLowerCase();
+  if (demoAccounts.has(normalized)) throw new Error("ACCOUNT_EXISTS: 本地账号已存在");
+  demoAccounts.set(normalized, { displayName: displayName.trim(), password });
+  demoCurrentUser = { username: normalized, displayName: displayName.trim() };
+  return demoCurrentUser;
+}
+
+export async function loginLocalAccount(
+  username: string,
+  password: string,
+): Promise<UserIdentity> {
+  if (isTauriRuntime()) {
+    return invoke<UserIdentity>("login_account", { request: { username, password } });
+  }
+  const normalized = username.trim().toLowerCase();
+  const account = demoAccounts.get(normalized);
+  if (!account || account.password !== password) throw new Error("AUTH_INVALID: 账号或密码错误");
+  demoCurrentUser = { username: normalized, displayName: account.displayName };
+  return demoCurrentUser;
+}
+
+export async function logoutLocalAccount(): Promise<void> {
+  if (isTauriRuntime()) await invoke("logout_account");
+  demoCurrentUser = null;
+}
+
+export async function listTaskDefinitions(): Promise<TaskDefinition[]> {
+  if (isTauriRuntime()) return invoke<TaskDefinition[]>("list_task_definitions");
+  return [
+    {
+      id: "close_oven",
+      label: "关闭烤箱",
+      codePrefix: "oven",
+      defaultDescription: "关闭烤箱门，并确认烤箱门完全闭合。",
+    },
+  ];
+}
+
+export async function suggestTrajectoryCode(taskId: string): Promise<string> {
+  if (isTauriRuntime()) return invoke<string>("suggest_trajectory_code", { taskId });
+  const task = (await listTaskDefinitions()).find((item) => item.id === taskId);
+  if (!task) throw new Error(`UNKNOWN_TASK: 不支持的任务 ${taskId}`);
+  const used = [...demoAnnotations.values()]
+    .filter((item) => item.trajectoryCode.startsWith(`${task.codePrefix}-`))
+    .map((item) => Number(item.trajectoryCode.slice(task.codePrefix.length + 1)))
+    .filter(Number.isFinite);
+  const next = Math.max(0, ...used) + 1;
+  return `${task.codePrefix}-${String(next).padStart(3, "0")}`;
+}
+
+export async function loadEpisodeAnnotation(sourcePath: string): Promise<EpisodeAnnotation | null> {
+  if (isTauriRuntime()) {
+    return invoke<EpisodeAnnotation | null>("load_episode_annotation", { sourcePath });
+  }
+  return demoAnnotations.get(sourcePath) ?? null;
+}
+
+export async function saveEpisodeAnnotation(
+  request: SaveAnnotationRequest,
+): Promise<EpisodeAnnotation> {
+  if (isTauriRuntime()) {
+    return invoke<EpisodeAnnotation>("save_episode_annotation", { request });
+  }
+  if (!demoCurrentUser) throw new Error("AUTH_REQUIRED: 请先登录本地账号");
+  const existing = demoAnnotations.get(request.sourcePath);
+  const now = Date.now();
+  const annotation: EpisodeAnnotation = {
+    formatVersion: 1,
+    episodeId: `demo-${request.sourcePath}`,
+    episodeRoot: request.sourcePath,
+    episodeFingerprint: "f5bc2dda9be850c0d89c88c1021ae8964f59592b7bad1db02159fdef24384727",
+    trajectoryCode: request.trajectoryCode,
+    taskId: request.taskId,
+    taskDescription: request.taskDescription.trim(),
+    processedBy: demoCurrentUser,
+    revision: (existing?.revision ?? 0) + 1,
+    createdAtMs: existing?.createdAtMs ?? now,
+    updatedAtMs: now,
+  };
+  demoAnnotations.set(request.sourcePath, annotation);
+  return annotation;
+}
 
 export function isTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in window;
@@ -127,7 +234,7 @@ export async function loadEpisode(path: string): Promise<EpisodeData> {
 export async function validateEpisode(path: string): Promise<ValidationReport> {
   if (isTauriRuntime()) return invoke<ValidationReport>("validate_episode", { path });
   return {
-    formatVersion: 2,
+    formatVersion: 3,
     episodeRoot: path,
     parsedStateCount: 196,
     imageValidationMode: "sampled",
@@ -189,14 +296,17 @@ export async function exportEpisode(
       },
     });
   }
+  const annotation = demoAnnotations.get(sourcePath);
+  const baseName = annotation?.trajectoryCode ?? "2026-07-13_07-34-12";
   const names: Record<ExportFormat, string> = {
-    mcap: `2026-07-13_07-34-12${demoRangeSuffix(range)}.mcap`,
-    hdf5: `2026-07-13_07-34-12${demoRangeSuffix(range)}.h5`,
-    lerobot_v2: `2026-07-13_07-34-12${demoRangeSuffix(range)}_lerobot_v2`,
+    mcap: `${baseName}${demoRangeSuffix(range)}.mcap`,
+    hdf5: `${baseName}${demoRangeSuffix(range)}.h5`,
+    lerobot_v2: `${baseName}${demoRangeSuffix(range)}_lerobot_v2`,
   };
   return {
     format,
     outputPath: `${destinationParent}/${names[format]}`,
+    trajectoryCode: annotation?.trajectoryCode ?? null,
     totalFiles: format === "lerobot_v2" ? 12 : 1,
     totalBytes: format === "mcap" ? 80_780_000 : format === "hdf5" ? 80_650_000 : 49_300_000,
     elapsedMs: format === "lerobot_v2" ? 18_400 : 3_200,

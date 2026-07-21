@@ -351,6 +351,7 @@ fn run_inner(
                 source_path: &imported,
                 destination_parent: &exports,
                 validation_report: &validation_report,
+                annotation: None,
                 acknowledge_warnings: true,
                 requested_range: None,
                 app: None,

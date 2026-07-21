@@ -3,6 +3,69 @@ use serde::{Deserialize, Serialize};
 pub const STREAM_NAMES: [&str; 5] = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
 pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 3;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserIdentity {
+    pub username: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthStatus {
+    pub has_accounts: bool,
+    pub current_user: Option<UserIdentity>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegisterAccountRequest {
+    pub username: String,
+    pub display_name: String,
+    pub password: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDefinition {
+    pub id: String,
+    pub label: String,
+    pub code_prefix: String,
+    pub default_description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EpisodeAnnotation {
+    pub format_version: u32,
+    pub episode_id: String,
+    pub episode_root: String,
+    pub episode_fingerprint: String,
+    pub trajectory_code: String,
+    pub task_id: String,
+    pub task_description: String,
+    pub processed_by: UserIdentity,
+    pub revision: u64,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveAnnotationRequest {
+    pub source_path: String,
+    pub trajectory_code: String,
+    pub task_id: String,
+    pub task_description: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamSummary {
@@ -280,6 +343,7 @@ pub struct ExportCommandRequest {
 pub struct ExportResult {
     pub format: String,
     pub output_path: String,
+    pub trajectory_code: Option<String>,
     pub total_files: u64,
     pub total_bytes: u64,
     pub elapsed_ms: u128,

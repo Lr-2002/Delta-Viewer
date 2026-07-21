@@ -24,9 +24,30 @@ html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
 
 body { min-height: 100vh; background: #f3f3f3; }
 
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { color: inherit; }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #111111; outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #111111; outline-offset: 2px; }
+
+.auth-shell { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; padding: 24px 28px 18px; background: var(--surface); }
+.auth-brand { display: flex; align-items: center; gap: 10px; }
+.auth-brand strong, .auth-brand span { display: block; }
+.auth-brand strong { font-size: 14px; }
+.auth-brand span:not(.brand-mark) { margin-top: 2px; color: var(--muted); font-size: 10px; text-transform: uppercase; }
+.auth-panel { width: min(100%, 410px); align-self: center; justify-self: center; padding: 28px 0 24px; border-top: 2px solid var(--ink); border-bottom: 1px solid var(--line); }
+.auth-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+.auth-heading h1 { margin: 4px 0 0; font-size: 21px; letter-spacing: 0; }
+.auth-icon { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 40px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-alt); }
+.auth-panel form { display: grid; gap: 14px; }
+.auth-panel label { display: grid; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 650; }
+.auth-panel input { width: 100%; height: 38px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 13px; }
+.auth-error { padding: 9px 10px; border-left: 3px solid var(--ink); color: var(--ink); background: var(--surface-alt); font-size: 11px; line-height: 1.45; }
+.auth-submit { min-height: 39px; margin-top: 4px; }
+.auth-switch { min-height: 26px; display: flex; justify-content: center; margin-top: 15px; }
+.auth-switch .text-button { margin-left: 0; }
+.auth-footer { align-self: end; color: var(--subtle); font-size: 10px; text-align: center; }
+.auth-loading { grid-template-rows: 1fr; place-items: center; align-content: center; gap: 10px; color: var(--muted); text-align: center; }
+.auth-loading strong { color: var(--ink); font-size: 13px; }
+.auth-loading span { max-width: 520px; font-size: 11px; }
 
 .app-shell { min-height: 100vh; display: flex; flex-direction: column; }
 
@@ -53,6 +74,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .source-display > span:not(.source-dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-dot { width: 7px; height: 7px; flex: 0 0 7px; display: inline-block; border-radius: 50%; background: var(--accent); }
 .topbar-actions { display: flex; align-items: center; gap: 9px; }
+.account-summary { min-width: 0; display: flex; align-items: center; gap: 7px; padding-left: 3px; }
+.account-summary > span { min-width: 0; }
+.account-summary strong, .account-summary small { display: block; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-summary strong { font-size: 11px; }
+.account-summary small { margin-top: 1px; color: var(--subtle); font-size: 9px; }
 
 .button {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px;
@@ -127,6 +153,27 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .review-view, .checks-view, .export-view { padding: 22px 25px 36px; }
 .section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .compact-heading { margin-bottom: 13px; }
+.annotation-section { margin-bottom: 23px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+.annotation-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.annotation-heading h2 { margin: 3px 0 0; font-size: 17px; line-height: 1.15; }
+.annotation-state { min-width: 74px; padding: 4px 7px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--muted); background: var(--surface-alt); font-size: 10px; text-align: center; }
+.annotation-state.saved { color: var(--ink); background: var(--surface); }
+.annotation-layout { display: grid; grid-template-columns: minmax(210px, .72fr) minmax(300px, 1.45fr); gap: 22px; }
+.annotation-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
+.annotation-fields label, .annotation-description { min-width: 0; display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 650; }
+.annotation-fields label > span, .annotation-description > span { display: inline-flex; align-items: center; gap: 5px; }
+.annotation-fields input, .annotation-fields select { width: 100%; height: 34px; min-width: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 12px; }
+.annotation-fields input[readonly] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; background: var(--surface-alt); }
+.annotation-fields label small { color: var(--subtle); font-size: 9px; font-weight: 500; }
+.annotation-processor { grid-column: 1 / 3; min-height: 42px; display: flex; align-items: center; gap: 8px; padding-top: 2px; }
+.annotation-processor > span { min-width: 0; display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 6px; }
+.annotation-processor small { color: var(--subtle); font-size: 9px; }
+.annotation-processor strong { font-size: 11px; }
+.annotation-processor code { color: var(--muted); font-size: 9px; }
+.annotation-description textarea { width: 100%; min-height: 98px; resize: vertical; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 12px; line-height: 1.55; }
+.annotation-description small { justify-self: end; color: var(--subtle); font-size: 9px; font-weight: 500; }
+.annotation-actions { min-height: 37px; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-top: 9px; }
+.annotation-actions > span { color: var(--subtle); font-size: 10px; }
 .frame-counter { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .camera-section { padding-bottom: 24px; border-bottom: 1px solid var(--line); }
 .camera-grid { height: clamp(300px, 49vh, 520px); min-height: 300px; display: grid; grid-template-columns: 1.6fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 7px; }
@@ -277,6 +324,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .workspace { grid-template-columns: 224px minmax(0, 1fr); }
   .review-view, .checks-view, .export-view { padding-right: 17px; padding-left: 17px; }
   .view-tabs { padding: 0 17px; }
+  .account-summary strong, .account-summary small { max-width: 78px; }
 }
 
 @media (max-width: 760px) {
@@ -284,6 +332,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .brand-lockup { min-width: 0; flex: 1; }
   .brand-lockup > div span { display: none; }
   .top-status { display: none; }
+  .account-summary { width: 30px; justify-content: center; padding: 0; }
+  .account-summary > span { display: none; }
   .button { padding: 0 9px; }
   .button-secondary { width: 34px; padding: 0; }
   .button-secondary { font-size: 0; }
@@ -299,6 +349,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .view-tabs { padding: 0 12px; }
   .loaded-label { display: none; }
   .review-view, .checks-view, .export-view { padding: 17px 12px 28px; }
+  .annotation-layout { grid-template-columns: 1fr; gap: 10px; }
+  .annotation-description textarea { min-height: 86px; }
   .camera-grid { height: auto; min-height: 0; grid-template-columns: 1fr 1fr; grid-template-rows: auto; }
   .camera-0, .camera-1, .camera-2, .camera-3, .camera-4 { grid-area: auto; aspect-ratio: 16 / 10; }
   .camera-0 { grid-column: 1 / 3; aspect-ratio: 16 / 9; }
@@ -331,4 +383,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .progress-copy { min-width: 0; max-width: calc(100% - 45px); flex: 1; }
   .progress-track { order: 3; flex-basis: 100%; }
   .progress-stats { display: none; }
+  .auth-shell { padding: 18px 18px 14px; }
+  .auth-panel { padding-top: 22px; }
 }
