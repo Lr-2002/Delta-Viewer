@@ -8,7 +8,7 @@ DOHC Viewer 的核心数据工作流完全离线：
 - 导入后逐文件回读目标端大小和 BLAKE3，不只信任源端读取。
 - 正式输出使用 partial 加同文件系统原子发布，不覆盖已有结果。
 
-GitHub Release 的构建过程需要网络下载编译依赖、reviewed FFmpeg 和访问签名服务；这不改变安装后应用运行时的离线边界。
+GitHub Release 的构建过程需要网络下载编译依赖、reviewed FFmpeg 和 WebView2；当前 unsigned channel 不访问签名服务。这不改变安装后应用运行时的离线边界。
 
 ## 文件系统
 

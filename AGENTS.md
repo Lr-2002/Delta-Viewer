@@ -16,7 +16,7 @@
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
 11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录或本地导入副本，三个 adapter 必须使用同一范围。
 12. 账号、登录会话和 episode 标注是纯本地能力。不得把账号、密码、处理人或标注发送到网络；所有数据 command 必须在 Rust 中验证当前登录会话。
-13. 正式 GitHub Release 必须同时包含 Windows x64、macOS arm64 和 macOS x64 的已签名可安装产物；任一平台、依赖、签名、notarization 或安装/启动检查失败时不得公开部分 Release。
+13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 macOS x64 可安装产物。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；标题、资产名、说明、verification report 和 manifest 都不得暗示已签名。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 
 ## 2. 仓库结构
 
@@ -27,7 +27,7 @@ DOHC_Viewer/
   README.md                      用户/构建入口
   AGENTS.md                      本开发指南
   .github/workflows/
-    release.yml                 三平台签名安装包 CD 与原子发布门禁
+    release.yml                 三平台安装包 CD 与原子发布门禁
     wiki.yml                    docs/wiki 到 GitHub Wiki 的同步流程
   docs/wiki/                    GitHub Wiki 的可审查唯一源文件
   src/                           React/TypeScript UI
@@ -62,8 +62,9 @@ DOHC_Viewer/
   scripts/release-check.mjs      跨平台 quick/full/bundle 发布检查
   scripts/verify-release.mjs     annotated tag、版本与打包契约门禁
   scripts/assemble-release.mjs   三平台产物/报告汇总与 SHA-256 manifest
-  scripts/verify-release-macos.sh signed/notarized DMG 安装启动检查
-  scripts/verify-release-windows.ps1 signed NSIS 安装启动卸载检查
+  scripts/build-ffmpeg-macos.sh 固定源码构建最小 LGPL FFmpeg
+  scripts/verify-release-macos.sh unsigned DMG 挂载与启动检查
+  scripts/verify-release-windows.ps1 unsigned NSIS 安装启动卸载检查
   scripts/check-wiki.mjs         Wiki 页面和内部链接检查
   scripts/windows-cross-check.mjs macOS/Linux 到 Windows x64 MSVC 条件编译检查
   scripts/exfat-smoke-macos.mjs  macOS 只读虚拟 ExFAT 全链路 smoke
@@ -421,38 +422,38 @@ pnpm tauri:build
 2. 归档 FFmpeg 下载来源、版本、SHA-256、构建选项、许可证和 manifest。
 3. NSIS 包含离线 WebView2，不依赖安装时网络。
 4. Installer hook 在 Win10 以下中止安装。
-5. 应用和安装器完成代码签名和时间戳。
+5. 当前 unsigned channel 必须确认应用和安装器没有被误标为可信签名，并在文件名和发布说明中显示 `UNSIGNED`；后续 production channel 再要求代码签名和时间戳。
 6. 在断网的干净 Win10/Win11 x64 VM 中运行完整 smoke test。
 7. 确认安装包不包含 `data/raw`、`data/imports`、测试输出或开发路径。
 
 不要把 staging 的 FFmpeg、许可证 bundle、manifest、JSON 检查报告或签名材料加入 Git。
 
-### 10.4 GitHub 正式 CD
+### 10.4 GitHub Release CD
 
 `.github/workflows/release.yml` 只处理已经存在的 annotated `vX.Y.Z` tag。prepare job
 重新验证 tag 类型、HEAD、clean checkout、Changelog 以及四处应用版本，然后运行
 `pnpm check`。Windows x64、macOS arm64 和 macOS x64 在原生 runner 上构建；所有
 job 使用锁定 commit SHA 的 Actions，并固定 Node 22、pnpm 10.12.1 和 Rust 1.97.1。
 
-正式 job 绑定 `production-release` GitHub Environment。该 Environment 必须配置
-required reviewers、Windows PFX、Apple Developer ID/notarization 凭据、每种架构
-reviewed FFmpeg 的 HTTPS URL/二进制与许可证 SHA-256/build ID，以及 Windows x64
-WebView2 exact Microsoft URL/SHA-256。缺少任何变量必须失败，禁止生成 unsigned 或
-ad-hoc fallback。秘密值不得写入 workflow、报告、artifact 或仓库。
+当前 `0.15.x` release channel 是显式 unsigned。Windows FFmpeg、许可证、构建说明和
+WebView2 exact URL/SHA-256 固定在 workflow；macOS arm64/x64 从固定 archive hash 和
+Git commit 的 FFmpeg 8.1.2 官方源码构建只含 JPEG -> MPEG-4 所需能力的最小 LGPL
+sidecar。不得替换为 `--enable-nonfree` 或带非系统动态库的构建。
 
 平台验证最低包括：
 
-1. Windows 应用/NSIS 的 Authenticode 与 RFC 3161 时间戳、预审核 exact URL/hash 的
-   offline WebView2、FFmpeg/许可证/manifest、silent install、启动 8 秒和 silent uninstall。
-2. macOS Developer ID、hardened runtime、Gatekeeper、stapled notarization、只读 DMG、
-   `/Applications` 链接、FFmpeg 独立 Developer ID 签名与 upstream/签名后 hash，
-   以及复制到本地后的 8 秒启动。
+1. Windows 确认 DOHC 应用、NSIS 和 uninstaller 为 unsigned，同时验证 Microsoft 已签名
+   的 offline WebView2、FFmpeg/许可证/manifest、silent install、启动 8 秒和 silent uninstall。
+2. macOS 确认没有 Developer ID 和 notarization claim，验证 FFmpeg 源码/binary hash、
+   架构与系统库依赖、只读 DMG、`/Applications` 链接，以及复制后的 8 秒直接启动。
 3. final job 重新读取三份 verification JSON 和安装器 hash，生成
    `release-manifest.json`、`SHA256SUMS.txt` 和 provenance；三个 installer 集合完整
    后才解除 draft。公开过的 tag 不允许 clobber。
 
-GitHub hosted runner 不是目标机验收。CD 通过仍不得关闭 Win10/Win11 断网、目标 Mac、
-真实 exFAT SD 卡或 100 GB/100,000 文件缺口。用户文档以 `docs/wiki/` 为唯一源，
+所有安装器文件名、Release 标题/说明和 manifest 必须显示 `UNSIGNED`。加入签名时必须
+作为单独版本恢复 Authenticode、Developer ID、timestamp、Gatekeeper 和 notarization
+门禁，不得在同一 tag 上替换资产。GitHub hosted runner 不是目标机验收；CD 通过仍不得
+关闭 Win10/Win11 断网、目标 Mac、真实 exFAT SD 卡或 100 GB/100,000 文件缺口。用户文档以 `docs/wiki/` 为唯一源，
 修改后运行 `pnpm check:wiki`；`.github/workflows/wiki.yml` 只负责同步到已初始化的
 GitHub Wiki，不直接在网页维护分叉版本。
 
@@ -490,10 +491,10 @@ GitHub Wiki，不直接在网页维护分叉版本。
 6. 在该 commit 上创建 annotated tag，例如 `git tag -a v0.2.0 -m "DOHC Viewer v0.2.0"`。
 7. 测试失败、报告 failed、版本不一致或工作区混入无关文件时不得打 tag。
 
-tag 推送后，正式 Release 只能由 `release.yml` 生成。不要手工上传 unsigned 包或只
-发布单一平台；CD 因凭据、FFmpeg、签名、notarization 或 smoke 失败时修复配置并重跑
-同一 draft，代码修复则进入新版本和新 tag。GitHub Wiki 的可编辑源保留在主仓库，
-Wiki Git 仓库只接收同步 commit。
+tag 推送后，GitHub Release 只能由 `release.yml` 生成。不要手工上传或只发布单一平台；
+当前 unsigned channel 必须保留全部警告和文件名标记。CD 因依赖或 smoke 失败时可重跑
+同一 draft，代码修复则进入新版本和新 tag。未来签名模式的修改也必须进入新版本，
+不得覆盖现有 unsigned tag。GitHub Wiki 的可编辑源保留在主仓库，Wiki Git 仓库只接收同步 commit。
 
 正式实盘验收是 tag 后的资格测试，因为 runner 会核对 exact tag。它失败时不得
 移动、覆盖或重建已有 tag；修复进入下一个版本。没有实盘条件时可以发布明确标注

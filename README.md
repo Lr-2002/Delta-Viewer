@@ -18,16 +18,18 @@ Project documentation:
 
 ## Installation
 
-Formal installers are published on [GitHub Releases](https://github.com/Lr-2002/Delta-Viewer/releases):
+Installers are published on [GitHub Releases](https://github.com/Lr-2002/Delta-Viewer/releases):
 
-- `DOHC-Viewer_<version>_windows-x64-setup.exe`
-- `DOHC-Viewer_<version>_macos-arm64.dmg`
-- `DOHC-Viewer_<version>_macos-x64.dmg`
+- `DOHC-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`
+- `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`
+- `DOHC-Viewer_<version>_UNSIGNED_macos-x64.dmg`
 
-A release is made public only after all three installers pass dependency,
-signature, install or mount, startup, and checksum gates. Use the accompanying
-`SHA256SUMS.txt` and `release-manifest.json`; detailed installation and usage
-instructions live in the Wiki.
+The current release channel is deliberately unsigned. Windows can show an
+unknown-publisher or SmartScreen warning, and macOS can require an explicit
+Gatekeeper override. A release is made public only after all three installers
+pass dependency, resource, install or mount, direct-startup, and checksum gates.
+Verify `SHA256SUMS.txt` before use; detailed installation and usage instructions
+live in the Wiki.
 
 ## Workflow
 
@@ -298,27 +300,28 @@ pnpm tauri:build
 The Windows-specific Tauri config bundles the verified FFmpeg resources,
 embeds the offline WebView2 installer, blocks downgrades, and refuses
 installation below Windows 10. The final NSIS application and installer must be
-signed and tested offline on clean Win10/Win11 x64 systems. Code signing
-credentials are intentionally not stored in this repository.
+tested offline on clean Win10/Win11 x64 systems. The current public package is
+explicitly unsigned; Authenticode remains a later production-hardening gate.
 
-## Formal release CD
+## GitHub release CD
 
 `.github/workflows/release.yml` runs only for an existing annotated `vX.Y.Z`
 tag (or a manual rerun of one). It builds Windows x64, macOS arm64, and macOS
-x64 on native GitHub-hosted runners. Each job requires reviewed, hash-pinned
-FFmpeg inputs and production signing credentials from the protected
-`production-release` environment. Missing inputs fail the release; there is no
-unsigned fallback.
+x64 on native GitHub-hosted runners. Windows uses reviewed, hash-pinned FFmpeg
+and offline WebView2 inputs. Each macOS runner builds a minimal LGPL FFmpeg from
+a pinned official source archive and commit.
 
-The platform jobs verify Authenticode or Developer ID signatures, trusted
-timestamps/notarization, bundled FFmpeg, offline WebView2 on Windows, installer
-or DMG contents, and an installed-copy startup smoke. The final job recomputes
-all SHA-256 values, emits a release manifest and GitHub provenance attestations,
-and publishes the draft only when the complete three-platform set matches.
+The platform jobs verify that DOHC assets are explicitly unsigned, then check
+bundled FFmpeg, offline WebView2 on Windows, installer or DMG contents, and an
+installed-copy direct-startup smoke. The final job recomputes all SHA-256 values,
+emits a release manifest and GitHub provenance attestations, and publishes the
+draft only when the complete three-platform set matches. Release titles, asset
+names, notes, reports, and the manifest all carry the `UNSIGNED` state.
 
 The hosted-runner smoke does not replace clean Win10/Win11 offline testing,
 target-Mac testing, physical exFAT SD-card validation, or the formal
-100 GB/100,000-file run. Release environment setup is documented in the
+100 GB/100,000-file run. Signing, notarization, and release operations are
+documented in the
 [Wiki release guide](https://github.com/Lr-2002/Delta-Viewer/wiki/Release-Operations).
 
 Wiki source is reviewed under `docs/wiki/` and synchronized by

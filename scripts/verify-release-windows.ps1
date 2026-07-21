@@ -2,7 +2,6 @@ param(
   [Parameter(Mandatory = $true)][string]$Version,
   [Parameter(Mandatory = $true)][string]$Tag,
   [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{40}$")][string]$Commit,
-  [Parameter(Mandatory = $true)][ValidatePattern("^[0-9A-Fa-f]{40}$")][string]$CertificateThumbprint,
   [Parameter(Mandatory = $true)][ValidatePattern("^https://")][string]$WebView2Url,
   [Parameter(Mandatory = $true)][ValidatePattern("^[0-9A-Fa-f]{64}$")][string]$WebView2Sha256,
   [Parameter(Mandatory = $true)][string]$OutputDirectory
@@ -16,18 +15,12 @@ function Get-LowerSha256 {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-function Assert-SignedAndTimestamped {
+function Assert-Unsigned {
   param([Parameter(Mandatory = $true)][string]$Path)
   $Signature = Get-AuthenticodeSignature -LiteralPath $Path
-  if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-    throw "Authenticode signature is not valid for $Path`: $($Signature.StatusMessage)"
-  }
-  if (-not $Signature.SignerCertificate -or
-      $Signature.SignerCertificate.Thumbprint -ne $CertificateThumbprint.ToUpperInvariant()) {
-    throw "Unexpected signing certificate on $Path"
-  }
-  if (-not $Signature.TimeStamperCertificate) {
-    throw "No trusted timestamp was found on $Path"
+  if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned -or
+      $null -ne $Signature.SignerCertificate) {
+    throw "Unsigned release unexpectedly contains an Authenticode signature: $Path"
   }
   return $Signature
 }
@@ -47,8 +40,8 @@ $MainBinary = Join-Path $RepositoryRoot "src-tauri\target\release\dohc-viewer.ex
 if (-not (Test-Path -LiteralPath $MainBinary -PathType Leaf)) {
   throw "Release application executable is missing: $MainBinary"
 }
-$InstallerSignature = Assert-SignedAndTimestamped -Path $Installer.FullName
-[void](Assert-SignedAndTimestamped -Path $MainBinary)
+$InstallerSignature = Assert-Unsigned -Path $Installer.FullName
+[void](Assert-Unsigned -Path $MainBinary)
 
 $SevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
 $ExtractRoot = Join-Path $env:RUNNER_TEMP ("dohc-viewer-nsis-" + [Guid]::NewGuid().ToString("N"))
@@ -60,7 +53,7 @@ try {
   & $SevenZip x -y "-o$ExtractRoot" $Installer.FullName | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "7-Zip could not extract the NSIS installer" }
 
-  $WebViewPayloads = @(Get-ChildItem -LiteralPath $ExtractRoot -Recurse -File -Filter "MicrosoftEdgeWebView2RuntimeInstaller.exe")
+  $WebViewPayloads = @(Get-ChildItem -LiteralPath $ExtractRoot -Recurse -File -Filter "MicrosoftEdgeWebView2RuntimeInstaller*.exe")
   if ($WebViewPayloads.Count -ne 1 -or $WebViewPayloads[0].Length -lt 1000000) {
     throw "NSIS does not contain exactly one offline WebView2 installer"
   }
@@ -98,11 +91,9 @@ try {
   if ($InstalledFfmpeg.Count -ne 1 -or (Get-LowerSha256 -Path $InstalledFfmpeg[0].FullName) -ne $FfmpegSha) {
     throw "Installed FFmpeg resource is missing or has the wrong hash"
   }
-  $InstalledApps = @(Get-ChildItem -LiteralPath $InstallRoot -Recurse -File -Filter "*.exe" | Where-Object {
-    $_.BaseName -eq "dohc-viewer" -or $_.VersionInfo.ProductName -eq "DOHC Viewer"
-  })
+  $InstalledApps = @(Get-ChildItem -LiteralPath $InstallRoot -Recurse -File -Filter "dohc-viewer.exe")
   if ($InstalledApps.Count -ne 1) { throw "Could not identify exactly one installed DOHC Viewer executable" }
-  [void](Assert-SignedAndTimestamped -Path $InstalledApps[0].FullName)
+  [void](Assert-Unsigned -Path $InstalledApps[0].FullName)
 
   $RunningApp = Start-Process -FilePath $InstalledApps[0].FullName -PassThru
   Start-Sleep -Seconds 8
@@ -115,7 +106,7 @@ try {
   $Uninstallers = @(Get-ChildItem -LiteralPath $InstallRoot -Recurse -File -Filter "*uninstall*.exe")
   if ($Uninstallers.Count -ne 1) { throw "Could not identify exactly one NSIS uninstaller" }
   $Uninstaller = $Uninstallers[0].FullName
-  [void](Assert-SignedAndTimestamped -Path $Uninstaller)
+  [void](Assert-Unsigned -Path $Uninstaller)
   $UninstallProcess = Start-Process -FilePath $Uninstaller -ArgumentList "/S" -Wait -PassThru
   if ($UninstallProcess.ExitCode -ne 0) { throw "Silent NSIS uninstall failed with $($UninstallProcess.ExitCode)" }
   Start-Sleep -Seconds 2
@@ -123,7 +114,7 @@ try {
   $Uninstaller = $null
 
   New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-  $ArtifactName = "DOHC-Viewer_${Version}_windows-x64-setup.exe"
+  $ArtifactName = "DOHC-Viewer_${Version}_UNSIGNED_windows-x64-setup.exe"
   $ArtifactPath = Join-Path $OutputDirectory $ArtifactName
   if (Test-Path -LiteralPath $ArtifactPath) { throw "Output already exists: $ArtifactPath" }
   Copy-Item -LiteralPath $Installer.FullName -Destination $ArtifactPath
@@ -137,6 +128,10 @@ try {
     version = $Version
     platform = "windows"
     architecture = "x64"
+    distribution = [ordered]@{
+      signingMode = "unsigned"
+      trustedPublisher = $false
+    }
     artifact = [ordered]@{
       fileName = $ArtifactName
       sha256 = $ArtifactSha
@@ -155,9 +150,10 @@ try {
       signer = $WebViewSignature.SignerCertificate.Subject
     }
     signing = [ordered]@{
-      verified = $true
-      signer = $InstallerSignature.SignerCertificate.Subject
-      timestampSigner = $InstallerSignature.TimeStamperCertificate.Subject
+      mode = "unsigned"
+      inspected = $true
+      verified = $false
+      authenticodeStatus = $InstallerSignature.Status.ToString()
     }
     runtimeSmoke = [ordered]@{
       passed = $true
@@ -173,7 +169,7 @@ try {
     (($Report | ConvertTo-Json -Depth 6) + "`n"),
     (New-Object System.Text.UTF8Encoding($false))
   )
-  Write-Host "Verified Windows release artifact: $ArtifactPath"
+  Write-Host "Verified unsigned Windows release artifact: $ArtifactPath"
 }
 finally {
   if ($RunningApp -and -not $RunningApp.HasExited) {

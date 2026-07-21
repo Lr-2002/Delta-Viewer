@@ -24,7 +24,7 @@ macOS 可能使 Foxglove 保存的最近文件权限句柄失效。不要修改 
 
 ## LeRobot 提示找不到 FFmpeg
 
-正式 Release 已内置并校验 FFmpeg。出现该错误时先确认安装来自 GitHub Release 且 hash 匹配；不要把本地 debug app 当作正式包。问题报告中附上应用版本、平台、导出错误摘要和 Release 文件 hash，不要附原始图像或账号密码。
+GitHub Release 已内置并校验 FFmpeg。出现该错误时先确认安装来自 GitHub Release 且 hash 匹配；不要把本地 debug app 当作发布包。问题报告中附上应用版本、平台、导出错误摘要和 Release 文件 hash，不要附原始图像或账号密码。
 
 ## 忘记本地账号密码
 
@@ -32,4 +32,4 @@ macOS 可能使 Foxglove 保存的最近文件权限句柄失效。不要修改 
 
 ## macOS 提示应用已损坏或无法验证
 
-确认下载的是与芯片匹配的正式 DMG，并核对 `SHA256SUMS.txt`。正式包必须通过 Gatekeeper。不要运行移除 quarantine 或关闭 Gatekeeper 的命令；这类提示通常表示下载不完整、架构错误或不是正式签名产物。
+当前 DMG 文件名包含 `UNSIGNED`，没有 Developer ID 或 Apple notarization，因此首次启动被 Gatekeeper 阻止是已知限制。先确认下载自本仓库、芯片架构正确并核对 `SHA256SUMS.txt`；随后可按[安装与升级](Installation)使用 Finder 的“打开”或系统设置中的“仍要打开”。不要关闭 Gatekeeper，也不要运行批量移除 quarantine 的命令。若 hash 不符，应删除文件并重新下载。

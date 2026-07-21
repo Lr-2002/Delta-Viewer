@@ -2,17 +2,19 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
-## Unreleased
+## 0.15.0 - 2026-07-21
 
-- Added fail-closed GitHub CD for signed Windows x64 NSIS and signed/notarized
-  macOS arm64/x64 DMG installers, with native install/startup smoke checks,
-  complete-set publication, checksums, manifests, and build provenance.
+- Added GitHub CD for explicitly unsigned Windows x64 NSIS and macOS arm64/x64
+  DMG installers, with native install/startup smoke checks, complete-set
+  publication, checksums, manifests, and build provenance.
 - Added a reviewed `docs/wiki` user manual and automatic GitHub Wiki sync for
   installation, SD-card loading, validation, playback, annotation, export,
   privacy, troubleshooting, and release operations.
-- Fixed formal macOS packaging at macOS 12 or later and pinned the release Rust
-  toolchain to 1.97.1; production releases still require approved signing and
-  reviewed FFmpeg configuration outside Git.
+- Added pinned Windows FFmpeg/WebView2 inputs and reproducible minimal macOS
+  FFmpeg source builds; all public assets and reports carry an `UNSIGNED`
+  warning until Authenticode, Developer ID, and notarization are added.
+- Fixed macOS packaging at macOS 12 or later, added headless DMG construction,
+  and pinned the release Rust toolchain to 1.97.1.
 
 ## 0.14.0 - 2026-07-21
 

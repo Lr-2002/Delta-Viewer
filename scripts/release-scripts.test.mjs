@@ -80,20 +80,33 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
   const tag = `v${version}`;
   const commit = "a".repeat(40);
   const definitions = [
-    { platform: "windows", architecture: "x64", suffix: "windows-x64-setup.exe" },
-    { platform: "macos", architecture: "arm64", suffix: "macos-arm64.dmg" },
-    { platform: "macos", architecture: "x64", suffix: "macos-x64.dmg" },
+    {
+      platform: "windows",
+      architecture: "x64",
+      suffix: "windows-x64-setup.exe",
+      reportSuffix: "windows-x64.verification.json",
+    },
+    {
+      platform: "macos",
+      architecture: "arm64",
+      suffix: "macos-arm64.dmg",
+      reportSuffix: "macos-arm64.verification.json",
+    },
+    {
+      platform: "macos",
+      architecture: "x64",
+      suffix: "macos-x64.dmg",
+      reportSuffix: "macos-x64.verification.json",
+    },
   ];
 
   for (const [index, definition] of definitions.entries()) {
-    const installer = `DOHC-Viewer_${version}_${definition.suffix}`;
+    const installer = `DOHC-Viewer_${version}_UNSIGNED_${definition.suffix}`;
     const installerPath = path.join(input, installer);
     const contents = Buffer.alloc(1_000_001, index + 1);
     await writeFile(installerPath, contents);
     const digest = createHash("sha256").update(contents).digest("hex");
-    const reportName = installer
-      .replace(/-setup\.exe$/, ".verification.json")
-      .replace(/\.dmg$/, ".verification.json");
+    const reportName = `DOHC-Viewer_${version}_${definition.reportSuffix}`;
     await writeJson(path.join(input, reportName), {
       schemaVersion: 1,
       status: "passed",
@@ -102,6 +115,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
       version,
       platform: definition.platform,
       architecture: definition.architecture,
+      distribution: { signingMode: "unsigned", trustedPublisher: false },
       artifact: { fileName: installer, sha256: digest, sizeBytes: contents.length },
       ffmpeg:
         definition.platform === "windows"
@@ -114,12 +128,14 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
           : {
               portable: true,
               sha256: "b".repeat(64),
-              sourceSha256: "d".repeat(64),
+              sourceArchiveSha256: "d".repeat(64),
+              sourceRevision: "1".repeat(40),
               licenseSha256: "e".repeat(64),
               manifestSha256: "f".repeat(64),
-              codeSigned: true,
+              codeSigned: false,
+              trustedSignature: false,
             },
-      signing: { verified: true, signer: "Release Test" },
+      signing: { mode: "unsigned", inspected: true, verified: false },
       runtimeSmoke: { passed: true },
       ...(definition.platform === "windows"
         ? {
@@ -129,7 +145,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
               sha256: "c".repeat(64),
             },
           }
-        : { notarization: { verified: true } }),
+        : { notarization: { verified: false, stapled: false } }),
     });
   }
 
@@ -140,6 +156,8 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
   );
   const manifest = JSON.parse(await readFile(path.join(output, "release-manifest.json"), "utf8"));
   assert.equal(manifest.assets.length, 3);
+  assert.equal(manifest.distribution.signingMode, "unsigned");
+  assert.equal(manifest.distribution.trustedPublisher, false);
   const checksumLines = (await readFile(path.join(output, "SHA256SUMS.txt"), "utf8"))
     .trim()
     .split("\n");

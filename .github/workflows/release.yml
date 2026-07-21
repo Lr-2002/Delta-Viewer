@@ -98,23 +98,23 @@ jobs:
           retention-days: 30
 
   windows:
-    name: Windows 10+ x64 installer
+    name: Windows 10+ x64 unsigned installer
     needs: prepare
     runs-on: windows-2022
-    environment: production-release
     permissions:
       contents: read
       id-token: write
       attestations: write
     env:
-      FFMPEG_URL: ${{ vars.FFMPEG_WINDOWS_URL }}
-      FFMPEG_SHA256: ${{ vars.FFMPEG_WINDOWS_SHA256 }}
-      FFMPEG_LICENSE_URL: ${{ vars.FFMPEG_WINDOWS_LICENSE_URL }}
-      FFMPEG_LICENSE_SHA256: ${{ vars.FFMPEG_WINDOWS_LICENSE_SHA256 }}
-      FFMPEG_BUILD_ID: ${{ vars.FFMPEG_WINDOWS_BUILD_ID }}
-      WEBVIEW2_URL: ${{ vars.WEBVIEW2_WINDOWS_X64_URL }}
-      WEBVIEW2_SHA256: ${{ vars.WEBVIEW2_WINDOWS_X64_SHA256 }}
-      WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+      FFMPEG_URL: https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64
+      FFMPEG_SHA256: 04e1307997530f9cf2fe35cba2ca7e8875ca91da02f89d6c7243df819c94ad00
+      FFMPEG_LICENSE_URL: https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/win32-x64.LICENSE
+      FFMPEG_LICENSE_SHA256: 8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903
+      FFMPEG_NOTICE_URL: https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/win32-x64.README
+      FFMPEG_NOTICE_SHA256: a636a7183c58006351acbaf35303c0ed85c6e1320fd4e80de453ba6157de6311
+      FFMPEG_BUILD_ID: ffmpeg-static-b6.1.1-gyan-6.1.1-essentials
+      WEBVIEW2_URL: https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/5a16eb19-26ed-4f1b-996e-b438848bb74a/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
+      WEBVIEW2_SHA256: 9915c97304977e2d11877b03e07a7fcdd10d4277b2297c5a5113d414fc6ae6b3
     steps:
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -159,11 +159,6 @@ jobs:
           if (-not $reviewedUri.AbsoluteUri.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
             throw "WEBVIEW2_WINDOWS_X64_URL must be an exact Microsoft filestreamingservice HTTPS URL"
           }
-          $current = Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?linkid=2124701" -Method Head
-          $currentUri = $current.BaseResponse.RequestMessage.RequestUri
-          if ($currentUri.AbsoluteUri -ne $reviewedUri.AbsoluteUri) {
-            throw "Microsoft evergreen WebView2 URL changed; review and update the pinned URL/hash before release"
-          }
           $segments = $reviewedUri.AbsolutePath.Trim("/").Split("/")
           if ($segments.Count -lt 2) { throw "Pinned WebView2 URL has no GUID/file path" }
           $guid = $segments[$segments.Count - 2]
@@ -195,93 +190,66 @@ jobs:
             "FFMPEG_SHA256",
             "FFMPEG_LICENSE_URL",
             "FFMPEG_LICENSE_SHA256",
+            "FFMPEG_NOTICE_URL",
+            "FFMPEG_NOTICE_SHA256",
             "FFMPEG_BUILD_ID"
           )
           foreach ($name in $required) {
             if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
-              throw "Missing production-release variable: $name"
+              throw "Missing pinned release input: $name"
             }
           }
-          if (([Uri]$env:FFMPEG_URL).Scheme -ne "https" -or ([Uri]$env:FFMPEG_LICENSE_URL).Scheme -ne "https") {
-            throw "FFmpeg binary and license URLs must use HTTPS"
+          if (([Uri]$env:FFMPEG_URL).Scheme -ne "https" -or
+              ([Uri]$env:FFMPEG_LICENSE_URL).Scheme -ne "https" -or
+              ([Uri]$env:FFMPEG_NOTICE_URL).Scheme -ne "https") {
+            throw "FFmpeg binary, license, and notice URLs must use HTTPS"
           }
           $dependencyRoot = Join-Path $env:RUNNER_TEMP "ffmpeg-reviewed"
           New-Item -ItemType Directory -Path $dependencyRoot | Out-Null
           $binary = Join-Path $dependencyRoot "ffmpeg.exe"
           $license = Join-Path $dependencyRoot "FFmpeg-LICENSE.txt"
+          $notice = Join-Path $dependencyRoot "FFmpeg-BUILD-README.txt"
           Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile $binary
           Invoke-WebRequest -Uri $env:FFMPEG_LICENSE_URL -OutFile $license
+          Invoke-WebRequest -Uri $env:FFMPEG_NOTICE_URL -OutFile $notice
           $licenseHash = (Get-FileHash -LiteralPath $license -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($licenseHash -ne $env:FFMPEG_LICENSE_SHA256.ToLowerInvariant()) {
             throw "Reviewed FFmpeg license SHA-256 mismatch"
           }
+          $noticeHash = (Get-FileHash -LiteralPath $notice -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($noticeHash -ne $env:FFMPEG_NOTICE_SHA256.ToLowerInvariant()) {
+            throw "Reviewed FFmpeg build notice SHA-256 mismatch"
+          }
           .\scripts\stage-ffmpeg.ps1 `
             -Source $binary `
             -ExpectedSha256 $env:FFMPEG_SHA256 `
-            -LicenseFile $license `
+            -LicenseFile @($license, $notice) `
             -SourceUrl $env:FFMPEG_URL `
             -BuildId $env:FFMPEG_BUILD_ID `
             -ReviewedPortable
 
-      - name: Import Windows code-signing certificate
-        id: windows_certificate
+      - name: Create unsigned Windows bundle configuration
         shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or
-              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
-            throw "Missing WINDOWS_CERTIFICATE or WINDOWS_CERTIFICATE_PASSWORD secret"
-          }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_TIMESTAMP_URL)) {
-            throw "Missing production-release variable: WINDOWS_TIMESTAMP_URL"
-          }
-          $timestamp = [Uri]$env:WINDOWS_TIMESTAMP_URL
-          if (-not $timestamp.IsAbsoluteUri -or $timestamp.Scheme -notin @("http", "https")) {
-            throw "WINDOWS_TIMESTAMP_URL must be an absolute HTTP(S) RFC 3161 endpoint"
-          }
-          $pfx = Join-Path $env:RUNNER_TEMP "dohc-viewer-signing.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-          $password = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
-          $imported = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password)
-          $certificate = @($imported | Where-Object HasPrivateKey | Select-Object -First 1)
-          if ($certificate.Count -ne 1) { throw "PFX did not contain one certificate with a private key" }
-          $certificate = $certificate[0]
-          if ($certificate.NotAfter.ToUniversalTime() -lt [DateTime]::UtcNow.AddDays(7)) {
-            throw "Windows code-signing certificate expires in less than seven days"
-          }
-          $codeSigningOid = "1.3.6.1.5.5.7.3.3"
-          if ($certificate.EnhancedKeyUsageList.ObjectId.Value -notcontains $codeSigningOid) {
-            throw "PFX certificate is not valid for code signing"
-          }
           $config = [ordered]@{
             bundle = [ordered]@{
               useLocalToolsDir = $true
-              windows = [ordered]@{
-                certificateThumbprint = $certificate.Thumbprint
-                digestAlgorithm = "sha256"
-                timestampUrl = $env:WINDOWS_TIMESTAMP_URL
-                tsp = $true
-              }
             }
           }
-          $configPath = Join-Path $env:RUNNER_TEMP "tauri-release-signing.json"
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri-release-unsigned.json"
           [IO.File]::WriteAllText($configPath, (($config | ConvertTo-Json -Depth 5) + "`n"))
-          "thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
 
-      - name: Build signed offline NSIS installer
-        run: pnpm tauri build --ci --bundles nsis --config "$env:RUNNER_TEMP\tauri-release-signing.json"
+      - name: Build unsigned offline NSIS installer
+        run: pnpm tauri build --ci --bundles nsis --no-sign --config "$env:RUNNER_TEMP\tauri-release-unsigned.json"
 
-      - name: Verify install, launch, resources, signatures, and uninstall
+      - name: Verify unsigned state, install, launch, resources, and uninstall
         shell: pwsh
         run: |
           .\scripts\verify-release-windows.ps1 `
             -Version "${{ needs.prepare.outputs.version }}" `
             -Tag "${{ needs.prepare.outputs.tag }}" `
             -Commit "${{ needs.prepare.outputs.commit }}" `
-            -CertificateThumbprint "${{ steps.windows_certificate.outputs.thumbprint }}" `
             -WebView2Url "$env:WEBVIEW2_URL" `
             -WebView2Sha256 "$env:WEBVIEW2_SHA256" `
             -OutputDirectory "$env:RUNNER_TEMP\release-assets"
@@ -289,7 +257,7 @@ jobs:
       - name: Attest Windows installer provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.prepare.outputs.version }}_windows-x64-setup.exe
+          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.prepare.outputs.version }}_UNSIGNED_windows-x64-setup.exe
 
       - name: Upload verified Windows release artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -299,18 +267,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Remove imported Windows certificate
-        if: always() && steps.windows_certificate.outputs.thumbprint != ''
-        shell: pwsh
-        run: |
-          Remove-Item -LiteralPath "Cert:\CurrentUser\My\${{ steps.windows_certificate.outputs.thumbprint }}" -Force -ErrorAction SilentlyContinue
-          Remove-Item -LiteralPath "$env:RUNNER_TEMP\dohc-viewer-signing.pfx" -Force -ErrorAction SilentlyContinue
-
   macos:
-    name: macOS 12+ ${{ matrix.architecture }} DMG
+    name: macOS 12+ ${{ matrix.architecture }} unsigned DMG
     needs: prepare
     runs-on: ${{ matrix.runner }}
-    environment: production-release
     permissions:
       contents: read
       id-token: write
@@ -326,11 +286,10 @@ jobs:
             architecture: x64
             target: x86_64-apple-darwin
     env:
-      FFMPEG_URL: ${{ matrix.architecture == 'arm64' && vars.FFMPEG_MACOS_ARM64_URL || vars.FFMPEG_MACOS_X64_URL }}
-      FFMPEG_SHA256: ${{ matrix.architecture == 'arm64' && vars.FFMPEG_MACOS_ARM64_SHA256 || vars.FFMPEG_MACOS_X64_SHA256 }}
-      FFMPEG_LICENSE_URL: ${{ matrix.architecture == 'arm64' && vars.FFMPEG_MACOS_ARM64_LICENSE_URL || vars.FFMPEG_MACOS_X64_LICENSE_URL }}
-      FFMPEG_LICENSE_SHA256: ${{ matrix.architecture == 'arm64' && vars.FFMPEG_MACOS_ARM64_LICENSE_SHA256 || vars.FFMPEG_MACOS_X64_LICENSE_SHA256 }}
-      FFMPEG_BUILD_ID: ${{ matrix.architecture == 'arm64' && vars.FFMPEG_MACOS_ARM64_BUILD_ID || vars.FFMPEG_MACOS_X64_BUILD_ID }}
+      FFMPEG_SOURCE_URL: https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2
+      FFMPEG_SOURCE_SHA256: 9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7
+      FFMPEG_SOURCE_REVISION: 38b88335f99e76ed89ff3c93f877fdefce736c13
+      FFMPEG_BUILD_ID: ffmpeg-8.1.2-dohc-minimal-lgpl
     steps:
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -363,111 +322,45 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Download and stage reviewed macOS FFmpeg
+      - name: Build and stage reviewed macOS FFmpeg
         shell: bash
         run: |
           set -euo pipefail
-          for name in FFMPEG_URL FFMPEG_SHA256 FFMPEG_LICENSE_URL FFMPEG_LICENSE_SHA256 FFMPEG_BUILD_ID; do
-            [[ -n "${!name:-}" ]] || { echo "Missing production-release variable: $name" >&2; exit 1; }
-          done
-          [[ "$FFMPEG_URL" == https://* && "$FFMPEG_LICENSE_URL" == https://* ]] || {
-            echo "FFmpeg binary and license URLs must use HTTPS" >&2
-            exit 1
-          }
-          dependency_root="$RUNNER_TEMP/ffmpeg-reviewed"
-          mkdir -p "$dependency_root"
-          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error "$FFMPEG_URL" -o "$dependency_root/ffmpeg"
-          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error "$FFMPEG_LICENSE_URL" -o "$dependency_root/FFmpeg-LICENSE.txt"
-          chmod 755 "$dependency_root/ffmpeg"
-          actual_license_sha="$(shasum -a 256 "$dependency_root/FFmpeg-LICENSE.txt" | awk '{print $1}')"
-          [[ "$actual_license_sha" == "$(printf '%s' "$FFMPEG_LICENSE_SHA256" | tr '[:upper:]' '[:lower:]')" ]] || {
-            echo "Reviewed FFmpeg license SHA-256 mismatch" >&2
-            exit 1
-          }
-          bash scripts/stage-ffmpeg.sh \
-            --source "$dependency_root/ffmpeg" \
-            --expected-sha256 "$FFMPEG_SHA256" \
-            --license "$dependency_root/FFmpeg-LICENSE.txt" \
-            --source-url "$FFMPEG_URL" \
+          source_archive="$RUNNER_TEMP/ffmpeg-n8.1.2.tar.gz"
+          curl \
+            --fail \
+            --location \
+            --proto '=https' \
+            --tlsv1.2 \
+            --silent \
+            --show-error \
+            "$FFMPEG_SOURCE_URL" \
+            --output "$source_archive"
+          bash scripts/build-ffmpeg-macos.sh \
+            --source-archive "$source_archive" \
+            --expected-source-sha256 "$FFMPEG_SOURCE_SHA256" \
+            --source-url "$FFMPEG_SOURCE_URL" \
+            --source-revision "$FFMPEG_SOURCE_REVISION" \
             --build-id "$FFMPEG_BUILD_ID"
 
-      - name: Import Apple Developer ID certificate
-        id: apple_certificate
+      - name: Build unsigned app and headless DMG
         shell: bash
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          set -euo pipefail
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID; do
-            [[ -n "${!name:-}" ]] || { echo "Missing production-release secret: $name" >&2; exit 1; }
-          done
-          [[ "$APPLE_SIGNING_IDENTITY" == Developer\ ID\ Application:* ]] || {
-            echo "APPLE_SIGNING_IDENTITY must be a Developer ID Application identity" >&2
-            exit 1
-          }
-          keychain="$RUNNER_TEMP/dohc-viewer-signing.keychain-db"
-          p12="$RUNNER_TEMP/dohc-viewer-signing.p12"
-          keychain_password="$(openssl rand -hex 32)"
-          printf '%s' "$APPLE_CERTIFICATE" | openssl base64 -d -A -out "$p12"
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
-          security list-keychains -d user -s "$keychain"
-          security default-keychain -d user -s "$keychain"
-          security find-identity -v -p codesigning "$keychain" | grep -F "\"$APPLE_SIGNING_IDENTITY\"" >/dev/null
-          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
-
-      - name: Sign the bundled FFmpeg executable
-        shell: bash
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          set -euo pipefail
-          binary="src-tauri/resources/bin/ffmpeg"
-          manifest="src-tauri/resources/ffmpeg-manifest.json"
-          source_sha="$(jq -er '.sha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$manifest")"
-          codesign \
-            --force \
-            --timestamp \
-            --options runtime \
-            --sign "$APPLE_SIGNING_IDENTITY" \
-            --keychain "${{ steps.apple_certificate.outputs.keychain }}" \
-            "$binary"
-          codesign --verify --strict --verbose=2 "$binary"
-          signed_sha="$(shasum -a 256 "$binary" | awk '{print $1}')"
-          temporary_manifest="$(mktemp "$manifest.partial.XXXXXX")"
-          jq \
-            --arg source_sha "$source_sha" \
-            --arg signed_sha "$signed_sha" \
-            --arg identity "$APPLE_SIGNING_IDENTITY" \
-            '.sourceSha256 = $source_sha | .sha256 = $signed_sha | .codeSigned = true | .signingIdentity = $identity' \
-            "$manifest" > "$temporary_manifest"
-          mv "$temporary_manifest" "$manifest"
-
-      - name: Build signed and notarized DMG
-        shell: bash
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           MACOSX_DEPLOYMENT_TARGET: "12.0"
         run: |
           set -euo pipefail
-          for name in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            [[ -n "${!name:-}" ]] || { echo "Missing production-release secret: $name" >&2; exit 1; }
-          done
-          pnpm tauri build --ci --target "${{ matrix.target }}" --bundles dmg
+          pnpm tauri build --ci --target "${{ matrix.target }}" --bundles app --no-sign
+          bundle_root="src-tauri/target/${{ matrix.target }}/release/bundle"
+          app_count="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')"
+          [[ "$app_count" == "1" ]] || { echo "Expected one app bundle, found $app_count" >&2; exit 1; }
+          app="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' -print)"
+          mkdir -p "$bundle_root/dmg"
+          bash scripts/make-dmg.sh \
+            --app "$app" \
+            --output "$bundle_root/dmg/DOHC-Viewer_${{ needs.prepare.outputs.version }}_${{ matrix.architecture }}.dmg"
 
-      - name: Verify DMG, Gatekeeper, notarization, resources, and startup
+      - name: Verify unsigned state, DMG, resources, and startup
         shell: bash
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           bash scripts/verify-release-macos.sh \
             --target "${{ matrix.target }}" \
@@ -475,13 +368,12 @@ jobs:
             --version "${{ needs.prepare.outputs.version }}" \
             --tag "${{ needs.prepare.outputs.tag }}" \
             --commit "${{ needs.prepare.outputs.commit }}" \
-            --team-id "$APPLE_TEAM_ID" \
             --output "$RUNNER_TEMP/release-assets"
 
       - name: Attest macOS installer provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.prepare.outputs.version }}_macos-${{ matrix.architecture }}.dmg
+          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.prepare.outputs.version }}_UNSIGNED_macos-${{ matrix.architecture }}.dmg
 
       - name: Upload verified macOS release artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -490,13 +382,6 @@ jobs:
           path: ${{ runner.temp }}/release-assets/*
           if-no-files-found: error
           retention-days: 30
-
-      - name: Remove temporary Apple keychain
-        if: always() && steps.apple_certificate.outputs.keychain != ''
-        shell: bash
-        run: |
-          security delete-keychain "${{ steps.apple_certificate.outputs.keychain }}" || true
-          rm -f "$RUNNER_TEMP/dohc-viewer-signing.p12"
 
   publish:
     name: Publish complete GitHub Release
@@ -537,7 +422,7 @@ jobs:
         with:
           subject-path: ${{ runner.temp }}/release-assets/*
 
-      - name: Publish only after every installer passed
+      - name: Publish only after every unsigned installer passed
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -557,8 +442,8 @@ jobs:
               [[ -z "$existing_asset" ]] || gh release delete-asset "$TAG" "$existing_asset" --yes
             done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
           else
-            notes=$'Compiled installers are attached for Windows x64, macOS Apple Silicon, and macOS Intel. All three passed signing, dependency, install/startup, and checksum gates before this release was published.\n\nUser guide: https://github.com/${{ github.repository }}/wiki'
-            create_args=("$TAG" --verify-tag --draft --title "DOHC Viewer $TAG" --generate-notes --notes "$notes")
+            notes=$'WARNING: This release is UNSIGNED. Windows will show an unknown-publisher or SmartScreen warning. macOS Gatekeeper may require an explicit user override. Verify SHA256SUMS.txt before use.\n\nCompiled installers are attached for Windows x64, macOS Apple Silicon, and macOS Intel. All three passed dependency, bundled-resource, install or mount, direct-startup, and checksum gates before publication. Authenticode, Developer ID, and Apple notarization are intentionally not claimed.\n\nUser guide: https://github.com/${{ github.repository }}/wiki'
+            create_args=("$TAG" --verify-tag --draft --title "DOHC Viewer $TAG (UNSIGNED)" --generate-notes --notes "$notes")
             if [[ "$PRERELEASE" == "true" ]]; then create_args+=(--prerelease); fi
             gh release create "${create_args[@]}"
           fi

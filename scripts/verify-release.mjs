@@ -141,9 +141,13 @@ async function verify(options) {
     prerelease: version.includes("-"),
     verifiedAtUtc: new Date().toISOString(),
     versions,
+    distribution: {
+      signingMode: "unsigned",
+      trustedPublisher: false,
+    },
     packaging: {
-      windows: "nsis-x64-offline-webview2",
-      macos: ["dmg-arm64", "dmg-x64"],
+      windows: "unsigned-nsis-x64-offline-webview2",
+      macos: ["unsigned-dmg-arm64", "unsigned-dmg-x64"],
       macosMinimumSystemVersion: "12.0",
     },
   };

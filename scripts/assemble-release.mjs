@@ -41,21 +41,21 @@ function expectedArtifacts(version) {
       key: "windows-x64",
       platform: "windows",
       architecture: "x64",
-      installer: `DOHC-Viewer_${version}_windows-x64-setup.exe`,
+      installer: `DOHC-Viewer_${version}_UNSIGNED_windows-x64-setup.exe`,
       report: `DOHC-Viewer_${version}_windows-x64.verification.json`,
     },
     {
       key: "macos-arm64",
       platform: "macos",
       architecture: "arm64",
-      installer: `DOHC-Viewer_${version}_macos-arm64.dmg`,
+      installer: `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.dmg`,
       report: `DOHC-Viewer_${version}_macos-arm64.verification.json`,
     },
     {
       key: "macos-x64",
       platform: "macos",
       architecture: "x64",
-      installer: `DOHC-Viewer_${version}_macos-x64.dmg`,
+      installer: `DOHC-Viewer_${version}_UNSIGNED_macos-x64.dmg`,
       report: `DOHC-Viewer_${version}_macos-x64.verification.json`,
     },
   ];
@@ -98,8 +98,15 @@ async function validateArtifact(options, expected, version) {
   ) {
     throw new Error(`${expected.report} has incomplete FFmpeg license/manifest evidence`);
   }
-  if (report.signing?.verified !== true || report.runtimeSmoke?.passed !== true) {
-    throw new Error(`${expected.report} has not passed signing and runtime smoke checks`);
+  if (
+    report.distribution?.signingMode !== "unsigned" ||
+    report.distribution?.trustedPublisher !== false ||
+    report.signing?.mode !== "unsigned" ||
+    report.signing?.inspected !== true ||
+    report.signing?.verified !== false ||
+    report.runtimeSmoke?.passed !== true
+  ) {
+    throw new Error(`${expected.report} has not passed unsigned-distribution and runtime checks`);
   }
   if (
     expected.platform === "windows" &&
@@ -108,15 +115,20 @@ async function validateArtifact(options, expected, version) {
   ) {
     throw new Error(`${expected.report} has not verified the offline WebView2 payload`);
   }
-  if (expected.platform === "macos" && report.notarization?.verified !== true) {
-    throw new Error(`${expected.report} has not verified Apple notarization`);
+  if (
+    expected.platform === "macos" &&
+    (report.notarization?.verified !== false || report.notarization?.stapled !== false)
+  ) {
+    throw new Error(`${expected.report} has an invalid unsigned notarization state`);
   }
   if (
     expected.platform === "macos" &&
-    (report.ffmpeg?.codeSigned !== true ||
-      !/^[0-9a-f]{64}$/.test(report.ffmpeg?.sourceSha256 ?? ""))
+    (report.ffmpeg?.codeSigned !== false ||
+      report.ffmpeg?.trustedSignature !== false ||
+      !/^[0-9a-f]{64}$/.test(report.ffmpeg?.sourceArchiveSha256 ?? "") ||
+      !/^[0-9a-f]{40}$/.test(report.ffmpeg?.sourceRevision ?? ""))
   ) {
-    throw new Error(`${expected.report} has not verified the signed macOS FFmpeg executable`);
+    throw new Error(`${expected.report} has incomplete macOS FFmpeg source evidence`);
   }
   return {
     ...expected,
@@ -125,10 +137,11 @@ async function validateArtifact(options, expected, version) {
     sha256: actualHash,
     verification: {
       ffmpegSha256: report.ffmpeg.sha256,
-      ffmpegSourceSha256: report.ffmpeg.sourceSha256 ?? report.ffmpeg.sha256,
+      ffmpegSourceArchiveSha256: report.ffmpeg.sourceArchiveSha256,
+      ffmpegSourceRevision: report.ffmpeg.sourceRevision,
       ffmpegLicenseSha256: report.ffmpeg.licenseSha256,
       ffmpegManifestSha256: report.ffmpeg.manifestSha256,
-      signer: report.signing.signer,
+      signingMode: report.signing.mode,
       ...(report.webview2?.sha256
         ? {
             webview2Sha256: report.webview2.sha256,
@@ -172,6 +185,12 @@ async function main() {
     version,
     commit: options.commit,
     createdAtUtc: new Date().toISOString(),
+    distribution: {
+      signingMode: "unsigned",
+      trustedPublisher: false,
+      warning:
+        "These installers are not code-signed or notarized. Verify SHA256SUMS.txt before use.",
+    },
     assets: verified.map(({ sourcePath: _sourcePath, report: _report, ...item }) => item),
   };
   const manifestName = "release-manifest.json";
