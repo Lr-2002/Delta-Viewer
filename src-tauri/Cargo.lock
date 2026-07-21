@@ -1052,7 +1052,7 @@ dependencies = [
 
 [[package]]
 name = "dohc-viewer"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "argon2",
  "arrow-array",

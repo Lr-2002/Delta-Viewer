@@ -14,7 +14,7 @@ Apple Silicon 机器下载 `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`；In
 
 可在“关于本机”查看芯片类型。当前 app 已通过完整的 ad-hoc 资源封印校验，但 DMG 没有 Developer ID 和 Apple notarization，因此首次启动仍会被 Gatekeeper 阻止。核对来源和 hash 后，先在“应用程序”中尝试打开一次；随后进入“系统设置 -> 隐私与安全性”，在 DOHC Viewer 提示旁选择“仍要打开”，完成系统认证后再次确认“打开”。这是每个版本的一次性授权。不要关闭 Gatekeeper，也不要运行移除 quarantine 的命令。
 
-`0.15.0` 的 macOS 包存在无效资源封印，可能被系统提示“已损坏”，已由 `0.15.1` 取代。macOS 用户不得继续使用 `0.15.0` DMG；请下载最新版本。Windows `0.15.0` 安装器不受此问题影响。
+`0.15.0` 的 macOS 包存在无效资源封印，可能被系统提示“已损坏”，已由 `0.15.2` 取代。`0.15.1` tag 在 CI 阶段被阻止，没有公开 Release。macOS 用户不得继续使用 `0.15.0` DMG；请下载 `0.15.2` 或更高版本。Windows `0.15.0` 安装器不受此问题影响。
 
 ## 校验下载文件
 
@@ -23,13 +23,13 @@ Apple Silicon 机器下载 `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`；In
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\DOHC-Viewer_0.15.1_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\DOHC-Viewer_0.15.2_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
 ```
 
 macOS：
 
 ```bash
-shasum -a 256 DOHC-Viewer_0.15.1_UNSIGNED_macos-arm64.dmg
+shasum -a 256 DOHC-Viewer_0.15.2_UNSIGNED_macos-arm64.dmg
 ```
 
 结果必须与 `SHA256SUMS.txt` 中对应文件完全一致。GitHub CLI 用户还可以用 `gh attestation verify <file> --repo Lr-2002/Delta-Viewer` 验证构建 provenance。

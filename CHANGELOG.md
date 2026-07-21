@@ -2,6 +2,18 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.15.2 - 2026-07-21
+
+- Kept strict macOS nested-code and sealed-resource verification while making
+  the quarantined policy check portable to GitHub's macOS 15 runners.
+- When `syspolicy_check` reports an internal XProtect error, the release gate
+  now builds a separate minimal ad-hoc control app and accepts the runner state
+  only if the same error occurs for that known-good control. Product-only
+  XProtect or any signature/resource damage still blocks publication.
+- Recorded policy-service availability and the control result in each macOS
+  verification report and final release manifest. The `0.15.1` tag was blocked
+  before publication, so users should install `0.15.2` or later.
+
 ## 0.15.1 - 2026-07-21
 
 - Fixed the invalid macOS app resource seal in the `0.15.0` DMGs that could make

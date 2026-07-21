@@ -162,15 +162,61 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
           }
         : {
             notarization: { verified: false, stapled: false },
-            gatekeeper: {
-              quarantineApplied: true,
-              assessment: "rejected-untrusted-adhoc-not-notarized",
-              structuralError: false,
-              userOverrideRequired: true,
-            },
+            gatekeeper:
+              definition.architecture === "arm64"
+                ? {
+                    quarantineApplied: true,
+                    assessment: "rejected-untrusted-adhoc-not-notarized",
+                    adHocSignatureConfirmed: true,
+                    notarizationTicketMissing: true,
+                    policyServiceAvailable: true,
+                    internalXprotectError: false,
+                    controlAssessmentMatched: false,
+                    structuralError: false,
+                    userOverrideRequired: true,
+                  }
+                : {
+                    quarantineApplied: true,
+                    assessment: "rejected-not-notarized-xprotect-unavailable",
+                    adHocSignatureConfirmed: true,
+                    notarizationTicketMissing: true,
+                    policyServiceAvailable: false,
+                    internalXprotectError: true,
+                    controlAssessmentMatched: true,
+                    structuralError: false,
+                    userOverrideRequired: true,
+                  },
           }),
     });
   }
+
+  const x64ReportPath = path.join(
+    input,
+    `DOHC-Viewer_${version}_macos-x64.verification.json`,
+  );
+  const x64Report = JSON.parse(await readFile(x64ReportPath, "utf8"));
+  x64Report.gatekeeper.controlAssessmentMatched = false;
+  await writeJson(x64ReportPath, x64Report);
+  const unmatchedControl = spawnSync(
+    process.execPath,
+    [
+      assembleScript,
+      "--input",
+      input,
+      "--output",
+      output,
+      "--tag",
+      tag,
+      "--commit",
+      commit,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.notEqual(unmatchedControl.status, 0);
+  assert.match(unmatchedControl.stderr, /unsupported macOS policy-service result/);
+
+  x64Report.gatekeeper.controlAssessmentMatched = true;
+  await writeJson(x64ReportPath, x64Report);
 
   run(
     process.execPath,
@@ -181,6 +227,16 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
   assert.equal(manifest.assets.length, 3);
   assert.equal(manifest.distribution.signingMode, "unsigned");
   assert.equal(manifest.distribution.trustedPublisher, false);
+  assert.equal(
+    manifest.assets.find((asset) => asset.key === "macos-arm64").verification
+      .gatekeeperPolicyServiceAvailable,
+    true,
+  );
+  assert.equal(
+    manifest.assets.find((asset) => asset.key === "macos-x64").verification
+      .gatekeeperAssessment,
+    "rejected-not-notarized-xprotect-unavailable",
+  );
   const checksumLines = (await readFile(path.join(output, "SHA256SUMS.txt"), "utf8"))
     .trim()
     .split("\n");

@@ -154,21 +154,82 @@ set -e
   echo "Unsigned ad-hoc app unexpectedly passed trusted distribution policy" >&2
   exit 1
 }
-printf '%s\n' "$gatekeeper_output" | grep -F 'Adhoc Signed App' >/dev/null || {
-  printf '%s\n' "$gatekeeper_output" >&2
-  echo "Gatekeeper did not identify the expected ad-hoc signature" >&2
-  exit 1
-}
 printf '%s\n' "$gatekeeper_output" | grep -F 'Notary Ticket Missing' >/dev/null || {
   printf '%s\n' "$gatekeeper_output" >&2
   echo "Gatekeeper did not identify the expected missing notarization ticket" >&2
   exit 1
 }
-if printf '%s\n' "$gatekeeper_output" | grep -Eiq 'code has no resources|invalid signature|damaged'; then
+structural_error_pattern='code has no resources|invalid signature|damaged|unsealed contents|sealed resource is missing or invalid|nested code is modified or invalid'
+if printf '%s\n' "$gatekeeper_output" | grep -Eiq "$structural_error_pattern"; then
   printf '%s\n' "$gatekeeper_output" >&2
   echo "Gatekeeper reported a structurally damaged app" >&2
   exit 1
 fi
+
+control_app="$install_parent/Gatekeeper Control.app"
+control_binary="$control_app/Contents/MacOS/gatekeeper-control"
+control_info="$control_app/Contents/Info.plist"
+control_source="$install_parent/gatekeeper-control.c"
+mkdir -p "$control_app/Contents/MacOS"
+printf '%s\n' 'int main(void) { return 0; }' >"$control_source"
+xcrun clang -mmacosx-version-min=12.0 "$control_source" -o "$control_binary"
+plutil -create xml1 "$control_info"
+plutil -insert CFBundleExecutable -string gatekeeper-control "$control_info"
+plutil -insert CFBundleIdentifier -string com.dohc.viewer.gatekeeper-control "$control_info"
+plutil -insert CFBundleName -string 'Gatekeeper Control' "$control_info"
+plutil -insert CFBundlePackageType -string APPL "$control_info"
+plutil -insert CFBundleShortVersionString -string 1.0 "$control_info"
+plutil -insert CFBundleVersion -string 1 "$control_info"
+plutil -insert LSMinimumSystemVersion -string 12.0 "$control_info"
+codesign --force --sign - --options runtime --timestamp=none "$control_binary"
+codesign --force --sign - --options runtime --timestamp=none "$control_app"
+codesign --verify --deep --strict --verbose=4 "$control_app"
+xattr -w com.apple.quarantine \
+  "0081;$quarantine_timestamp;DOHC-Release-CI;https://github.com/Lr-2002/Delta-Viewer" \
+  "$control_app"
+
+set +e
+control_gatekeeper_output="$(syspolicy_check distribution "$control_app" 2>&1)"
+control_gatekeeper_status=$?
+set -e
+[[ "$control_gatekeeper_status" -ne 0 ]] || {
+  echo "Ad-hoc Gatekeeper control unexpectedly passed trusted distribution policy" >&2
+  exit 1
+}
+if printf '%s\n' "$control_gatekeeper_output" | grep -Eiq "$structural_error_pattern"; then
+  printf '%s\n' "$control_gatekeeper_output" >&2
+  echo "Gatekeeper control app has a structural error" >&2
+  exit 1
+fi
+printf '%s\n' "$control_gatekeeper_output" | grep -F 'Notary Ticket Missing' >/dev/null || {
+  printf '%s\n' "$control_gatekeeper_output" >&2
+  echo "Gatekeeper control did not report the expected missing notarization ticket" >&2
+  exit 1
+}
+
+gatekeeper_assessment="rejected-untrusted-adhoc-not-notarized"
+gatekeeper_policy_service_available=true
+gatekeeper_internal_xprotect_error=false
+gatekeeper_control_assessment_matched=false
+if ! printf '%s\n' "$gatekeeper_output" | grep -F 'Adhoc Signed App' >/dev/null; then
+  printf '%s\n' "$gatekeeper_output" | grep -F 'Internal Xprotect Error' >/dev/null || {
+    printf '%s\n' "$gatekeeper_output" >&2
+    echo "Gatekeeper did not identify an ad-hoc signature or a known policy-service failure" >&2
+    exit 1
+  }
+  printf '%s\n' "$control_gatekeeper_output" | grep -F 'Internal Xprotect Error' >/dev/null || {
+    printf '%s\n' "$gatekeeper_output" >&2
+    printf '%s\n' "$control_gatekeeper_output" >&2
+    echo "XProtect failed only for DOHC Viewer; refusing to classify it as a runner issue" >&2
+    exit 1
+  }
+
+  gatekeeper_assessment="rejected-not-notarized-xprotect-unavailable"
+  gatekeeper_policy_service_available=false
+  gatekeeper_internal_xprotect_error=true
+  gatekeeper_control_assessment_matched=true
+fi
+echo "Gatekeeper assessment: $gatekeeper_assessment"
 runtime_log="$install_parent/runtime.log"
 "$installed_app/Contents/MacOS/dohc-viewer" >"$runtime_log" 2>&1 &
 app_pid=$!
@@ -212,6 +273,10 @@ jq -n \
   --arg ffmpeg_source_revision "$ffmpeg_source_revision" \
   --arg license_sha "$license_sha" \
   --arg manifest_sha "$manifest_sha" \
+  --arg gatekeeper_assessment "$gatekeeper_assessment" \
+  --argjson gatekeeper_policy_service_available "$gatekeeper_policy_service_available" \
+  --argjson gatekeeper_internal_xprotect_error "$gatekeeper_internal_xprotect_error" \
+  --argjson gatekeeper_control_assessment_matched "$gatekeeper_control_assessment_matched" \
   '{
     schemaVersion: 1,
     status: "passed",
@@ -244,7 +309,12 @@ jq -n \
     notarization: { verified: false, stapled: false },
     gatekeeper: {
       quarantineApplied: true,
-      assessment: "rejected-untrusted-adhoc-not-notarized",
+      assessment: $gatekeeper_assessment,
+      adHocSignatureConfirmed: true,
+      notarizationTicketMissing: true,
+      policyServiceAvailable: $gatekeeper_policy_service_available,
+      internalXprotectError: $gatekeeper_internal_xprotect_error,
+      controlAssessmentMatched: $gatekeeper_control_assessment_matched,
       structuralError: false,
       userOverrideRequired: true
     },

@@ -112,15 +112,31 @@ async function validateArtifact(options, expected, version) {
     }
   }
   if (expected.platform === "macos") {
+    const gatekeeper = report.gatekeeper;
     if (
       report.signing?.mode !== "adhoc" ||
       report.signing?.structureVerified !== true ||
       report.signing?.verified !== false ||
-      report.gatekeeper?.assessment !== "rejected-untrusted-adhoc-not-notarized" ||
-      report.gatekeeper?.structuralError !== false ||
-      report.gatekeeper?.userOverrideRequired !== true
+      gatekeeper?.quarantineApplied !== true ||
+      gatekeeper?.adHocSignatureConfirmed !== true ||
+      gatekeeper?.notarizationTicketMissing !== true ||
+      gatekeeper?.structuralError !== false ||
+      gatekeeper?.userOverrideRequired !== true
     ) {
       throw new Error(`${expected.report} has not passed the macOS Gatekeeper structure checks`);
+    }
+    const policyClassified =
+      gatekeeper.assessment === "rejected-untrusted-adhoc-not-notarized" &&
+      gatekeeper.policyServiceAvailable === true &&
+      gatekeeper.internalXprotectError === false &&
+      gatekeeper.controlAssessmentMatched === false;
+    const policyServiceUnavailable =
+      gatekeeper.assessment === "rejected-not-notarized-xprotect-unavailable" &&
+      gatekeeper.policyServiceAvailable === false &&
+      gatekeeper.internalXprotectError === true &&
+      gatekeeper.controlAssessmentMatched === true;
+    if (!policyClassified && !policyServiceUnavailable) {
+      throw new Error(`${expected.report} has an unsupported macOS policy-service result`);
     }
   }
   if (
@@ -160,6 +176,12 @@ async function validateArtifact(options, expected, version) {
       ffmpegLicenseSha256: report.ffmpeg.licenseSha256,
       ffmpegManifestSha256: report.ffmpeg.manifestSha256,
       signingMode: report.signing.mode,
+      ...(report.gatekeeper
+        ? {
+            gatekeeperAssessment: report.gatekeeper.assessment,
+            gatekeeperPolicyServiceAvailable: report.gatekeeper.policyServiceAvailable,
+          }
+        : {}),
       ...(report.webview2?.sha256
         ? {
             webview2Sha256: report.webview2.sha256,

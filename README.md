@@ -315,14 +315,16 @@ a pinned official source archive and commit.
 
 The Windows job verifies that DOHC assets have no Authenticode signature. The
 macOS jobs apply and strictly verify a local ad-hoc seal, reject Developer ID or
-notarization claims, and confirm under synthetic quarantine that Gatekeeper
-reports only the expected untrusted identity and missing ticket. Both paths
-also check bundled FFmpeg, offline WebView2 on Windows, installer or DMG
-contents, and an installed-copy startup smoke. The final job recomputes all
-SHA-256 values, emits a release manifest and GitHub provenance attestations,
-and publishes the draft only when the complete three-platform set matches.
-Release titles, asset names, notes, reports, and the manifest all carry the
-`UNSIGNED` state because no trusted publisher identity is present.
+notarization claims, and run a policy check under synthetic quarantine. If a
+GitHub runner's XProtect service is unavailable, the job requires the same
+result from an independently built minimal control app and records that state;
+a product-only XProtect error still fails. Both paths also check bundled FFmpeg,
+offline WebView2 on Windows, installer or DMG contents, and an installed-copy
+startup smoke. The final job recomputes all SHA-256 values, emits a release
+manifest and GitHub provenance attestations, and publishes the draft only when
+the complete three-platform set matches. Release titles, asset names, notes,
+reports, and the manifest all carry the `UNSIGNED` state because no trusted
+publisher identity is present.
 
 The hosted-runner smoke does not replace clean Win10/Win11 offline testing,
 target-Mac testing, physical exFAT SD-card validation, or the formal

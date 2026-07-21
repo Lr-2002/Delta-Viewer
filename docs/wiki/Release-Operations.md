@@ -29,7 +29,9 @@ macOS arm64/x64 job 从 FFmpeg 官方 `n8.1.2` tag 的固定 source archive SHA-
 
 Windows 检查 DOHC app、NSIS installer 和 uninstaller 确实没有 Authenticode，随后验证内嵌 WebView2/FFmpeg/许可证/manifest、静默安装、启动 8 秒和静默卸载。
 
-macOS 先用 `codesign --verify --deep --strict` 检查 app、主程序和 FFmpeg 的嵌套代码及 sealed resources，要求三者都是 ad-hoc 且没有 Developer ID team/authority。随后验证版本、最低 macOS 12.0、架构、FFmpeg source/binary/license/manifest hash、只读 UDZO DMG 和 `/Applications` 链接。挂载后的 app 被复制到本地目录并添加合成 quarantine；`syspolicy_check distribution` 必须只报告 `Adhoc Signed App` 和 `Notary Ticket Missing`，任何 invalid signature、missing resources 或 damaged 结果都会阻止发布。最后直接启动该隔离副本 8 秒，确认程序本身可以运行。
+macOS 先用 `codesign --verify --deep --strict` 检查 app、主程序和 FFmpeg 的嵌套代码及 sealed resources，要求三者都是 ad-hoc 且没有 Developer ID team/authority。随后验证版本、最低 macOS 12.0、架构、FFmpeg source/binary/license/manifest hash、只读 UDZO DMG 和 `/Applications` 链接。挂载后的 app 被复制到本地目录并添加合成 quarantine；`syspolicy_check distribution` 正常应报告 `Adhoc Signed App` 和 `Notary Ticket Missing`。
+
+GitHub macOS 15 runner 的 XProtect 服务可能返回 `Internal Xprotect Error`。此时 job 会现场编译、封印一个最小 control app 并执行完全相同的策略检查；只有 control 同样报告内部 XProtect 错误时，才把它作为 `policyServiceAvailable:false` 记录到 verification report。control 正常而产品异常、invalid signature、missing resources 或 damaged 均会阻止发布。最后直接启动隔离的产品副本 8 秒，确认程序本身可以运行。
 
 该 Gatekeeper 结果仍是策略拒绝，不代表普通双击会直接放行。用户必须按[安装与升级](Installation)在系统设置中完成一次性“仍要打开”；只有 Developer ID 签名和 notarization 才能消除这个步骤。
 
