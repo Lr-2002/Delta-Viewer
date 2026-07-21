@@ -343,7 +343,7 @@ jobs:
             --source-revision "$FFMPEG_SOURCE_REVISION" \
             --build-id "$FFMPEG_BUILD_ID"
 
-      - name: Build unsigned app and headless DMG
+      - name: Build ad-hoc-sealed app and headless DMG
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: "12.0"
@@ -354,12 +354,13 @@ jobs:
           app_count="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')"
           [[ "$app_count" == "1" ]] || { echo "Expected one app bundle, found $app_count" >&2; exit 1; }
           app="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' -print)"
+          bash scripts/seal-macos-app-adhoc.sh --app "$app"
           mkdir -p "$bundle_root/dmg"
           bash scripts/make-dmg.sh \
             --app "$app" \
             --output "$bundle_root/dmg/DOHC-Viewer_${{ needs.prepare.outputs.version }}_${{ matrix.architecture }}.dmg"
 
-      - name: Verify unsigned state, DMG, resources, and startup
+      - name: Verify ad-hoc seal, Gatekeeper state, DMG, resources, and startup
         shell: bash
         run: |
           bash scripts/verify-release-macos.sh \
@@ -442,7 +443,7 @@ jobs:
               [[ -z "$existing_asset" ]] || gh release delete-asset "$TAG" "$existing_asset" --yes
             done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
           else
-            notes=$'WARNING: This release is UNSIGNED. Windows will show an unknown-publisher or SmartScreen warning. macOS Gatekeeper may require an explicit user override. Verify SHA256SUMS.txt before use.\n\nCompiled installers are attached for Windows x64, macOS Apple Silicon, and macOS Intel. All three passed dependency, bundled-resource, install or mount, direct-startup, and checksum gates before publication. Authenticode, Developer ID, and Apple notarization are intentionally not claimed.\n\nUser guide: https://github.com/${{ github.repository }}/wiki'
+            notes=$'WARNING: This release has no trusted publisher signature. Windows will show an unknown-publisher or SmartScreen warning. The macOS app has a valid local ad-hoc resource seal but no Developer ID or notarization, so first launch requires the standard System Settings > Privacy & Security > Open Anyway override. Verify SHA256SUMS.txt before use.\n\nCompiled installers are attached for Windows x64, macOS Apple Silicon, and macOS Intel. All three passed dependency, bundled-resource, install or mount, startup, and checksum gates before publication. The macOS jobs also passed strict nested-code/resource verification and confirmed under synthetic quarantine that Gatekeeper rejects only the ad-hoc identity and missing notarization ticket, not structural damage. Authenticode, Developer ID, and Apple notarization are intentionally not claimed.\n\nUser guide: https://github.com/${{ github.repository }}/wiki'
             create_args=("$TAG" --verify-tag --draft --title "DOHC Viewer $TAG (UNSIGNED)" --generate-notes --notes "$notes")
             if [[ "$PRERELEASE" == "true" ]]; then create_args+=(--prerelease); fi
             gh release create "${create_args[@]}"

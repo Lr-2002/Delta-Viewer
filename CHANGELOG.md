@@ -2,6 +2,19 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.15.1 - 2026-07-21
+
+- Fixed the invalid macOS app resource seal in the `0.15.0` DMGs that could make
+  Gatekeeper report that DOHC Viewer was damaged. The `0.15.0` macOS assets are
+  superseded; its Windows installer is unaffected.
+- Added an explicit ad-hoc seal for the macOS app, main executable, and bundled
+  FFmpeg, including a post-signing FFmpeg hash in the bundled provenance
+  manifest. This validates package integrity without claiming a trusted Apple
+  Developer ID or notarization.
+- Added strict nested-code and sealed-resource verification plus a quarantined
+  Gatekeeper regression gate. macOS packages may now fail policy only for the
+  expected ad-hoc identity and missing notarization, never for structural damage.
+
 ## 0.15.0 - 2026-07-21
 
 - Added GitHub CD for explicitly unsigned Windows x64 NSIS and macOS arm64/x64

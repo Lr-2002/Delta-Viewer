@@ -30,6 +30,8 @@ for value in "$target" "$arch" "$version" "$tag" "$commit" "$output"; do
 done
 [[ "$arch" == "arm64" || "$arch" == "x64" ]] || { echo "Unsupported architecture: $arch" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+command -v codesign >/dev/null || { echo "codesign is required" >&2; exit 1; }
+command -v syspolicy_check >/dev/null || { echo "syspolicy_check is required" >&2; exit 1; }
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 bundle_root="$repo_root/src-tauri/target/$target/release/bundle"
@@ -61,14 +63,16 @@ lipo -archs "$main_binary" | tr ' ' '\n' | grep -Fx "$expected_lipo_arch" >/dev/
 lipo -archs "$bundled_ffmpeg" | tr ' ' '\n' | grep -Fx "$expected_lipo_arch" >/dev/null
 
 ffmpeg_expected="$(jq -er '.sha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$bundled_manifest")"
+ffmpeg_source_binary_sha="$(jq -er '.sourceBinarySha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$bundled_manifest")"
 ffmpeg_source_archive_sha="$(jq -er '.sourceArchiveSha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$bundled_manifest")"
 ffmpeg_source_revision="$(jq -er '.sourceRevision | select(test("^[0-9a-f]{40}$"))' "$bundled_manifest")"
 ffmpeg_portable="$(jq -er '.portable' "$bundled_manifest")"
 ffmpeg_code_signed="$(jq -r '.codeSigned' "$bundled_manifest")"
+ffmpeg_signature_mode="$(jq -r '.signatureMode' "$bundled_manifest")"
 ffmpeg_trusted_signature="$(jq -r '.trustedSignature' "$bundled_manifest")"
 [[ "$ffmpeg_portable" == "true" ]] || { echo "Bundled FFmpeg is not marked portable" >&2; exit 1; }
-[[ "$ffmpeg_code_signed" == "false" && "$ffmpeg_trusted_signature" == "false" ]] || {
-  echo "Unsigned release FFmpeg manifest has an unexpected trusted signature"
+[[ "$ffmpeg_code_signed" == "true" && "$ffmpeg_signature_mode" == "adhoc" && "$ffmpeg_trusted_signature" == "false" ]] || {
+  echo "Bundled FFmpeg does not have the required untrusted ad-hoc signature state"
   exit 1
 }
 ffmpeg_actual="$(shasum -a 256 "$bundled_ffmpeg" | awk '{print $1}')"
@@ -76,15 +80,34 @@ ffmpeg_actual="$(shasum -a 256 "$bundled_ffmpeg" | awk '{print $1}')"
 license_sha="$(shasum -a 256 "$bundled_license" | awk '{print $1}')"
 manifest_sha="$(shasum -a 256 "$bundled_manifest" | awk '{print $1}')"
 
-app_sign_details="$(codesign -dv --verbose=4 "$app" 2>&1 || true)"
-binary_sign_details="$(codesign -dv --verbose=4 "$main_binary" 2>&1 || true)"
-dmg_sign_details="$(codesign -dv --verbose=4 "$dmg" 2>&1 || true)"
-for details in "$app_sign_details" "$binary_sign_details" "$dmg_sign_details"; do
+codesign --verify --deep --strict --verbose=4 "$app"
+codesign --verify --strict --verbose=4 "$main_binary"
+codesign --verify --strict --verbose=4 "$bundled_ffmpeg"
+app_sign_details="$(codesign -dv --verbose=4 "$app" 2>&1)"
+binary_sign_details="$(codesign -dv --verbose=4 "$main_binary" 2>&1)"
+ffmpeg_sign_details="$(codesign -dv --verbose=4 "$bundled_ffmpeg" 2>&1)"
+for details in "$app_sign_details" "$binary_sign_details" "$ffmpeg_sign_details"; do
+  printf '%s\n' "$details" | grep -Fx 'Signature=adhoc' >/dev/null || {
+    echo "macOS app code is not ad-hoc signed" >&2
+    exit 1
+  }
   if printf '%s\n' "$details" | grep -Eq '^Authority=|^TeamIdentifier=[A-Z0-9]'; then
-    echo "Unsigned release unexpectedly contains a trusted Apple signature" >&2
+    echo "Unsigned release unexpectedly contains a trusted Apple identity" >&2
     exit 1
   fi
 done
+printf '%s\n' "$app_sign_details" | grep -F 'Identifier=com.dohc.viewer' >/dev/null || {
+  echo "App signature has the wrong identifier" >&2
+  exit 1
+}
+printf '%s\n' "$app_sign_details" | grep -F 'Sealed Resources version=2' >/dev/null || {
+  echo "App signature does not seal bundle resources" >&2
+  exit 1
+}
+if codesign -dv --verbose=4 "$dmg" >/dev/null 2>&1; then
+  echo "Unsigned release DMG unexpectedly contains a code signature" >&2
+  exit 1
+fi
 if xcrun stapler validate "$app" >/dev/null 2>&1; then
   echo "Unsigned app unexpectedly contains a notarization ticket" >&2
   exit 1
@@ -111,11 +134,41 @@ attached=true
 mounted_app_count="$(find "$mount_point" -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')"
 [[ "$mounted_app_count" == "1" ]] || { echo "DMG does not contain exactly one app" >&2; exit 1; }
 mounted_app="$(find "$mount_point" -maxdepth 1 -type d -name '*.app' -print)"
+codesign --verify --deep --strict --verbose=4 "$mounted_app"
 mounted_ffmpeg_sha="$(shasum -a 256 "$mounted_app/Contents/Resources/bin/ffmpeg" | awk '{print $1}')"
 [[ "$mounted_ffmpeg_sha" == "$ffmpeg_expected" ]] || { echo "DMG FFmpeg hash mismatch" >&2; exit 1; }
 
 installed_app="$install_parent/DOHC Viewer.app"
 ditto "$mounted_app" "$installed_app"
+codesign --verify --deep --strict --verbose=4 "$installed_app"
+quarantine_timestamp="$(printf '%x' "$(date +%s)")"
+xattr -w com.apple.quarantine \
+  "0081;$quarantine_timestamp;DOHC-Release-CI;https://github.com/Lr-2002/Delta-Viewer" \
+  "$installed_app"
+codesign --verify --deep --strict --verbose=4 "$installed_app"
+set +e
+gatekeeper_output="$(syspolicy_check distribution "$installed_app" 2>&1)"
+gatekeeper_status=$?
+set -e
+[[ "$gatekeeper_status" -ne 0 ]] || {
+  echo "Unsigned ad-hoc app unexpectedly passed trusted distribution policy" >&2
+  exit 1
+}
+printf '%s\n' "$gatekeeper_output" | grep -F 'Adhoc Signed App' >/dev/null || {
+  printf '%s\n' "$gatekeeper_output" >&2
+  echo "Gatekeeper did not identify the expected ad-hoc signature" >&2
+  exit 1
+}
+printf '%s\n' "$gatekeeper_output" | grep -F 'Notary Ticket Missing' >/dev/null || {
+  printf '%s\n' "$gatekeeper_output" >&2
+  echo "Gatekeeper did not identify the expected missing notarization ticket" >&2
+  exit 1
+}
+if printf '%s\n' "$gatekeeper_output" | grep -Eiq 'code has no resources|invalid signature|damaged'; then
+  printf '%s\n' "$gatekeeper_output" >&2
+  echo "Gatekeeper reported a structurally damaged app" >&2
+  exit 1
+fi
 runtime_log="$install_parent/runtime.log"
 "$installed_app/Contents/MacOS/dohc-viewer" >"$runtime_log" 2>&1 &
 app_pid=$!
@@ -154,6 +207,7 @@ jq -n \
   --arg artifact_sha "$artifact_sha" \
   --argjson artifact_size "$artifact_size" \
   --arg ffmpeg_sha "$ffmpeg_actual" \
+  --arg ffmpeg_source_binary_sha "$ffmpeg_source_binary_sha" \
   --arg ffmpeg_source_archive_sha "$ffmpeg_source_archive_sha" \
   --arg ffmpeg_source_revision "$ffmpeg_source_revision" \
   --arg license_sha "$license_sha" \
@@ -170,18 +224,32 @@ jq -n \
     artifact: { fileName: $artifact_name, sha256: $artifact_sha, sizeBytes: $artifact_size },
     ffmpeg: {
       sha256: $ffmpeg_sha,
+      sourceBinarySha256: $ffmpeg_source_binary_sha,
       sourceArchiveSha256: $ffmpeg_source_archive_sha,
       sourceRevision: $ffmpeg_source_revision,
       licenseSha256: $license_sha,
       manifestSha256: $manifest_sha,
       portable: true,
-      codeSigned: false,
+      codeSigned: true,
+      signatureMode: "adhoc",
       trustedSignature: false
     },
-    signing: { mode: "unsigned", inspected: true, verified: false, developerId: false },
+    signing: {
+      mode: "adhoc",
+      inspected: true,
+      structureVerified: true,
+      verified: false,
+      developerId: false
+    },
     notarization: { verified: false, stapled: false },
-    runtimeSmoke: { passed: true, installedCopyLaunchedSeconds: 8 },
+    gatekeeper: {
+      quarantineApplied: true,
+      assessment: "rejected-untrusted-adhoc-not-notarized",
+      structuralError: false,
+      userOverrideRequired: true
+    },
+    runtimeSmoke: { passed: true, installedCopyLaunchedSeconds: 8, quarantineApplied: true },
     minimumSystemVersion: "12.0"
   }' >"$report_path"
 
-echo "Verified unsigned macOS release artifact: $artifact_path"
+echo "Verified untrusted ad-hoc-sealed macOS release artifact: $artifact_path"

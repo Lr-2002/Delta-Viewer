@@ -101,12 +101,27 @@ async function validateArtifact(options, expected, version) {
   if (
     report.distribution?.signingMode !== "unsigned" ||
     report.distribution?.trustedPublisher !== false ||
-    report.signing?.mode !== "unsigned" ||
     report.signing?.inspected !== true ||
-    report.signing?.verified !== false ||
     report.runtimeSmoke?.passed !== true
   ) {
     throw new Error(`${expected.report} has not passed unsigned-distribution and runtime checks`);
+  }
+  if (expected.platform === "windows") {
+    if (report.signing?.mode !== "unsigned" || report.signing?.verified !== false) {
+      throw new Error(`${expected.report} has an invalid unsigned Windows signing state`);
+    }
+  }
+  if (expected.platform === "macos") {
+    if (
+      report.signing?.mode !== "adhoc" ||
+      report.signing?.structureVerified !== true ||
+      report.signing?.verified !== false ||
+      report.gatekeeper?.assessment !== "rejected-untrusted-adhoc-not-notarized" ||
+      report.gatekeeper?.structuralError !== false ||
+      report.gatekeeper?.userOverrideRequired !== true
+    ) {
+      throw new Error(`${expected.report} has not passed the macOS Gatekeeper structure checks`);
+    }
   }
   if (
     expected.platform === "windows" &&
@@ -123,8 +138,10 @@ async function validateArtifact(options, expected, version) {
   }
   if (
     expected.platform === "macos" &&
-    (report.ffmpeg?.codeSigned !== false ||
+    (report.ffmpeg?.codeSigned !== true ||
+      report.ffmpeg?.signatureMode !== "adhoc" ||
       report.ffmpeg?.trustedSignature !== false ||
+      !/^[0-9a-f]{64}$/.test(report.ffmpeg?.sourceBinarySha256 ?? "") ||
       !/^[0-9a-f]{64}$/.test(report.ffmpeg?.sourceArchiveSha256 ?? "") ||
       !/^[0-9a-f]{40}$/.test(report.ffmpeg?.sourceRevision ?? ""))
   ) {
@@ -137,6 +154,7 @@ async function validateArtifact(options, expected, version) {
     sha256: actualHash,
     verification: {
       ffmpegSha256: report.ffmpeg.sha256,
+      ffmpegSourceBinarySha256: report.ffmpeg.sourceBinarySha256,
       ffmpegSourceArchiveSha256: report.ffmpeg.sourceArchiveSha256,
       ffmpegSourceRevision: report.ffmpeg.sourceRevision,
       ffmpegLicenseSha256: report.ffmpeg.licenseSha256,
@@ -189,7 +207,7 @@ async function main() {
       signingMode: "unsigned",
       trustedPublisher: false,
       warning:
-        "These installers are not code-signed or notarized. Verify SHA256SUMS.txt before use.",
+        "These installers are not signed by a trusted publisher or notarized. The macOS app has a valid local ad-hoc seal but still requires the standard Gatekeeper user override. Verify SHA256SUMS.txt before use.",
     },
     assets: verified.map(({ sourcePath: _sourcePath, report: _report, ...item }) => item),
   };

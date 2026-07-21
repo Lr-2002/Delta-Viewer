@@ -34,6 +34,7 @@ for value in "$source_archive" "$expected_source_sha256" "$source_url" "$source_
   [[ -n "$value" ]] || { usage >&2; exit 2; }
 done
 [[ "$(uname -s)" == "Darwin" ]] || { echo "macOS is required" >&2; exit 2; }
+command -v codesign >/dev/null || { echo "codesign is required" >&2; exit 2; }
 [[ -f "$source_archive" ]] || { echo "Source archive is missing: $source_archive" >&2; exit 2; }
 [[ "$source_url" == https://* ]] || { echo "Source URL must use HTTPS" >&2; exit 2; }
 [[ "$expected_source_sha256" =~ ^[0-9A-Fa-f]{64}$ ]] || {
@@ -94,6 +95,8 @@ export TZ=UTC
 
 binary="$source_root/ffmpeg"
 [[ -x "$binary" ]] || { echo "FFmpeg build did not produce an executable" >&2; exit 1; }
+codesign --force --sign - --timestamp=none "$binary"
+codesign --verify --strict --verbose=2 "$binary"
 sips -s format jpeg "$repo_root/src-tauri/icons/128x128.png" --out "$sample_root/0.jpg" >/dev/null
 cp "$sample_root/0.jpg" "$sample_root/1.jpg"
 cp "$sample_root/0.jpg" "$sample_root/2.jpg"
@@ -120,7 +123,8 @@ jq \
   --arg source_revision "$source_revision" \
   '.sourceArchiveSha256 = $source_archive_sha256
     | .sourceRevision = $source_revision
-    | .codeSigned = false
+    | .codeSigned = true
+    | .signatureMode = "adhoc"
     | .trustedSignature = false' \
   "$manifest" > "$temporary_manifest"
 mv "$temporary_manifest" "$manifest"

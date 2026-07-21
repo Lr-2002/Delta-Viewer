@@ -24,12 +24,14 @@ Installers are published on [GitHub Releases](https://github.com/Lr-2002/Delta-V
 - `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`
 - `DOHC-Viewer_<version>_UNSIGNED_macos-x64.dmg`
 
-The current release channel is deliberately unsigned. Windows can show an
-unknown-publisher or SmartScreen warning, and macOS can require an explicit
-Gatekeeper override. A release is made public only after all three installers
-pass dependency, resource, install or mount, direct-startup, and checksum gates.
-Verify `SHA256SUMS.txt` before use; detailed installation and usage instructions
-live in the Wiki.
+The current release channel has no trusted publisher signature. Windows can
+show an unknown-publisher or SmartScreen warning. The macOS app is ad-hoc sealed
+so its nested code and resources can be verified, but it has no Developer ID or
+notarization and therefore requires Apple's one-time Gatekeeper override. A
+release is made public only after all three installers pass dependency,
+resource, install or mount, startup, and checksum gates. Verify
+`SHA256SUMS.txt` before use; detailed installation and usage instructions live
+in the Wiki.
 
 ## Workflow
 
@@ -311,12 +313,16 @@ x64 on native GitHub-hosted runners. Windows uses reviewed, hash-pinned FFmpeg
 and offline WebView2 inputs. Each macOS runner builds a minimal LGPL FFmpeg from
 a pinned official source archive and commit.
 
-The platform jobs verify that DOHC assets are explicitly unsigned, then check
-bundled FFmpeg, offline WebView2 on Windows, installer or DMG contents, and an
-installed-copy direct-startup smoke. The final job recomputes all SHA-256 values,
-emits a release manifest and GitHub provenance attestations, and publishes the
-draft only when the complete three-platform set matches. Release titles, asset
-names, notes, reports, and the manifest all carry the `UNSIGNED` state.
+The Windows job verifies that DOHC assets have no Authenticode signature. The
+macOS jobs apply and strictly verify a local ad-hoc seal, reject Developer ID or
+notarization claims, and confirm under synthetic quarantine that Gatekeeper
+reports only the expected untrusted identity and missing ticket. Both paths
+also check bundled FFmpeg, offline WebView2 on Windows, installer or DMG
+contents, and an installed-copy startup smoke. The final job recomputes all
+SHA-256 values, emits a release manifest and GitHub provenance attestations,
+and publishes the draft only when the complete three-platform set matches.
+Release titles, asset names, notes, reports, and the manifest all carry the
+`UNSIGNED` state because no trusted publisher identity is present.
 
 The hosted-runner smoke does not replace clean Win10/Win11 offline testing,
 target-Mac testing, physical exFAT SD-card validation, or the formal

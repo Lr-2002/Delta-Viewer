@@ -59,6 +59,10 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
   const metadata = JSON.parse(await readFile(output, "utf8"));
   assert.equal(metadata.version, "1.2.3");
   assert.equal(metadata.commit, run("git", ["rev-parse", "HEAD"], testRoot));
+  assert.deepEqual(metadata.packaging.macos, [
+    "untrusted-adhoc-sealed-dmg-arm64",
+    "untrusted-adhoc-sealed-dmg-x64",
+  ]);
 
   run("git", ["tag", "-d", "v1.2.3"], testRoot);
   run("git", ["tag", "v1.2.3"], testRoot);
@@ -128,14 +132,25 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
           : {
               portable: true,
               sha256: "b".repeat(64),
+              sourceBinarySha256: "a".repeat(64),
               sourceArchiveSha256: "d".repeat(64),
               sourceRevision: "1".repeat(40),
               licenseSha256: "e".repeat(64),
               manifestSha256: "f".repeat(64),
-              codeSigned: false,
+              codeSigned: true,
+              signatureMode: "adhoc",
               trustedSignature: false,
             },
-      signing: { mode: "unsigned", inspected: true, verified: false },
+      signing:
+        definition.platform === "windows"
+          ? { mode: "unsigned", inspected: true, verified: false }
+          : {
+              mode: "adhoc",
+              inspected: true,
+              structureVerified: true,
+              verified: false,
+              developerId: false,
+            },
       runtimeSmoke: { passed: true },
       ...(definition.platform === "windows"
         ? {
@@ -145,7 +160,15 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
               sha256: "c".repeat(64),
             },
           }
-        : { notarization: { verified: false, stapled: false } }),
+        : {
+            notarization: { verified: false, stapled: false },
+            gatekeeper: {
+              quarantineApplied: true,
+              assessment: "rejected-untrusted-adhoc-not-notarized",
+              structuralError: false,
+              userOverrideRequired: true,
+            },
+          }),
     });
   }
 

@@ -16,7 +16,7 @@
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
 11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录或本地导入副本，三个 adapter 必须使用同一范围。
 12. 账号、登录会话和 episode 标注是纯本地能力。不得把账号、密码、处理人或标注发送到网络；所有数据 command 必须在 Rust 中验证当前登录会话。
-13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 macOS x64 可安装产物。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；标题、资产名、说明、verification report 和 manifest 都不得暗示已签名。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
+13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 macOS x64 可安装产物。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 
 ## 2. 仓库结构
 
@@ -63,7 +63,8 @@ DOHC_Viewer/
   scripts/verify-release.mjs     annotated tag、版本与打包契约门禁
   scripts/assemble-release.mjs   三平台产物/报告汇总与 SHA-256 manifest
   scripts/build-ffmpeg-macos.sh 固定源码构建最小 LGPL FFmpeg
-  scripts/verify-release-macos.sh unsigned DMG 挂载与启动检查
+  scripts/seal-macos-app-adhoc.sh macOS app 嵌套代码与资源 ad-hoc 封印
+  scripts/verify-release-macos.sh DMG 封印、Gatekeeper、挂载与启动检查
   scripts/verify-release-windows.ps1 unsigned NSIS 安装启动卸载检查
   scripts/check-wiki.mjs         Wiki 页面和内部链接检查
   scripts/windows-cross-check.mjs macOS/Linux 到 Windows x64 MSVC 条件编译检查
@@ -373,7 +374,9 @@ DOHC_SAMPLE_ROOT="$PWD/data/raw/2026-07-13_07-34-12" \
 `licenses/FFmpeg.txt` 和 `ffmpeg-manifest.json`。manifest schemaVersion 当前为
 1，记录平台、相对资源路径、来源、build ID、SHA-256、版本、configuration、
 encoder、架构、许可证文件名、portable 和 UTC 暂存时间。bundle 检查必须回读
-manifest 和二进制 hash；`portable:false` 默认阻止打包。
+manifest 和二进制 hash；`portable:false` 默认阻止打包。macOS 正式构建在封印后还必须
+记录 `sourceBinarySha256`、封印后 `sha256`、`codeSigned:true`、
+`signatureMode:adhoc` 和 `trustedSignature:false`。
 
 ### 10.2 macOS 验证
 
@@ -396,6 +399,11 @@ node scripts/release-check.mjs --full --bundle --allow-nonportable-bundle
 
 该例外只允许验证本机 `.app`/`.dmg` 结构和运行路径，产物不得发布，也不能关闭
 FFmpeg 分发审核缺口。
+
+正式 macOS app 组装完成后必须运行 `scripts/seal-macos-app-adhoc.sh --app <path>`，
+再创建 DMG。脚本按 FFmpeg、主程序、app bundle 的顺序执行 ad-hoc 封印并运行
+`codesign --verify --deep --strict`。不得把 Tauri/linker 自动生成的半成品签名直接打包；
+这会产生 “code has no resources” 并让 Gatekeeper 报告应用已损坏。
 
 ### 10.3 Windows 发布
 
@@ -435,22 +443,27 @@ pnpm tauri:build
 `pnpm check`。Windows x64、macOS arm64 和 macOS x64 在原生 runner 上构建；所有
 job 使用锁定 commit SHA 的 Actions，并固定 Node 22、pnpm 10.12.1 和 Rust 1.97.1。
 
-当前 `0.15.x` release channel 是显式 unsigned。Windows FFmpeg、许可证、构建说明和
+当前 `0.15.x` release channel 是显式 unsigned，即没有可信发布者身份。Windows FFmpeg、许可证、构建说明和
 WebView2 exact URL/SHA-256 固定在 workflow；macOS arm64/x64 从固定 archive hash 和
 Git commit 的 FFmpeg 8.1.2 官方源码构建只含 JPEG -> MPEG-4 所需能力的最小 LGPL
-sidecar。不得替换为 `--enable-nonfree` 或带非系统动态库的构建。
+sidecar。不得替换为 `--enable-nonfree` 或带非系统动态库的构建。macOS 的 unsigned
+披露不允许省略 ad-hoc 完整性封印。
 
 平台验证最低包括：
 
 1. Windows 确认 DOHC 应用、NSIS 和 uninstaller 为 unsigned，同时验证 Microsoft 已签名
    的 offline WebView2、FFmpeg/许可证/manifest、silent install、启动 8 秒和 silent uninstall。
-2. macOS 确认没有 Developer ID 和 notarization claim，验证 FFmpeg 源码/binary hash、
-   架构与系统库依赖、只读 DMG、`/Applications` 链接，以及复制后的 8 秒直接启动。
+2. macOS 确认没有 Developer ID 和 notarization claim；app、主程序和 FFmpeg 必须是
+   ad-hoc 且通过 `codesign --verify --deep --strict`。验证 FFmpeg 源码/封印前后 binary
+   hash、架构与系统库依赖、只读 DMG、`/Applications` 链接；复制 app 并添加合成
+   quarantine 后，`syspolicy_check distribution` 只能因 `Adhoc Signed App` 和
+   `Notary Ticket Missing` 拒绝，不能出现 invalid signature、missing resources 或
+   damaged，再执行 8 秒直接启动。
 3. final job 重新读取三份 verification JSON 和安装器 hash，生成
    `release-manifest.json`、`SHA256SUMS.txt` 和 provenance；三个 installer 集合完整
    后才解除 draft。公开过的 tag 不允许 clobber。
 
-所有安装器文件名、Release 标题/说明和 manifest 必须显示 `UNSIGNED`。加入签名时必须
+所有安装器文件名、Release 标题/说明和 manifest 必须显示 `UNSIGNED`。加入可信签名时必须
 作为单独版本恢复 Authenticode、Developer ID、timestamp、Gatekeeper 和 notarization
 门禁，不得在同一 tag 上替换资产。GitHub hosted runner 不是目标机验收；CD 通过仍不得
 关闭 Win10/Win11 断网、目标 Mac、真实 exFAT SD 卡或 100 GB/100,000 文件缺口。用户文档以 `docs/wiki/` 为唯一源，

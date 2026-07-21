@@ -147,7 +147,7 @@ async function verify(options) {
     },
     packaging: {
       windows: "unsigned-nsis-x64-offline-webview2",
-      macos: ["unsigned-dmg-arm64", "unsigned-dmg-x64"],
+      macos: ["untrusted-adhoc-sealed-dmg-arm64", "untrusted-adhoc-sealed-dmg-x64"],
       macosMinimumSystemVersion: "12.0",
     },
   };
