@@ -2,6 +2,18 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.11.0 - 2026-07-21
+
+- Reworked the complete application chrome into a black, white, and neutral-gray
+  system across navigation, session selection, controls, progress, status, and
+  export feedback.
+- Converted telemetry axes, grids, and markers to distinct grayscale values while
+  preserving the original color of camera recordings.
+- Kept warning and error states identifiable through labels, icons, borders, and
+  luminance instead of relying on hue alone.
+- Verified playback, checks, and export at 1440x920, 960x680, and 390x844 with
+  five decoded images, no horizontal overflow, and no browser runtime errors.
+
 ## 0.10.0 - 2026-07-21
 
 - Made the left episode list a session selector: a single click only changes

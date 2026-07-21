@@ -236,6 +236,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 进度、错误、warning 和成功结果都必须有可见状态，不能只写 console。
 - 图像面板使用稳定尺寸；加载或错误不能改变 grid 布局。
 - 左侧 episode 列表以源路径作为 session 身份：单击只选择，双击才进入回放；本地导入路径不得覆盖源 session 的选中身份。
+- 应用 UI 色彩系统固定为黑、白和中性灰；原始相机画面保留源颜色。状态不得只靠色相表达，必须同时使用文字、图标、边框和明度层级。
 - 图标使用当前 Lucide 库，陌生图标按钮提供 `title`/`aria-label`。
 - 桌面工具保持紧凑、可扫描，不增加 landing page、营销 hero 或装饰性卡片。
 - 卡片圆角不超过 8 px，不嵌套卡片，letter-spacing 保持 0。

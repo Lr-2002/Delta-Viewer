@@ -6,7 +6,7 @@ interface TelemetryChartProps {
   metric: MetricKey;
   frameId: number;
 }
-const COLORS = ["#167f6b", "#d25b40", "#3175b9", "#9b6a20"];
+const COLORS = ["#161616", "#4d4d4d", "#858585", "#adadad"];
 
 const METRIC_LABELS: Record<MetricKey, string> = {
   position: "位置",
@@ -60,9 +60,9 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
       minimum -= margin;
       maximum += margin;
 
-      context.strokeStyle = "#d9ddda";
+      context.strokeStyle = "#dddddd";
       context.lineWidth = 1;
-      context.fillStyle = "#68716b";
+      context.fillStyle = "#666666";
       context.font = "11px system-ui, sans-serif";
       context.textAlign = "right";
       context.textBaseline = "middle";
@@ -108,14 +108,14 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
       }
 
       const markerX = xFor(Math.max(firstFrame, Math.min(lastFrame, frameId)));
-      context.strokeStyle = "#151a17";
+      context.strokeStyle = "#171717";
       context.lineWidth = 1;
       context.beginPath();
       context.moveTo(markerX + 0.5, padding.top);
       context.lineTo(markerX + 0.5, padding.top + plotHeight);
       context.stroke();
 
-      context.fillStyle = "#68716b";
+      context.fillStyle = "#666666";
       context.textAlign = "left";
       context.textBaseline = "bottom";
       context.fillText("0", padding.left, height - 7);
