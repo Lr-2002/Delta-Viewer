@@ -1,0 +1,573 @@
+name: Release installers
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing annotated vX.Y.Z tag to release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.12.1"
+  RUST_VERSION: "1.97.1"
+
+jobs:
+  prepare:
+    name: Verify release tag
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
+      commit: ${{ steps.metadata.outputs.commit }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+    steps:
+      - name: Check out annotated tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Install Linux Tauri build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            patchelf
+
+      - name: Verify annotated tag and version contract
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/release-metadata.json"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --output "$metadata"
+          {
+            echo "tag=$(jq -r .tag "$metadata")"
+            echo "version=$(jq -r .version "$metadata")"
+            echo "commit=$(jq -r .commit "$metadata")"
+            echo "prerelease=$(jq -r .prerelease "$metadata")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run shared release gate
+        run: |
+          pnpm check:release-scripts
+          pnpm check
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-metadata
+          path: ${{ runner.temp }}/release-metadata.json
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    name: Windows 10+ x64 installer
+    needs: prepare
+    runs-on: windows-2022
+    environment: production-release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      FFMPEG_URL: ${{ vars.FFMPEG_WINDOWS_URL }}
+      FFMPEG_SHA256: ${{ vars.FFMPEG_WINDOWS_SHA256 }}
+      FFMPEG_LICENSE_URL: ${{ vars.FFMPEG_WINDOWS_LICENSE_URL }}
+      FFMPEG_LICENSE_SHA256: ${{ vars.FFMPEG_WINDOWS_LICENSE_SHA256 }}
+      FFMPEG_BUILD_ID: ${{ vars.FFMPEG_WINDOWS_BUILD_ID }}
+      WEBVIEW2_URL: ${{ vars.WEBVIEW2_WINDOWS_X64_URL }}
+      WEBVIEW2_SHA256: ${{ vars.WEBVIEW2_WINDOWS_X64_SHA256 }}
+      WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Reverify release checkout
+        run: node scripts/verify-release.mjs --tag "$env:RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Stage reviewed offline WebView2 installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:WEBVIEW2_URL) -or
+              [string]::IsNullOrWhiteSpace($env:WEBVIEW2_SHA256)) {
+            throw "Missing WEBVIEW2_WINDOWS_X64_URL or WEBVIEW2_WINDOWS_X64_SHA256 variable"
+          }
+          $reviewedUri = [Uri]$env:WEBVIEW2_URL
+          $expectedPrefix = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/"
+          if (-not $reviewedUri.AbsoluteUri.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "WEBVIEW2_WINDOWS_X64_URL must be an exact Microsoft filestreamingservice HTTPS URL"
+          }
+          $current = Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?linkid=2124701" -Method Head
+          $currentUri = $current.BaseResponse.RequestMessage.RequestUri
+          if ($currentUri.AbsoluteUri -ne $reviewedUri.AbsoluteUri) {
+            throw "Microsoft evergreen WebView2 URL changed; review and update the pinned URL/hash before release"
+          }
+          $segments = $reviewedUri.AbsolutePath.Trim("/").Split("/")
+          if ($segments.Count -lt 2) { throw "Pinned WebView2 URL has no GUID/file path" }
+          $guid = $segments[$segments.Count - 2]
+          $fileName = [Uri]::UnescapeDataString($segments[$segments.Count - 1])
+          $parsedGuid = [Guid]::Empty
+          if (-not [Guid]::TryParse($guid, [ref]$parsedGuid) -or [string]::IsNullOrWhiteSpace($fileName)) {
+            throw "Pinned WebView2 URL has an invalid GUID or file name"
+          }
+          $cache = Join-Path $env:GITHUB_WORKSPACE "src-tauri\target\.tauri\x64\$guid"
+          New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          $installer = Join-Path $cache $fileName
+          Invoke-WebRequest -Uri $reviewedUri -OutFile $installer
+          $actualHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:WEBVIEW2_SHA256.ToLowerInvariant()) {
+            throw "Reviewed WebView2 SHA-256 mismatch"
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+              -not $signature.SignerCertificate.Subject.Contains("Microsoft")) {
+            throw "Reviewed WebView2 installer does not have a valid Microsoft signature"
+          }
+
+      - name: Download and stage reviewed Windows FFmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $required = @(
+            "FFMPEG_URL",
+            "FFMPEG_SHA256",
+            "FFMPEG_LICENSE_URL",
+            "FFMPEG_LICENSE_SHA256",
+            "FFMPEG_BUILD_ID"
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Missing production-release variable: $name"
+            }
+          }
+          if (([Uri]$env:FFMPEG_URL).Scheme -ne "https" -or ([Uri]$env:FFMPEG_LICENSE_URL).Scheme -ne "https") {
+            throw "FFmpeg binary and license URLs must use HTTPS"
+          }
+          $dependencyRoot = Join-Path $env:RUNNER_TEMP "ffmpeg-reviewed"
+          New-Item -ItemType Directory -Path $dependencyRoot | Out-Null
+          $binary = Join-Path $dependencyRoot "ffmpeg.exe"
+          $license = Join-Path $dependencyRoot "FFmpeg-LICENSE.txt"
+          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile $binary
+          Invoke-WebRequest -Uri $env:FFMPEG_LICENSE_URL -OutFile $license
+          $licenseHash = (Get-FileHash -LiteralPath $license -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($licenseHash -ne $env:FFMPEG_LICENSE_SHA256.ToLowerInvariant()) {
+            throw "Reviewed FFmpeg license SHA-256 mismatch"
+          }
+          .\scripts\stage-ffmpeg.ps1 `
+            -Source $binary `
+            -ExpectedSha256 $env:FFMPEG_SHA256 `
+            -LicenseFile $license `
+            -SourceUrl $env:FFMPEG_URL `
+            -BuildId $env:FFMPEG_BUILD_ID `
+            -ReviewedPortable
+
+      - name: Import Windows code-signing certificate
+        id: windows_certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw "Missing WINDOWS_CERTIFICATE or WINDOWS_CERTIFICATE_PASSWORD secret"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_TIMESTAMP_URL)) {
+            throw "Missing production-release variable: WINDOWS_TIMESTAMP_URL"
+          }
+          $timestamp = [Uri]$env:WINDOWS_TIMESTAMP_URL
+          if (-not $timestamp.IsAbsoluteUri -or $timestamp.Scheme -notin @("http", "https")) {
+            throw "WINDOWS_TIMESTAMP_URL must be an absolute HTTP(S) RFC 3161 endpoint"
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "dohc-viewer-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
+          $imported = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password)
+          $certificate = @($imported | Where-Object HasPrivateKey | Select-Object -First 1)
+          if ($certificate.Count -ne 1) { throw "PFX did not contain one certificate with a private key" }
+          $certificate = $certificate[0]
+          if ($certificate.NotAfter.ToUniversalTime() -lt [DateTime]::UtcNow.AddDays(7)) {
+            throw "Windows code-signing certificate expires in less than seven days"
+          }
+          $codeSigningOid = "1.3.6.1.5.5.7.3.3"
+          if ($certificate.EnhancedKeyUsageList.ObjectId.Value -notcontains $codeSigningOid) {
+            throw "PFX certificate is not valid for code signing"
+          }
+          $config = [ordered]@{
+            bundle = [ordered]@{
+              useLocalToolsDir = $true
+              windows = [ordered]@{
+                certificateThumbprint = $certificate.Thumbprint
+                digestAlgorithm = "sha256"
+                timestampUrl = $env:WINDOWS_TIMESTAMP_URL
+                tsp = $true
+              }
+            }
+          }
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri-release-signing.json"
+          [IO.File]::WriteAllText($configPath, (($config | ConvertTo-Json -Depth 5) + "`n"))
+          "thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
+
+      - name: Build signed offline NSIS installer
+        run: pnpm tauri build --ci --bundles nsis --config "$env:RUNNER_TEMP\tauri-release-signing.json"
+
+      - name: Verify install, launch, resources, signatures, and uninstall
+        shell: pwsh
+        run: |
+          .\scripts\verify-release-windows.ps1 `
+            -Version "${{ needs.prepare.outputs.version }}" `
+            -Tag "${{ needs.prepare.outputs.tag }}" `
+            -Commit "${{ needs.prepare.outputs.commit }}" `
+            -CertificateThumbprint "${{ steps.windows_certificate.outputs.thumbprint }}" `
+            -WebView2Url "$env:WEBVIEW2_URL" `
+            -WebView2Sha256 "$env:WEBVIEW2_SHA256" `
+            -OutputDirectory "$env:RUNNER_TEMP\release-assets"
+
+      - name: Attest Windows installer provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.prepare.outputs.version }}_windows-x64-setup.exe
+
+      - name: Upload verified Windows release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-windows-x64
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove imported Windows certificate
+        if: always() && steps.windows_certificate.outputs.thumbprint != ''
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath "Cert:\CurrentUser\My\${{ steps.windows_certificate.outputs.thumbprint }}" -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$env:RUNNER_TEMP\dohc-viewer-signing.pfx" -Force -ErrorAction SilentlyContinue
+
+  macos:
+    name: macOS 12+ ${{ matrix.architecture }} DMG
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    environment: production-release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            architecture: x64
+            target: x86_64-apple-darwin
+    env:
+      FFMPEG_URL: ${{ matrix.architecture == 'arm64' && vars.FFMPEG_MACOS_ARM64_URL || vars.FFMPEG_MACOS_X64_URL }}
+      FFMPEG_SHA256: ${{ matrix.architecture == 'arm64' && vars.FFMPEG_MACOS_ARM64_SHA256 || vars.FFMPEG_MACOS_X64_SHA256 }}
+      FFMPEG_LICENSE_URL: ${{ matrix.architecture == 'arm64' && vars.FFMPEG_MACOS_ARM64_LICENSE_URL || vars.FFMPEG_MACOS_X64_LICENSE_URL }}
+      FFMPEG_LICENSE_SHA256: ${{ matrix.architecture == 'arm64' && vars.FFMPEG_MACOS_ARM64_LICENSE_SHA256 || vars.FFMPEG_MACOS_X64_LICENSE_SHA256 }}
+      FFMPEG_BUILD_ID: ${{ matrix.architecture == 'arm64' && vars.FFMPEG_MACOS_ARM64_BUILD_ID || vars.FFMPEG_MACOS_X64_BUILD_ID }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up Rust target
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Reverify release checkout
+        run: node scripts/verify-release.mjs --tag "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download and stage reviewed macOS FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in FFMPEG_URL FFMPEG_SHA256 FFMPEG_LICENSE_URL FFMPEG_LICENSE_SHA256 FFMPEG_BUILD_ID; do
+            [[ -n "${!name:-}" ]] || { echo "Missing production-release variable: $name" >&2; exit 1; }
+          done
+          [[ "$FFMPEG_URL" == https://* && "$FFMPEG_LICENSE_URL" == https://* ]] || {
+            echo "FFmpeg binary and license URLs must use HTTPS" >&2
+            exit 1
+          }
+          dependency_root="$RUNNER_TEMP/ffmpeg-reviewed"
+          mkdir -p "$dependency_root"
+          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error "$FFMPEG_URL" -o "$dependency_root/ffmpeg"
+          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error "$FFMPEG_LICENSE_URL" -o "$dependency_root/FFmpeg-LICENSE.txt"
+          chmod 755 "$dependency_root/ffmpeg"
+          actual_license_sha="$(shasum -a 256 "$dependency_root/FFmpeg-LICENSE.txt" | awk '{print $1}')"
+          [[ "$actual_license_sha" == "$(printf '%s' "$FFMPEG_LICENSE_SHA256" | tr '[:upper:]' '[:lower:]')" ]] || {
+            echo "Reviewed FFmpeg license SHA-256 mismatch" >&2
+            exit 1
+          }
+          bash scripts/stage-ffmpeg.sh \
+            --source "$dependency_root/ffmpeg" \
+            --expected-sha256 "$FFMPEG_SHA256" \
+            --license "$dependency_root/FFmpeg-LICENSE.txt" \
+            --source-url "$FFMPEG_URL" \
+            --build-id "$FFMPEG_BUILD_ID"
+
+      - name: Import Apple Developer ID certificate
+        id: apple_certificate
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID; do
+            [[ -n "${!name:-}" ]] || { echo "Missing production-release secret: $name" >&2; exit 1; }
+          done
+          [[ "$APPLE_SIGNING_IDENTITY" == Developer\ ID\ Application:* ]] || {
+            echo "APPLE_SIGNING_IDENTITY must be a Developer ID Application identity" >&2
+            exit 1
+          }
+          keychain="$RUNNER_TEMP/dohc-viewer-signing.keychain-db"
+          p12="$RUNNER_TEMP/dohc-viewer-signing.p12"
+          keychain_password="$(openssl rand -hex 32)"
+          printf '%s' "$APPLE_CERTIFICATE" | openssl base64 -d -A -out "$p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -d user -s "$keychain"
+          security find-identity -v -p codesigning "$keychain" | grep -F "\"$APPLE_SIGNING_IDENTITY\"" >/dev/null
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+
+      - name: Sign the bundled FFmpeg executable
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          binary="src-tauri/resources/bin/ffmpeg"
+          manifest="src-tauri/resources/ffmpeg-manifest.json"
+          source_sha="$(jq -er '.sha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$manifest")"
+          codesign \
+            --force \
+            --timestamp \
+            --options runtime \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --keychain "${{ steps.apple_certificate.outputs.keychain }}" \
+            "$binary"
+          codesign --verify --strict --verbose=2 "$binary"
+          signed_sha="$(shasum -a 256 "$binary" | awk '{print $1}')"
+          temporary_manifest="$(mktemp "$manifest.partial.XXXXXX")"
+          jq \
+            --arg source_sha "$source_sha" \
+            --arg signed_sha "$signed_sha" \
+            --arg identity "$APPLE_SIGNING_IDENTITY" \
+            '.sourceSha256 = $source_sha | .sha256 = $signed_sha | .codeSigned = true | .signingIdentity = $identity' \
+            "$manifest" > "$temporary_manifest"
+          mv "$temporary_manifest" "$manifest"
+
+      - name: Build signed and notarized DMG
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: |
+          set -euo pipefail
+          for name in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [[ -n "${!name:-}" ]] || { echo "Missing production-release secret: $name" >&2; exit 1; }
+          done
+          pnpm tauri build --ci --target "${{ matrix.target }}" --bundles dmg
+
+      - name: Verify DMG, Gatekeeper, notarization, resources, and startup
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          bash scripts/verify-release-macos.sh \
+            --target "${{ matrix.target }}" \
+            --arch "${{ matrix.architecture }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --tag "${{ needs.prepare.outputs.tag }}" \
+            --commit "${{ needs.prepare.outputs.commit }}" \
+            --team-id "$APPLE_TEAM_ID" \
+            --output "$RUNNER_TEMP/release-assets"
+
+      - name: Attest macOS installer provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.prepare.outputs.version }}_macos-${{ matrix.architecture }}.dmg
+
+      - name: Upload verified macOS release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-macos-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary Apple keychain
+        if: always() && steps.apple_certificate.outputs.keychain != ''
+        shell: bash
+        run: |
+          security delete-keychain "${{ steps.apple_certificate.outputs.keychain }}" || true
+          rm -f "$RUNNER_TEMP/dohc-viewer-signing.p12"
+
+  publish:
+    name: Publish complete GitHub Release
+    needs: [prepare, windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download all verified platform artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/release-inputs
+          merge-multiple: true
+
+      - name: Assemble and cross-check complete release
+        run: |
+          node scripts/assemble-release.mjs \
+            --input "$RUNNER_TEMP/release-inputs" \
+            --output "$RUNNER_TEMP/release-assets" \
+            --tag "${{ needs.prepare.outputs.tag }}" \
+            --commit "${{ needs.prepare.outputs.commit }}"
+
+      - name: Attest final release set
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/*
+
+      - name: Publish only after every installer passed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          ASSET_DIR: ${{ runner.temp }}/release-assets
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+            [[ "$is_draft" == "true" ]] || {
+              echo "A published release already exists for immutable tag $TAG" >&2
+              exit 1
+            }
+            while IFS= read -r existing_asset; do
+              [[ -z "$existing_asset" ]] || gh release delete-asset "$TAG" "$existing_asset" --yes
+            done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+          else
+            notes=$'Compiled installers are attached for Windows x64, macOS Apple Silicon, and macOS Intel. All three passed signing, dependency, install/startup, and checksum gates before this release was published.\n\nUser guide: https://github.com/${{ github.repository }}/wiki'
+            create_args=("$TAG" --verify-tag --draft --title "DOHC Viewer $TAG" --generate-notes --notes "$notes")
+            if [[ "$PRERELEASE" == "true" ]]; then create_args+=(--prerelease); fi
+            gh release create "${create_args[@]}"
+          fi
+
+          gh release upload "$TAG" "$ASSET_DIR"/* --clobber
+          find "$ASSET_DIR" -maxdepth 1 -type f -exec basename {} \; | sort > "$RUNNER_TEMP/local-assets.txt"
+          gh release view "$TAG" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/remote-assets.txt"
+          diff -u "$RUNNER_TEMP/local-assets.txt" "$RUNNER_TEMP/remote-assets.txt"
+
+          edit_args=("$TAG" --draft=false)
+          if [[ "$PRERELEASE" != "true" ]]; then edit_args+=(--latest); fi
+          gh release edit "${edit_args[@]}"

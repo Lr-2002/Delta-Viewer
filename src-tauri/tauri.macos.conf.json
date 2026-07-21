@@ -2,6 +2,10 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
     "targets": ["app", "dmg"],
+    "macOS": {
+      "hardenedRuntime": true,
+      "minimumSystemVersion": "12.0"
+    },
     "resources": {
       "resources/bin/ffmpeg": "bin/ffmpeg",
       "resources/licenses/FFmpeg.txt": "licenses/FFmpeg.txt",

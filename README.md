@@ -4,16 +4,30 @@ DOHC Viewer is a Tauri 2 desktop application for importing DOHC recordings from
 an SD card, verifying the local copy, reviewing synchronized sensor data, and
 exporting it through independent format adapters.
 
-Development and packaging prioritize macOS and Windows; the first formal
-release target remains Windows 10 or later. The frontend is React/TypeScript
-and the data path is implemented in Rust so directory scans, hashing, image
-checks, and exports do not block the UI.
+Official packaging targets Windows 10/11 x64 plus macOS 12 or later on Apple
+Silicon and Intel. The first field-acceptance target remains Windows. The
+frontend is React/TypeScript and the data path is implemented in Rust so
+directory scans, hashing, image checks, and exports do not block the UI.
 
 Project documentation:
 
+- [User guide on GitHub Wiki](https://github.com/Lr-2002/Delta-Viewer/wiki)
 - [Product requirements](prd.md)
 - [Development and agent guide](AGENTS.md)
 - [Version history](CHANGELOG.md)
+
+## Installation
+
+Formal installers are published on [GitHub Releases](https://github.com/Lr-2002/Delta-Viewer/releases):
+
+- `DOHC-Viewer_<version>_windows-x64-setup.exe`
+- `DOHC-Viewer_<version>_macos-arm64.dmg`
+- `DOHC-Viewer_<version>_macos-x64.dmg`
+
+A release is made public only after all three installers pass dependency,
+signature, install or mount, startup, and checksum gates. Use the accompanying
+`SHA256SUMS.txt` and `release-manifest.json`; detailed installation and usage
+instructions live in the Wiki.
 
 ## Workflow
 
@@ -286,3 +300,27 @@ embeds the offline WebView2 installer, blocks downgrades, and refuses
 installation below Windows 10. The final NSIS application and installer must be
 signed and tested offline on clean Win10/Win11 x64 systems. Code signing
 credentials are intentionally not stored in this repository.
+
+## Formal release CD
+
+`.github/workflows/release.yml` runs only for an existing annotated `vX.Y.Z`
+tag (or a manual rerun of one). It builds Windows x64, macOS arm64, and macOS
+x64 on native GitHub-hosted runners. Each job requires reviewed, hash-pinned
+FFmpeg inputs and production signing credentials from the protected
+`production-release` environment. Missing inputs fail the release; there is no
+unsigned fallback.
+
+The platform jobs verify Authenticode or Developer ID signatures, trusted
+timestamps/notarization, bundled FFmpeg, offline WebView2 on Windows, installer
+or DMG contents, and an installed-copy startup smoke. The final job recomputes
+all SHA-256 values, emits a release manifest and GitHub provenance attestations,
+and publishes the draft only when the complete three-platform set matches.
+
+The hosted-runner smoke does not replace clean Win10/Win11 offline testing,
+target-Mac testing, physical exFAT SD-card validation, or the formal
+100 GB/100,000-file run. Release environment setup is documented in the
+[Wiki release guide](https://github.com/Lr-2002/Delta-Viewer/wiki/Release-Operations).
+
+Wiki source is reviewed under `docs/wiki/` and synchronized by
+`.github/workflows/wiki.yml`; do not maintain divergent instructions directly
+in the GitHub web editor.

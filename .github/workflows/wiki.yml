@@ -1,0 +1,58 @@
+name: Publish Wiki
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/wiki/**"
+      - "scripts/check-wiki.mjs"
+      - ".github/workflows/wiki.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-wiki
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Sync reviewed documentation to GitHub Wiki
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out documentation source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Check Wiki pages and links
+        run: node scripts/check-wiki.mjs
+
+      - name: Sync Wiki repository
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          wiki_dir="$RUNNER_TEMP/delta-viewer-wiki"
+          wiki_url="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git"
+          if ! git clone "$wiki_url" "$wiki_dir"; then
+            echo "::error::GitHub Wiki has not been initialized. Create its first Home page once, then rerun this workflow."
+            exit 1
+          fi
+          rsync -a --delete --exclude '.git/' docs/wiki/ "$wiki_dir/"
+          cd "$wiki_dir"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          if git diff --cached --quiet; then
+            echo "Wiki is already up to date."
+            exit 0
+          fi
+          git commit -m "docs: sync Wiki from ${GITHUB_SHA}"
+          git push origin HEAD

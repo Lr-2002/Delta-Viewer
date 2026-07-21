@@ -2,6 +2,18 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## Unreleased
+
+- Added fail-closed GitHub CD for signed Windows x64 NSIS and signed/notarized
+  macOS arm64/x64 DMG installers, with native install/startup smoke checks,
+  complete-set publication, checksums, manifests, and build provenance.
+- Added a reviewed `docs/wiki` user manual and automatic GitHub Wiki sync for
+  installation, SD-card loading, validation, playback, annotation, export,
+  privacy, troubleshooting, and release operations.
+- Fixed formal macOS packaging at macOS 12 or later and pinned the release Rust
+  toolchain to 1.97.1; production releases still require approved signing and
+  reviewed FFmpeg configuration outside Git.
+
 ## 0.14.0 - 2026-07-21
 
 - Added offline local account creation, login, and logout so every annotation

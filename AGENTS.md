@@ -16,6 +16,7 @@
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
 11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录或本地导入副本，三个 adapter 必须使用同一范围。
 12. 账号、登录会话和 episode 标注是纯本地能力。不得把账号、密码、处理人或标注发送到网络；所有数据 command 必须在 Rust 中验证当前登录会话。
+13. 正式 GitHub Release 必须同时包含 Windows x64、macOS arm64 和 macOS x64 的已签名可安装产物；任一平台、依赖、签名、notarization 或安装/启动检查失败时不得公开部分 Release。
 
 ## 2. 仓库结构
 
@@ -25,6 +26,10 @@ DOHC_Viewer/
   CHANGELOG.md                   按 tag 记录的版本历史
   README.md                      用户/构建入口
   AGENTS.md                      本开发指南
+  .github/workflows/
+    release.yml                 三平台签名安装包 CD 与原子发布门禁
+    wiki.yml                    docs/wiki 到 GitHub Wiki 的同步流程
+  docs/wiki/                    GitHub Wiki 的可审查唯一源文件
   src/                           React/TypeScript UI
     App.tsx                      顶层工作流和视图状态
     components/                  回放、检查、进度和导出组件
@@ -55,6 +60,11 @@ DOHC_Viewer/
     windows/installer-hooks.nsh  Win10 最低版本检查
     examples/stress-check.rs     压力验收 CLI；正式模式默认开启
   scripts/release-check.mjs      跨平台 quick/full/bundle 发布检查
+  scripts/verify-release.mjs     annotated tag、版本与打包契约门禁
+  scripts/assemble-release.mjs   三平台产物/报告汇总与 SHA-256 manifest
+  scripts/verify-release-macos.sh signed/notarized DMG 安装启动检查
+  scripts/verify-release-windows.ps1 signed NSIS 安装启动卸载检查
+  scripts/check-wiki.mjs         Wiki 页面和内部链接检查
   scripts/windows-cross-check.mjs macOS/Linux 到 Windows x64 MSVC 条件编译检查
   scripts/exfat-smoke-macos.mjs  macOS 只读虚拟 ExFAT 全链路 smoke
   scripts/make-dmg.sh            macOS 无头 DMG 内容打包
@@ -87,7 +97,7 @@ React component
 
 ## 4. 环境与常用命令
 
-要求：Node.js、pnpm 10、稳定 Rust、平台对应的 Tauri 构建依赖。LeRobot smoke test 还需要 FFmpeg。
+要求：Node.js、pnpm 10、`rust-toolchain.toml` 固定的 Rust、平台对应的 Tauri 构建依赖。LeRobot smoke test 还需要 FFmpeg。
 
 ```bash
 pnpm install
@@ -95,6 +105,7 @@ pnpm dev
 pnpm tauri:dev
 pnpm build
 pnpm check
+pnpm check:wiki
 pnpm check:windows-cross
 pnpm check:exfat-macos
 pnpm check:full
@@ -416,12 +427,41 @@ pnpm tauri:build
 
 不要把 staging 的 FFmpeg、许可证 bundle、manifest、JSON 检查报告或签名材料加入 Git。
 
+### 10.4 GitHub 正式 CD
+
+`.github/workflows/release.yml` 只处理已经存在的 annotated `vX.Y.Z` tag。prepare job
+重新验证 tag 类型、HEAD、clean checkout、Changelog 以及四处应用版本，然后运行
+`pnpm check`。Windows x64、macOS arm64 和 macOS x64 在原生 runner 上构建；所有
+job 使用锁定 commit SHA 的 Actions，并固定 Node 22、pnpm 10.12.1 和 Rust 1.97.1。
+
+正式 job 绑定 `production-release` GitHub Environment。该 Environment 必须配置
+required reviewers、Windows PFX、Apple Developer ID/notarization 凭据、每种架构
+reviewed FFmpeg 的 HTTPS URL/二进制与许可证 SHA-256/build ID，以及 Windows x64
+WebView2 exact Microsoft URL/SHA-256。缺少任何变量必须失败，禁止生成 unsigned 或
+ad-hoc fallback。秘密值不得写入 workflow、报告、artifact 或仓库。
+
+平台验证最低包括：
+
+1. Windows 应用/NSIS 的 Authenticode 与 RFC 3161 时间戳、预审核 exact URL/hash 的
+   offline WebView2、FFmpeg/许可证/manifest、silent install、启动 8 秒和 silent uninstall。
+2. macOS Developer ID、hardened runtime、Gatekeeper、stapled notarization、只读 DMG、
+   `/Applications` 链接、FFmpeg 独立 Developer ID 签名与 upstream/签名后 hash，
+   以及复制到本地后的 8 秒启动。
+3. final job 重新读取三份 verification JSON 和安装器 hash，生成
+   `release-manifest.json`、`SHA256SUMS.txt` 和 provenance；三个 installer 集合完整
+   后才解除 draft。公开过的 tag 不允许 clobber。
+
+GitHub hosted runner 不是目标机验收。CD 通过仍不得关闭 Win10/Win11 断网、目标 Mac、
+真实 exFAT SD 卡或 100 GB/100,000 文件缺口。用户文档以 `docs/wiki/` 为唯一源，
+修改后运行 `pnpm check:wiki`；`.github/workflows/wiki.yml` 只负责同步到已初始化的
+GitHub Wiki，不直接在网页维护分叉版本。
+
 ## 11. 依赖管理
 
 - 优先使用仓库已有库和纯 Rust 实现。
 - 增加依赖前说明它解决的具体问题、二进制大小、许可证和 Windows 支持。
 - 解析 JSON、Parquet、MCAP、HDF5 时使用结构化库，不写 ad-hoc string parser。
-- `pnpm-lock.yaml` 和 `Cargo.lock` 是可重复构建的一部分，依赖变更必须同步提交 lockfile。
+- `pnpm-lock.yaml`、`Cargo.lock` 和 `rust-toolchain.toml` 是可重复构建的一部分，依赖或工具链变更必须同步审查和提交。
 - vendored 依赖必须保留上游版本、checksum、Git revision、许可证和本地 patch 清单；不得把未说明来源的源码复制进 `vendor/`。
 - 不进行无关的大版本升级；格式库升级必须重跑真实 export/readback。
 - FFmpeg 是受控 sidecar，不假设用户 PATH 中存在。
@@ -449,6 +489,11 @@ pnpm tauri:build
 5. 在 release commit 上运行 `node scripts/release-check.mjs --quick --require-clean`，确认版本一致且工作区干净。
 6. 在该 commit 上创建 annotated tag，例如 `git tag -a v0.2.0 -m "DOHC Viewer v0.2.0"`。
 7. 测试失败、报告 failed、版本不一致或工作区混入无关文件时不得打 tag。
+
+tag 推送后，正式 Release 只能由 `release.yml` 生成。不要手工上传 unsigned 包或只
+发布单一平台；CD 因凭据、FFmpeg、签名、notarization 或 smoke 失败时修复配置并重跑
+同一 draft，代码修复则进入新版本和新 tag。GitHub Wiki 的可编辑源保留在主仓库，
+Wiki Git 仓库只接收同步 commit。
 
 正式实盘验收是 tag 后的资格测试，因为 runner 会核对 exact tag。它失败时不得
 移动、覆盖或重建已有 tag；修复进入下一个版本。没有实盘条件时可以发布明确标注
