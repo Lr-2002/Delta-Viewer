@@ -18,23 +18,30 @@ Project documentation:
 ## Workflow
 
 1. Select an SD card or a recording directory.
-2. Scan one or more episodes without modifying the source card. The left list
-   selects sessions with one click and opens the selected session with a double
-   click.
-3. If the session is not loaded yet, copy it to local storage before opening
+2. Scan one or more episodes without modifying the source card, automatically
+   select the first session, and continue loading it without a separate import
+   button. The left list selects other sessions with one click and opens one
+   with a double click.
+3. Immediately choose local storage and copy an unloaded session before opening
    playback; an already loaded session opens playback directly.
 4. Preflight local capacity and filesystem support, then identify any safely
    cleanable incomplete imports.
 5. Verify every destination file by size and BLAKE3, then write a format-v2
    `.dohc-manifest.json` with original and Windows-safe relative paths.
-6. Decode-check all JPEG frames, validate stream continuity, parse every state,
-   and check state frame IDs and timestamps.
+6. Decode-check each stream at fixed 1%, 25%, 50%, 73%, and 99% positions,
+   validate the complete stream structure, parse every state, and check state
+   frame IDs and timestamps.
 7. Review five synchronized image streams and state telemetry, and optionally
    select one continuous inclusive frame range for playback and export.
 8. Export the selected range as MCAP, HDF5, or LeRobot v2.1. Errors in that
    range are blocked in Rust; warnings require explicit confirmation.
 9. Export a versioned JSON health report or reveal completed adapter output in
    the system file manager.
+
+Interactive health reports use format v2 and explicitly identify sampled image
+validation and the five percentages. Formal stress and release smoke tests still
+decode every JPEG; a sampled result does not claim that unsampled frames are
+free of encoding damage.
 
 The runtime has no SSH or other network data path. SSH was used only once to
 retrieve the development sample from the current ext4 card.

@@ -2,6 +2,23 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.12.0 - 2026-07-21
+
+- Made SD-card selection automatically scan and load the first session through
+  local destination selection, verified import, health checking, and playback;
+  removed both manual "Import and check" controls.
+- Replaced interactive all-frame JPEG decoding with deterministic per-stream
+  samples at 1%, 25%, 50%, 73%, and 99%, while retaining complete structural,
+  state, frame-ID, and timestamp checks.
+- Kept formal stress and real release smoke validation on full JPEG decoding,
+  with fixtures proving that full mode still detects damage outside the sampled
+  positions.
+- Upgraded health reports to format v2 with image validation mode, sampling
+  percentages, and actual checked-frame counts; stale reports are rejected by
+  the trusted export cache.
+- Updated the checks view to distinguish total and sampled frames, including
+  compact narrow-viewport table tracks and a matching browser demo.
+
 ## 0.11.0 - 2026-07-21
 
 - Reworked the complete application chrome into a black, white, and neutral-gray

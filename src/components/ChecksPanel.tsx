@@ -25,6 +25,10 @@ export function ChecksPanel({
   onLocateIssue,
 }: ChecksPanelProps) {
   const stateStatus = data.states.length ? "ok" : "error";
+  const sampledImages = report?.imageValidationMode === "sampled";
+  const sampleTitle = sampledImages
+    ? `固定位置：${report.imageSamplePercentages.map((value) => `${value}%`).join(" / ")}`
+    : "全量图像检查";
   return (
     <div className="checks-view">
       <header className="section-heading">
@@ -67,7 +71,8 @@ export function ChecksPanel({
       <section className="stream-checks" aria-label="数据流检查结果">
         <div className="check-table-head">
           <span>数据流</span>
-          <span>帧数</span>
+          <span>总帧</span>
+          <span title={sampleTitle}>{sampledImages ? "抽检帧" : "已检帧"}</span>
           <span>解码失败</span>
           <span>结果</span>
         </div>
@@ -82,6 +87,7 @@ export function ChecksPanel({
                 </small>
               </span>
               <span>{stream.frameCount}</span>
+              <span>{result?.checkedFrames ?? "—"}</span>
               <span>{result?.decodeFailures ?? "—"}</span>
               <span>
                 <StatusMark status={result?.status ?? "warning"} compact />
@@ -95,6 +101,7 @@ export function ChecksPanel({
             <small>状态记录</small>
           </span>
           <span>{data.states.length}</span>
+          <span>—</span>
           <span>{stateStatus === "ok" ? 0 : 1}</span>
           <span>
             <StatusMark status={stateStatus} compact />

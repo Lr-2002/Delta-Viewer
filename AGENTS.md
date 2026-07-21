@@ -6,7 +6,7 @@
 
 1. 源 SD 卡是只读数据源。不得在源路径创建、修改、重命名或删除任何文件。
 2. 应用运行时只处理本机目录，不增加 SSH、HTTP、云存储或遥测路径。
-3. 正常工作流是“扫描 -> 本地导入并校验 -> 健康检查 -> 回放/导出”。不要绕过本地校验直接把 SD 卡当作长期工作目录。
+3. 正常工作流是“选择 SD 卡 -> 自动扫描/选择首条 session -> 本地导入并校验 -> 健康检查 -> 回放/导出”。不要绕过本地校验直接把 SD 卡当作长期工作目录。
 4. 完整导入必须验证目标端的文件大小和 BLAKE3，不能只信任复制时的源端 hash。
 5. `capture_time_ns` 在 Rust/磁盘中为 int64，在 TypeScript 中必须保持十进制字符串；涉及差值时使用 `BigInt`。
 6. 五个标准流名称固定为 `cam0`、`cam1`、`cam2`、`t265_left`、`t265_right`。
@@ -76,7 +76,7 @@ React component
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
 - 源目录遍历统一使用可取消的 no-follow 路径；不要重新引入会隐式跟随 symlink 的文件判断。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
-- Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。它不能被当作后端验收。
+- Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。交互抽检基线是报告 format v2、26 个已检查文件、每流 5 帧和 `[1,25,50,73,99]`；它不能被当作后端验收。
 
 ## 4. 环境与常用命令
 
@@ -194,7 +194,9 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 健康检查应报告事实，不自动修复源数据。
 - Warning 表示数据可读取但存在质量风险；error 表示缺失、损坏或语义不可用。
 - 新检查必须说明 severity、scope、code、消息和导出影响。
-- 保持全量 JPEG 解码；仅读 header 不能满足编码损坏检查。
+- 交互健康检查固定解码每流排序后唯一帧序列的 `1% / 25% / 50% / 73% / 99%`，少于五个命中时去重；结构、文件名、缺帧、frame ID 集合、状态和时间轴仍全量检查。
+- 正式 stress 和发布 smoke 必须调用全量 JPEG 解码，不能用交互抽检报告替代。任何报告都必须显式记录 `imageValidationMode`、`imageSamplePercentages` 和实际 `checkedFrames`；仅读 header 不能算 JPEG 解码检查。
+- 抽检无法保证发现未命中帧的编码损坏。界面、报告、文档和测试不得把 sampled 结果描述成全量 JPEG 通过。
 - 导出后端必须最终具备 error hard gate，不能只依赖按钮 disabled。
 - 当前稳定 issue code 还包括 `INVALID_TIMESTAMP`、`INVALID_FRAME_FILENAME`、`DUPLICATE_FRAME_ID` 和 `FRAME_ID_MISMATCH`；改变其 severity 属于契约变更。
 
@@ -235,7 +237,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 操作按钮在 busy/error 状态下必须正确 disabled。
 - 进度、错误、warning 和成功结果都必须有可见状态，不能只写 console。
 - 图像面板使用稳定尺寸；加载或错误不能改变 grid 布局。
-- 左侧 episode 列表以源路径作为 session 身份：单击只选择，双击才进入回放；本地导入路径不得覆盖源 session 的选中身份。
+- 选择 SD 卡后自动扫描并加载第一条 session，不保留额外“导入并检查”按钮。左侧 episode 列表仍以源路径作为 session 身份：单击只选择，双击才进入回放；本地导入路径不得覆盖源 session 的选中身份。
 - 应用 UI 色彩系统固定为黑、白和中性灰；原始相机画面保留源颜色。状态不得只靠色相表达，必须同时使用文字、图标、边框和明度层级。
 - 图标使用当前 Lucide 库，陌生图标按钮提供 `title`/`aria-label`。
 - 桌面工具保持紧凑、可扫描，不增加 landing page、营销 hero 或装饰性卡片。
@@ -260,7 +262,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 | React/CSS | `pnpm build`，相关视口截图，console/overflow 检查 |
 | Rust model/IPC | `pnpm check`、Clippy，确认 camelCase 和 TS 类型 |
 | Import/hash | 单元测试 + 真实 import smoke test |
-| Validation | fixture 测试 + 真实全量 JPEG smoke test |
+| Validation | 固定百分位/全量模式 fixture + 真实交互抽检及全量 JPEG smoke test |
 | Export adapter | Clippy + 三格式真实 export/readback smoke test |
 | Tauri config | `pnpm tauri build --debug --no-bundle`；平台配置在目标平台验证 |
 | Windows 条件源码 | `pnpm check:windows-cross`；仍需 Windows 本机构建和运行 |
@@ -274,7 +276,7 @@ pnpm check
 ```
 
 真实样例会读取私有数据，因此保持 `#[ignore]`。`--all-targets` 常规 Rust suite
-当前为 39 项（37 通过、2 个真实样例测试 ignored），其中包含压力 CLI 参数测试；
+当前为 40 项（38 通过、2 个真实样例测试 ignored），其中包含压力 CLI 参数测试；
 debug 构建的三格式完整 smoke test 约需 69 秒。任何
 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 

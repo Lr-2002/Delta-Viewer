@@ -4,7 +4,6 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
-  Download,
   FileSearch,
   FolderOpen,
   Gauge,
@@ -153,10 +152,9 @@ function App() {
       setScan(result);
       const first = result.episodes[0] ?? null;
       setSelectedEpisode(first);
+      resetLoadedData();
       if (autoLoad && first) {
-        await loadAndValidate(first.root, first.root);
-      } else {
-        resetLoadedData();
+        await loadEpisodeForReview(first, true);
       }
     } catch (reason) {
       setError(toMessage(reason));
@@ -168,17 +166,12 @@ function App() {
 
   async function chooseSource() {
     const path = await chooseDirectory("选择 SD 卡或记录目录");
-    if (path) await openSource(path);
+    if (path) await openSource(path, true);
   }
 
-  async function loadSelectedEpisode() {
-    if (!selectedEpisode) return;
-    await loadEpisodeForReview(selectedEpisode);
-  }
-
-  async function loadEpisodeForReview(episode: EpisodeSummary) {
+  async function loadEpisodeForReview(episode: EpisodeSummary, force = false) {
     setSelectedEpisode(episode);
-    if (data && loadedEpisodeSourceRoot === episode.root) {
+    if (!force && data && loadedEpisodeSourceRoot === episode.root) {
       setPlaying(false);
       setView("review");
       return;
@@ -433,10 +426,6 @@ function App() {
             <FolderOpen size={16} />
             选择 SD 卡
           </button>
-          <button className="button button-primary" type="button" onClick={() => void loadSelectedEpisode()} disabled={!selectedEpisode || busy}>
-            <Download size={16} />
-            导入并检查
-          </button>
         </div>
       </header>
 
@@ -666,7 +655,6 @@ function App() {
               selectedEpisode={selectedEpisode}
               busy={busy}
               onChoose={chooseSource}
-              onLoad={() => void loadSelectedEpisode()}
             />
           )}
         </main>
@@ -679,12 +667,10 @@ function EmptyWorkspace({
   selectedEpisode,
   busy,
   onChoose,
-  onLoad,
 }: {
   selectedEpisode: EpisodeSummary | null;
   busy: boolean;
   onChoose: () => Promise<void>;
-  onLoad: () => void;
 }) {
   return (
     <div className="empty-workspace">
@@ -695,15 +681,17 @@ function EmptyWorkspace({
       </div>
       {selectedEpisode ? (
         <div className="selected-episode-line">
-          <div className="selected-episode-icon"><FileSearch size={20} /></div>
+          <div className="selected-episode-icon">
+            {busy ? <LoaderCircle className="spin" size={20} /> : <FileSearch size={20} />}
+          </div>
           <div>
             <strong>{selectedEpisode.name}</strong>
-            <span>{selectedEpisode.stateCount} 条状态 · {formatBytes(selectedEpisode.totalBytes)} · {selectedEpisode.streams.length} 路流</span>
+            <span>
+              {busy
+                ? "正在复制到本地并检查"
+                : `${selectedEpisode.stateCount} 条状态 · ${formatBytes(selectedEpisode.totalBytes)} · ${selectedEpisode.streams.length} 路流`}
+            </span>
           </div>
-          <button className="button button-primary" type="button" onClick={onLoad} disabled={busy}>
-            {busy ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
-            导入并检查
-          </button>
         </div>
       ) : (
         <button className="empty-action" type="button" onClick={() => void onChoose()} disabled={busy}>

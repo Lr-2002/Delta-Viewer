@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppResult};
-use crate::model::ValidationReport;
+use crate::model::{ValidationReport, VALIDATION_REPORT_FORMAT_VERSION};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,11 @@ impl ValidationCache {
         fingerprint: String,
         report: ValidationReport,
     ) -> AppResult<()> {
+        if report.format_version != VALIDATION_REPORT_FORMAT_VERSION {
+            return Err(AppError::Message(
+                "EXPORT_REVALIDATION_REQUIRED: 检查报告版本已过期，请重新检查".into(),
+            ));
+        }
         let root = fs::canonicalize(root)?;
         let mut entries = self.lock()?;
         if entries.len() >= 16 && !entries.contains_key(&root) {
@@ -43,7 +48,7 @@ impl ValidationCache {
         let mut entries = self.lock()?;
         let Some(cached) = entries.get(&root) else {
             return Err(AppError::Message(
-                "EXPORT_REVALIDATION_REQUIRED: 请先运行完整数据检查".into(),
+                "EXPORT_REVALIDATION_REQUIRED: 请先运行数据检查".into(),
             ));
         };
         if cached.fingerprint != fingerprint {
@@ -65,7 +70,8 @@ impl ValidationCache {
 #[cfg(test)]
 mod tests {
     use super::ValidationCache;
-    use crate::model::ValidationReport;
+    use crate::model::{ImageValidationMode, ValidationReport, VALIDATION_REPORT_FORMAT_VERSION};
+    use crate::validation::IMAGE_SAMPLE_PERCENTAGES;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -82,6 +88,10 @@ mod tests {
         let cache = ValidationCache::default();
         assert!(cache.report_for(&root, "one").is_err());
 
+        let mut stale = report(&root);
+        stale.format_version = 1;
+        assert!(cache.store(&root, "old".into(), stale).is_err());
+
         cache.store(&root, "one".into(), report(&root)).unwrap();
         assert_eq!(cache.report_for(&root, "one").unwrap().status, "ok");
         assert!(cache.report_for(&root, "two").is_err());
@@ -92,9 +102,11 @@ mod tests {
 
     fn report(root: &std::path::Path) -> ValidationReport {
         ValidationReport {
-            format_version: 1,
+            format_version: VALIDATION_REPORT_FORMAT_VERSION,
             episode_root: root.display().to_string(),
             parsed_state_count: 0,
+            image_validation_mode: ImageValidationMode::Sampled,
+            image_sample_percentages: IMAGE_SAMPLE_PERCENTAGES.to_vec(),
             status: "ok".into(),
             checked_files: 0,
             elapsed_ms: 0,

@@ -334,8 +334,9 @@ fn output_size(path: &Path) -> AppResult<(u64, u64)> {
 mod tests {
     use super::{ensure_export_allowed, export_episode, select_episode_data, ExportJob};
     use crate::model::{
-        EpisodeData, EpisodeSummary, ExportFormat, ExportRange, Severity, StreamSummary,
-        ValidationIssue, ValidationReport, STREAM_NAMES,
+        EpisodeData, EpisodeSummary, ExportFormat, ExportRange, ImageValidationMode, Severity,
+        StreamSummary, ValidationIssue, ValidationReport, STREAM_NAMES,
+        VALIDATION_REPORT_FORMAT_VERSION,
     };
     use crate::validation;
     use foxglove::messages::{CompressedImage, PoseInFrame};
@@ -357,7 +358,24 @@ mod tests {
         fs::create_dir_all(&output).unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        let report = validation::validate_episode(&sample, None, &cancelled).unwrap();
+        let sampled_report = validation::validate_episode(&sample, None, &cancelled).unwrap();
+        assert_eq!(
+            sampled_report.image_validation_mode,
+            ImageValidationMode::Sampled
+        );
+        assert_eq!(
+            sampled_report.image_sample_percentages,
+            validation::IMAGE_SAMPLE_PERCENTAGES
+        );
+        assert_eq!(sampled_report.checked_files, 26);
+        assert!(sampled_report
+            .streams
+            .iter()
+            .all(|stream| stream.checked_frames == 5));
+
+        let report = validation::validate_episode_full(&sample, None, &cancelled).unwrap();
+        assert_eq!(report.image_validation_mode, ImageValidationMode::Full);
+        assert!(report.image_sample_percentages.is_empty());
         assert!(!report
             .issues
             .iter()
@@ -380,8 +398,15 @@ mod tests {
             validation::export_report(&report, &sample, &output, None, &cancelled).unwrap();
         let health_report: crate::model::ValidationReport =
             serde_json::from_slice(&fs::read(health.output_path).unwrap()).unwrap();
-        assert_eq!(health_report.format_version, 1);
+        assert_eq!(
+            health_report.format_version,
+            VALIDATION_REPORT_FORMAT_VERSION
+        );
         assert_eq!(health_report.parsed_state_count, 196);
+        assert_eq!(
+            health_report.image_validation_mode,
+            ImageValidationMode::Full
+        );
 
         let clip = ExportRange {
             start_frame: 10,
@@ -435,9 +460,11 @@ mod tests {
     #[test]
     fn requires_warning_acknowledgement() {
         let report = ValidationReport {
-            format_version: 1,
+            format_version: VALIDATION_REPORT_FORMAT_VERSION,
             episode_root: "fixture".into(),
             parsed_state_count: 1,
+            image_validation_mode: ImageValidationMode::Sampled,
+            image_sample_percentages: validation::IMAGE_SAMPLE_PERCENTAGES.to_vec(),
             status: "warning".into(),
             checked_files: 1,
             elapsed_ms: 0,
@@ -465,9 +492,11 @@ mod tests {
             end_frame: 19,
         };
         let report = ValidationReport {
-            format_version: 1,
+            format_version: VALIDATION_REPORT_FORMAT_VERSION,
             episode_root: "fixture".into(),
             parsed_state_count: 20,
+            image_validation_mode: ImageValidationMode::Sampled,
+            image_sample_percentages: validation::IMAGE_SAMPLE_PERCENTAGES.to_vec(),
             status: "error".into(),
             checked_files: 1,
             elapsed_ms: 0,

@@ -127,12 +127,14 @@ export async function loadEpisode(path: string): Promise<EpisodeData> {
 export async function validateEpisode(path: string): Promise<ValidationReport> {
   if (isTauriRuntime()) return invoke<ValidationReport>("validate_episode", { path });
   return {
-    formatVersion: 1,
+    formatVersion: 2,
     episodeRoot: path,
     parsedStateCount: 196,
+    imageValidationMode: "sampled",
+    imageSamplePercentages: [1, 25, 50, 73, 99],
     status: "warning",
-    checkedFiles: 981,
-    elapsedMs: 7021,
+    checkedFiles: 26,
+    elapsedMs: 214,
     issues: [
       {
         severity: "warning",
@@ -144,7 +146,7 @@ export async function validateEpisode(path: string): Promise<ValidationReport> {
     ],
     streams: ["cam0", "cam1", "cam2", "t265_left", "t265_right"].map((name) => ({
       name,
-      checkedFrames: 196,
+      checkedFrames: 5,
       decodeFailures: 0,
       status: "ok" as const,
     })),

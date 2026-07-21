@@ -1,7 +1,8 @@
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    ProgressPayload, RawStateRecord, ReportExportResult, Severity, StreamValidation,
-    ValidationIssue, ValidationReport, STREAM_NAMES,
+    ImageValidationMode, ProgressPayload, RawStateRecord, ReportExportResult, Severity,
+    StreamValidation, ValidationIssue, ValidationReport, STREAM_NAMES,
+    VALIDATION_REPORT_FORMAT_VERSION,
 };
 use crate::source::{collect_stream_files, emit_progress, is_regular_file, scan_episode};
 use crate::{importer, storage};
@@ -14,10 +15,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tauri::AppHandle;
 
+pub const IMAGE_SAMPLE_PERCENTAGES: [u8; 5] = [1, 25, 50, 73, 99];
+
 pub fn validate_episode(
     root: &Path,
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
+) -> AppResult<ValidationReport> {
+    validate_episode_with_mode(root, app, cancelled, ImageValidationMode::Sampled)
+}
+
+pub fn validate_episode_full(
+    root: &Path,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+) -> AppResult<ValidationReport> {
+    validate_episode_with_mode(root, app, cancelled, ImageValidationMode::Full)
+}
+
+fn validate_episode_with_mode(
+    root: &Path,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+    image_validation_mode: ImageValidationMode,
 ) -> AppResult<ValidationReport> {
     let started = Instant::now();
     let summary = scan_episode(root, app, cancelled)?;
@@ -108,7 +128,10 @@ pub fn validate_episode(
     let total_frames: u64 = summary
         .streams
         .iter()
-        .map(|stream| stream.frame_count)
+        .map(|stream| match image_validation_mode {
+            ImageValidationMode::Sampled => stream.frame_count.min(5),
+            ImageValidationMode::Full => stream.frame_count,
+        })
         .sum();
     let mut total_checked_frames = 0_u64;
     let mut stream_reports = Vec::with_capacity(STREAM_NAMES.len());
@@ -185,11 +208,24 @@ pub fn validate_episode(
             }
         }
 
-        let mut expected_dimensions: Option<(u32, u32)> = None;
-        for (frame_id, path) in &stream_files.frames {
+        let unique_frames = stream_files
+            .frames
+            .iter()
+            .enumerate()
+            .filter_map(|(index, frame)| {
+                (index == 0 || stream_files.frames[index - 1].0 != frame.0).then_some(frame)
+            })
+            .collect::<Vec<_>>();
+        let frame_indexes = match image_validation_mode {
+            ImageValidationMode::Sampled => sampled_frame_indexes(unique_frames.len()),
+            ImageValidationMode::Full => (0..unique_frames.len()).collect(),
+        };
+        let mut expected_dimensions = stream.width.zip(stream.height);
+        for (position, frame_index) in frame_indexes.iter().enumerate() {
             if cancelled.load(Ordering::Relaxed) {
                 return Err(AppError::Cancelled);
             }
+            let (frame_id, path) = unique_frames[*frame_index];
             checked_files += 1;
             checked_frames += 1;
             total_checked_frames += 1;
@@ -234,12 +270,18 @@ pub fn validate_episode(
                     ));
                 }
             }
-            if checked_frames % 8 == 0 || checked_frames == stream_files.frames.len() as u64 {
+            if image_validation_mode == ImageValidationMode::Sampled
+                || checked_frames % 8 == 0
+                || position + 1 == frame_indexes.len()
+            {
                 emit_progress(
                     app,
                     crate::model::ProgressPayload {
                         task: "validate".into(),
-                        phase: "校验图像".into(),
+                        phase: match image_validation_mode {
+                            ImageValidationMode::Sampled => "抽检图像".into(),
+                            ImageValidationMode::Full => "校验图像".into(),
+                        },
                         current: total_checked_frames,
                         total: total_frames,
                         bytes_done: 0,
@@ -295,15 +337,33 @@ pub fn validate_episode(
         },
     );
     Ok(ValidationReport {
-        format_version: 1,
+        format_version: VALIDATION_REPORT_FORMAT_VERSION,
         episode_root: root.display().to_string(),
         parsed_state_count: states.len() as u64,
+        image_validation_mode,
+        image_sample_percentages: match image_validation_mode {
+            ImageValidationMode::Sampled => IMAGE_SAMPLE_PERCENTAGES.to_vec(),
+            ImageValidationMode::Full => Vec::new(),
+        },
         status: status.into(),
         checked_files,
         elapsed_ms: started.elapsed().as_millis(),
         issues,
         streams: stream_reports,
     })
+}
+
+fn sampled_frame_indexes(frame_count: usize) -> Vec<usize> {
+    if frame_count == 0 {
+        return Vec::new();
+    }
+    let last_index = (frame_count - 1) as u128;
+    IMAGE_SAMPLE_PERCENTAGES
+        .iter()
+        .map(|percentage| ((last_index * u128::from(*percentage) + 50) / 100) as usize)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 pub fn export_report(
@@ -348,6 +408,8 @@ pub fn export_report(
         let decoded: ValidationReport = serde_json::from_reader(File::open(&partial)?)?;
         if decoded.format_version != report.format_version
             || decoded.episode_root != report.episode_root
+            || decoded.image_validation_mode != report.image_validation_mode
+            || decoded.image_sample_percentages != report.image_sample_percentages
             || decoded.status != report.status
         {
             return Err(AppError::Message("检查报告回读验证失败".into()));
@@ -560,8 +622,14 @@ fn issue_at(
 
 #[cfg(test)]
 mod tests {
-    use super::{check_state_sequence, export_report, validate_episode};
-    use crate::model::{RawStateRecord, ValidationReport, STREAM_NAMES};
+    use super::{
+        check_state_sequence, export_report, sampled_frame_indexes, validate_episode,
+        validate_episode_full, IMAGE_SAMPLE_PERCENTAGES,
+    };
+    use crate::model::{
+        ImageValidationMode, RawStateRecord, ValidationReport, STREAM_NAMES,
+        VALIDATION_REPORT_FORMAT_VERSION,
+    };
     use image::codecs::jpeg::JpegEncoder;
     use image::ExtendedColorType;
     use std::fs;
@@ -577,9 +645,11 @@ mod tests {
         fs::create_dir_all(&source).unwrap();
         fs::create_dir_all(&destination).unwrap();
         let report = ValidationReport {
-            format_version: 1,
+            format_version: VALIDATION_REPORT_FORMAT_VERSION,
             episode_root: source.display().to_string(),
             parsed_state_count: 3,
+            image_validation_mode: ImageValidationMode::Sampled,
+            image_sample_percentages: IMAGE_SAMPLE_PERCENTAGES.to_vec(),
             status: "warning".into(),
             checked_files: 4,
             elapsed_ms: 10,
@@ -593,8 +663,10 @@ mod tests {
         assert_ne!(first.output_path, second.output_path);
         let decoded: ValidationReport =
             serde_json::from_slice(&fs::read(first.output_path).unwrap()).unwrap();
-        assert_eq!(decoded.format_version, 1);
+        assert_eq!(decoded.format_version, VALIDATION_REPORT_FORMAT_VERSION);
         assert_eq!(decoded.parsed_state_count, 3);
+        assert_eq!(decoded.image_validation_mode, ImageValidationMode::Sampled);
+        assert_eq!(decoded.image_sample_percentages, IMAGE_SAMPLE_PERCENTAGES);
         assert_eq!(fs::read_dir(&destination).unwrap().count(), 2);
 
         fs::remove_dir_all(root).unwrap();
@@ -733,6 +805,40 @@ mod tests {
         fs::rename(mismatch.join("cam0/1.jpg"), mismatch.join("cam0/11.jpg")).unwrap();
         assert_codes(&mismatch, &["FRAME_ID_MISMATCH"]);
         fs::remove_dir_all(mismatch).unwrap();
+    }
+
+    #[test]
+    fn sampled_validation_uses_fixed_percentiles_and_full_mode_remains_available() {
+        assert_eq!(sampled_frame_indexes(196), vec![2, 49, 98, 142, 193]);
+        assert_eq!(sampled_frame_indexes(10), vec![0, 2, 5, 7, 9]);
+        assert_eq!(sampled_frame_indexes(5), vec![0, 1, 2, 3, 4]);
+        assert!(sampled_frame_indexes(0).is_empty());
+
+        let root = valid_episode("sampled-percentiles", &(0_u64..10).collect::<Vec<_>>());
+        fs::write(root.join("cam0/3.jpg"), b"not jpeg").unwrap();
+        let cancelled = AtomicBool::new(false);
+
+        let sampled = validate_episode(&root, None, &cancelled).unwrap();
+        assert_eq!(sampled.image_validation_mode, ImageValidationMode::Sampled);
+        assert_eq!(sampled.image_sample_percentages, IMAGE_SAMPLE_PERCENTAGES);
+        assert_eq!(sampled.checked_files, 26);
+        assert!(sampled
+            .streams
+            .iter()
+            .all(|stream| stream.checked_frames == 5));
+        assert!(!has_code(&sampled, "DECODE_FAILED"));
+
+        let full = validate_episode_full(&root, None, &cancelled).unwrap();
+        assert_eq!(full.image_validation_mode, ImageValidationMode::Full);
+        assert!(full.image_sample_percentages.is_empty());
+        assert_eq!(full.checked_files, 51);
+        assert!(full
+            .streams
+            .iter()
+            .all(|stream| stream.checked_frames == 10));
+        assert!(has_code(&full, "DECODE_FAILED"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

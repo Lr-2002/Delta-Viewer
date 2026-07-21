@@ -113,6 +113,8 @@ struct ValidationEvidence {
     status: String,
     checked_files: u64,
     parsed_state_count: u64,
+    image_validation_mode: crate::model::ImageValidationMode,
+    image_sample_percentages: Vec<u8>,
     warning_codes: Vec<String>,
     error_codes: Vec<String>,
 }
@@ -305,7 +307,7 @@ fn run_inner(
         heartbeat,
         "full validation",
         summary.total_bytes,
-        || validation::validate_episode(&imported, None, &cancelled),
+        || validation::validate_episode_full(&imported, None, &cancelled),
     )?;
     let warning_codes = validation_report
         .issues
@@ -323,6 +325,8 @@ fn run_inner(
         status: validation_report.status.clone(),
         checked_files: validation_report.checked_files,
         parsed_state_count: validation_report.parsed_state_count,
+        image_validation_mode: validation_report.image_validation_mode,
+        image_sample_percentages: validation_report.image_sample_percentages.clone(),
         warning_codes,
         error_codes: error_codes.clone(),
     });

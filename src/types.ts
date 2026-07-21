@@ -100,6 +100,8 @@ export interface ValidationReport {
   formatVersion: number;
   episodeRoot: string;
   parsedStateCount: number;
+  imageValidationMode: "sampled" | "full";
+  imageSamplePercentages: number[];
   status: "ok" | "warning" | "error";
   checkedFiles: number;
   elapsedMs: number;

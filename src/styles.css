@@ -195,7 +195,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .check-summary-band span { color: var(--muted); font-size: 11px; }
 .check-summary-band strong { font-size: 15px; font-variant-numeric: tabular-nums; }
 .stream-checks { border-top: 1px solid var(--line); }
-.check-table-head, .check-table-row { display: grid; grid-template-columns: minmax(180px, 1.5fr) .65fr .75fr .7fr; align-items: center; gap: 12px; min-height: 47px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.check-table-head, .check-table-row { display: grid; grid-template-columns: minmax(180px, 1.5fr) .55fr .65fr .7fr .65fr; align-items: center; gap: 12px; min-height: 47px; border-bottom: 1px solid var(--line); font-size: 12px; }
 .check-table-head { min-height: 34px; color: var(--subtle); font-size: 10px; font-weight: 700; letter-spacing: 0; text-transform: uppercase; }
 .check-table-row > span:not(:first-child) { color: var(--muted); font-variant-numeric: tabular-nums; }
 .check-table-row strong, .check-table-row small { display: block; }
@@ -320,13 +320,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .export-result { grid-template-columns: auto minmax(0, 1fr) auto; }
   .export-result-meta { grid-column: 2; flex-wrap: wrap; }
   .export-reveal { grid-column: 3; grid-row: 1 / 3; }
-  .check-table-head, .check-table-row { grid-template-columns: minmax(130px, 1.5fr) .55fr .7fr .65fr; gap: 6px; }
+  .check-table-head, .check-table-row { grid-template-columns: minmax(110px, 1.35fr) .48fr .55fr .55fr .62fr; gap: 4px; }
   .issue-row { grid-template-columns: 20px 70px minmax(0, 1fr) 32px; padding: 6px 0; }
   .issue-row code { display: none; }
   .issue-row .issue-locate, .issue-row > span:last-child { grid-column: 4; }
   .empty-workspace { padding: 55px 18px; }
   .selected-episode-line { align-items: flex-start; flex-wrap: wrap; }
-  .selected-episode-line .button { margin-left: 51px; }
   .progress-strip { flex-wrap: wrap; padding: 8px 13px; gap: 8px; }
   .progress-copy { min-width: 0; max-width: calc(100% - 45px); flex: 1; }
   .progress-track { order: 3; flex-basis: 100%; }
