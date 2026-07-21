@@ -2,7 +2,7 @@
 
 ## 选择不到 SD 卡
 
-先确认操作系统文件管理器能够看到卷和 episode 文件。DOHC Viewer 不包含 ext4 驱动；ext4 卡在标准 Windows/macOS 上不能直接选择。不要为了读取数据直接格式化仍含数据的卡。
+先确认操作系统文件管理器能够看到卷和 episode 文件。DOHC Viewer 不包含 ext4 驱动；ext4 卡在标准 Windows/macOS 上不能直接选择。macOS 用户可按[Paragon extFS 只读教程](Paragon-extFS-macOS)挂载，必须确认 `Mount in Read-only mode` 和只读卷状态。不要为了读取数据直接格式化仍含数据的卡。
 
 ## 选择目录后没有继续
 

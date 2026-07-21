@@ -2,6 +2,7 @@
 
 - [首页](Home)
 - [安装与升级](Installation)
+- [macOS 读取 ext4 SD 卡](Paragon-extFS-macOS)
 - [快速开始](Quick-Start)
 - [数据检查](Data-Validation)
 - [回放与裁剪](Playback-and-Clipping)
