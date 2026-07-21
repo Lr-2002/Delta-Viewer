@@ -99,6 +99,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .episode-item { width: 100%; display: block; padding: 11px 9px 10px; margin-bottom: 5px; text-align: left; border: 1px solid transparent; border-radius: 6px; color: var(--ink); background: transparent; cursor: pointer; }
 .episode-item:hover { background: rgba(255,255,255,.55); border-color: var(--line); }
 .episode-item.selected { background: var(--surface); border-color: #a9c9be; box-shadow: inset 3px 0 0 var(--teal); }
+.episode-item:disabled { cursor: wait; opacity: .65; }
 .episode-item-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .episode-item-top svg:first-child { flex: 0 0 auto; color: var(--teal); }
 .episode-item-top strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }

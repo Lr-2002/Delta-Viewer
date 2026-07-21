@@ -18,8 +18,11 @@ Project documentation:
 ## Workflow
 
 1. Select an SD card or a recording directory.
-2. Scan one or more episodes without modifying the source card.
-3. Copy the selected episode to local storage.
+2. Scan one or more episodes without modifying the source card. The left list
+   selects sessions with one click and opens the selected session with a double
+   click.
+3. If the session is not loaded yet, copy it to local storage before opening
+   playback; an already loaded session opens playback directly.
 4. Preflight local capacity and filesystem support, then identify any safely
    cleanable incomplete imports.
 5. Verify every destination file by size and BLAKE3, then write a format-v2

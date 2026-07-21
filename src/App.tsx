@@ -72,6 +72,7 @@ function App() {
   const [sourcePath, setSourcePath] = useState("");
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeSummary | null>(null);
+  const [loadedEpisodeSourceRoot, setLoadedEpisodeSourceRoot] = useState<string | null>(null);
   const [data, setData] = useState<EpisodeData | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("mcap");
@@ -152,7 +153,11 @@ function App() {
       setScan(result);
       const first = result.episodes[0] ?? null;
       setSelectedEpisode(first);
-      if (autoLoad && first) await loadAndValidate(first.root, false);
+      if (autoLoad && first) {
+        await loadAndValidate(first.root, first.root);
+      } else {
+        resetLoadedData();
+      }
     } catch (reason) {
       setError(toMessage(reason));
     } finally {
@@ -168,16 +173,26 @@ function App() {
 
   async function loadSelectedEpisode() {
     if (!selectedEpisode) return;
+    await loadEpisodeForReview(selectedEpisode);
+  }
+
+  async function loadEpisodeForReview(episode: EpisodeSummary) {
+    setSelectedEpisode(episode);
+    if (data && loadedEpisodeSourceRoot === episode.root) {
+      setPlaying(false);
+      setView("review");
+      return;
+    }
     setError("");
     setNotice("");
     setBusy(true);
     try {
-      let root = selectedEpisode.root;
+      let root = episode.root;
       if (isTauriRuntime()) {
         const destinationParent = await chooseDirectory("选择本地导入目录");
         if (!destinationParent) return;
         window.localStorage.setItem(LAST_IMPORT_DESTINATION, destinationParent);
-        const preflight = await inspectImportDestination(selectedEpisode.root, destinationParent);
+        const preflight = await inspectImportDestination(episode.root, destinationParent);
         if (!preflight.canImport) {
           setError(preflight.issues.map((issue) => `${issue.code}: ${issue.message}`).join("；"));
           return;
@@ -188,11 +203,11 @@ function App() {
         setNotice(
           `导入预检通过：${preflight.volume.filesystem ?? "未知文件系统"}，可用 ${formatBytes(preflight.volume.availableBytes)}`,
         );
-        const imported = await importEpisode(selectedEpisode.root, destinationParent);
+        const imported = await importEpisode(episode.root, destinationParent);
         root = imported.destination;
         setNotice(`已导入本地，BLAKE3 ${imported.datasetBlake3.slice(0, 16)}…`);
       }
-      await loadAndValidate(root, true);
+      await loadAndValidate(root, episode.root);
     } catch (reason) {
       setError(toMessage(reason));
     } finally {
@@ -201,11 +216,12 @@ function App() {
     }
   }
 
-  async function loadAndValidate(root: string, updateSelection: boolean) {
+  async function loadAndValidate(root: string, sourceEpisodeRoot: string) {
     const loaded = await loadEpisode(root);
     const checked = await validateEpisode(root);
     setData(loaded);
     setReport(checked);
+    setLoadedEpisodeSourceRoot(sourceEpisodeRoot);
     setExportResult(null);
     setFpsOverride(null);
     const loadedMinFrame = getMinFrame(loaded);
@@ -215,10 +231,6 @@ function App() {
     setCurrentFrame(loadedMinFrame);
     frameRef.current = loadedMinFrame;
     setView("review");
-    if (updateSelection) {
-      setSelectedEpisode(loaded.summary);
-      setSourcePath(root);
-    }
   }
 
   function resetLoadedData() {
@@ -229,6 +241,7 @@ function App() {
     setCurrentFrame(0);
     setClipStartFrame(0);
     setClipEndFrame(0);
+    setLoadedEpisodeSourceRoot(null);
   }
 
   function moveFrame(delta: number) {
@@ -462,10 +475,14 @@ function App() {
                   type="button"
                   className={`episode-item${selectedEpisode?.root === episode.root ? " selected" : ""}`}
                   key={episode.root}
+                  aria-pressed={selectedEpisode?.root === episode.root}
+                  disabled={busy}
+                  title="双击进入回放"
                   onClick={() => {
                     setSelectedEpisode(episode);
-                    resetLoadedData();
+                    if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
                   }}
+                  onDoubleClick={() => void loadEpisodeForReview(episode)}
                 >
                   <span className="episode-item-top">
                     <Images size={16} />

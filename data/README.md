@@ -9,7 +9,8 @@ filesystem: ext4
 local: data/raw/2026-07-13_07-34-12
 ```
 
-The raw directory is excluded from Git.
+All recording, import, and export directories under `data/` are excluded from
+Git. Only this inventory document is tracked.
 
 ## Inventory
 

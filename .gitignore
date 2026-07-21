@@ -4,9 +4,9 @@ src-tauri/target/
 src-tauri/gen/schemas/
 .DS_Store
 
-# Real recordings stay local and must never be bundled or committed.
-data/raw/
-data/imports/
+# Recordings and generated exports stay local. Keep only the inventory document.
+data/*
+!data/README.md
 
 # Staged per-release dependency. Keep the binary and its license bundle out of source control.
 src-tauri/resources/bin/ffmpeg

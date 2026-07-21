@@ -2,6 +2,17 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.10.0 - 2026-07-21
+
+- Made the left episode list a session selector: a single click only changes
+  selection, while a double click enters normal playback.
+- Double-clicking an unloaded session runs the existing local import, capacity
+  preflight, size/BLAKE3 verification, and health-check workflow before playback.
+- Double-clicking an already loaded session returns to playback without copying
+  again, and source-session selection remains highlighted after local import.
+- Kept generated recordings and exports under `data/` ignored except for the
+  tracked inventory document, preventing local test output from entering a release.
+
 ## 0.9.0 - 2026-07-21
 
 - Added inclusive single-trajectory frame trimming with start/end sliders,
