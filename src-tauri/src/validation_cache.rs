@@ -89,7 +89,7 @@ mod tests {
         assert!(cache.report_for(&root, "one").is_err());
 
         let mut stale = report(&root);
-        stale.format_version = 1;
+        stale.format_version = VALIDATION_REPORT_FORMAT_VERSION - 1;
         assert!(cache.store(&root, "old".into(), stale).is_err());
 
         cache.store(&root, "one".into(), report(&root)).unwrap();
@@ -107,6 +107,7 @@ mod tests {
             parsed_state_count: 0,
             image_validation_mode: ImageValidationMode::Sampled,
             image_sample_percentages: IMAGE_SAMPLE_PERCENTAGES.to_vec(),
+            auto_report_path: None,
             status: "ok".into(),
             checked_files: 0,
             elapsed_ms: 0,

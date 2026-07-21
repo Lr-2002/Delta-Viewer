@@ -345,6 +345,7 @@ fn validate_episode_with_mode(
             ImageValidationMode::Sampled => IMAGE_SAMPLE_PERCENTAGES.to_vec(),
             ImageValidationMode::Full => Vec::new(),
         },
+        auto_report_path: None,
         status: status.into(),
         checked_files,
         elapsed_ms: started.elapsed().as_millis(),
@@ -364,6 +365,61 @@ fn sampled_frame_indexes(frame_count: usize) -> Vec<usize> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+pub fn persist_background_report(
+    report: &mut ValidationReport,
+    fingerprint: &str,
+    reports_dir: &Path,
+    cancelled: &AtomicBool,
+) -> AppResult<Option<ReportExportResult>> {
+    if report.status == "ok" {
+        report.auto_report_path = None;
+        return Ok(None);
+    }
+
+    check_cancelled(cancelled)?;
+    fs::create_dir_all(reports_dir)?;
+    let started = Instant::now();
+    let source_name = Path::new(&report.episode_root)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("episode");
+    let sanitized = importer::sanitize_name(source_name);
+    let source_stem = sanitized.chars().take(80).collect::<String>();
+    let mut id_hasher = blake3::Hasher::new();
+    id_hasher.update(report.episode_root.as_bytes());
+    id_hasher.update(&[0]);
+    id_hasher.update(fingerprint.as_bytes());
+    let report_id = id_hasher.finalize().to_hex().to_string();
+    let output = reports_dir.join(format!(
+        "{source_stem}.health-v{}-{}.json",
+        report.format_version,
+        &report_id[..24]
+    ));
+    report.auto_report_path = Some(output.display().to_string());
+
+    if output.exists() {
+        let metadata = fs::symlink_metadata(&output)?;
+        if !metadata.file_type().is_file() {
+            report.auto_report_path = None;
+            return Err(AppError::Message(format!(
+                "后台检查报告路径不是普通文件: {}",
+                output.display()
+            )));
+        }
+        let decoded: ValidationReport = serde_json::from_reader(File::open(&output)?)?;
+        ensure_report_matches(&decoded, report)?;
+    } else if let Err(error) = write_report_atomic(report, &output, cancelled) {
+        report.auto_report_path = None;
+        return Err(error);
+    }
+
+    Ok(Some(ReportExportResult {
+        output_path: output.display().to_string(),
+        total_bytes: fs::metadata(&output)?.len(),
+        elapsed_ms: started.elapsed().as_millis(),
+    }))
 }
 
 pub fn export_report(
@@ -392,35 +448,7 @@ pub fn export_report(
         .unwrap_or("episode");
     let stem = format!("{}.health", importer::sanitize_name(source_name));
     let output = unique_report_path(destination_parent, &stem);
-    let partial = report_partial_path(&output);
-
-    let result = (|| -> AppResult<()> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&partial)?;
-        serde_json::to_writer_pretty(&mut file, report)?;
-        file.write_all(b"\n")?;
-        file.flush()?;
-        file.sync_all()?;
-        check_cancelled(cancelled)?;
-
-        let decoded: ValidationReport = serde_json::from_reader(File::open(&partial)?)?;
-        if decoded.format_version != report.format_version
-            || decoded.episode_root != report.episode_root
-            || decoded.image_validation_mode != report.image_validation_mode
-            || decoded.image_sample_percentages != report.image_sample_percentages
-            || decoded.status != report.status
-        {
-            return Err(AppError::Message("检查报告回读验证失败".into()));
-        }
-        storage::publish_noreplace(&partial, &output)?;
-        Ok(())
-    })();
-    if let Err(error) = result {
-        let _ = fs::remove_file(&partial);
-        return Err(error);
-    }
+    write_report_atomic(report, &output, cancelled)?;
 
     let total_bytes = fs::metadata(&output)?.len();
     emit_progress(
@@ -441,6 +469,52 @@ pub fn export_report(
         total_bytes,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+fn write_report_atomic(
+    report: &ValidationReport,
+    output: &Path,
+    cancelled: &AtomicBool,
+) -> AppResult<()> {
+    let partial = report_partial_path(output);
+    let result = (|| -> AppResult<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&partial)?;
+        serde_json::to_writer_pretty(&mut file, report)?;
+        file.write_all(b"\n")?;
+        file.flush()?;
+        file.sync_all()?;
+        check_cancelled(cancelled)?;
+
+        let decoded: ValidationReport = serde_json::from_reader(File::open(&partial)?)?;
+        ensure_report_matches(&decoded, report)?;
+        storage::publish_noreplace(&partial, output)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&partial);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn ensure_report_matches(decoded: &ValidationReport, expected: &ValidationReport) -> AppResult<()> {
+    if decoded.format_version != expected.format_version
+        || decoded.episode_root != expected.episode_root
+        || decoded.parsed_state_count != expected.parsed_state_count
+        || decoded.image_validation_mode != expected.image_validation_mode
+        || decoded.image_sample_percentages != expected.image_sample_percentages
+        || decoded.auto_report_path != expected.auto_report_path
+        || decoded.status != expected.status
+        || decoded.checked_files != expected.checked_files
+        || decoded.issues != expected.issues
+        || decoded.streams != expected.streams
+    {
+        return Err(AppError::Message("检查报告回读验证失败".into()));
+    }
+    Ok(())
 }
 
 fn check_cancelled(cancelled: &AtomicBool) -> AppResult<()> {
@@ -623,12 +697,12 @@ fn issue_at(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_state_sequence, export_report, sampled_frame_indexes, validate_episode,
-        validate_episode_full, IMAGE_SAMPLE_PERCENTAGES,
+        check_state_sequence, export_report, persist_background_report, sampled_frame_indexes,
+        validate_episode, validate_episode_full, IMAGE_SAMPLE_PERCENTAGES,
     };
     use crate::model::{
-        ImageValidationMode, RawStateRecord, ValidationReport, STREAM_NAMES,
-        VALIDATION_REPORT_FORMAT_VERSION,
+        ImageValidationMode, RawStateRecord, Severity, ValidationIssue, ValidationReport,
+        STREAM_NAMES, VALIDATION_REPORT_FORMAT_VERSION,
     };
     use image::codecs::jpeg::JpegEncoder;
     use image::ExtendedColorType;
@@ -650,6 +724,7 @@ mod tests {
             parsed_state_count: 3,
             image_validation_mode: ImageValidationMode::Sampled,
             image_sample_percentages: IMAGE_SAMPLE_PERCENTAGES.to_vec(),
+            auto_report_path: None,
             status: "warning".into(),
             checked_files: 4,
             elapsed_ms: 10,
@@ -668,6 +743,90 @@ mod tests {
         assert_eq!(decoded.image_validation_mode, ImageValidationMode::Sampled);
         assert_eq!(decoded.image_sample_percentages, IMAGE_SAMPLE_PERCENTAGES);
         assert_eq!(fs::read_dir(&destination).unwrap().count(), 2);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn automatically_persists_warning_and_error_reports_once() {
+        let root = test_output("background-report");
+        let reports = root.join("reports");
+        let episode = root.join("episode");
+        fs::create_dir_all(&episode).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let mut report = ValidationReport {
+            format_version: VALIDATION_REPORT_FORMAT_VERSION,
+            episode_root: episode.display().to_string(),
+            parsed_state_count: 3,
+            image_validation_mode: ImageValidationMode::Sampled,
+            image_sample_percentages: IMAGE_SAMPLE_PERCENTAGES.to_vec(),
+            auto_report_path: None,
+            status: "warning".into(),
+            checked_files: 4,
+            elapsed_ms: 10,
+            issues: vec![ValidationIssue {
+                severity: Severity::Warning,
+                code: "TEST_WARNING".into(),
+                scope: "states".into(),
+                message: "测试警告".into(),
+                frame_id: None,
+            }],
+            streams: Vec::new(),
+        };
+
+        let first =
+            persist_background_report(&mut report, "warning-fingerprint", &reports, &cancelled)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            report.auto_report_path.as_deref(),
+            Some(first.output_path.as_str())
+        );
+        let decoded: ValidationReport =
+            serde_json::from_slice(&fs::read(&first.output_path).unwrap()).unwrap();
+        assert_eq!(decoded.auto_report_path, report.auto_report_path);
+        assert_eq!(decoded.status, "warning");
+
+        let second =
+            persist_background_report(&mut report, "warning-fingerprint", &reports, &cancelled)
+                .unwrap()
+                .unwrap();
+        assert_eq!(first.output_path, second.output_path);
+        assert_eq!(fs::read_dir(&reports).unwrap().count(), 1);
+
+        let mut tampered = decoded;
+        tampered.issues[0].message = "被篡改的警告".into();
+        fs::write(
+            &first.output_path,
+            serde_json::to_vec_pretty(&tampered).unwrap(),
+        )
+        .unwrap();
+        assert!(persist_background_report(
+            &mut report,
+            "warning-fingerprint",
+            &reports,
+            &cancelled
+        )
+        .is_err());
+
+        report.status = "error".into();
+        report.auto_report_path = None;
+        let error =
+            persist_background_report(&mut report, "error-fingerprint", &reports, &cancelled)
+                .unwrap()
+                .unwrap();
+        assert_ne!(first.output_path, error.output_path);
+        assert_eq!(fs::read_dir(&reports).unwrap().count(), 2);
+
+        report.status = "ok".into();
+        report.auto_report_path = None;
+        assert!(
+            persist_background_report(&mut report, "ok-fingerprint", &reports, &cancelled,)
+                .unwrap()
+                .is_none()
+        );
+        assert!(report.auto_report_path.is_none());
+        assert_eq!(fs::read_dir(&reports).unwrap().count(), 2);
 
         fs::remove_dir_all(root).unwrap();
     }

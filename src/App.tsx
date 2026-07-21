@@ -710,7 +710,7 @@ function EmptyWorkspace({
 }
 
 function StatusBadge({ status }: { status: "ok" | "warning" | "error" | "idle" }) {
-  const labels = { ok: "检查通过", warning: "有警告", error: "检查失败", idle: "未载入" };
+  const labels = { ok: "检查通过", warning: "有警告", error: "有错误", idle: "未载入" };
   return <span className={`top-status top-status-${status}`}><span />{labels[status]}</span>;
 }
 

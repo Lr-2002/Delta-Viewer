@@ -76,7 +76,7 @@ React component
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
 - 源目录遍历统一使用可取消的 no-follow 路径；不要重新引入会隐式跟随 symlink 的文件判断。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
-- Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。交互抽检基线是报告 format v2、26 个已检查文件、每流 5 帧和 `[1,25,50,73,99]`；它不能被当作后端验收。
+- Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。交互抽检基线是报告 format v3、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]` 和非空 `autoReportPath`；它不能被当作后端验收。
 
 ## 4. 环境与常用命令
 
@@ -179,6 +179,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - Manifest 当前为 format v2：`sourcePath` 是原始相对路径，`path` 是 Windows 安全目标路径；数据集 BLAKE3 仍基于原始 `sourcePath`。
 - 取消或失败时不得出现正式输出名。
 - 如果新增自动清理，只能删除本应用可证明创建的 partial 路径，不能使用宽泛 glob 或递归删除用户目录。
+- warning/error 后台报告只能写入 Tauri `appLocalData` 下的应用专属 `reports` 目录；不得写入源卡或 episode。保持 partial、回读和原子 no-replace，同一 episode 路径/指纹/报告版本稳定去重；不得把“后台汇报”实现为网络上传。
 
 ### 6.3 数据模型
 
@@ -197,6 +198,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 交互健康检查固定解码每流排序后唯一帧序列的 `1% / 25% / 50% / 73% / 99%`，少于五个命中时去重；结构、文件名、缺帧、frame ID 集合、状态和时间轴仍全量检查。
 - 正式 stress 和发布 smoke 必须调用全量 JPEG 解码，不能用交互抽检报告替代。任何报告都必须显式记录 `imageValidationMode`、`imageSamplePercentages` 和实际 `checkedFrames`；仅读 header 不能算 JPEG 解码检查。
 - 抽检无法保证发现未命中帧的编码损坏。界面、报告、文档和测试不得把 sampled 结果描述成全量 JPEG 通过。
+- warning/error 必须在检查 command 返回前完成本地后台报告，ok 不生成；报告字段 `autoReportPath` 与实际普通文件一致，失败必须显式返回，不能显示“已生成”。
 - 导出后端必须最终具备 error hard gate，不能只依赖按钮 disabled。
 - 当前稳定 issue code 还包括 `INVALID_TIMESTAMP`、`INVALID_FRAME_FILENAME`、`DUPLICATE_FRAME_ID` 和 `FRAME_ID_MISMATCH`；改变其 severity 属于契约变更。
 
@@ -238,6 +240,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 进度、错误、warning 和成功结果都必须有可见状态，不能只写 console。
 - 图像面板使用稳定尺寸；加载或错误不能改变 grid 布局。
 - 选择 SD 卡后自动扫描并加载第一条 session，不保留额外“导入并检查”按钮。左侧 episode 列表仍以源路径作为 session 身份：单击只选择，双击才进入回放；本地导入路径不得覆盖源 session 的选中身份。
+- 检查结果固定使用“错误/警告/通过”文本，错误优先、警告其次、通过最后；`states.jsonl` 必须从 scope 为 `states` 的 issue 推导结果。手动报告按钮使用“导出报告”，不暴露存储格式作为主标签。
 - 应用 UI 色彩系统固定为黑、白和中性灰；原始相机画面保留源颜色。状态不得只靠色相表达，必须同时使用文字、图标、边框和明度层级。
 - 图标使用当前 Lucide 库，陌生图标按钮提供 `title`/`aria-label`。
 - 桌面工具保持紧凑、可扫描，不增加 landing page、营销 hero 或装饰性卡片。
@@ -276,7 +279,7 @@ pnpm check
 ```
 
 真实样例会读取私有数据，因此保持 `#[ignore]`。`--all-targets` 常规 Rust suite
-当前为 40 项（38 通过、2 个真实样例测试 ignored），其中包含压力 CLI 参数测试；
+当前为 41 项（39 通过、2 个真实样例测试 ignored），其中包含压力 CLI 参数测试；
 debug 构建的三格式完整 smoke test 约需 69 秒。任何
 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 

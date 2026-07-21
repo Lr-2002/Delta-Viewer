@@ -19,7 +19,7 @@ use model::{
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use validation_cache::ValidationCache;
 
 #[derive(Clone)]
@@ -121,18 +121,24 @@ async fn validate_episode(
     let task = control.start()?;
     let cancelled = control.cancelled.clone();
     let cache = cache.inner().clone();
+    let reports_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("无法定位应用报告目录: {error}"))?
+        .join("reports");
     emit_task_start(&app, "validate", "准备数据检查", &path);
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ValidationReport> {
         let _task = task;
         let root = Path::new(&path);
         let before = source::episode_fingerprint(root, &cancelled)?;
-        let report = validation::validate_episode(root, Some(&app), &cancelled)?;
+        let mut report = validation::validate_episode(root, Some(&app), &cancelled)?;
         let after = source::episode_fingerprint(root, &cancelled)?;
         if before != after {
             return Err(error::AppError::Message(
                 "数据在检查过程中发生变化，请重新检查".into(),
             ));
         }
+        validation::persist_background_report(&mut report, &after, &reports_dir, &cancelled)?;
         cache.store(root, after, report.clone())?;
         Ok(report)
     })

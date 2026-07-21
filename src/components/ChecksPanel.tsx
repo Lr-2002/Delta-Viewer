@@ -3,8 +3,9 @@ import {
   CircleX,
   Clock3,
   FileCheck2,
-  FileJson,
+  FileDown,
   LocateFixed,
+  ScrollText,
   TriangleAlert,
 } from "lucide-react";
 import { formatDuration } from "../lib/format";
@@ -17,6 +18,10 @@ interface ChecksPanelProps {
   onExportReport: () => void;
   onLocateIssue: (frameId: number) => void;
 }
+
+type CheckStatus = "ok" | "warning" | "error";
+const STATUS_ORDER: Record<CheckStatus, number> = { error: 0, warning: 1, ok: 2 };
+
 export function ChecksPanel({
   data,
   report,
@@ -24,11 +29,53 @@ export function ChecksPanel({
   onExportReport,
   onLocateIssue,
 }: ChecksPanelProps) {
-  const stateStatus = data.states.length ? "ok" : "error";
   const sampledImages = report?.imageValidationMode === "sampled";
   const sampleTitle = sampledImages
     ? `固定位置：${report.imageSamplePercentages.map((value) => `${value}%`).join(" / ")}`
     : "全量图像检查";
+  const stateIssues = report?.issues.filter((issue) => issue.scope === "states") ?? [];
+  const stateStatus: CheckStatus = stateIssues.some((issue) => issue.severity === "error")
+    ? "error"
+    : stateIssues.some((issue) => issue.severity === "warning")
+      ? "warning"
+      : data.states.length
+        ? "ok"
+        : "error";
+  const checkRows = [
+    ...data.summary.streams.map((stream) => {
+      const result = report?.streams.find((item) => item.name === stream.name);
+      return {
+        key: stream.name,
+        label: stream.label,
+        detail: `${stream.width ?? "—"}×${stream.height ?? "—"}`,
+        totalFrames: stream.frameCount,
+        checkedFrames: result?.checkedFrames ?? "—",
+        decodeFailures: result?.decodeFailures ?? "—",
+        status: result?.status ?? "warning",
+      };
+    }),
+    {
+      key: "states",
+      label: "states.jsonl",
+      detail: "状态记录",
+      totalFrames: data.states.length,
+      checkedFrames: "—",
+      decodeFailures: "—",
+      status: stateStatus,
+    },
+  ].sort((left, right) => STATUS_ORDER[left.status] - STATUS_ORDER[right.status]);
+  const orderedIssues = report
+    ? [...report.issues].sort(
+      (left, right) => STATUS_ORDER[left.severity] - STATUS_ORDER[right.severity],
+    )
+    : [];
+  const backgroundReportStatus = !report
+    ? "—"
+    : report.status === "ok"
+      ? "无需生成"
+      : report.autoReportPath
+        ? "已生成"
+        : "生成失败";
   return (
     <div className="checks-view">
       <header className="section-heading">
@@ -43,8 +90,8 @@ export function ChecksPanel({
             onClick={onExportReport}
             disabled={!report || busy}
           >
-            <FileJson size={16} />
-            导出 JSON
+            <FileDown size={16} />
+            导出报告
           </button>
           {report ? <StatusMark status={report.status} /> : null}
         </div>
@@ -62,9 +109,9 @@ export function ChecksPanel({
           <strong>{report ? formatDuration(report.elapsedMs) : "—"}</strong>
         </div>
         <div>
-          <CircleCheck size={18} />
-          <span>有效状态</span>
-          <strong>{data.states.length}</strong>
+          <ScrollText size={18} />
+          <span>本地后台报告</span>
+          <strong title={report?.autoReportPath ?? undefined}>{backgroundReportStatus}</strong>
         </div>
       </section>
 
@@ -76,45 +123,31 @@ export function ChecksPanel({
           <span>解码失败</span>
           <span>结果</span>
         </div>
-        {data.summary.streams.map((stream) => {
-          const result = report?.streams.find((item) => item.name === stream.name);
-          return (
-            <div className="check-table-row" key={stream.name}>
-              <span>
-                <strong>{stream.label}</strong>
-                <small>
-                  {stream.width ?? "—"}×{stream.height ?? "—"}
-                </small>
-              </span>
-              <span>{stream.frameCount}</span>
-              <span>{result?.checkedFrames ?? "—"}</span>
-              <span>{result?.decodeFailures ?? "—"}</span>
-              <span>
-                <StatusMark status={result?.status ?? "warning"} compact />
-              </span>
-            </div>
-          );
-        })}
-        <div className="check-table-row">
-          <span>
-            <strong>states.jsonl</strong>
-            <small>状态记录</small>
-          </span>
-          <span>{data.states.length}</span>
-          <span>—</span>
-          <span>{stateStatus === "ok" ? 0 : 1}</span>
-          <span>
-            <StatusMark status={stateStatus} compact />
-          </span>
-        </div>
+        {checkRows.map((row) => (
+          <div className="check-table-row" key={row.key}>
+            <span>
+              <strong>{row.label}</strong>
+              <small>{row.detail}</small>
+            </span>
+            <span>{row.totalFrames}</span>
+            <span>{row.checkedFrames}</span>
+            <span>{row.decodeFailures}</span>
+            <span>
+              <StatusMark status={row.status} compact />
+            </span>
+          </div>
+        ))}
       </section>
 
       <section className="issue-list" aria-label="检查问题">
-        <h3>问题与警告</h3>
-        {report?.issues.length ? (
-          report.issues.map((issue, index) => (
+        <h3>错误与警告</h3>
+        {orderedIssues.length ? (
+          orderedIssues.map((issue, index) => (
             <div className={`issue-row issue-${issue.severity}`} key={`${issue.code}-${index}`}>
-              {issue.severity === "error" ? <CircleX size={17} /> : <TriangleAlert size={17} />}
+              <span className="issue-severity">
+                {issue.severity === "error" ? <CircleX size={16} /> : <TriangleAlert size={16} />}
+                {issue.severity === "error" ? "错误" : "警告"}
+              </span>
               <span className="issue-scope">{issue.scope}</span>
               <span>{issue.message}</span>
               <code>{issue.code}</code>
@@ -149,7 +182,7 @@ function StatusMark({
   status: "ok" | "warning" | "error";
   compact?: boolean;
 }) {
-  const labels = { ok: "通过", warning: "警告", error: "失败" };
+  const labels = { ok: "通过", warning: "警告", error: "错误" };
   const Icon = status === "ok" ? CircleCheck : status === "warning" ? TriangleAlert : CircleX;
   return (
     <span className={`status-mark status-${status}${compact ? " status-compact" : ""}`}>

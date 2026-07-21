@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const STREAM_NAMES: [&str; 5] = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
-pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 2;
+pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,7 +141,7 @@ pub enum ImageValidationMode {
     Full,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationIssue {
     pub severity: Severity,
@@ -151,7 +151,7 @@ pub struct ValidationIssue {
     pub frame_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamValidation {
     pub name: String,
@@ -168,6 +168,7 @@ pub struct ValidationReport {
     pub parsed_state_count: u64,
     pub image_validation_mode: ImageValidationMode,
     pub image_sample_percentages: Vec<u8>,
+    pub auto_report_path: Option<String>,
     pub status: String,
     pub checked_files: u64,
     pub elapsed_ms: u128,

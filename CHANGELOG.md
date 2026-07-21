@@ -2,6 +2,19 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.13.0 - 2026-07-21
+
+- Added offline background reports for warning and error validation results in
+  the application-local data directory; passing checks do not generate one.
+- Made automatic report names stable per episode path, data fingerprint, and
+  report version, with atomic publication, readback verification, and deduplication.
+- Upgraded health reports to format v3 with `autoReportPath`, and kept stale
+  formats outside the trusted export cache.
+- Ordered check rows and issues by error, warning, then pass, and fixed state
+  results so `TIMESTAMP_GAP` makes `states.jsonl` visibly report a warning.
+- Renamed the check-page action from "Export JSON" to "Export report" and added
+  visible local background-report status across desktop and narrow layouts.
+
 ## 0.12.0 - 2026-07-21
 
 - Made SD-card selection automatically scan and load the first session through

@@ -132,6 +132,7 @@ export async function validateEpisode(path: string): Promise<ValidationReport> {
     parsedStateCount: 196,
     imageValidationMode: "sampled",
     imageSamplePercentages: [1, 25, 50, 73, 99],
+    autoReportPath: "/DOHC Viewer/reports/2026-07-13_07-34-12.health.json",
     status: "warning",
     checkedFiles: 26,
     elapsedMs: 214,

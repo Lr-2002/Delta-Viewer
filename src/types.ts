@@ -102,6 +102,7 @@ export interface ValidationReport {
   parsedStateCount: number;
   imageValidationMode: "sampled" | "full";
   imageSamplePercentages: number[];
+  autoReportPath: string | null;
   status: "ok" | "warning" | "error";
   checkedFiles: number;
   elapsedMs: number;

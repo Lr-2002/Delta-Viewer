@@ -35,13 +35,16 @@ Project documentation:
    select one continuous inclusive frame range for playback and export.
 8. Export the selected range as MCAP, HDF5, or LeRobot v2.1. Errors in that
    range are blocked in Rust; warnings require explicit confirmation.
-9. Export a versioned JSON health report or reveal completed adapter output in
-   the system file manager.
+9. Automatically persist warning/error health reports in the app-local data
+   directory, or use **Export report** to choose another destination. Passing
+   checks do not create a background report.
 
-Interactive health reports use format v2 and explicitly identify sampled image
-validation and the five percentages. Formal stress and release smoke tests still
-decode every JPEG; a sampled result does not claim that unsampled frames are
-free of encoding damage.
+Interactive health reports use format v3 and explicitly identify sampled image
+validation, the five percentages, and `autoReportPath`. Automatic reporting is
+strictly local and never writes to the SD card or imported episode; repeated
+checks of the same episode path and fingerprint reuse one report. Formal stress
+and release smoke tests still decode every JPEG; a sampled result does not claim
+that unsampled frames are free of encoding damage.
 
 The runtime has no SSH or other network data path. SSH was used only once to
 retrieve the development sample from the current ext4 card.
