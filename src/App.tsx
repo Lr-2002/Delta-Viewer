@@ -25,6 +25,7 @@ import { ExportPanel } from "./components/ExportPanel";
 import { FramePanel } from "./components/FramePanel";
 import { ProgressStrip } from "./components/ProgressStrip";
 import { TelemetryChart } from "./components/TelemetryChart";
+import { TrimControls } from "./components/TrimControls";
 import {
   DEMO_ROOT,
   cancelTask,
@@ -48,6 +49,7 @@ import type {
   EpisodeData,
   EpisodeSummary,
   ExportFormat,
+  ExportRange,
   ExportResult,
   MetricKey,
   PartialImport,
@@ -77,6 +79,8 @@ function App() {
   const [view, setView] = useState<View>("review");
   const [metric, setMetric] = useState<MetricKey>("position");
   const [currentFrame, setCurrentFrame] = useState(0);
+  const [clipStartFrame, setClipStartFrame] = useState(0);
+  const [clipEndFrame, setClipEndFrame] = useState(0);
   const [speed, setSpeed] = useState(1);
   const [fpsOverride, setFpsOverride] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -125,10 +129,10 @@ function App() {
 
   useEffect(() => {
     if (!playing || !data) return;
-    const maxFrame = getMaxFrame(data);
+    const playbackEnd = Math.min(clipEndFrame, getMaxFrame(data));
     const interval = window.setInterval(() => {
       const next = frameRef.current + 1;
-      if (next > maxFrame) {
+      if (next > playbackEnd) {
         setPlaying(false);
         return;
       }
@@ -136,7 +140,7 @@ function App() {
       setCurrentFrame(next);
     }, Math.max(4, Math.round(1000 / (playbackFps * speed))));
     return () => window.clearInterval(interval);
-  }, [data, playbackFps, playing, speed]);
+  }, [clipEndFrame, data, playbackFps, playing, speed]);
 
   async function openSource(path: string, autoLoad = false) {
     setError("");
@@ -204,12 +208,12 @@ function App() {
     setReport(checked);
     setExportResult(null);
     setFpsOverride(null);
-    const initialFrame = Math.max(
-      0,
-      loaded.states[0]?.frameId ?? loaded.summary.streams[0]?.firstFrame ?? 0,
-    );
-    setCurrentFrame(initialFrame);
-    frameRef.current = initialFrame;
+    const loadedMinFrame = getMinFrame(loaded);
+    const loadedMaxFrame = getMaxFrame(loaded);
+    setClipStartFrame(loadedMinFrame);
+    setClipEndFrame(loadedMaxFrame);
+    setCurrentFrame(loadedMinFrame);
+    frameRef.current = loadedMinFrame;
     setView("review");
     if (updateSelection) {
       setSelectedEpisode(loaded.summary);
@@ -223,21 +227,72 @@ function App() {
     setPlaying(false);
     setExportResult(null);
     setCurrentFrame(0);
+    setClipStartFrame(0);
+    setClipEndFrame(0);
   }
 
   function moveFrame(delta: number) {
     if (!data) return;
-    const next = Math.max(getMinFrame(data), Math.min(getMaxFrame(data), currentFrame + delta));
+    const next = Math.max(clipStartFrame, Math.min(clipEndFrame, currentFrame + delta));
     frameRef.current = next;
     setCurrentFrame(next);
   }
 
+  function togglePlayback() {
+    if (!data) return;
+    if (!playing && currentFrame >= clipEndFrame) {
+      frameRef.current = clipStartFrame;
+      setCurrentFrame(clipStartFrame);
+    }
+    setPlaying((value) => !value);
+  }
+
+  function updateClipStart(value: number) {
+    if (!data) return;
+    const next = Math.max(getMinFrame(data), Math.min(Math.round(value), clipEndFrame));
+    setClipStartFrame(next);
+    if (currentFrame < next) {
+      frameRef.current = next;
+      setCurrentFrame(next);
+    }
+    setPlaying(false);
+    setExportResult(null);
+  }
+
+  function updateClipEnd(value: number) {
+    if (!data) return;
+    const next = Math.min(getMaxFrame(data), Math.max(Math.round(value), clipStartFrame));
+    setClipEndFrame(next);
+    if (currentFrame > next) {
+      frameRef.current = next;
+      setCurrentFrame(next);
+    }
+    setPlaying(false);
+    setExportResult(null);
+  }
+
+  function resetClipRange() {
+    if (!data) return;
+    const start = getMinFrame(data);
+    const end = getMaxFrame(data);
+    setClipStartFrame(start);
+    setClipEndFrame(end);
+    const next = Math.max(start, Math.min(currentFrame, end));
+    frameRef.current = next;
+    setCurrentFrame(next);
+    setExportResult(null);
+  }
+
   async function runExport() {
-    if (!data || report?.status === "error") return;
+    if (!data) return;
+    const range: ExportRange = { startFrame: clipStartFrame, endFrame: clipEndFrame };
+    const rangeStatus = statusForRange(report, range);
+    if (rangeStatus === "error") return;
     let acknowledgeWarnings = false;
-    if (report?.status === "warning") {
+    if (rangeStatus === "warning") {
+      const warningCount = report?.issues.filter((issue) => issueInRange(issue, range) && issue.severity === "warning").length ?? 0;
       acknowledgeWarnings = await confirmAction(
-        `该记录包含 ${report.issues.filter((issue) => issue.severity === "warning").length} 条数据警告。导出不会修复这些问题，是否继续？`,
+        `当前裁剪片段包含 ${warningCount} 条数据警告。导出不会修复这些问题，是否继续？`,
         "确认带警告导出",
       );
       if (!acknowledgeWarnings) return;
@@ -254,9 +309,10 @@ function App() {
         destinationParent,
         exportFormat,
         acknowledgeWarnings,
+        range,
       );
       setExportResult(result);
-      setNotice(`已导出 ${exportFormatLabel(exportFormat)}：${shortPath(result.outputPath, 72)}`);
+      setNotice(`已导出 ${exportFormatLabel(exportFormat)}（帧 ${range.startFrame}–${range.endFrame}）：${shortPath(result.outputPath, 72)}`);
     } catch (reason) {
       setError(toMessage(reason));
     } finally {
@@ -310,18 +366,38 @@ function App() {
     if (!data) return;
     const target = Math.max(getMinFrame(data), Math.min(getMaxFrame(data), frameId));
     setPlaying(false);
+    if (target < clipStartFrame) setClipStartFrame(target);
+    if (target > clipEndFrame) setClipEndFrame(target);
+    setExportResult(null);
     frameRef.current = target;
     setCurrentFrame(target);
     setView("review");
   }
 
-  const currentState = useMemo(
-    () => data?.states.find((state) => state.frameId === currentFrame) ?? null,
-    [currentFrame, data],
-  );
+  const stateByFrame = useMemo(() => {
+    const index = new Map<number, EpisodeData["states"][number]>();
+    for (const state of data?.states ?? []) index.set(state.frameId, state);
+    return index;
+  }, [data]);
+  const currentState = stateByFrame.get(currentFrame) ?? null;
   const maxFrame = data ? getMaxFrame(data) : 0;
   const minFrame = data ? getMinFrame(data) : 0;
   const status = report?.status ?? (data ? "warning" : "idle");
+  const clipRange: ExportRange = { startFrame: clipStartFrame, endFrame: clipEndFrame };
+  const clipStateCount = useMemo(
+    () => data
+      ? data.states.filter((state) => state.frameId >= clipStartFrame && state.frameId <= clipEndFrame).length
+      : 0,
+    [clipEndFrame, clipStartFrame, data],
+  );
+  const clipDurationMs = useMemo(
+    () => data ? durationBetweenFrames(data, clipStartFrame, clipEndFrame) : null,
+    [clipEndFrame, clipStartFrame, data],
+  );
+  const clipStatus = useMemo(
+    () => statusForRange(report, clipRange),
+    [clipEndFrame, clipStartFrame, report],
+  );
 
   return (
     <div className="app-shell">
@@ -460,10 +536,24 @@ function App() {
                         />
                       ))}
                     </div>
+                    <TrimControls
+                      minFrame={minFrame}
+                      maxFrame={maxFrame}
+                      currentFrame={currentFrame}
+                      range={clipRange}
+                      stateCount={clipStateCount}
+                      durationMs={clipDurationMs}
+                      disabled={busy}
+                      onStartChange={updateClipStart}
+                      onEndChange={updateClipEnd}
+                      onMarkStart={() => updateClipStart(currentFrame)}
+                      onMarkEnd={() => updateClipEnd(currentFrame)}
+                      onReset={resetClipRange}
+                    />
                     <div className="timeline-controls">
                       <div className="transport-buttons">
                         <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧"><SkipBack size={17} /></button>
-                        <button className="play-button" type="button" onClick={() => setPlaying((value) => !value)} title={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"}>
+                        <button className="play-button" type="button" onClick={togglePlayback} title={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"}>
                           {playing ? <Pause size={17} /> : <Play size={17} />}
                         </button>
                         <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧"><SkipForward size={17} /></button>
@@ -471,9 +561,9 @@ function App() {
                       <input
                         className="timeline-slider"
                         type="range"
-                        min={minFrame}
-                        max={maxFrame}
-                        value={currentFrame}
+                        min={clipStartFrame}
+                        max={clipEndFrame}
+                        value={Math.max(clipStartFrame, Math.min(clipEndFrame, currentFrame))}
                         onChange={(event) => {
                           const next = Number(event.target.value);
                           frameRef.current = next;
@@ -538,7 +628,10 @@ function App() {
               ) : (
                 <ExportPanel
                   data={data}
-                  report={report}
+                  range={clipRange}
+                  rangeStatus={clipStatus}
+                  rangeStateCount={clipStateCount}
+                  rangeDurationMs={clipDurationMs}
                   selectedFormat={exportFormat}
                   result={exportResult}
                   busy={busy}
@@ -617,19 +710,23 @@ function StatusBadge({ status }: { status: "ok" | "warning" | "error" | "idle" }
 }
 
 function getMaxFrame(data: EpisodeData): number {
-  let maximum = 0;
-  for (const stream of data.summary.streams) maximum = Math.max(maximum, stream.lastFrame ?? 0);
-  for (const state of data.states) maximum = Math.max(maximum, state.frameId);
-  return maximum;
+  let maximum = -1;
+  for (const state of data.states) {
+    if (state.frameId >= 0) maximum = Math.max(maximum, state.frameId);
+  }
+  if (maximum >= 0) return maximum;
+  for (const stream of data.summary.streams) maximum = Math.max(maximum, stream.lastFrame ?? -1);
+  return Math.max(0, maximum);
 }
 
 function getMinFrame(data: EpisodeData): number {
   let minimum = Number.POSITIVE_INFINITY;
-  for (const stream of data.summary.streams) {
-    if (stream.firstFrame !== null) minimum = Math.min(minimum, stream.firstFrame);
-  }
   for (const state of data.states) {
     if (state.frameId >= 0) minimum = Math.min(minimum, state.frameId);
+  }
+  if (Number.isFinite(minimum)) return minimum;
+  for (const stream of data.summary.streams) {
+    if (stream.firstFrame !== null) minimum = Math.min(minimum, stream.firstFrame);
   }
   return Number.isFinite(minimum) ? minimum : 0;
 }
@@ -680,6 +777,45 @@ function estimateFrameRate(states: EpisodeData["states"]): number {
   const medianNs = deltas[Math.floor(deltas.length / 2)];
   const fps = 1_000_000_000 / Number(medianNs);
   return Number.isFinite(fps) ? Math.max(1, Math.min(240, fps)) : 30;
+}
+
+function issueInRange(
+  issue: ValidationReport["issues"][number],
+  range: ExportRange,
+): boolean {
+  return issue.frameId === null
+    || issue.frameId < 0
+    || (issue.frameId >= range.startFrame && issue.frameId <= range.endFrame);
+}
+
+function statusForRange(
+  report: ValidationReport | null,
+  range: ExportRange,
+): "ok" | "warning" | "error" {
+  if (!report) return "warning";
+  const relevant = report.issues.filter((issue) => issueInRange(issue, range));
+  if (relevant.some((issue) => issue.severity === "error")) return "error";
+  if (relevant.some((issue) => issue.severity === "warning")) return "warning";
+  return "ok";
+}
+
+function durationBetweenFrames(
+  data: EpisodeData,
+  startFrame: number,
+  endFrame: number,
+): number | null {
+  const selected = data.states.filter(
+    (state) => state.frameId >= startFrame && state.frameId <= endFrame,
+  );
+  const first = selected[0]?.captureTimeNs;
+  const last = selected.at(-1)?.captureTimeNs;
+  if (!first || !last) return null;
+  try {
+    const durationNs = BigInt(last) - BigInt(first);
+    return durationNs >= 0n ? Number(durationNs) / 1_000_000 : null;
+  } catch {
+    return null;
+  }
 }
 
 export default App;

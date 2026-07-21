@@ -13,7 +13,7 @@ mod validation_cache;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use model::{
-    EpisodeData, ExportFormat, ExportResult, FramePayload, ImportPreflight, ImportResult,
+    EpisodeData, ExportCommandRequest, ExportResult, FramePayload, ImportPreflight, ImportResult,
     PartialImport, ProgressPayload, ReportExportResult, ScanResult, ValidationReport,
 };
 use std::path::Path;
@@ -218,11 +218,15 @@ async fn export_episode(
     app: AppHandle,
     control: State<'_, TaskControl>,
     cache: State<'_, ValidationCache>,
-    source_path: String,
-    destination_parent: String,
-    format: ExportFormat,
-    acknowledge_warnings: bool,
+    request: ExportCommandRequest,
 ) -> Result<ExportResult, String> {
+    let ExportCommandRequest {
+        source_path,
+        destination_parent,
+        format,
+        acknowledge_warnings,
+        range,
+    } = request;
     let task = control.start()?;
     let cancelled = control.cancelled.clone();
     let cache = cache.inner().clone();
@@ -232,15 +236,16 @@ async fn export_episode(
         let root = Path::new(&source_path);
         let fingerprint = source::episode_fingerprint(root, &cancelled)?;
         let report = cache.report_for(root, &fingerprint)?;
-        export::export_episode(
+        export::export_episode(export::ExportJob {
             format,
-            root,
-            Path::new(&destination_parent),
-            &report,
+            source_path: root,
+            destination_parent: Path::new(&destination_parent),
+            validation_report: &report,
             acknowledge_warnings,
-            Some(&app),
-            &cancelled,
-        )
+            requested_range: range,
+            app: Some(&app),
+            cancelled: &cancelled,
+        })
     })
     .await
     .map_err(|error| error.to_string())?

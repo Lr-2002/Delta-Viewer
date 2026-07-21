@@ -2,6 +2,25 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.9.0 - 2026-07-21
+
+- Added inclusive single-trajectory frame trimming with start/end sliders,
+  numeric inputs, current-frame markers, range playback, and shared range-aware
+  export controls.
+- Applied the selected range in Rust across state rows and all five image
+  streams, with backend boundary validation and range-aware warning/error gates.
+- Recorded clip bounds in MCAP, HDF5, and LeRobot v2.1 metadata and clipped
+  output names; real frames 10-19 pass all three adapter readbacks.
+- Upgraded MCAP to seven topics and three schemas using official Foxglove
+  `CompressedImage` and `PoseInFrame` protobuf messages while retaining JSON
+  state and bounded production summary readback.
+- Opened the full 196-frame sample in Foxglove Desktop 2.57.0: all five image
+  panels decoded, state JSON was readable, and all seven topics were recognized
+  at 196 messages each.
+- Re-ran the complete 80,531,730-byte APFS development workflow in 72.726
+  seconds with stable source BLAKE3; formal Windows, physical SD-card, and
+  100 GB/100,000-file gates remain open.
+
 ## 0.8.0 - 2026-07-21
 
 - Added a repeatable macOS-hosted Windows x64 MSVC all-target compile check with

@@ -14,6 +14,7 @@
 8. LeRobot 数据不得虚构源数据中不存在的 action。规范化时间轴时必须保留原始纳秒时间。
 9. 正式输出必须先写 partial 路径，成功后再原子 rename；不得覆盖已有输出。
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
+11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录或本地导入副本，三个 adapter 必须使用同一范围。
 
 ## 2. 仓库结构
 
@@ -149,7 +150,8 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 健康状态为 warning，而不是 ok。
 - 必须出现 `TIMESTAMP_GAP`，因为末尾帧时间间隔异常。
 - 数据集 BLAKE3 为 `f5bc2dda9be850c0d89c88c1021ae8964f59592b7bad1db02159fdef24384727`。
-- MCAP 为 6 channels/1 schema。
+- MCAP 为 7 channels/3 schemas：1 个 JSON state、1 个官方 Foxglove
+  PoseInFrame 和 5 个官方 Foxglove CompressedImage；每个 channel 196 条消息。
 - HDF5 关键 dataset shape 为 196。
 - LeRobot 为 30 FPS、196 行 Parquet、5 个非空 MP4，并包含 `observation.capture_time_ns`。
 
@@ -213,6 +215,10 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 格式专属约束：
 
 - MCAP 使用原始 `capture_time_ns` 作为 log/publish time。
+- MCAP 图像和位姿必须使用 Foxglove 官方 protobuf schema；生产回读保持
+  summary-only 有界读取，真实样例测试再逐条解码 protobuf 和 JSON。
+- 裁剪范围使用包含起止帧的闭区间。范围外逐帧 issue 不阻断导出；无 frame ID
+  或负 frame ID 的全局 issue 仍然生效。输出名称与 metadata 必须记录范围。
 - HDF5 使用 `hdf5-pure`；不要引入需要用户安装的 HDF5 DLL。
 - HDF5 JPEG 必须经 `with_streamed_u8_data` 按固定 1 MiB chunk 写入；禁止退回 `with_u8_data` 暂存完整流或重新引入按 JPEG 总量增长的内存缓冲。
 - `vendor/hdf5-pure` 固定 0.21.2，只公开其已有 lazy chunk writer 的最小接口；修改或升级前必须阅读 `DOHC_PATCH.md`，重跑跨文件/尾块测试和真实三格式回读。
@@ -266,7 +272,7 @@ pnpm check
 ```
 
 真实样例会读取私有数据，因此保持 `#[ignore]`。`--all-targets` 常规 Rust suite
-当前为 37 项（35 通过、2 个真实样例测试 ignored），其中包含压力 CLI 参数测试；
+当前为 39 项（37 通过、2 个真实样例测试 ignored），其中包含压力 CLI 参数测试；
 debug 构建的三格式完整 smoke test 约需 69 秒。任何
 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 
@@ -287,7 +293,7 @@ macOS 命令：
 export DOHC_FFMPEG=/absolute/path/to/reviewed/ffmpeg
 cargo run --release --manifest-path src-tauri/Cargo.toml --example stress-check -- \
   --source /Volumes/DOHC_CARD/episode \
-  --work-root /Volumes/LOCAL_WORK/dohc-stress-v0.8.0
+  --work-root /Volumes/LOCAL_WORK/dohc-stress-v0.9.0
 ```
 
 Windows PowerShell 命令：
@@ -296,7 +302,7 @@ Windows PowerShell 命令：
 $env:DOHC_FFMPEG = "C:\reviewed\ffmpeg.exe"
 cargo run --release --manifest-path src-tauri/Cargo.toml --example stress-check -- `
   --source "E:\episode" `
-  --work-root "D:\dohc-stress-v0.8.0"
+  --work-root "D:\dohc-stress-v0.9.0"
 ```
 
 runner 依次执行环境门禁、扫描、卷/规模/空间门禁、源元数据指纹、import
@@ -402,6 +408,7 @@ pnpm tauri:build
 - `tauri-plugin-opener` 只开放 `opener:allow-reveal-item-in-dir`；不得开放 URL 或任意程序启动权限。
 - Dialog capability 只开放目录选择和消息框；新增 capability 必须对应明确的用户操作。
 - `tauri-plugin-opener 2.5.4` 为 MIT/Apache-2.0 双许可的官方跨平台实现。`v0.3.0` 全部变更使 macOS ARM debug 二进制增加 1,239,152 bytes（约 2.2%）；Windows release 体积必须在目标构建机另行记录。
+- `foxglove 0.26.0`（MIT）、`prost 0.14.4`（Apache-2.0）和 `bytes 1.12.1`（MIT）用于生成官方 Foxglove protobuf schema/消息；Foxglove 默认 features 保持关闭。`v0.9.0` macOS ARM debug 主程序相对 `v0.8.0` 增加 383,472 bytes（约 0.5%），Windows x64 MSVC all-target 条件编译已通过，目标机 release 体积仍需另行记录。
 
 ## 12. Git 与工作区纪律
 

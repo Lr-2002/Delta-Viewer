@@ -11,8 +11,8 @@ import { formatBytes, shortPath } from "../lib/format";
 import type {
   EpisodeData,
   ExportFormat,
+  ExportRange,
   ExportResult,
-  ValidationReport,
 } from "../types";
 
 const FORMATS: Array<{
@@ -26,7 +26,7 @@ const FORMATS: Array<{
     id: "mcap",
     name: "MCAP",
     extension: ".mcap",
-    contents: "JSON state + 5 路 JPEG topic",
+    contents: "Foxglove 图像 + 位姿 + JSON state",
     icon: FileArchive,
   },
   {
@@ -47,7 +47,10 @@ const FORMATS: Array<{
 
 export function ExportPanel({
   data,
-  report,
+  range,
+  rangeStatus,
+  rangeStateCount,
+  rangeDurationMs,
   selectedFormat,
   result,
   busy,
@@ -56,7 +59,10 @@ export function ExportPanel({
   onReveal,
 }: {
   data: EpisodeData;
-  report: ValidationReport | null;
+  range: ExportRange;
+  rangeStatus: "ok" | "warning" | "error";
+  rangeStateCount: number;
+  rangeDurationMs: number | null;
   selectedFormat: ExportFormat;
   result: ExportResult | null;
   busy: boolean;
@@ -64,7 +70,7 @@ export function ExportPanel({
   onExport: () => void;
   onReveal: (path: string) => void;
 }) {
-  const blocked = report?.status === "error";
+  const blocked = rangeStatus === "error";
   const selected = FORMATS.find((format) => format.id === selectedFormat) ?? FORMATS[0];
 
   return (
@@ -74,8 +80,8 @@ export function ExportPanel({
           <span className="section-kicker">DATA ADAPTERS</span>
           <h2>导出数据</h2>
         </div>
-        <span className={`status-mark status-${report?.status ?? "warning"}`}>
-          {blocked ? "检查未通过" : report?.status === "warning" ? "带警告导出" : "可导出"}
+        <span className={`status-mark status-${rangeStatus}`}>
+          {blocked ? "检查未通过" : rangeStatus === "warning" ? "带警告导出" : "可导出"}
         </span>
       </div>
 
@@ -85,12 +91,12 @@ export function ExportPanel({
           <strong>{data.summary.name}</strong>
         </div>
         <div>
-          <span>数据量</span>
-          <strong>{formatBytes(data.summary.totalBytes)}</strong>
+          <span>裁剪范围</span>
+          <strong>帧 {range.startFrame}–{range.endFrame}</strong>
         </div>
         <div>
-          <span>帧 / 状态</span>
-          <strong>{data.summary.streams[0]?.frameCount ?? 0} / {data.states.length}</strong>
+          <span>片段状态</span>
+          <strong>{rangeStateCount} 条 · {formatDuration(rangeDurationMs)}</strong>
         </div>
         <div>
           <span>视频流</span>
@@ -166,9 +172,15 @@ export function ExportPanel({
 
       {blocked ? (
         <div className="export-blocked">
-          当前记录包含错误。请先在“检查”中处理解码、空流或状态数据问题。
+          当前裁剪片段包含错误。请先在“检查”中处理解码、空流或状态数据问题。
         </div>
       ) : null}
     </div>
   );
+}
+
+function formatDuration(durationMs: number | null): string {
+  if (durationMs === null) return "时长 —";
+  if (durationMs < 1000) return `${durationMs.toFixed(0)} ms`;
+  return `${(durationMs / 1000).toFixed(2)} s`;
 }

@@ -1,6 +1,6 @@
 [package]
 name = "dohc-viewer"
-version = "0.8.0"
+version = "0.9.0"
 description = "Inspect and export DOHC recordings from removable media"
 authors = ["DOHC"]
 edition = "2021"
@@ -20,12 +20,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 base64 = "0.22"
 blake3 = "1"
+bytes = "1"
+foxglove = { version = "0.26", default-features = false }
 fs2 = "0.4.3"
 arrow-array = "59"
 hdf5-pure = { path = "../vendor/hdf5-pure" }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 mcap = { version = "0.25", default-features = false }
 parquet = { version = "59", default-features = false, features = ["arrow", "snap"] }
+prost = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

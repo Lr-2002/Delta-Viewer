@@ -26,9 +26,10 @@ Project documentation:
    `.dohc-manifest.json` with original and Windows-safe relative paths.
 6. Decode-check all JPEG frames, validate stream continuity, parse every state,
    and check state frame IDs and timestamps.
-7. Review five synchronized image streams and state telemetry.
-8. Export MCAP, HDF5, or LeRobot v2.1. Errors are blocked in Rust; warnings
-   require explicit confirmation.
+7. Review five synchronized image streams and state telemetry, and optionally
+   select one continuous inclusive frame range for playback and export.
+8. Export the selected range as MCAP, HDF5, or LeRobot v2.1. Errors in that
+   range are blocked in Rust; warnings require explicit confirmation.
 9. Export a versioned JSON health report or reveal completed adapter output in
    the system file manager.
 
@@ -53,7 +54,7 @@ Adapter output:
 
 | Format | Output |
 | --- | --- |
-| MCAP | Six timestamped channels: JSON state plus five raw JPEG streams |
+| MCAP | Seven timestamped topics: JSON state, official Foxglove PoseInFrame, and five official Foxglove CompressedImage streams |
 | HDF5 | Typed state datasets and per-stream concatenated JPEG bytes, offsets, sizes, and frame IDs |
 | LeRobot v2.1 | Parquet data, five MP4 streams, tasks/episodes/stats metadata, and `info.json` |
 
@@ -61,6 +62,19 @@ The source has no robot action field, so the LeRobot adapter exports the
 available observation/state fields and images without inventing an action.
 Its standard `timestamp` follows the constant-rate video timeline; the original
 nanosecond clock is retained separately as `observation.capture_time_ns`.
+
+Trim ranges are inclusive: a range of frames 10-19 contains ten states and the
+matching frames from all five streams. Trimming never changes the imported
+episode. Clipped output names include `_frames_10-19`, and each adapter records
+the bounds in its metadata.
+
+The MCAP adapter has been exercised with Foxglove Desktop 2.57.0: all five
+image topics decode in Image panels, `/dohc/pose` is recognized as
+`foxglove.PoseInFrame`, and `/dohc/state` is readable as JSON. On macOS,
+Foxglove may show `Permission denied` when a persisted recent-file handle has
+expired. Use **Open local file(s)** and select the MCAP again instead of opening
+the stale recent item; this is a Foxglove file-handle permission, not an MCAP
+parse error.
 
 Playback estimates the recorded FPS from the median positive state timestamp
 delta and supports explicit 15, 24, 30, or 60 FPS overrides. Health issues that
@@ -181,7 +195,7 @@ plus a 25% reserve (425 GB for a 100 GB source).
 export DOHC_FFMPEG=/absolute/path/to/reviewed/ffmpeg
 cargo run --release --manifest-path src-tauri/Cargo.toml --example stress-check -- \
   --source /Volumes/DOHC_CARD/episode \
-  --work-root /Volumes/LOCAL_WORK/dohc-stress-v0.8.0
+  --work-root /Volumes/LOCAL_WORK/dohc-stress-v0.9.0
 ```
 
 On Windows, set `$env:DOHC_FFMPEG` to an absolute reviewed `ffmpeg.exe`, use the

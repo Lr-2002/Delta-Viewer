@@ -6,6 +6,7 @@ import type {
   EpisodeData,
   EpisodeSummary,
   ExportFormat,
+  ExportRange,
   ExportResult,
   ImportPreflight,
   ImportResult,
@@ -172,19 +173,23 @@ export async function exportEpisode(
   destinationParent: string,
   format: ExportFormat,
   acknowledgeWarnings: boolean,
+  range: ExportRange,
 ): Promise<ExportResult> {
   if (isTauriRuntime()) {
     return invoke<ExportResult>("export_episode", {
-      sourcePath,
-      destinationParent,
-      format,
-      acknowledgeWarnings,
+      request: {
+        sourcePath,
+        destinationParent,
+        format,
+        acknowledgeWarnings,
+        range,
+      },
     });
   }
   const names: Record<ExportFormat, string> = {
-    mcap: "2026-07-13_07-34-12.mcap",
-    hdf5: "2026-07-13_07-34-12.h5",
-    lerobot_v2: "2026-07-13_07-34-12_lerobot_v2",
+    mcap: `2026-07-13_07-34-12${demoRangeSuffix(range)}.mcap`,
+    hdf5: `2026-07-13_07-34-12${demoRangeSuffix(range)}.h5`,
+    lerobot_v2: `2026-07-13_07-34-12${demoRangeSuffix(range)}_lerobot_v2`,
   };
   return {
     format,
@@ -192,7 +197,15 @@ export async function exportEpisode(
     totalFiles: format === "lerobot_v2" ? 12 : 1,
     totalBytes: format === "mcap" ? 80_780_000 : format === "hdf5" ? 80_650_000 : 49_300_000,
     elapsedMs: format === "lerobot_v2" ? 18_400 : 3_200,
+    range,
+    stateCount: range.endFrame - range.startFrame + 1,
   };
+}
+
+function demoRangeSuffix(range: ExportRange): string {
+  return range.startFrame === 0 && range.endFrame === 195
+    ? ""
+    : `_frames_${range.startFrame}-${range.endFrame}`;
 }
 
 export async function frameUrl(root: string, stream: string, frameId: number): Promise<string> {

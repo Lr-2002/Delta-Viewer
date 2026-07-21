@@ -1,4 +1,6 @@
-use super::{map_error, partial_sibling, unique_directory, ExportAdapter, ExportContext};
+use super::{
+    map_error, output_stem, partial_sibling, unique_directory, ExportAdapter, ExportContext,
+};
 use crate::error::{AppError, AppResult};
 use crate::model::{ProgressPayload, StateRecord};
 use crate::source::emit_progress;
@@ -25,10 +27,7 @@ pub struct LeRobotV2Adapter;
 impl ExportAdapter for LeRobotV2Adapter {
     fn export(&self, context: &ExportContext<'_>) -> AppResult<PathBuf> {
         validate_lerobot_source(context)?;
-        let stem = format!(
-            "{}_lerobot_v2",
-            crate::importer::sanitize_name(&context.data.summary.name)
-        );
+        let stem = format!("{}_lerobot_v2", output_stem(context));
         let output = unique_directory(context.destination_parent, &stem);
         let partial = partial_sibling(&output);
         fs::create_dir_all(&partial)?;
@@ -100,6 +99,8 @@ impl ExportAdapter for LeRobotV2Adapter {
             "total_chunks": 1,
             "chunks_size": 1000,
             "fps": fps,
+            "clip_start_frame": context.range.start_frame,
+            "clip_end_frame": context.range.end_frame,
             "splits": {"train": "0:1"},
             "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
             "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
@@ -123,8 +124,8 @@ impl ExportAdapter for LeRobotV2Adapter {
         fs::write(
             partial.join("README.md"),
             format!(
-                "# {}\n\nLeRobot v2.1 dataset exported by DOHC Viewer.\n",
-                context.data.summary.name
+                "# {}\n\nLeRobot v2.1 dataset exported by DOHC Viewer.\n\nFrame range: {}-{}.\n",
+                context.data.summary.name, context.range.start_frame, context.range.end_frame
             ),
         )?;
 
@@ -138,6 +139,26 @@ fn validate_lerobot_source(context: &ExportContext<'_>) -> AppResult<()> {
     if context.data.states.is_empty() {
         return Err(AppError::Message("状态数据为空，无法导出 LeRobot".into()));
     }
+    if context
+        .data
+        .states
+        .windows(2)
+        .any(|pair| pair[1].frame_id != pair[0].frame_id.saturating_add(1))
+    {
+        return Err(AppError::Message(
+            "LeRobot 导出要求裁剪范围内的 frame_id 连续".into(),
+        ));
+    }
+    let first_state = context
+        .data
+        .states
+        .first()
+        .and_then(|state| u64::try_from(state.frame_id).ok());
+    let last_state = context
+        .data
+        .states
+        .last()
+        .and_then(|state| u64::try_from(state.frame_id).ok());
     for stream in &context.data.summary.streams {
         if stream.frame_count != context.data.states.len() as u64 {
             return Err(AppError::Message(format!(
@@ -149,6 +170,12 @@ fn validate_lerobot_source(context: &ExportContext<'_>) -> AppResult<()> {
         }
         if stream.missing_frame_count > 0 {
             return Err(AppError::Message(format!("{} 存在缺帧", stream.name)));
+        }
+        if stream.first_frame != first_state || stream.last_frame != last_state {
+            return Err(AppError::Message(format!(
+                "{} 的裁剪帧范围与状态时间轴不一致",
+                stream.name
+            )));
         }
     }
     Ok(())
@@ -174,6 +201,8 @@ fn verify_lerobot_output(root: &Path, context: &ExportContext<'_>, fps: u32) -> 
     if info["codebase_version"] != "v2.1"
         || info["fps"] != fps
         || info["total_frames"] != context.data.states.len()
+        || info["clip_start_frame"] != context.range.start_frame
+        || info["clip_end_frame"] != context.range.end_frame
     {
         return Err(AppError::Message(
             "LeRobot 回读验证失败: info.json 不匹配".into(),

@@ -134,12 +134,19 @@ export interface ImportResult {
 
 export type ExportFormat = "mcap" | "hdf5" | "lerobot_v2";
 
+export interface ExportRange {
+  startFrame: number;
+  endFrame: number;
+}
+
 export interface ExportResult {
   format: ExportFormat;
   outputPath: string;
   totalFiles: number;
   totalBytes: number;
   elapsedMs: number;
+  range: ExportRange;
+  stateCount: number;
 }
 
 export type MetricKey = "position" | "velocity" | "euler" | "omega";

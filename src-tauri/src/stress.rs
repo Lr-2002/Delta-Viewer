@@ -342,15 +342,16 @@ fn run_inner(
         let format_name = format.as_str();
         let phase_name = format!("{format_name} export and readback");
         let result = record_phase(report, heartbeat, &phase_name, summary.total_bytes, || {
-            export::export_episode(
+            export::export_episode(export::ExportJob {
                 format,
-                &imported,
-                &exports,
-                &validation_report,
-                true,
-                None,
-                &cancelled,
-            )
+                source_path: &imported,
+                destination_parent: &exports,
+                validation_report: &validation_report,
+                acknowledge_warnings: true,
+                requested_range: None,
+                app: None,
+                cancelled: &cancelled,
+            })
         })?;
         report.outputs.push(OutputEvidence {
             format: result.format,

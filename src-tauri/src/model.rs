@@ -241,6 +241,29 @@ impl ExportFormat {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRange {
+    pub start_frame: u64,
+    pub end_frame: u64,
+}
+
+impl ExportRange {
+    pub fn contains(self, frame_id: u64) -> bool {
+        frame_id >= self.start_frame && frame_id <= self.end_frame
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportCommandRequest {
+    pub source_path: String,
+    pub destination_parent: String,
+    pub format: ExportFormat,
+    pub acknowledge_warnings: bool,
+    pub range: Option<ExportRange>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportResult {
@@ -249,4 +272,6 @@ pub struct ExportResult {
     pub total_files: u64,
     pub total_bytes: u64,
     pub elapsed_ms: u128,
+    pub range: ExportRange,
+    pub state_count: u64,
 }

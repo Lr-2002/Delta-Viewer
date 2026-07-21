@@ -1,4 +1,4 @@
-use super::{map_error, partial_sibling, unique_file, ExportAdapter, ExportContext};
+use super::{map_error, output_stem, partial_sibling, unique_file, ExportAdapter, ExportContext};
 use crate::error::{AppError, AppResult};
 use crate::model::ProgressPayload;
 use crate::source::{collect_stream_files, emit_progress};
@@ -176,7 +176,7 @@ impl ExportAdapter for Hdf5Adapter {
         if context.data.states.is_empty() {
             return Err(AppError::Message("状态数据为空，无法导出 HDF5".into()));
         }
-        let stem = crate::importer::sanitize_name(&context.data.summary.name);
+        let stem = output_stem(context);
         let output = unique_file(context.destination_parent, &stem, "h5");
         let partial = partial_sibling(&output);
         let started = Instant::now();
@@ -188,7 +188,12 @@ impl ExportAdapter for Hdf5Adapter {
             }
             let stream_files =
                 collect_stream_files(context.source, &stream.name, &context.cancelled)?;
-            let plan = plan_jpeg_stream(&stream.name, stream_files.frames, &context.cancelled)?;
+            let frames = stream_files
+                .frames
+                .into_iter()
+                .filter(|(frame_id, _)| context.contains_frame(*frame_id))
+                .collect();
+            let plan = plan_jpeg_stream(&stream.name, frames, &context.cancelled)?;
             if plan.frame_ids.len() as u64 != stream.frame_count
                 || plan.total_bytes != stream.total_bytes
             {
@@ -230,6 +235,14 @@ impl ExportAdapter for Hdf5Adapter {
         builder.set_attr(
             "source_name",
             AttrValue::AsciiString(context.data.summary.name.clone()),
+        );
+        builder.set_attr(
+            "clip_start_frame",
+            AttrValue::I64(context.range.start_frame as i64),
+        );
+        builder.set_attr(
+            "clip_end_frame",
+            AttrValue::I64(context.range.end_frame as i64),
         );
 
         let mut states_group = builder.create_group("states");
@@ -434,6 +447,14 @@ fn write_builder(builder: FileBuilder, partial: &Path, cancelled: &AtomicBool) -
 
 fn verify_hdf5(path: &Path, context: &ExportContext<'_>) -> AppResult<()> {
     let file = HdfFile::open_streaming(path).map_err(map_error)?;
+    let attrs = file.root().attrs().map_err(map_error)?;
+    if attrs.get("clip_start_frame") != Some(&AttrValue::I64(context.range.start_frame as i64))
+        || attrs.get("clip_end_frame") != Some(&AttrValue::I64(context.range.end_frame as i64))
+    {
+        return Err(AppError::Message(
+            "HDF5 回读验证失败: 裁剪范围属性不匹配".into(),
+        ));
+    }
     let shape = file
         .dataset("states/frame_id")
         .map_err(map_error)?
