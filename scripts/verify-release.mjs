@@ -121,6 +121,9 @@ async function verify(options) {
     throw new Error(`CHANGELOG.md has no dated ${version} release heading`);
   }
   if (tauriConfig.bundle?.active !== true) throw new Error("Tauri bundling is not active");
+  if (tauriConfig.bundle?.category !== "Utility") {
+    throw new Error("Tauri bundle category must be Utility");
+  }
   for (const icon of ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"]) {
     if (!tauriConfig.bundle?.icon?.includes(icon)) {
       throw new Error(`Tauri bundle icon is missing: ${icon}`);

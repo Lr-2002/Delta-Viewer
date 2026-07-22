@@ -33,6 +33,10 @@ async function main() {
 
   const bundle = tauriConfig.bundle;
   const deb = bundle?.linux?.deb;
+  requireCondition(
+    baseTauriConfig.bundle?.category === "Utility",
+    "Tauri bundle category must produce a valid Freedesktop desktop category",
+  );
   for (const icon of ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"]) {
     requireCondition(
       baseTauriConfig.bundle?.icon?.includes(icon),

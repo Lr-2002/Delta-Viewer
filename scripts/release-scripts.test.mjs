@@ -37,6 +37,7 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
     version: "1.2.3",
     bundle: {
       active: true,
+      category: "Utility",
       icon: ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"],
     },
   });
