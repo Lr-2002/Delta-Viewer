@@ -7,9 +7,10 @@ interface FramePanelProps {
   root: string;
   stream: StreamSummary;
   frameId: number;
+  playing?: boolean;
   className?: string;
 }
-export function FramePanel({ root, stream, frameId, className = "" }: FramePanelProps) {
+export function FramePanel({ root, stream, frameId, playing = false, className = "" }: FramePanelProps) {
   const requestKey = `${root}\0${stream.name}\0${frameId}`;
   const [frame, setFrame] = useState<{
     key: string;
@@ -56,7 +57,7 @@ export function FramePanel({ root, stream, frameId, className = "" }: FramePanel
           {stream.width && stream.height ? `${stream.width}×${stream.height}` : "—"}
         </span>
       </figcaption>
-      {current.status === "loading" ? <span className="frame-loading">解码中</span> : null}
+      {current.status === "loading" && !playing ? <span className="frame-loading">解码中</span> : null}
       {current.status === "failed" ? (
         <span className="frame-error">
           <ImageOff size={18} aria-hidden="true" />

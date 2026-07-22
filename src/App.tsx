@@ -797,6 +797,7 @@ function App() {
                           root={data.summary.root}
                           stream={stream}
                           frameId={currentFrame}
+                          playing={playing}
                           className={`camera-${index}`}
                         />
                       ))}
