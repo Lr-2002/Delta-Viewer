@@ -61,7 +61,7 @@ jobs:
       - name: Run release checks
         run: pnpm check
 
-      - name: Check Ubuntu Flatpak packaging contract
+      - name: Check Ubuntu deb and Flatpak packaging contract
         run: pnpm check:linux
 
       - name: Check Wiki sources

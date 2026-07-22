@@ -16,7 +16,7 @@
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
 11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录或本地导入副本，三个 adapter 必须使用同一范围。
 12. 账号、登录会话和 episode 标注是纯本地能力。不得把账号、密码、处理人或标注发送到网络；所有数据 command 必须在 Rust 中验证当前登录会话。
-13. GitHub Release 必须同时包含 Windows x64、macOS arm64、macOS x64 和 Ubuntu 20.04+ x86_64 Flatpak 可安装产物。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu `.deb` 只作为 Flatpak 构建输入，不是 20.04 的正式分发包。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
+13. GitHub Release 必须同时包含 Windows x64、macOS arm64、macOS x64、Ubuntu 22.04+ x86_64 原生 deb 和 Ubuntu 20.04+ x86_64 Flatpak 五个可安装产物。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证，Flatpak 作为 20.04+ 兼容路径保留。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 
 ## 2. 仓库结构
 
@@ -27,8 +27,8 @@ DOHC_Viewer/
   README.md                      用户/构建入口
   AGENTS.md                      本开发指南
   .github/workflows/
-    release.yml                 四个安装包 CD 与原子发布门禁
-    linux-package.yml           main 分支 Ubuntu Flatpak 构建 smoke
+    release.yml                 五个安装包 CD 与原子发布门禁
+    linux-package.yml           main 分支 Ubuntu deb/Flatpak 构建 smoke
     wiki.yml                    docs/wiki 到 GitHub Wiki 的同步流程
   docs/wiki/                    GitHub Wiki 的可审查唯一源文件
   src/                           React/TypeScript UI
@@ -64,12 +64,13 @@ DOHC_Viewer/
   scripts/release-check.mjs      跨平台 quick/full/bundle 发布检查
   scripts/verify-release.mjs     annotated tag、版本与打包契约门禁
   packaging/flatpak/             Ubuntu Flatpak manifest 和 AppStream metadata
-  scripts/assemble-release.mjs   四个产物/报告汇总与 SHA-256 manifest
+  scripts/assemble-release.mjs   五个产物/报告汇总与 SHA-256 manifest
   scripts/build-ffmpeg-linux.sh  Linux x64 最小 LGPL FFmpeg 源码构建
   scripts/build-flatpak.sh       deb 到 Ubuntu 20.04+ Flatpak bundle
   scripts/build-ffmpeg-macos.sh 固定源码构建最小 LGPL FFmpeg
   scripts/seal-macos-app-adhoc.sh macOS app 嵌套代码与资源 ad-hoc 封印
   scripts/verify-release-macos.sh DMG 封印、Gatekeeper、挂载与启动检查
+  scripts/verify-release-deb.sh Ubuntu deb 元数据、apt 安装、资源与启动检查
   scripts/verify-release-linux.sh Flatpak 权限、资源、安装与启动检查
   scripts/verify-release-windows.ps1 unsigned NSIS 安装启动卸载检查
   scripts/check-wiki.mjs         Wiki 页面和内部链接检查
@@ -126,7 +127,7 @@ pnpm check:bundle
 Tauri debug no-bundle build；`check:bundle` 再生成当前平台 unsigned debug
 bundle；macOS 无头环境使用 `scripts/make-dmg.sh` 生成内容等价的 DMG，Linux
 生成并检查 `.deb` 内的主程序和资源。`check:linux` 在任意开发平台静态验证
-Flatpak runtime、离线权限和 Tauri 资源配置。三者均通过 `scripts/release-check.mjs` 写入 ignored 的
+deb 依赖/安装门禁、Flatpak runtime、离线权限和 Tauri 资源配置。三者均通过 `scripts/release-check.mjs` 写入 ignored 的
 `artifacts/release-check/*.json`，报告 schemaVersion 当前为 1。debug bundle
 成功不能替代签名发布和目标机器验收。
 
@@ -307,7 +308,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 | Windows 条件源码 | `pnpm check:windows-cross`；仍需 Windows 本机构建和运行 |
 | macOS ExFAT 路径 | `pnpm check:exfat-macos`；仍需真实 SD 卡和大容量 formal run |
 | Windows release | Win10/Win11 x64 断网安装、导入、检查、回放、三导出、卸载 |
-| Ubuntu release | `pnpm check:linux` + Ubuntu 24.04 CI 构建/安装/启动 Flatpak；仍需 Ubuntu 20.04 实机和物理 SD 卡验收 |
+| Ubuntu release | `pnpm check:linux` + Ubuntu 22.04 CI 构建/安装/启动 deb 和 Flatpak；仍需 Ubuntu 22.04 deb、Ubuntu 20.04 Flatpak 实机及物理 SD 卡验收 |
 
 提交前默认运行：
 
@@ -454,12 +455,13 @@ pnpm tauri:build
 `pnpm check`。Windows x64、macOS arm64、macOS x64 和 Ubuntu x64 在原生 runner 上构建；所有
 job 使用锁定 commit SHA 的 Actions，并固定 Node 22、pnpm 10.12.1 和 Rust 1.97.1。
 
-当前 `0.16.x` release channel 是显式 unsigned，即没有可信发布者身份。Windows FFmpeg、许可证、构建说明和
+当前 release channel 是显式 unsigned，即没有可信发布者身份。Windows FFmpeg、许可证、构建说明和
 WebView2 exact URL/SHA-256 固定在 workflow；macOS arm64/x64 从固定 archive hash 和
 Git commit 的 FFmpeg 8.1.2 官方源码构建只含 JPEG -> MPEG-4 所需能力的最小 LGPL
-sidecar。Linux x64 使用相同固定源码构建最小 LGPL sidecar，在 Ubuntu 24.04 生成
-`.deb` 后封装进 GNOME 50 Flatpak；Flatpak 是 Ubuntu 20.04+ 的正式兼容路径，`.deb`
-只作为中间产物。不得替换为 `--enable-nonfree` 或带未审查动态库的构建。macOS 的
+sidecar。Linux x64 使用相同固定源码构建最小 LGPL sidecar，在 Ubuntu 22.04 生成
+原生 `.deb`，完成 `apt` 安装/启动检查后再封装进 GNOME 50 Flatpak。deb 是 Ubuntu
+22.04+ 的首选安装包，Flatpak 是 Ubuntu 20.04+ 的兼容路径。不得替换为
+`--enable-nonfree` 或带未审查动态库的构建。macOS 的
 unsigned 披露不允许省略 ad-hoc 完整性封印。
 
 平台验证最低包括：
@@ -474,11 +476,14 @@ unsigned 披露不允许省略 ad-hoc 完整性封印。
    一个最小 ad-hoc control app，并且 control 得到相同错误后才能记录
    `policyServiceAvailable:false`；control 正常但产品异常、invalid signature、missing
    resources 或 damaged 一律失败。之后再执行 8 秒直接启动。
-3. Ubuntu Flatpak 必须固定 `com.dohc.viewer`、GNOME 50 runtime，仅开放显示、DRI、IPC
+3. Ubuntu deb 必须声明 WebKitGTK 4.1、GTK 3、AppIndicator 和 librsvg 运行时依赖，
+   在干净 Ubuntu 22.04 runner 用 `apt` 安装，检查 ELF 动态库、desktop/AppStream、
+   FFmpeg 资源，并在 Xvfb 中保持启动 10 秒。Flatpak 必须固定 `com.dohc.viewer`、
+   GNOME 50 runtime，仅开放显示、DRI、IPC
    和 `/media`、`/run/media`、`/mnt`，不得开放 network；安装后验证 FFmpeg/许可证/
    manifest hash、desktop/AppStream 文件，并在 Xvfb 中保持启动 10 秒。
-4. final job 重新读取四份 verification JSON 和安装器 hash，生成
-   `release-manifest.json`、`SHA256SUMS.txt` 和 provenance；四个 installer 集合完整
+4. final job 重新读取五份 verification JSON 和安装器 hash，生成
+   `release-manifest.json`、`SHA256SUMS.txt` 和 provenance；五个 installer 集合完整
    后才解除 draft。公开过的 tag 不允许 clobber。
 
 所有安装器文件名、Release 标题/说明和 manifest 必须显示 `UNSIGNED`。加入可信签名时必须

@@ -2,6 +2,18 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.17.0 - 2026-07-22
+
+- Added an unsigned native x86_64 deb as the preferred installer for Ubuntu
+  22.04 and later, while retaining the GNOME 50 Flatpak for Ubuntu 20.04+
+  compatibility.
+- Fixed Linux release builds on Ubuntu 22.04 and added a real `apt` install,
+  package/dependency inspection, bundled-resource validation, unresolved-library
+  check, and 10-second Xvfb startup smoke for the generated deb.
+- Expanded the atomic GitHub Release gate to require five verified installers,
+  with independent deb and Flatpak reports, checksums, manifests, and build
+  provenance before publication.
+
 ## 0.16.1 - 2026-07-22
 
 - Hid the per-frame loading overlay while synchronized playback is running, so

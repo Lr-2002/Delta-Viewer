@@ -59,11 +59,20 @@ function expectedArtifacts(version) {
       report: `DOHC-Viewer_${version}_macos-x64.verification.json`,
     },
     {
-      key: "ubuntu-x64",
+      key: "ubuntu-deb-x64",
       platform: "linux",
       architecture: "x64",
+      packageKind: "deb",
+      installer: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
+      report: `DOHC-Viewer_${version}_linux-deb-x64.verification.json`,
+    },
+    {
+      key: "ubuntu-flatpak-x64",
+      platform: "linux",
+      architecture: "x64",
+      packageKind: "flatpak",
       installer: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-x64.flatpak`,
-      report: `DOHC-Viewer_${version}_linux-x64.verification.json`,
+      report: `DOHC-Viewer_${version}_linux-flatpak-x64.verification.json`,
     },
   ];
 }
@@ -182,7 +191,7 @@ async function validateArtifact(options, expected, version) {
   ) {
     throw new Error(`${expected.report} has incomplete Linux FFmpeg source evidence`);
   }
-  if (expected.platform === "linux") {
+  if (expected.packageKind === "flatpak") {
     if (
       report.flatpak?.appId !== "com.dohc.viewer" ||
       report.flatpak?.runtime !== "org.gnome.Platform" ||
@@ -192,6 +201,32 @@ async function validateArtifact(options, expected, version) {
       report.runtimeSmoke?.displayServer !== "xvfb"
     ) {
       throw new Error(`${expected.report} has incomplete Flatpak runtime evidence`);
+    }
+  }
+  if (expected.packageKind === "deb") {
+    const requiredDependencies = [
+      "libwebkit2gtk-4.1-0",
+      "libgtk-3-0",
+      "libayatana-appindicator3-1",
+      "librsvg2-2",
+    ];
+    const dependencies = report.deb?.dependencies ?? [];
+    if (
+      report.deb?.packageName !== "dohc-viewer" ||
+      report.deb?.packageVersion !== version ||
+      report.deb?.packageArchitecture !== "amd64" ||
+      report.deb?.hostMinimum !== "ubuntu-22.04" ||
+      report.deb?.verifiedHost !== "ubuntu-22.04" ||
+      report.deb?.installationMethod !== "apt-local-deb" ||
+      report.deb?.sandboxed !== false ||
+      !Array.isArray(dependencies) ||
+      !dependencies.every((dependency) => typeof dependency === "string") ||
+      !requiredDependencies.every((required) =>
+        dependencies.some((actual) => actual === required || actual.startsWith(`${required} `)),
+      ) ||
+      report.runtimeSmoke?.displayServer !== "xvfb"
+    ) {
+      throw new Error(`${expected.report} has incomplete Debian install/runtime evidence`);
     }
   }
   return {
@@ -237,7 +272,9 @@ async function main() {
   const expected = expectedArtifacts(version);
   const inputEntries = await readdir(options.input);
   const unexpectedInstallers = inputEntries.filter(
-    (name) => /\.(?:dmg|exe|flatpak)$/i.test(name) && !expected.some((item) => item.installer === name),
+    (name) =>
+      /\.(?:deb|dmg|exe|flatpak)$/i.test(name) &&
+      !expected.some((item) => item.installer === name),
   );
   if (unexpectedInstallers.length > 0) {
     throw new Error(`unexpected installer artifacts: ${unexpectedInstallers.join(", ")}`);
@@ -260,7 +297,7 @@ async function main() {
       signingMode: "unsigned",
       trustedPublisher: false,
       warning:
-        "These installers are not signed by a trusted publisher or notarized. The macOS app has a valid local ad-hoc seal but still requires the standard Gatekeeper user override; the Ubuntu package is an unsigned Flatpak bundle. Verify SHA256SUMS.txt before use.",
+        "These installers are not signed by a trusted publisher or notarized. The macOS app has a valid local ad-hoc seal but still requires the standard Gatekeeper user override; the Ubuntu deb and Flatpak packages are unsigned. Verify SHA256SUMS.txt before use.",
     },
     assets: verified.map(({ sourcePath: _sourcePath, report: _report, ...item }) => item),
   };

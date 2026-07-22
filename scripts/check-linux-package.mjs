@@ -22,6 +22,7 @@ async function main() {
     metainfo,
     smokeWorkflow,
     releaseWorkflow,
+    debVerificationScript,
   ] = await Promise.all([
     readJson("src-tauri/tauri.conf.json"),
     readJson("src-tauri/tauri.linux.conf.json"),
@@ -29,6 +30,7 @@ async function main() {
     readFile(path.join(root, "packaging/flatpak/com.dohc.viewer.metainfo.xml"), "utf8"),
     readFile(path.join(root, ".github/workflows/linux-package.yml"), "utf8"),
     readFile(path.join(root, ".github/workflows/release.yml"), "utf8"),
+    readFile(path.join(root, "scripts/verify-release-deb.sh"), "utf8"),
   ]);
 
   const bundle = tauriConfig.bundle;
@@ -101,13 +103,38 @@ async function main() {
   requireCondition(/\n\s+elfutils \\\n/.test(smokeWorkflow), "Linux smoke workflow must install elfutils");
   requireCondition(/\n\s+elfutils \\\n/.test(releaseWorkflow), "Linux release workflow must install elfutils");
   requireCondition(
-    smokeWorkflow.includes("runs-on: ubuntu-24.04"),
-    "Linux smoke workflow must use a Flatpak builder compatible with GNOME 50",
+    smokeWorkflow.includes("runs-on: ubuntu-22.04"),
+    "Linux smoke workflow must build and verify the native deb on Ubuntu 22.04",
   );
   requireCondition(
-    releaseWorkflow.includes("runs-on: ubuntu-24.04"),
-    "Linux release workflow must use a Flatpak builder compatible with GNOME 50",
+    releaseWorkflow.includes("runs-on: ubuntu-22.04"),
+    "Linux release workflow must build and verify the native deb on Ubuntu 22.04",
   );
+  for (const workflow of [smokeWorkflow, releaseWorkflow]) {
+    requireCondition(
+      workflow.includes("verify-release-deb.sh"),
+      "Linux workflow must install and verify the generated deb",
+    );
+    requireCondition(
+      workflow.includes("UNSIGNED_ubuntu-22.04+-x64.deb"),
+      "Linux workflow must stage the formal Ubuntu 22.04+ deb asset",
+    );
+    requireCondition(
+      workflow.includes("verify-release-linux.sh"),
+      "Linux workflow must retain Flatpak runtime verification",
+    );
+  }
+  for (const fragment of [
+    'host_version" == "22.04"',
+    "sudo apt-get install --yes",
+    'package_architecture" == "amd64"',
+    'hostMinimum: "ubuntu-22.04"',
+  ]) {
+    requireCondition(
+      debVerificationScript.includes(fragment),
+      `Debian verification script is missing: ${fragment}`,
+    );
+  }
 
   requireCondition(!metainfo.includes("<!DOCTYPE"), "AppStream metadata must not contain an external entity declaration");
   for (const field of [
@@ -118,7 +145,9 @@ async function main() {
     const [tag, value] = field;
     requireCondition(metainfo.includes(`<${tag}>${value}</${tag}>`) || metainfo.includes(`type=\"desktop-id\">${value}</launchable>`), `AppStream metadata is missing ${tag}`);
   }
-  console.log("Linux package configuration is valid (Ubuntu 20.04+ Flatpak, x86_64)");
+  console.log(
+    "Linux package configuration is valid (Ubuntu 22.04+ deb and Ubuntu 20.04+ Flatpak, x86_64)",
+  );
 }
 
 try {

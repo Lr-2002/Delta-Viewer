@@ -221,7 +221,11 @@ async function verify(options) {
       windows: "unsigned-nsis-x64-offline-webview2",
       macos: ["untrusted-adhoc-sealed-dmg-arm64", "untrusted-adhoc-sealed-dmg-x64"],
       macosMinimumSystemVersion: "12.0",
-      linux: "unsigned-flatpak-ubuntu-20.04+-x64",
+      linux: [
+        "unsigned-deb-ubuntu-22.04+-x64",
+        "unsigned-flatpak-ubuntu-20.04+-x64",
+      ],
+      linuxDebMinimum: "ubuntu-22.04",
       linuxRuntime: "org.gnome.Platform//50",
     },
   };

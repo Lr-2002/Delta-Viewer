@@ -108,7 +108,11 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
     "untrusted-adhoc-sealed-dmg-arm64",
     "untrusted-adhoc-sealed-dmg-x64",
   ]);
-  assert.equal(metadata.packaging.linux, "unsigned-flatpak-ubuntu-20.04+-x64");
+  assert.deepEqual(metadata.packaging.linux, [
+    "unsigned-deb-ubuntu-22.04+-x64",
+    "unsigned-flatpak-ubuntu-20.04+-x64",
+  ]);
+  assert.equal(metadata.packaging.linuxDebMinimum, "ubuntu-22.04");
 
   run("git", ["tag", "-d", "v1.2.3"], testRoot);
   run("git", ["tag", "v1.2.3"], testRoot);
@@ -151,8 +155,16 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
     {
       platform: "linux",
       architecture: "x64",
+      packageKind: "deb",
+      suffix: "ubuntu-22.04+-x64.deb",
+      reportSuffix: "linux-deb-x64.verification.json",
+    },
+    {
+      platform: "linux",
+      architecture: "x64",
+      packageKind: "flatpak",
       suffix: "ubuntu-x64.flatpak",
-      reportSuffix: "linux-x64.verification.json",
+      reportSuffix: "linux-flatpak-x64.verification.json",
     },
   ];
 
@@ -227,7 +239,25 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
               sha256: "c".repeat(64),
             },
           }
-        : definition.platform === "linux"
+        : definition.packageKind === "deb"
+          ? {
+              deb: {
+                packageName: "dohc-viewer",
+                packageVersion: version,
+                packageArchitecture: "amd64",
+                hostMinimum: "ubuntu-22.04",
+                verifiedHost: "ubuntu-22.04",
+                dependencies: [
+                  "libwebkit2gtk-4.1-0",
+                  "libgtk-3-0",
+                  "libayatana-appindicator3-1",
+                  "librsvg2-2",
+                ],
+                installationMethod: "apt-local-deb",
+                sandboxed: false,
+              },
+            }
+          : definition.packageKind === "flatpak"
           ? {
               flatpak: {
                 appId: "com.dohc.viewer",
@@ -303,13 +333,41 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
   x64Report.gatekeeper.controlAssessmentMatched = true;
   await writeJson(x64ReportPath, x64Report);
 
+  const debReportPath = path.join(
+    input,
+    `DOHC-Viewer_${version}_linux-deb-x64.verification.json`,
+  );
+  const debReport = JSON.parse(await readFile(debReportPath, "utf8"));
+  debReport.deb.verifiedHost = "ubuntu-24.04";
+  await writeJson(debReportPath, debReport);
+  const wrongDebHost = spawnSync(
+    process.execPath,
+    [
+      assembleScript,
+      "--input",
+      input,
+      "--output",
+      output,
+      "--tag",
+      tag,
+      "--commit",
+      commit,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.notEqual(wrongDebHost.status, 0);
+  assert.match(wrongDebHost.stderr, /incomplete Debian install\/runtime evidence/);
+
+  debReport.deb.verifiedHost = "ubuntu-22.04";
+  await writeJson(debReportPath, debReport);
+
   run(
     process.execPath,
     [assembleScript, "--input", input, "--output", output, "--tag", tag, "--commit", commit],
     root,
   );
   const manifest = JSON.parse(await readFile(path.join(output, "release-manifest.json"), "utf8"));
-  assert.equal(manifest.assets.length, 4);
+  assert.equal(manifest.assets.length, 5);
   assert.equal(manifest.distribution.signingMode, "unsigned");
   assert.equal(manifest.distribution.trustedPublisher, false);
   assert.equal(
@@ -322,8 +380,16 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
       .gatekeeperAssessment,
     "rejected-not-notarized-xprotect-unavailable",
   );
+  assert.equal(
+    manifest.assets.find((asset) => asset.key === "ubuntu-deb-x64").packageKind,
+    "deb",
+  );
+  assert.equal(
+    manifest.assets.find((asset) => asset.key === "ubuntu-flatpak-x64").packageKind,
+    "flatpak",
+  );
   const checksumLines = (await readFile(path.join(output, "SHA256SUMS.txt"), "utf8"))
     .trim()
     .split("\n");
-  assert.equal(checksumLines.length, 5);
+  assert.equal(checksumLines.length, 6);
 });

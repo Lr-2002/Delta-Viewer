@@ -10,6 +10,7 @@ on:
       - "packaging/flatpak/**"
       - "scripts/build-ffmpeg-linux.sh"
       - "scripts/build-flatpak.sh"
+      - "scripts/verify-release-deb.sh"
       - "scripts/verify-release-linux.sh"
       - "scripts/check-linux-package.mjs"
       - "package.json"
@@ -34,8 +35,8 @@ env:
 
 jobs:
   package:
-    name: Ubuntu 24.04 Flatpak smoke
-    runs-on: ubuntu-24.04
+    name: Ubuntu 22.04 deb and Flatpak smoke
+    runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
       - name: Check out source
@@ -102,10 +103,10 @@ jobs:
             --source-revision "$FFMPEG_SOURCE_REVISION" \
             --build-id "$FFMPEG_BUILD_ID"
 
-      - name: Build Debian input package
+      - name: Build unsigned Debian package
         run: pnpm tauri build --ci --bundles deb --no-sign
 
-      - name: Build and verify Flatpak
+      - name: Stage, install, and verify Debian package
         shell: bash
         run: |
           set -euo pipefail
@@ -114,6 +115,22 @@ jobs:
           deb="$(find src-tauri/target -type f -path '*/release/bundle/deb/*.deb' -print -quit)"
           [[ -n "$deb" ]] || { echo "Tauri did not produce a Debian package" >&2; exit 1; }
           mkdir -p "$RUNNER_TEMP/release-assets"
+          formal_deb="$RUNNER_TEMP/release-assets/DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb"
+          install -m 0644 "$deb" "$formal_deb"
+          bash scripts/verify-release-deb.sh \
+            --deb "$formal_deb" \
+            --version "$version" \
+            --tag "v$version" \
+            --commit "$commit" \
+            --output-directory "$RUNNER_TEMP/release-assets"
+
+      - name: Build and verify Flatpak
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          commit="$(git rev-parse HEAD)"
+          deb="$RUNNER_TEMP/release-assets/DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb"
           bundle="$RUNNER_TEMP/release-assets/DOHC-Viewer_${version}_UNSIGNED_ubuntu-x64.flatpak"
           bash scripts/build-flatpak.sh --deb "$deb" --version "$version" --output "$bundle"
           bash scripts/verify-release-linux.sh \

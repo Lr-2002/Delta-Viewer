@@ -164,7 +164,7 @@ permissions_sha256="$(sha256sum "$permissions_file" | awk '{print $1}')"
 source_archive_sha256="$(jq -r '.sourceArchiveSha256' "$bundled_manifest")"
 source_revision="$(jq -r '.sourceRevision' "$bundled_manifest")"
 source_binary_sha256="$ffmpeg_sha256"
-report_path="$output_directory/DOHC-Viewer_"$version"_linux-x64.verification.json"
+report_path="$output_directory/DOHC-Viewer_"$version"_linux-flatpak-x64.verification.json"
 temporary_report="$report_path.partial-$$"
 
 REPORT_PATH="$temporary_report" \
