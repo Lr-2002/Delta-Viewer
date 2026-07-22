@@ -34,8 +34,8 @@ env:
 
 jobs:
   package:
-    name: Ubuntu 22.04 Flatpak smoke
-    runs-on: ubuntu-22.04
+    name: Ubuntu 24.04 Flatpak smoke
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Check out source

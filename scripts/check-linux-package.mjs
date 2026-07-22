@@ -95,6 +95,14 @@ async function main() {
   );
   requireCondition(/\n\s+elfutils \\\n/.test(smokeWorkflow), "Linux smoke workflow must install elfutils");
   requireCondition(/\n\s+elfutils \\\n/.test(releaseWorkflow), "Linux release workflow must install elfutils");
+  requireCondition(
+    smokeWorkflow.includes("runs-on: ubuntu-24.04"),
+    "Linux smoke workflow must use a Flatpak builder compatible with GNOME 50",
+  );
+  requireCondition(
+    releaseWorkflow.includes("runs-on: ubuntu-24.04"),
+    "Linux release workflow must use a Flatpak builder compatible with GNOME 50",
+  );
 
   requireCondition(!metainfo.includes("<!DOCTYPE"), "AppStream metadata must not contain an external entity declaration");
   for (const field of [

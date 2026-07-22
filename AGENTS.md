@@ -307,7 +307,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 | Windows 条件源码 | `pnpm check:windows-cross`；仍需 Windows 本机构建和运行 |
 | macOS ExFAT 路径 | `pnpm check:exfat-macos`；仍需真实 SD 卡和大容量 formal run |
 | Windows release | Win10/Win11 x64 断网安装、导入、检查、回放、三导出、卸载 |
-| Ubuntu release | `pnpm check:linux` + Ubuntu 22.04 CI 构建/安装/启动 Flatpak；仍需 Ubuntu 20.04 实机和物理 SD 卡验收 |
+| Ubuntu release | `pnpm check:linux` + Ubuntu 24.04 CI 构建/安装/启动 Flatpak；仍需 Ubuntu 20.04 实机和物理 SD 卡验收 |
 
 提交前默认运行：
 
@@ -457,7 +457,7 @@ job 使用锁定 commit SHA 的 Actions，并固定 Node 22、pnpm 10.12.1 和 R
 当前 `0.16.x` release channel 是显式 unsigned，即没有可信发布者身份。Windows FFmpeg、许可证、构建说明和
 WebView2 exact URL/SHA-256 固定在 workflow；macOS arm64/x64 从固定 archive hash 和
 Git commit 的 FFmpeg 8.1.2 官方源码构建只含 JPEG -> MPEG-4 所需能力的最小 LGPL
-sidecar。Linux x64 使用相同固定源码构建最小 LGPL sidecar，在 Ubuntu 22.04 生成
+sidecar。Linux x64 使用相同固定源码构建最小 LGPL sidecar，在 Ubuntu 24.04 生成
 `.deb` 后封装进 GNOME 50 Flatpak；Flatpak 是 Ubuntu 20.04+ 的正式兼容路径，`.deb`
 只作为中间产物。不得替换为 `--enable-nonfree` 或带未审查动态库的构建。macOS 的
 unsigned 披露不允许省略 ad-hoc 完整性封印。

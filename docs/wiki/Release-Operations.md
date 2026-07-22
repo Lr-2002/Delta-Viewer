@@ -24,7 +24,7 @@ Windows job 固定以下内容：
 
 macOS arm64/x64 job 从 FFmpeg 官方 `n8.1.2` tag 的固定 source archive SHA-256 和 Git commit 构建最小 LGPL sidecar，只启用 JPEG 输入、MPEG-4 编码和 MP4 输出。构建与 staging 会拒绝 `--enable-nonfree`、错误架构和非系统动态库，并执行真实 JPEG 到 MP4 smoke。FFmpeg 构建后先 ad-hoc 签名；app 组装完成后重新封印 FFmpeg、主程序和整个 bundle，并把封印后的 FFmpeg hash 写回 provenance manifest。
 
-Ubuntu job 固定运行在 Ubuntu 22.04 x86_64，从同一 FFmpeg `n8.1.2` 固定源码构建最小 LGPL sidecar。Tauri `.deb` 只用作 Flatpak 构建输入，正式产物固定为 `com.dohc.viewer`、GNOME Platform 50。权限只包含 Wayland/fallback X11、DRI、IPC 和 `/media`、`/run/media`、`/mnt`，不包含 network。
+Ubuntu job 固定运行在 Ubuntu 24.04 x86_64，从同一 FFmpeg `n8.1.2` 固定源码构建最小 LGPL sidecar。Tauri `.deb` 只用作 Flatpak 构建输入，正式产物固定为 `com.dohc.viewer`、GNOME Platform 50。权限只包含 Wayland/fallback X11、DRI、IPC 和 `/media`、`/run/media`、`/mnt`，不包含 network。
 
 更新任何 URL、版本、commit、构建选项、许可证或 hash 都需要代码审查和新 tag，不能只重跑旧 Release。
 
