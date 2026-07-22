@@ -2,6 +2,12 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.16.1 - 2026-07-22
+
+- Hid the per-frame loading overlay while synchronized playback is running, so
+  repeated `解码中` messages no longer obscure video. Paused loading feedback
+  and explicit unavailable-frame errors remain visible.
+
 ## 0.16.0 - 2026-07-22
 
 - Added Ubuntu 20.04+ x86_64 support through an unsigned Flatpak bundle using

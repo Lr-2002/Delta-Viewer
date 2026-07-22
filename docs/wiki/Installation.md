@@ -41,19 +41,19 @@ Ubuntu 内核原生支持 ext4，不需要 Paragon。先让系统以只读方式
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\DOHC-Viewer_0.16.0_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\DOHC-Viewer_0.16.1_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
 ```
 
 macOS：
 
 ```bash
-shasum -a 256 DOHC-Viewer_0.16.0_UNSIGNED_macos-arm64.dmg
+shasum -a 256 DOHC-Viewer_0.16.1_UNSIGNED_macos-arm64.dmg
 ```
 
 Ubuntu：
 
 ```bash
-sha256sum DOHC-Viewer_0.16.0_UNSIGNED_ubuntu-x64.flatpak
+sha256sum DOHC-Viewer_0.16.1_UNSIGNED_ubuntu-x64.flatpak
 ```
 
 结果必须与 `SHA256SUMS.txt` 中对应文件完全一致。GitHub CLI 用户还可以用 `gh attestation verify <file> --repo Lr-2002/Delta-Viewer` 验证构建 provenance。
