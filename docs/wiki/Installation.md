@@ -54,19 +54,19 @@ Flatpak 只预授权 `/media`、`/run/media` 和 `/mnt` 三类常见可移动介
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\DOHC-Viewer_0.17.0_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\DOHC-Viewer_0.17.1_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
 ```
 
 macOS：
 
 ```bash
-shasum -a 256 DOHC-Viewer_0.17.0_UNSIGNED_macos-arm64.dmg
+shasum -a 256 DOHC-Viewer_0.17.1_UNSIGNED_macos-arm64.dmg
 ```
 
 Ubuntu：
 
 ```bash
-sha256sum 'DOHC-Viewer_0.17.0_UNSIGNED_ubuntu-22.04+-x64.deb'
+sha256sum 'DOHC-Viewer_0.17.1_UNSIGNED_ubuntu-22.04+-x64.deb'
 ```
 
 结果必须与 `SHA256SUMS.txt` 中对应文件完全一致。GitHub CLI 用户还可以用 `gh attestation verify <file> --repo Lr-2002/Delta-Viewer` 验证构建 provenance。

@@ -2,6 +2,18 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.17.1 - 2026-07-22
+
+- Kept native deb construction, `apt` installation, and startup verification on
+  Ubuntu 22.04, while moving only the downstream GNOME 50 Flatpak packaging to
+  Ubuntu 24.04's compatible `flatpak-builder`.
+- Passed the verified Ubuntu 22.04 deb between isolated jobs and retained
+  independent deb/Flatpak reports, attestations, and the five-installer atomic
+  publication gate.
+- Superseded the unpublished `0.17.0` tag, whose deb checks passed but whose
+  combined Ubuntu 22.04 job was blocked when its older Flatpak builder could not
+  invoke `appstream-compose` from the GNOME 50 SDK.
+
 ## 0.17.0 - 2026-07-22
 
 - Added an unsigned native x86_64 deb as the preferred installer for Ubuntu

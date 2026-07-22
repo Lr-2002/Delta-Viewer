@@ -14,7 +14,7 @@
 
 ## 出现 operation not allowed / Operation not permitted
 
-应用会把原始消息保存到操作错误历史，并归类为 `PERMISSION_DENIED`。macOS 先确认 Finder 能打开该卷，再在“系统设置 -> 隐私与安全性 -> 文件与文件夹”允许 DOHC Viewer 访问可移动宗卷；Windows 则确认当前用户对卡和 app-local-data 工作区有读取/写入权限；Ubuntu 确认卡位于 Flatpak 已授权的挂载目录，并且当前用户能读取。不要通过 `chmod`、关闭系统保护或把源卡改成可写来绕过问题。
+应用会把原始消息保存到操作错误历史，并归类为 `PERMISSION_DENIED`。macOS 先确认 Finder 能打开该卷，再在“系统设置 -> 隐私与安全性 -> 文件与文件夹”允许 DOHC Viewer 访问可移动宗卷；Windows 则确认当前用户对卡和 app-local-data 工作区有读取/写入权限；Ubuntu 原生 deb 用户确认当前账号能读取挂载目录，Flatpak 用户还要确认卡位于已授权的 `/media`、`/run/media` 或 `/mnt`。不要通过 `chmod`、关闭系统保护或把源卡改成可写来绕过问题。
 
 如果上次取消留下 partial，应用只会清理带自身 marker、能够证明由 DOHC Viewer 创建的目录；不会删除普通用户目录。
 

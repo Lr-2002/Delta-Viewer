@@ -226,6 +226,8 @@ async function verify(options) {
         "unsigned-flatpak-ubuntu-20.04+-x64",
       ],
       linuxDebMinimum: "ubuntu-22.04",
+      linuxDebBuildHost: "ubuntu-22.04",
+      linuxFlatpakBuildHost: "ubuntu-24.04",
       linuxRuntime: "org.gnome.Platform//50",
     },
   };

@@ -10,6 +10,16 @@ function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function workflowJob(workflow, jobName) {
+  const marker = `\n  ${jobName}:\n`;
+  const start = workflow.indexOf(marker);
+  requireCondition(start >= 0, `Workflow job is missing: ${jobName}`);
+  const bodyStart = start + marker.length;
+  const remaining = workflow.slice(bodyStart);
+  const nextJob = remaining.search(/\n  [A-Za-z0-9_]+:\n/);
+  return nextJob >= 0 ? remaining.slice(0, nextJob) : remaining;
+}
+
 async function readJson(relativePath) {
   return JSON.parse(await readFile(path.join(root, relativePath), "utf8"));
 }
@@ -35,6 +45,11 @@ async function main() {
 
   const bundle = tauriConfig.bundle;
   const deb = bundle?.linux?.deb;
+  const smokeDebJob = workflowJob(smokeWorkflow, "deb");
+  const smokeFlatpakJob = workflowJob(smokeWorkflow, "flatpak");
+  const releaseDebJob = workflowJob(releaseWorkflow, "linux_deb");
+  const releaseFlatpakJob = workflowJob(releaseWorkflow, "linux_flatpak");
+  const releasePublishJob = workflowJob(releaseWorkflow, "publish");
   requireCondition(
     baseTauriConfig.bundle?.category === "Utility",
     "Tauri bundle category must produce a valid Freedesktop desktop category",
@@ -100,30 +115,34 @@ async function main() {
     commands.some((command) => command.includes("test -n") && command.includes("*.png")),
     "Flatpak build must reject a package with no application icon",
   );
-  requireCondition(/\n\s+elfutils \\\n/.test(smokeWorkflow), "Linux smoke workflow must install elfutils");
-  requireCondition(/\n\s+elfutils \\\n/.test(releaseWorkflow), "Linux release workflow must install elfutils");
-  requireCondition(
-    smokeWorkflow.includes("runs-on: ubuntu-22.04"),
-    "Linux smoke workflow must build and verify the native deb on Ubuntu 22.04",
-  );
-  requireCondition(
-    releaseWorkflow.includes("runs-on: ubuntu-22.04"),
-    "Linux release workflow must build and verify the native deb on Ubuntu 22.04",
-  );
-  for (const workflow of [smokeWorkflow, releaseWorkflow]) {
-    requireCondition(
-      workflow.includes("verify-release-deb.sh"),
-      "Linux workflow must install and verify the generated deb",
-    );
-    requireCondition(
-      workflow.includes("UNSIGNED_ubuntu-22.04+-x64.deb"),
-      "Linux workflow must stage the formal Ubuntu 22.04+ deb asset",
-    );
-    requireCondition(
-      workflow.includes("verify-release-linux.sh"),
-      "Linux workflow must retain Flatpak runtime verification",
-    );
+  for (const [job, label, artifactName] of [
+    [smokeDebJob, "Linux smoke deb", "linux-deb-smoke"],
+    [releaseDebJob, "Linux release deb", "release-ubuntu-deb-x64"],
+  ]) {
+    requireCondition(job.includes("runs-on: ubuntu-22.04"), `${label} job must run on Ubuntu 22.04`);
+    requireCondition(job.includes("verify-release-deb.sh"), `${label} job must install and verify the deb`);
+    requireCondition(job.includes("UNSIGNED_ubuntu-22.04+-x64.deb"), `${label} job must stage the formal deb asset`);
+    requireCondition(job.includes(artifactName), `${label} job must upload named deb evidence`);
   }
+  for (const [job, label, dependency, artifactName] of [
+    [smokeFlatpakJob, "Linux smoke Flatpak", "needs: deb", "linux-deb-smoke"],
+    [
+      releaseFlatpakJob,
+      "Linux release Flatpak",
+      "needs: [prepare, linux_deb]",
+      "release-ubuntu-deb-x64",
+    ],
+  ]) {
+    requireCondition(job.includes("runs-on: ubuntu-24.04"), `${label} job must run on Ubuntu 24.04`);
+    requireCondition(job.includes(dependency), `${label} job must depend on verified deb evidence`);
+    requireCondition(job.includes("verify-release-linux.sh"), `${label} job must verify the Flatpak runtime`);
+    requireCondition(job.includes("ubuntu-22.04+-x64.deb"), `${label} job must consume the verified deb`);
+    requireCondition(job.includes(artifactName), `${label} job must download named deb evidence`);
+  }
+  requireCondition(
+    releasePublishJob.includes("linux_deb") && releasePublishJob.includes("linux_flatpak"),
+    "Release publication must depend on both Linux package jobs",
+  );
   for (const fragment of [
     'host_version" == "22.04"',
     "sudo apt-get install --yes",

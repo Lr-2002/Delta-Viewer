@@ -308,7 +308,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 | Windows 条件源码 | `pnpm check:windows-cross`；仍需 Windows 本机构建和运行 |
 | macOS ExFAT 路径 | `pnpm check:exfat-macos`；仍需真实 SD 卡和大容量 formal run |
 | Windows release | Win10/Win11 x64 断网安装、导入、检查、回放、三导出、卸载 |
-| Ubuntu release | `pnpm check:linux` + Ubuntu 22.04 CI 构建/安装/启动 deb 和 Flatpak；仍需 Ubuntu 22.04 deb、Ubuntu 20.04 Flatpak 实机及物理 SD 卡验收 |
+| Ubuntu release | `pnpm check:linux` + Ubuntu 22.04 CI 构建/安装/启动 deb + Ubuntu 24.04 CI 消费同一 deb 构建/安装/启动 Flatpak；仍需 Ubuntu 22.04 deb、Ubuntu 20.04 Flatpak 实机及物理 SD 卡验收 |
 
 提交前默认运行：
 
@@ -459,8 +459,9 @@ job 使用锁定 commit SHA 的 Actions，并固定 Node 22、pnpm 10.12.1 和 R
 WebView2 exact URL/SHA-256 固定在 workflow；macOS arm64/x64 从固定 archive hash 和
 Git commit 的 FFmpeg 8.1.2 官方源码构建只含 JPEG -> MPEG-4 所需能力的最小 LGPL
 sidecar。Linux x64 使用相同固定源码构建最小 LGPL sidecar，在 Ubuntu 22.04 生成
-原生 `.deb`，完成 `apt` 安装/启动检查后再封装进 GNOME 50 Flatpak。deb 是 Ubuntu
-22.04+ 的首选安装包，Flatpak 是 Ubuntu 20.04+ 的兼容路径。不得替换为
+原生 `.deb` 并完成 `apt` 安装/启动检查；下游 Ubuntu 24.04 job 只能消费这份已验证
+deb，再封装进 GNOME 50 Flatpak。deb 是 Ubuntu 22.04+ 的首选安装包，Flatpak 是
+Ubuntu 20.04+ 的兼容路径。不得替换为
 `--enable-nonfree` 或带未审查动态库的构建。macOS 的
 unsigned 披露不允许省略 ad-hoc 完整性封印。
 
@@ -478,8 +479,8 @@ unsigned 披露不允许省略 ad-hoc 完整性封印。
    resources 或 damaged 一律失败。之后再执行 8 秒直接启动。
 3. Ubuntu deb 必须声明 WebKitGTK 4.1、GTK 3、AppIndicator 和 librsvg 运行时依赖，
    在干净 Ubuntu 22.04 runner 用 `apt` 安装，检查 ELF 动态库、desktop/AppStream、
-   FFmpeg 资源，并在 Xvfb 中保持启动 10 秒。Flatpak 必须固定 `com.dohc.viewer`、
-   GNOME 50 runtime，仅开放显示、DRI、IPC
+   FFmpeg 资源，并在 Xvfb 中保持启动 10 秒。Flatpak job 固定 Ubuntu 24.04，必须
+   下载上述 deb artifact，固定 `com.dohc.viewer`、GNOME 50 runtime，仅开放显示、DRI、IPC
    和 `/media`、`/run/media`、`/mnt`，不得开放 network；安装后验证 FFmpeg/许可证/
    manifest hash、desktop/AppStream 文件，并在 Xvfb 中保持启动 10 秒。
 4. final job 重新读取五份 verification JSON 和安装器 hash，生成

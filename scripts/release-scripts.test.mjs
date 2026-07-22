@@ -113,6 +113,8 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
     "unsigned-flatpak-ubuntu-20.04+-x64",
   ]);
   assert.equal(metadata.packaging.linuxDebMinimum, "ubuntu-22.04");
+  assert.equal(metadata.packaging.linuxDebBuildHost, "ubuntu-22.04");
+  assert.equal(metadata.packaging.linuxFlatpakBuildHost, "ubuntu-24.04");
 
   run("git", ["tag", "-d", "v1.2.3"], testRoot);
   run("git", ["tag", "v1.2.3"], testRoot);

@@ -25,7 +25,7 @@ Windows job 固定以下内容：
 
 macOS arm64/x64 job 从 FFmpeg 官方 `n8.1.2` tag 的固定 source archive SHA-256 和 Git commit 构建最小 LGPL sidecar，只启用 JPEG 输入、MPEG-4 编码和 MP4 输出。构建与 staging 会拒绝 `--enable-nonfree`、错误架构和非系统动态库，并执行真实 JPEG 到 MP4 smoke。FFmpeg 构建后先 ad-hoc 签名；app 组装完成后重新封印 FFmpeg、主程序和整个 bundle，并把封印后的 FFmpeg hash 写回 provenance manifest。
 
-Ubuntu job 固定运行在 Ubuntu 22.04 x86_64，从同一 FFmpeg `n8.1.2` 固定源码构建最小 LGPL sidecar。Tauri 生成原生 deb，完成 `apt` 安装和启动验证后，再从同一 deb 构建固定为 `com.dohc.viewer`、GNOME Platform 50 的 Flatpak。Flatpak 权限只包含 Wayland/fallback X11、DRI、IPC 和 `/media`、`/run/media`、`/mnt`，不包含 network。
+Ubuntu deb job 固定运行在 Ubuntu 22.04 x86_64，从同一 FFmpeg `n8.1.2` 固定源码构建最小 LGPL sidecar。Tauri 生成原生 deb，完成 `apt` 安装和启动验证后上传 deb/report artifact。依赖它的 Ubuntu 24.04 Flatpak job 下载同一 deb，构建固定为 `com.dohc.viewer`、GNOME Platform 50 的 bundle；不能重建另一个 deb。Flatpak 权限只包含 Wayland/fallback X11、DRI、IPC 和 `/media`、`/run/media`、`/mnt`，不包含 network。
 
 更新任何 URL、版本、commit、构建选项、许可证或 hash 都需要代码审查和新 tag，不能只重跑旧 Release。
 
@@ -39,7 +39,7 @@ GitHub macOS 15 runner 的 XProtect 服务可能返回 `Internal Xprotect Error`
 
 该 Gatekeeper 结果仍是策略拒绝，不代表普通双击会直接放行。用户必须按[安装与升级](Installation)在系统设置中完成一次性“仍要打开”；只有 Developer ID 签名和 notarization 才能消除这个步骤。
 
-Ubuntu job 先检查 deb 的 package/version/amd64/依赖和 unsigned 状态，用 `apt` 安装实际产物，检查应用 ELF 动态库、binary、desktop、AppStream metadata、icon、FFmpeg、许可证和 provenance manifest，并在 Xvfb + D-Bus 中保持启动 10 秒。卸载测试 deb 后，再安装 Flatpak，回读实际 runtime/permissions 并重复资源和 10 秒启动检查。任何缺失资源、动态库错误、意外 network 权限或提前退出都会阻止发布。
+Ubuntu 22.04 deb job 先检查 package/version/amd64/依赖和 unsigned 状态，用 `apt` 安装实际产物，检查应用 ELF 动态库、binary、desktop、AppStream metadata、icon、FFmpeg、许可证和 provenance manifest，并在 Xvfb + D-Bus 中保持启动 10 秒。卸载测试 deb 后上传安装器和报告。Ubuntu 24.04 Flatpak job 下载该 artifact，构建并安装 bundle，回读实际 runtime/permissions 并重复资源和 10 秒启动检查。任何缺失资源、动态库错误、意外 network 权限或提前退出都会阻止发布。
 
 final job 重新读取五份报告和安装器，生成 manifest/checksums/provenance；完整集合匹配后才公开 Release。hosted runner 检查不能关闭真实 Win10/Win11 断网、目标 Mac、Ubuntu 22.04 deb/Ubuntu 20.04 Flatpak 实机、物理 SD 卡和 100 GB/100,000 文件验收缺口。
 

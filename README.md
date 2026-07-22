@@ -327,8 +327,9 @@ tag (or a manual rerun of one). It builds Windows x64, macOS arm64, macOS x64,
 and Ubuntu x64 on native GitHub-hosted runners. Windows uses reviewed,
 hash-pinned FFmpeg and offline WebView2 inputs. Each macOS runner builds a
 minimal LGPL FFmpeg from a pinned official source archive and commit. The
-Ubuntu 22.04 runner installs and starts the generated deb, then builds and
-tests the GNOME 50 Flatpak compatibility package from that verified deb.
+Ubuntu 22.04 runner installs and starts the generated deb. A downstream Ubuntu
+24.04 job downloads that exact verified deb and builds/tests the GNOME 50
+Flatpak compatibility package.
 
 The Windows job verifies that DOHC assets have no Authenticode signature. The
 macOS jobs apply and strictly verify a local ad-hoc seal, reject Developer ID or
