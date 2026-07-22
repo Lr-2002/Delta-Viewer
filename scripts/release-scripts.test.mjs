@@ -35,7 +35,10 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
   );
   await writeJson(path.join(testRoot, "src-tauri/tauri.conf.json"), {
     version: "1.2.3",
-    bundle: { active: true },
+    bundle: {
+      active: true,
+      icon: ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"],
+    },
   });
   await writeJson(path.join(testRoot, "src-tauri/tauri.macos.conf.json"), {
     bundle: { targets: ["app", "dmg"], macOS: { minimumSystemVersion: "12.0" } },

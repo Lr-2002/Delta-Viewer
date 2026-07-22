@@ -37,7 +37,7 @@
         "find '/app/lib/DOHC Viewer' -type f ! -path '/app/lib/DOHC Viewer/bin/ffmpeg' -exec chmod 644 {} \\;",
         "chmod 755 '/app/lib/DOHC Viewer/bin/ffmpeg'",
         "desktop=\"$(find deb-extract/data/usr/share/applications -maxdepth 1 -type f -name '*.desktop' -print -quit)\"; test -n \"$desktop\"; sed -i 's/^Icon=.*/Icon=com.dohc.viewer/' \"$desktop\"; install -Dm644 \"$desktop\" /app/share/applications/com.dohc.viewer.desktop",
-        "find deb-extract/data/usr/share/icons/hicolor -type f -name '*.png' | while IFS= read -r icon; do relative=\"${icon#deb-extract/data/usr/share/icons/hicolor/}\"; size=\"${relative%%/*}\"; install -Dm644 \"$icon\" \"/app/share/icons/hicolor/$size/apps/com.dohc.viewer.png\"; done",
+        "icon_root=deb-extract/data/usr/share/icons/hicolor; test -d \"$icon_root\"; test -n \"$(find \"$icon_root\" -type f -name '*.png' -print -quit)\"; find \"$icon_root\" -type f -name '*.png' | while IFS= read -r icon; do relative=\"${icon#\"$icon_root\"/}\"; size=\"${relative%%/*}\"; install -Dm644 \"$icon\" \"/app/share/icons/hicolor/$size/apps/com.dohc.viewer.png\"; done",
         "install -Dm644 com.dohc.viewer.metainfo.xml /app/share/metainfo/com.dohc.viewer.metainfo.xml"
       ]
     }

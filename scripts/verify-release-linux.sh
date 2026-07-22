@@ -140,6 +140,7 @@ flatpak run --user --command="$resource_root/bin/ffmpeg" "$app_id" -hide_banner 
   }
 flatpak run --user --command=test "$app_id" -f /app/share/applications/com.dohc.viewer.desktop
 flatpak run --user --command=test "$app_id" -f /app/share/metainfo/com.dohc.viewer.metainfo.xml
+flatpak run --user --command=test "$app_id" -f /app/share/icons/hicolor/128x128/apps/com.dohc.viewer.png
 
 startup_log="$temporary_root/startup.log"
 set +e

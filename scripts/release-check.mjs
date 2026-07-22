@@ -32,6 +32,10 @@ const commands = {
   rustc: isWindows ? "rustc.exe" : "rustc",
 };
 const pnpmArguments = (args) => (isWindows ? ["/d", "/s", "/c", "pnpm.cmd", ...args] : args);
+const cargoCheckEnvironment = {
+  // Clippy and unit tests compile application code but do not create an installer.
+  TAURI_CONFIG: JSON.stringify({ bundle: { resources: [] } }),
+};
 
 function usage() {
   console.log(`Usage: node scripts/release-check.mjs [options]
@@ -540,9 +544,10 @@ async function verifyLinuxDeb(debPath, dependency) {
   try {
     captureRequired("dpkg-deb", ["--extract", debPath, extractRoot], 8 * 1024 * 1024);
     const executable = path.join(extractRoot, "usr/bin/dohc-viewer");
-    const binary = path.join(extractRoot, "usr/lib/dohc-viewer/bin/ffmpeg");
-    const license = path.join(extractRoot, "usr/lib/dohc-viewer/licenses/FFmpeg.txt");
-    const manifest = path.join(extractRoot, "usr/lib/dohc-viewer/ffmpeg-manifest.json");
+    const resources = path.join(extractRoot, "usr/lib/DOHC Viewer");
+    const binary = path.join(resources, "bin/ffmpeg");
+    const license = path.join(resources, "licenses/FFmpeg.txt");
+    const manifest = path.join(resources, "ffmpeg-manifest.json");
     const [executableInfo, binaryInfo, binaryHash, licenseHash, manifestHash] = await Promise.all([
       stat(executable),
       stat(binary),
@@ -697,13 +702,14 @@ async function main() {
       "--",
       "-D",
       "warnings",
-    ]);
-    await runCommand(report, "Rust unit tests", commands.cargo, [
-      "test",
-      "--manifest-path",
-      cargoManifest,
-      "--all-targets",
-    ]);
+    ], cargoCheckEnvironment);
+    await runCommand(
+      report,
+      "Rust unit tests",
+      commands.cargo,
+      ["test", "--manifest-path", cargoManifest, "--all-targets"],
+      cargoCheckEnvironment,
+    );
 
     if (options.profile === "full") {
       await recordCheck(report, "private sample availability", async () => {

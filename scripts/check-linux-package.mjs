@@ -15,14 +15,30 @@ async function readJson(relativePath) {
 }
 
 async function main() {
-  const [tauriConfig, flatpakManifest, metainfo] = await Promise.all([
+  const [
+    baseTauriConfig,
+    tauriConfig,
+    flatpakManifest,
+    metainfo,
+    smokeWorkflow,
+    releaseWorkflow,
+  ] = await Promise.all([
+    readJson("src-tauri/tauri.conf.json"),
     readJson("src-tauri/tauri.linux.conf.json"),
     readJson("packaging/flatpak/com.dohc.viewer.json"),
     readFile(path.join(root, "packaging/flatpak/com.dohc.viewer.metainfo.xml"), "utf8"),
+    readFile(path.join(root, ".github/workflows/linux-package.yml"), "utf8"),
+    readFile(path.join(root, ".github/workflows/release.yml"), "utf8"),
   ]);
 
   const bundle = tauriConfig.bundle;
   const deb = bundle?.linux?.deb;
+  for (const icon of ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"]) {
+    requireCondition(
+      baseTauriConfig.bundle?.icon?.includes(icon),
+      `Tauri bundle icon is missing: ${icon}`,
+    );
+  }
   requireCondition(Array.isArray(bundle?.targets) && bundle.targets.length === 1 && bundle.targets[0] === "deb", "Linux Tauri config must build only deb");
   requireCondition(deb && Array.isArray(deb.depends), "Linux deb dependencies are missing");
   for (const dependency of ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1", "librsvg2-2"]) {
@@ -73,6 +89,12 @@ async function main() {
   ]) {
     requireCondition(commands.some((command) => command.includes(fragment)), `Flatpak install command is missing: ${fragment}`);
   }
+  requireCondition(
+    commands.some((command) => command.includes("test -n") && command.includes("*.png")),
+    "Flatpak build must reject a package with no application icon",
+  );
+  requireCondition(/\n\s+elfutils \\\n/.test(smokeWorkflow), "Linux smoke workflow must install elfutils");
+  requireCondition(/\n\s+elfutils \\\n/.test(releaseWorkflow), "Linux release workflow must install elfutils");
 
   requireCondition(!metainfo.includes("<!DOCTYPE"), "AppStream metadata must not contain an external entity declaration");
   for (const field of [

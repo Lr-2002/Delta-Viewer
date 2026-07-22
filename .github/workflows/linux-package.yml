@@ -65,6 +65,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends \
             build-essential \
             dbus-x11 \
+            elfutils \
             file \
             flatpak \
             flatpak-builder \
