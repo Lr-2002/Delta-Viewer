@@ -35,7 +35,7 @@ async function main() {
     "Linux FFmpeg resource mappings are incomplete",
   );
   requireCondition(
-    deb.files?.["../packaging/flatpak/com.dohc.viewer.metainfo.xml"] === "/usr/share/metainfo/com.dohc.viewer.metainfo.xml",
+    deb.files?.["/usr/share/metainfo/com.dohc.viewer.metainfo.xml"] === "../packaging/flatpak/com.dohc.viewer.metainfo.xml",
     "Linux AppStream metainfo must be included in the deb",
   );
 

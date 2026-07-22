@@ -51,6 +51,10 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
             "libayatana-appindicator3-1",
             "librsvg2-2",
           ],
+          files: {
+            "/usr/share/metainfo/com.dohc.viewer.metainfo.xml":
+              "../packaging/flatpak/com.dohc.viewer.metainfo.xml",
+          },
         },
       },
     },

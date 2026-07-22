@@ -18,7 +18,7 @@
         "section": "utils",
         "priority": "optional",
         "files": {
-          "../packaging/flatpak/com.dohc.viewer.metainfo.xml": "/usr/share/metainfo/com.dohc.viewer.metainfo.xml"
+          "/usr/share/metainfo/com.dohc.viewer.metainfo.xml": "../packaging/flatpak/com.dohc.viewer.metainfo.xml"
         }
       }
     }

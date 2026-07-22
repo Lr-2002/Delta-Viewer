@@ -145,6 +145,12 @@ async function verify(options) {
     }
   }
   if (
+    linuxDeb.files?.["/usr/share/metainfo/com.dohc.viewer.metainfo.xml"] !==
+    "../packaging/flatpak/com.dohc.viewer.metainfo.xml"
+  ) {
+    throw new Error("Linux deb AppStream metainfo mapping is missing or reversed");
+  }
+  if (
     flatpakManifest["app-id"] !== "com.dohc.viewer" ||
     flatpakManifest.runtime !== "org.gnome.Platform" ||
     flatpakManifest["runtime-version"] !== "50" ||
