@@ -109,7 +109,7 @@ if grep -Eq 'shared=.*network' "$permissions_file"; then
   exit 1
 fi
 
-resource_root="/app/lib/dohc-viewer"
+resource_root="/app/lib/DOHC Viewer"
 bundled_manifest="$temporary_root/ffmpeg-manifest.json"
 flatpak run --user --command=cat "$app_id" "$resource_root/ffmpeg-manifest.json" > "$bundled_manifest"
 jq -e '

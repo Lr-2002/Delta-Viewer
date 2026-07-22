@@ -67,7 +67,7 @@ async function main() {
   for (const fragment of [
     "ar -x dohc-viewer.deb",
     "/app/bin/dohc-viewer",
-    "/app/lib/dohc-viewer",
+    "/app/lib/DOHC Viewer",
     "/app/share/applications/com.dohc.viewer.desktop",
     "/app/share/metainfo/com.dohc.viewer.metainfo.xml",
   ]) {

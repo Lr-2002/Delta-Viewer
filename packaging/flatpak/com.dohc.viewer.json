@@ -33,9 +33,9 @@
         "ar -x dohc-viewer.deb --output deb-extract",
         "data_archive=\"$(find deb-extract -maxdepth 1 -type f -name 'data.tar.*' -print -quit)\"; test -n \"$data_archive\"; mkdir -p deb-extract/data; tar -xf \"$data_archive\" -C deb-extract/data",
         "install -Dm755 deb-extract/data/usr/bin/dohc-viewer /app/bin/dohc-viewer",
-        "mkdir -p /app/lib/dohc-viewer; cp -a deb-extract/data/usr/lib/dohc-viewer/. /app/lib/dohc-viewer/",
-        "find /app/lib/dohc-viewer -type f ! -path '/app/lib/dohc-viewer/bin/ffmpeg' -exec chmod 644 {} \\;",
-        "chmod 755 /app/lib/dohc-viewer/bin/ffmpeg",
+        "resource_dir=\"$(find deb-extract/data/usr/lib -mindepth 1 -maxdepth 1 -type d -print -quit)\"; test -n \"$resource_dir\"; test -f \"$resource_dir/ffmpeg-manifest.json\"; mkdir -p /app/lib; cp -a \"$resource_dir\" /app/lib/",
+        "find '/app/lib/DOHC Viewer' -type f ! -path '/app/lib/DOHC Viewer/bin/ffmpeg' -exec chmod 644 {} \\;",
+        "chmod 755 '/app/lib/DOHC Viewer/bin/ffmpeg'",
         "desktop=\"$(find deb-extract/data/usr/share/applications -maxdepth 1 -type f -name '*.desktop' -print -quit)\"; test -n \"$desktop\"; sed -i 's/^Icon=.*/Icon=com.dohc.viewer/' \"$desktop\"; install -Dm644 \"$desktop\" /app/share/applications/com.dohc.viewer.desktop",
         "find deb-extract/data/usr/share/icons/hicolor -type f -name '*.png' | while IFS= read -r icon; do relative=\"${icon#deb-extract/data/usr/share/icons/hicolor/}\"; size=\"${relative%%/*}\"; install -Dm644 \"$icon\" \"/app/share/icons/hicolor/$size/apps/com.dohc.viewer.png\"; done",
         "install -Dm644 com.dohc.viewer.metainfo.xml /app/share/metainfo/com.dohc.viewer.metainfo.xml"
