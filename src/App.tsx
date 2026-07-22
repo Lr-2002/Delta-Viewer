@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Gauge,
   HardDrive,
+  History,
   Images,
   LoaderCircle,
   LogOut,
@@ -20,6 +21,7 @@ import {
   SkipForward,
   Timer,
   UserRound,
+  X,
 } from "lucide-react";
 import { AnnotationPanel } from "./components/AnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
@@ -41,11 +43,14 @@ import {
   importEpisode,
   inspectImportDestination,
   isTauriRuntime,
+  listOperationErrors,
   listPartialImports,
   listTaskDefinitions,
   loadEpisodeAnnotation,
   loadEpisode,
   logoutLocalAccount,
+  prepareImportWorkspace,
+  recordOperationError,
   onTaskProgress,
   revealOutput,
   scanSource,
@@ -61,6 +66,7 @@ import type {
   ExportRange,
   ExportResult,
   MetricKey,
+  OperationErrorRecord,
   PartialImport,
   ScanResult,
   TaskProgress,
@@ -69,7 +75,8 @@ import type {
 } from "./types";
 
 type View = "review" | "checks" | "export";
-const LAST_IMPORT_DESTINATION = "dohc-viewer:last-import-destination";
+const LAST_MANAGED_IMPORT_ROOT = "dohc-viewer:last-managed-import-root";
+type EpisodeImportState = "pending" | "importing" | "ready" | "error";
 
 const METRICS: { key: MetricKey; label: string }[] = [
   { key: "position", label: "位置" },
@@ -86,6 +93,8 @@ function App() {
   const [sourcePath, setSourcePath] = useState("");
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeSummary | null>(null);
+  const [importedEpisodeRoots, setImportedEpisodeRoots] = useState<Record<string, string>>({});
+  const [episodeImportStates, setEpisodeImportStates] = useState<Record<string, EpisodeImportState>>({});
   const [loadedEpisodeSourceRoot, setLoadedEpisodeSourceRoot] = useState<string | null>(null);
   const [data, setData] = useState<EpisodeData | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
@@ -103,6 +112,9 @@ function App() {
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [currentOperationError, setCurrentOperationError] = useState(false);
+  const [operationErrors, setOperationErrors] = useState<OperationErrorRecord[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const frameRef = useRef(0);
   const didAutoLoad = useRef(false);
   const didCheckPartials = useRef(false);
@@ -121,6 +133,16 @@ function App() {
     void listTaskDefinitions()
       .then(setTasks)
       .catch((reason) => setError(`无法加载任务目录：${toMessage(reason)}`));
+  }, [authStatus?.currentUser?.username]);
+
+  useEffect(() => {
+    if (!authStatus?.currentUser) {
+      setOperationErrors([]);
+      return;
+    }
+    void listOperationErrors()
+      .then(setOperationErrors)
+      .catch(() => undefined);
   }, [authStatus?.currentUser?.username]);
 
   useEffect(() => {
@@ -144,14 +166,14 @@ function App() {
   useEffect(() => {
     if (didCheckPartials.current || !isTauriRuntime() || !authStatus?.currentUser) return;
     didCheckPartials.current = true;
-    const destination = window.localStorage.getItem(LAST_IMPORT_DESTINATION);
+    const destination = window.localStorage.getItem(LAST_MANAGED_IMPORT_ROOT);
     if (!destination) return;
     void (async () => {
       try {
         const partials = await listPartialImports(destination);
         if (partials.length) await maybeCleanupPartials(destination, partials);
       } catch (reason) {
-        setError(`检查未完成导入失败：${toMessage(reason)}`);
+        await reportFailure("cleanup_partial_import", reason, destination);
       }
     })();
   }, [authStatus?.currentUser?.username]);
@@ -174,19 +196,32 @@ function App() {
   async function openSource(path: string, autoLoad = false) {
     setError("");
     setNotice("");
+    setCurrentOperationError(false);
     setBusy(true);
+    let operation = "scan_source";
     try {
       const result = await scanSource(path);
       setSourcePath(result.sourceRoot);
       setScan(result);
+      setImportedEpisodeRoots({});
+      setEpisodeImportStates(Object.fromEntries(
+        result.episodes.map((episode) => [episode.root, "pending" as const]),
+      ));
       const first = result.episodes[0] ?? null;
       setSelectedEpisode(first);
       resetLoadedData();
       if (autoLoad && first) {
-        await loadEpisodeForReview(first, true);
+        operation = "import_source";
+        const importedRoots = await importDiscoveredEpisodes(result);
+        const firstReady = result.episodes.find((episode) => importedRoots[episode.root]) ?? null;
+        if (firstReady) {
+          setSelectedEpisode(firstReady);
+          operation = "load_and_validate";
+          await loadAndValidate(importedRoots[firstReady.root], firstReady.root);
+        }
       }
     } catch (reason) {
-      setError(toMessage(reason));
+      await reportFailure(operation, reason, path);
     } finally {
       setBusy(false);
       setProgress(null);
@@ -194,8 +229,12 @@ function App() {
   }
 
   async function chooseSource() {
-    const path = await chooseDirectory("选择 SD 卡或记录目录");
-    if (path) await openSource(path, true);
+    try {
+      const path = await chooseDirectory("选择 SD 卡根目录");
+      if (path) await openSource(path, true);
+    } catch (reason) {
+      await reportFailure("choose_source", reason);
+    }
   }
 
   async function loadEpisodeForReview(episode: EpisodeSummary, force = false) {
@@ -207,34 +246,116 @@ function App() {
     }
     setError("");
     setNotice("");
+    setCurrentOperationError(false);
     setBusy(true);
     try {
-      let root = episode.root;
-      if (isTauriRuntime()) {
-        const destinationParent = await chooseDirectory("选择本地导入目录");
-        if (!destinationParent) return;
-        window.localStorage.setItem(LAST_IMPORT_DESTINATION, destinationParent);
-        const preflight = await inspectImportDestination(episode.root, destinationParent);
-        if (!preflight.canImport) {
-          setError(preflight.issues.map((issue) => `${issue.code}: ${issue.message}`).join("；"));
-          return;
-        }
-        if (preflight.partials.length) {
-          await maybeCleanupPartials(destinationParent, preflight.partials);
-        }
-        setNotice(
-          `导入预检通过：${preflight.volume.filesystem ?? "未知文件系统"}，可用 ${formatBytes(preflight.volume.availableBytes)}`,
-        );
-        const imported = await importEpisode(episode.root, destinationParent);
+      let root = importedEpisodeRoots[episode.root] ?? episode.root;
+      if (isTauriRuntime() && !importedEpisodeRoots[episode.root]) {
+        const destinationParent = await prepareImportDestination(scan?.sourceRoot ?? episode.root);
+        const imported = await importOneEpisode(episode, destinationParent);
         root = imported.destination;
-        setNotice(`已导入本地，BLAKE3 ${imported.datasetBlake3.slice(0, 16)}…`);
+        setImportedEpisodeRoots((current) => ({ ...current, [episode.root]: root }));
+        setNotice(`已自动导入本地，BLAKE3 ${imported.datasetBlake3.slice(0, 16)}…`);
       }
       await loadAndValidate(root, episode.root);
     } catch (reason) {
-      setError(toMessage(reason));
+      setEpisodeImportStates((current) => ({ ...current, [episode.root]: "error" }));
+      await reportFailure("load_episode", reason, episode.root);
     } finally {
       setBusy(false);
       setProgress(null);
+    }
+  }
+
+  async function importDiscoveredEpisodes(result: ScanResult): Promise<Record<string, string>> {
+    if (!isTauriRuntime()) {
+      const demoRoots = Object.fromEntries(result.episodes.map((episode) => [episode.root, episode.root]));
+      setImportedEpisodeRoots(demoRoots);
+      setEpisodeImportStates(Object.fromEntries(
+        result.episodes.map((episode) => [episode.root, "ready" as const]),
+      ));
+      return demoRoots;
+    }
+
+    const destinationParent = await prepareImportDestination(result.sourceRoot);
+    const importedRoots: Record<string, string> = {};
+    let failed = 0;
+    let importedBytes = 0;
+    let cancelled = false;
+    for (const [index, episode] of result.episodes.entries()) {
+      setNotice(`正在自动导入 ${index + 1}/${result.episodes.length}：${episode.name}`);
+      try {
+        const imported = await importOneEpisode(episode, destinationParent);
+        importedRoots[episode.root] = imported.destination;
+        importedBytes += imported.totalBytes;
+        setImportedEpisodeRoots((current) => ({
+          ...current,
+          [episode.root]: imported.destination,
+        }));
+      } catch (reason) {
+        if (toMessage(reason).includes("任务已取消")) {
+          setNotice("自动导入已取消");
+          cancelled = true;
+          break;
+        }
+        failed += 1;
+        setEpisodeImportStates((current) => ({ ...current, [episode.root]: "error" }));
+        await reportFailure("import_episode", reason, episode.root);
+      }
+    }
+
+    if (cancelled) {
+      setError(`自动导入已取消，已完成 ${Object.keys(importedRoots).length}/${result.episodes.length} 个 session。`);
+    } else if (failed) {
+      setError(`自动导入完成，但有 ${failed}/${result.episodes.length} 个 session 失败；详细信息已保存到错误历史。`);
+    } else {
+      setNotice(`已自动导入 ${result.episodes.length} 个 session（${formatBytes(importedBytes)}）`);
+    }
+    return importedRoots;
+  }
+
+  async function prepareImportDestination(sourceRoot: string): Promise<string> {
+    const destinationParent = await prepareImportWorkspace(sourceRoot);
+    window.localStorage.setItem(LAST_MANAGED_IMPORT_ROOT, destinationParent);
+    const partials = await listPartialImports(destinationParent);
+    if (partials.length) await maybeCleanupPartials(destinationParent, partials);
+    return destinationParent;
+  }
+
+  async function importOneEpisode(
+    episode: EpisodeSummary,
+    destinationParent: string,
+  ) {
+    setEpisodeImportStates((current) => ({ ...current, [episode.root]: "importing" }));
+    const preflight = await inspectImportDestination(episode.root, destinationParent);
+    if (!preflight.canImport) {
+      throw new Error(preflight.issues.map((issue) => `${issue.code}: ${issue.message}`).join("；"));
+    }
+    const imported = await importEpisode(episode.root, destinationParent);
+    setEpisodeImportStates((current) => ({ ...current, [episode.root]: "ready" }));
+    return imported;
+  }
+
+  async function reportFailure(operation: string, reason: unknown, path = sourcePath) {
+    const message = toMessage(reason);
+    if (message.includes("任务已取消")) {
+      setNotice("任务已取消");
+      return;
+    }
+    setError(presentOperationError(message));
+    setCurrentOperationError(true);
+    try {
+      const record = await recordOperationError({
+        operation,
+        message,
+        sourcePath: path || null,
+      });
+      setOperationErrors((current) => [
+        record,
+        ...current.filter((item) => item.id !== record.id),
+      ].slice(0, 200));
+    } catch (historyError) {
+      console.error("Failed to persist operation error history", historyError);
     }
   }
 
@@ -286,6 +407,11 @@ function App() {
       setSourcePath("");
       setScan(null);
       setSelectedEpisode(null);
+      setImportedEpisodeRoots({});
+      setEpisodeImportStates({});
+      setOperationErrors([]);
+      setHistoryOpen(false);
+      setCurrentOperationError(false);
       setTasks([]);
       setError("");
       setNotice("");
@@ -296,7 +422,7 @@ function App() {
         currentUser: null,
       }));
     } catch (reason) {
-      setError(`退出登录失败：${toMessage(reason)}`);
+      await reportFailure("logout", reason);
     }
   }
 
@@ -370,6 +496,7 @@ function App() {
     if (!destinationParent) return;
     setError("");
     setNotice("");
+    setCurrentOperationError(false);
     setBusy(true);
     setExportResult(null);
     try {
@@ -383,7 +510,7 @@ function App() {
       setExportResult(result);
       setNotice(`已导出 ${exportFormatLabel(exportFormat)}（帧 ${range.startFrame}–${range.endFrame}）：${shortPath(result.outputPath, 72)}`);
     } catch (reason) {
-      setError(toMessage(reason));
+      await reportFailure("export_episode", reason, data.summary.root);
     } finally {
       setBusy(false);
       setProgress(null);
@@ -396,12 +523,13 @@ function App() {
     if (!destinationParent) return;
     setError("");
     setNotice("");
+    setCurrentOperationError(false);
     setBusy(true);
     try {
       const result = await exportValidationReport(data.summary.root, destinationParent);
       setNotice(`检查报告已导出：${shortPath(result.outputPath, 72)}`);
     } catch (reason) {
-      setError(toMessage(reason));
+      await reportFailure("export_validation_report", reason, data.summary.root);
     } finally {
       setBusy(false);
       setProgress(null);
@@ -412,7 +540,7 @@ function App() {
     try {
       await revealOutput(path);
     } catch (reason) {
-      setError(`无法打开导出位置：${toMessage(reason)}`);
+      await reportFailure("reveal_output", reason, path);
     }
   }
 
@@ -451,7 +579,7 @@ function App() {
   const currentState = stateByFrame.get(currentFrame) ?? null;
   const maxFrame = data ? getMaxFrame(data) : 0;
   const minFrame = data ? getMinFrame(data) : 0;
-  const status = report?.status ?? (data ? "warning" : "idle");
+  const status = currentOperationError ? "error" : report?.status ?? (data ? "warning" : "idle");
   const clipRange: ExportRange = { startFrame: clipStartFrame, endFrame: clipEndFrame };
   const clipStateCount = useMemo(
     () => data
@@ -515,6 +643,17 @@ function App() {
             <FolderOpen size={16} />
             选择 SD 卡
           </button>
+          <button
+            className="icon-button history-trigger"
+            type="button"
+            onClick={() => setHistoryOpen((current) => !current)}
+            title="操作错误历史"
+            aria-label="操作错误历史"
+            aria-expanded={historyOpen}
+          >
+            <History size={16} />
+            {operationErrors.length ? <span>{Math.min(operationErrors.length, 99)}</span> : null}
+          </button>
           <div className="account-summary" title={`@${currentUser.username}`}>
             <UserRound size={16} />
             <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
@@ -525,12 +664,22 @@ function App() {
         </div>
       </header>
 
+      {historyOpen ? (
+        <OperationHistoryPanel
+          records={operationErrors}
+          onClose={() => setHistoryOpen(false)}
+        />
+      ) : null}
+
       {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelTask()} /> : null}
       {error ? (
         <div className="alert-banner alert-error" role="alert">
           <CircleAlert size={17} />
           <span>{error}</span>
-          <button type="button" className="text-button" onClick={() => setError("")}>关闭</button>
+          <span className="alert-actions">
+            <button type="button" className="text-button" onClick={() => setHistoryOpen(true)}>错误历史</button>
+            <button type="button" className="text-button" onClick={() => setError("")}>关闭</button>
+          </span>
         </div>
       ) : null}
       {notice ? (
@@ -555,35 +704,39 @@ function App() {
           <div className="sidebar-path" title={sourcePath}>{sourcePath ? shortPath(sourcePath, 38) : "等待 SD 卡"}</div>
           <div className="episode-list">
             {scan?.episodes.length ? (
-              scan.episodes.map((episode) => (
-                <button
-                  type="button"
-                  className={`episode-item${selectedEpisode?.root === episode.root ? " selected" : ""}`}
-                  key={episode.root}
-                  aria-pressed={selectedEpisode?.root === episode.root}
-                  disabled={busy}
-                  title="双击进入回放"
-                  onClick={() => {
-                    setSelectedEpisode(episode);
-                    if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
-                  }}
-                  onDoubleClick={() => void loadEpisodeForReview(episode)}
-                >
-                  <span className="episode-item-top">
-                    <Images size={16} />
-                    <strong>{episode.name}</strong>
-                    <ChevronRight size={15} />
-                  </span>
-                  <span className="episode-item-meta">
-                    {episode.stateCount} states · {formatBytes(episode.totalBytes)}
-                  </span>
-                  <span className="stream-dots">
-                    {episode.streams.map((stream) => (
-                      <i className={stream.frameCount ? "dot-ok" : "dot-error"} key={stream.name} title={stream.label} />
-                    ))}
-                  </span>
-                </button>
-              ))
+              scan.episodes.map((episode) => {
+                const importState = episodeImportStates[episode.root] ?? "pending";
+                return (
+                  <button
+                    type="button"
+                    className={`episode-item${selectedEpisode?.root === episode.root ? " selected" : ""}`}
+                    key={episode.root}
+                    aria-pressed={selectedEpisode?.root === episode.root}
+                    disabled={busy}
+                    title={importState === "error" ? "双击重试导入" : "双击进入回放"}
+                    onClick={() => {
+                      setSelectedEpisode(episode);
+                      if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
+                    }}
+                    onDoubleClick={() => void loadEpisodeForReview(episode)}
+                  >
+                    <span className="episode-item-top">
+                      <Images size={16} />
+                      <strong>{episode.name}</strong>
+                      <EpisodeImportMark state={importState} />
+                      <ChevronRight size={15} />
+                    </span>
+                    <span className="episode-item-meta">
+                      {episode.stateCount} states · {formatBytes(episode.totalBytes)}
+                    </span>
+                    <span className="stream-dots">
+                      {episode.streams.map((stream) => (
+                        <i className={stream.frameCount ? "dot-ok" : "dot-error"} key={stream.name} title={stream.label} />
+                      ))}
+                    </span>
+                  </button>
+                );
+              })
             ) : (
               <div className="sidebar-empty">
                 <HardDrive size={23} />
@@ -784,7 +937,7 @@ function EmptyWorkspace({
       <div className="empty-header">
         <span className="section-kicker">IMPORT QUEUE</span>
         <h2>从 SD 卡载入记录</h2>
-        <p>选择记录后，复制到本地并运行完整性检查。</p>
+        <p>选择 SD 卡后，全部记录会自动复制到本机工作区。</p>
       </div>
       {selectedEpisode ? (
         <div className="selected-episode-line">
@@ -795,7 +948,7 @@ function EmptyWorkspace({
             <strong>{selectedEpisode.name}</strong>
             <span>
               {busy
-                ? "正在复制到本地并检查"
+                ? "正在自动导入全部记录"
                 : `${selectedEpisode.stateCount} 条状态 · ${formatBytes(selectedEpisode.totalBytes)} · ${selectedEpisode.streams.length} 路流`}
             </span>
           </div>
@@ -813,6 +966,56 @@ function EmptyWorkspace({
         <span><Images size={16} />多路同步回放</span>
       </div>
     </div>
+  );
+}
+
+function EpisodeImportMark({ state }: { state: EpisodeImportState }) {
+  if (state === "importing") {
+    return <span className="episode-import-state"><LoaderCircle className="spin" size={13} />导入中</span>;
+  }
+  if (state === "ready") {
+    return <span className="episode-import-state"><Check size={13} />已导入</span>;
+  }
+  if (state === "error") {
+    return <span className="episode-import-state state-error"><CircleAlert size={13} />失败</span>;
+  }
+  return <span className="episode-import-state">等待</span>;
+}
+
+function OperationHistoryPanel({
+  records,
+  onClose,
+}: {
+  records: OperationErrorRecord[];
+  onClose: () => void;
+}) {
+  return (
+    <section className="operation-history" aria-label="操作错误历史">
+      <header>
+        <span><History size={17} /><strong>操作错误历史</strong></span>
+        <button className="icon-button" type="button" onClick={onClose} title="关闭" aria-label="关闭错误历史">
+          <X size={16} />
+        </button>
+      </header>
+      {records.length ? (
+        <div className="operation-history-list">
+          {records.map((record) => (
+            <article className="operation-history-row" key={record.id}>
+              <span className="history-time">{formatHistoryTime(record.occurredAtMs)}</span>
+              <span className="history-code">{operationErrorLabel(record.code)}</span>
+              <span className="history-operation">{operationLabel(record.operation)}</span>
+              <span className="history-message" title={record.message}>{record.message}</span>
+              <span className="history-source" title={record.sourcePath ?? undefined}>
+                {record.sourcePath ? shortPath(record.sourcePath, 48) : "—"}
+              </span>
+              <span className="history-user">{record.processedBy.displayName}</span>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="operation-history-empty"><Check size={16} />暂无操作错误</div>
+      )}
+    </section>
   );
 }
 
@@ -856,6 +1059,59 @@ function formatStateTime(data: EpisodeData, captureTimeNs: string): string {
 
 function toMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
+}
+
+function presentOperationError(message: string): string {
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("operation not allowed")
+    || normalized.includes("operation not permitted")
+    || normalized.includes("permission denied")
+    || normalized.includes("access is denied")
+    || message.includes("权限")
+    || message.includes("不允许")
+  ) {
+    return `系统拒绝访问所选卷或目录。请确认当前账号和 DOHC Viewer 可以读取该卷，并允许写入本机应用数据目录。原始错误：${message}`;
+  }
+  return message;
+}
+
+function formatHistoryTime(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
+}
+
+function operationErrorLabel(code: string): string {
+  const labels: Record<string, string> = {
+    PERMISSION_DENIED: "权限错误",
+    INSUFFICIENT_SPACE: "空间不足",
+    PATH_NOT_FOUND: "路径失效",
+    OPERATION_FAILED: "操作失败",
+  };
+  return labels[code] ?? code;
+}
+
+function operationLabel(operation: string): string {
+  const labels: Record<string, string> = {
+    choose_source: "选择 SD 卡",
+    scan_source: "扫描 SD 卡",
+    import_source: "准备导入",
+    import_episode: "导入 session",
+    load_episode: "加载 session",
+    load_and_validate: "加载与检查",
+    cleanup_partial_import: "清理未完成导入",
+    export_episode: "导出数据",
+    export_validation_report: "导出报告",
+    reveal_output: "打开导出位置",
+    logout: "退出登录",
+  };
+  return labels[operation] ?? operation;
 }
 
 function exportFormatLabel(format: ExportFormat): string {

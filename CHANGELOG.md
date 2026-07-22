@@ -2,6 +2,17 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## Unreleased
+
+- Removed the second local-destination dialog. Selecting an SD card now creates
+  a managed app-local-data workspace and automatically imports every discovered
+  session, while preserving the source-path identity and per-session status in
+  the left list.
+- Added append-only local operation error history with the original platform
+  message, stable error classification, source path, timestamp, and operator.
+  Permission failures such as `Operation not permitted` remain available after
+  the transient banner is closed or the app is restarted.
+
 ## 0.15.2 - 2026-07-21
 
 - Kept strict macOS nested-code and sealed-resource verification while making

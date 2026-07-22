@@ -38,14 +38,15 @@ in the Wiki.
 1. Create or sign in to a local account. The account identifies who last
    processed an episode; it is not a cloud account or a remote permission system.
 2. Select an SD card or a recording directory.
-3. Scan one or more episodes without modifying the source card, automatically
-   select the first session, and continue loading it without a separate import
-   button. The left list selects other sessions with one click and opens one
-   with a double click.
-4. Immediately choose local storage and copy an unloaded session before opening
-   playback; an already loaded session opens playback directly.
-5. Preflight local capacity and filesystem support, then identify any safely
-   cleanable incomplete imports.
+3. Scan every direct-child episode without modifying the source card, then
+   automatically queue all discovered sessions for import without a second
+   destination dialog or import button.
+4. Create an isolated workspace under the current user's app-local data,
+   preflight its capacity and filesystem support, and copy each session there.
+   The first successful session opens automatically; the left list shows every
+   session's import status and opens one with a double click.
+5. Identify any safely cleanable incomplete imports before publishing a
+   completed local copy.
 6. Verify every destination file by size and BLAKE3, then write a format-v2
    `.dohc-manifest.json` with original and Windows-safe relative paths.
 7. Decode-check each stream at fixed 1%, 25%, 50%, 73%, and 99% positions,
@@ -61,6 +62,9 @@ in the Wiki.
 11. Automatically persist warning/error health reports in the app-local data
    directory, or use **Export report** to choose another destination. Passing
    checks do not create a background report.
+12. Persist user-visible scan, import, load, validation, and export failures in
+    an append-only local operation history. Permission failures retain the raw
+    platform message and are classified as `PERMISSION_DENIED`.
 
 Interactive health reports use format v3 and explicitly identify sampled image
 validation, the five percentages, and `autoReportPath`. Automatic reporting is
@@ -69,8 +73,9 @@ checks of the same episode path and fingerprint reuse one report. Formal stress
 and release smoke tests still decode every JPEG; a sampled result does not claim
 that unsampled frames are free of encoding damage.
 
-Accounts, trajectory reservations, and append-only annotation revisions are
-stored under the operating system's application-local data directory. Passwords
+Managed imports, accounts, trajectory reservations, append-only annotation
+revisions, and operation error history are stored under the operating system's
+application-local data directory. Passwords
 are stored as Argon2id PHC hashes with random salts, never as plaintext. Login
 sessions last only for the current application process. This identity layer is
 for processing attribution; it does not encrypt local files, provide roles,

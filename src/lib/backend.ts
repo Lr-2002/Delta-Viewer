@@ -13,6 +13,8 @@ import type {
   ImportPreflight,
   ImportResult,
   PartialImport,
+  OperationErrorRecord,
+  RecordOperationErrorRequest,
   ReportExportResult,
   SaveAnnotationRequest,
   ScanResult,
@@ -223,6 +225,58 @@ export async function importEpisode(
     };
   }
   return invoke<ImportResult>("import_episode", { sourcePath, destinationParent });
+}
+
+export async function prepareImportWorkspace(sourcePath: string): Promise<string> {
+  if (isTauriRuntime()) {
+    return invoke<string>("prepare_import_workspace", { sourcePath });
+  }
+  return `${sourcePath}/.dohc-viewer-imports`;
+}
+
+const DEMO_OPERATION_ERRORS = "dohc-viewer:demo-operation-errors";
+
+export async function recordOperationError(
+  request: RecordOperationErrorRequest,
+): Promise<OperationErrorRecord> {
+  if (isTauriRuntime()) {
+    return invoke<OperationErrorRecord>("record_operation_error", { request });
+  }
+  const now = Date.now();
+  const record: OperationErrorRecord = {
+    formatVersion: 1,
+    id: `demo-${now}-${Math.random().toString(16).slice(2)}`,
+    occurredAtMs: now,
+    operation: request.operation,
+    code: classifyDemoError(request.message),
+    message: request.message,
+    sourcePath: request.sourcePath,
+    processedBy: demoCurrentUser ?? { username: "demo", displayName: "Demo" },
+  };
+  const records = await listOperationErrors();
+  window.localStorage.setItem(DEMO_OPERATION_ERRORS, JSON.stringify([record, ...records].slice(0, 200)));
+  return record;
+}
+
+export async function listOperationErrors(): Promise<OperationErrorRecord[]> {
+  if (isTauriRuntime()) {
+    return invoke<OperationErrorRecord[]>("list_operation_errors");
+  }
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(DEMO_OPERATION_ERRORS) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed as OperationErrorRecord[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function classifyDemoError(message: string): string {
+  const normalized = message.toLowerCase();
+  return normalized.includes("operation not allowed")
+    || normalized.includes("operation not permitted")
+    || normalized.includes("permission denied")
+    ? "PERMISSION_DENIED"
+    : "OPERATION_FAILED";
 }
 
 export async function loadEpisode(path: string): Promise<EpisodeData> {

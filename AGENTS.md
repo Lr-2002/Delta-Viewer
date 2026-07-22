@@ -6,7 +6,7 @@
 
 1. 源 SD 卡是只读数据源。不得在源路径创建、修改、重命名或删除任何文件。
 2. 应用运行时只处理本机目录，不增加 SSH、HTTP、云存储或遥测路径。
-3. 正常工作流是“选择 SD 卡 -> 自动扫描/选择首条 session -> 本地导入并校验 -> 健康检查 -> 回放/导出”。不要绕过本地校验直接把 SD 卡当作长期工作目录。
+3. 正常工作流是“选择 SD 卡 -> 自动扫描全部 session -> 应用管理工作区导入并校验 -> 首条成功 session 健康检查 -> 回放/导出”。不要绕过本地校验直接把 SD 卡当作长期工作目录。
 4. 完整导入必须验证目标端的文件大小和 BLAKE3，不能只信任复制时的源端 hash。
 5. `capture_time_ns` 在 Rust/磁盘中为 int64，在 TypeScript 中必须保持十进制字符串；涉及差值时使用 `BigInt`。
 6. 五个标准流名称固定为 `cam0`、`cam1`、`cam2`、`t265_left`、`t265_right`。
@@ -191,7 +191,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 
 ### 6.2 文件安全
 
-- 写入前确认目标位于用户选择的 destination 下。
+- 写入前确认目标位于应用管理的导入工作区或用户明确选择的导出 destination 下。
 - 中间结果使用唯一 `.partial-{nonce}`，完成后 rename。
 - 使用 `create_new` 防止意外覆盖。
 - 最终发布必须调用 `storage::publish_noreplace`，保持 Windows/macOS/Linux 原子 no-replace；不能退回 `exists + rename` 的竞态组合。
@@ -199,7 +199,9 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - Manifest 当前为 format v2：`sourcePath` 是原始相对路径，`path` 是 Windows 安全目标路径；数据集 BLAKE3 仍基于原始 `sourcePath`。
 - 取消或失败时不得出现正式输出名。
 - 如果新增自动清理，只能删除本应用可证明创建的 partial 路径，不能使用宽泛 glob 或递归删除用户目录。
+- 自动导入工作区固定在 `appLocalData/imports/{safe-source-name}-{path-hash}`；源路径仍只读，不能把用户选择或源卡路径当作写入目标。
 - warning/error 后台报告只能写入 Tauri `appLocalData` 下的应用专属 `reports` 目录；不得写入源卡或 episode。保持 partial、回读和原子 no-replace，同一 episode 路径/指纹/报告版本稳定去重；不得把“后台汇报”实现为网络上传。
+- 用户可见的扫描、导入、加载、检查和导出失败写入 `appLocalData/reports/operation-errors` 的不可覆盖 JSON；原始平台消息必须保留，权限类消息使用稳定码 `PERMISSION_DENIED`，Unix 文件权限为 `0600`。
 - 账号写入 `appLocalData/accounts`，轨迹占号写入 `appLocalData/trajectory-codes`，标注修订写入 `appLocalData/annotations/{episodeId}`。全部使用 `create_new`、回读和原子 no-replace；Unix 新文件权限为 `0600`。不得写入源 SD 卡或导入 episode。
 
 ### 6.3 数据模型
@@ -263,7 +265,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 操作按钮在 busy/error 状态下必须正确 disabled。
 - 进度、错误、warning 和成功结果都必须有可见状态，不能只写 console。
 - 图像面板使用稳定尺寸；加载或错误不能改变 grid 布局。
-- 选择 SD 卡后自动扫描并加载第一条 session，不保留额外“导入并检查”按钮。左侧 episode 列表仍以源路径作为 session 身份：单击只选择，双击才进入回放；本地导入路径不得覆盖源 session 的选中身份。
+- 选择 SD 卡后自动扫描并导入全部 session，不保留额外“导入并检查”按钮，也不向用户请求本地目标目录。左侧 episode 列表仍以源路径作为 session 身份：单击只选择，双击才进入回放；本地导入路径不得覆盖源 session 的选中身份。导入失败和权限错误必须写入本地操作历史。
 - 登录页是唯一的工作区入口；顶栏显示当前账号并提供退出。退出必须清空当前 episode、检查和标注状态，不能让未登录用户继续调用数据 IPC。
 - 回放首页顶部固定提供 episode 级数据标注。选择任务时自动填充默认描述和该任务前缀的下一个轨迹码；描述可编辑，轨迹码只读；保存结果显示修订号和最近处理人。
 - 检查结果固定使用“错误/警告/通过”文本，错误优先、警告其次、通过最后；`states.jsonl` 必须从 scope 为 `states` 的 issue 推导结果。手动报告按钮使用“导出报告”，不暴露存储格式作为主标签。

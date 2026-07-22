@@ -290,6 +290,27 @@ pub struct ImportResult {
     pub elapsed_ms: u128,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecordOperationErrorRequest {
+    pub operation: String,
+    pub message: String,
+    pub source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationErrorRecord {
+    pub format_version: u32,
+    pub id: String,
+    pub occurred_at_ms: u64,
+    pub operation: String,
+    pub code: String,
+    pub message: String,
+    pub source_path: Option<String>,
+    pub processed_by: UserIdentity,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FramePayload {

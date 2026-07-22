@@ -173,6 +173,23 @@ export interface ImportResult {
   elapsedMs: number;
 }
 
+export interface OperationErrorRecord {
+  formatVersion: number;
+  id: string;
+  occurredAtMs: number;
+  operation: string;
+  code: string;
+  message: string;
+  sourcePath: string | null;
+  processedBy: UserIdentity;
+}
+
+export interface RecordOperationErrorRequest {
+  operation: string;
+  message: string;
+  sourcePath: string | null;
+}
+
 export type ExportFormat = "mcap" | "hdf5" | "lerobot_v2";
 
 export interface ExportRange {

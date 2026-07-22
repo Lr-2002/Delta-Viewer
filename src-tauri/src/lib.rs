@@ -6,6 +6,7 @@ mod export;
 mod identity;
 mod importer;
 mod model;
+mod operation_history;
 mod source;
 mod storage;
 pub mod stress;
@@ -17,9 +18,9 @@ use base64::Engine;
 use identity::AuthState;
 use model::{
     AuthStatus, EpisodeAnnotation, EpisodeData, ExportCommandRequest, ExportResult, FramePayload,
-    ImportPreflight, ImportResult, LoginRequest, PartialImport, ProgressPayload,
-    RegisterAccountRequest, ReportExportResult, SaveAnnotationRequest, ScanResult, TaskDefinition,
-    UserIdentity, ValidationReport,
+    ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
+    ProgressPayload, RecordOperationErrorRequest, RegisterAccountRequest, ReportExportResult,
+    SaveAnnotationRequest, ScanResult, TaskDefinition, UserIdentity, ValidationReport,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -296,6 +297,52 @@ async fn import_episode(
 }
 
 #[tauri::command]
+async fn prepare_import_workspace(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    source_path: String,
+) -> Result<String, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        storage::managed_import_root(&data_root, Path::new(&source_path))
+            .map(|path| path.display().to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn record_operation_error(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    request: RecordOperationErrorRequest,
+) -> Result<OperationErrorRecord, String> {
+    let user = auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        operation_history::record_error(&data_root, user, request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_operation_errors(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Vec<OperationErrorRecord>, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || operation_history::list_errors(&data_root))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn inspect_import_destination(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -472,10 +519,13 @@ pub fn run() {
             scan_source,
             load_episode,
             validate_episode,
+            prepare_import_workspace,
             inspect_import_destination,
             import_episode,
             list_partial_imports,
             cleanup_partial_import,
+            record_operation_error,
+            list_operation_errors,
             export_episode,
             export_validation_report,
             cancel_task,

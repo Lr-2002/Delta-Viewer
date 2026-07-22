@@ -48,6 +48,26 @@ pub fn ensure_local_source(volume: &VolumeInfo) -> AppResult<()> {
     Ok(())
 }
 
+pub fn managed_import_root(data_root: &Path, source: &Path) -> AppResult<PathBuf> {
+    let source = fs::canonicalize(source)?;
+    let source_name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("sd-card");
+    let safe_name = crate::importer::sanitize_name(source_name);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(source.to_string_lossy().as_bytes());
+    let path_hash = hasher.finalize().to_hex().to_string();
+    let workspace_name = format!(
+        "{}-{}",
+        safe_name.chars().take(64).collect::<String>(),
+        &path_hash[..12]
+    );
+    let workspace = data_root.join("imports").join(workspace_name);
+    fs::create_dir_all(&workspace)?;
+    Ok(workspace)
+}
+
 pub fn inspect_import(
     source: &Path,
     destination_parent: &Path,
@@ -540,7 +560,7 @@ mod tests {
     use super::volume_info;
     use super::{
         cleanup_partial_import, create_import_partial, inspect_import, is_unsupported_fat,
-        list_partial_imports, publish_import_partial, publish_noreplace,
+        list_partial_imports, managed_import_root, publish_import_partial, publish_noreplace,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -633,6 +653,23 @@ mod tests {
             .any(|issue| issue.code == "DESTINATION_INSIDE_SOURCE"));
 
         fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn managed_workspace_is_deterministic_and_outside_source() {
+        let root = test_output("managed-workspace");
+        let source = root.join("source").join("CARD 01");
+        let data_root = root.join("app-data");
+        fs::create_dir_all(&source).unwrap();
+
+        let first = managed_import_root(&data_root, &source).unwrap();
+        let second = managed_import_root(&data_root, &source).unwrap();
+
+        assert_eq!(first, second);
+        assert!(first.starts_with(data_root.join("imports")));
+        assert!(!first.starts_with(&source));
+        assert_eq!(fs::read_dir(&source).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn test_output(label: &str) -> PathBuf {
