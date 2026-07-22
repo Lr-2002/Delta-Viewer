@@ -23,6 +23,7 @@ async function writeJson(filePath, value) {
 test("verify-release accepts only a clean exact annotated version tag", async () => {
   const testRoot = await mkdtemp(path.join(tmpdir(), "dohc-release-tag-"));
   await mkdir(path.join(testRoot, "src-tauri"), { recursive: true });
+  await mkdir(path.join(testRoot, "packaging/flatpak"), { recursive: true });
   await writeJson(path.join(testRoot, "package.json"), { version: "1.2.3" });
   await writeFile(
     path.join(testRoot, "src-tauri/Cargo.toml"),
@@ -39,12 +40,47 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
   await writeJson(path.join(testRoot, "src-tauri/tauri.macos.conf.json"), {
     bundle: { targets: ["app", "dmg"], macOS: { minimumSystemVersion: "12.0" } },
   });
+  await writeJson(path.join(testRoot, "src-tauri/tauri.linux.conf.json"), {
+    bundle: {
+      targets: ["deb"],
+      linux: {
+        deb: {
+          depends: [
+            "libwebkit2gtk-4.1-0",
+            "libgtk-3-0",
+            "libayatana-appindicator3-1",
+            "librsvg2-2",
+          ],
+        },
+      },
+    },
+  });
   await writeJson(path.join(testRoot, "src-tauri/tauri.windows.conf.json"), {
     bundle: {
       targets: ["nsis"],
       windows: { webviewInstallMode: { type: "offlineInstaller" } },
     },
   });
+  await writeJson(path.join(testRoot, "packaging/flatpak/com.dohc.viewer.json"), {
+    "app-id": "com.dohc.viewer",
+    runtime: "org.gnome.Platform",
+    "runtime-version": "50",
+    sdk: "org.gnome.Sdk",
+    command: "dohc-viewer",
+    "finish-args": [
+      "--socket=wayland",
+      "--socket=fallback-x11",
+      "--device=dri",
+      "--share=ipc",
+      "--filesystem=/media:rw",
+      "--filesystem=/run/media:rw",
+      "--filesystem=/mnt:rw",
+    ],
+  });
+  await writeFile(
+    path.join(testRoot, "packaging/flatpak/com.dohc.viewer.metainfo.xml"),
+    "<component><id>com.dohc.viewer</id></component>\n",
+  );
   await writeFile(path.join(testRoot, "CHANGELOG.md"), "# Changelog\n\n## 1.2.3 - 2026-07-21\n");
 
   run("git", ["init", "-q"], testRoot);
@@ -63,6 +99,7 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
     "untrusted-adhoc-sealed-dmg-arm64",
     "untrusted-adhoc-sealed-dmg-x64",
   ]);
+  assert.equal(metadata.packaging.linux, "unsigned-flatpak-ubuntu-20.04+-x64");
 
   run("git", ["tag", "-d", "v1.2.3"], testRoot);
   run("git", ["tag", "v1.2.3"], testRoot);
@@ -102,6 +139,12 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
       suffix: "macos-x64.dmg",
       reportSuffix: "macos-x64.verification.json",
     },
+    {
+      platform: "linux",
+      architecture: "x64",
+      suffix: "ubuntu-x64.flatpak",
+      reportSuffix: "linux-x64.verification.json",
+    },
   ];
 
   for (const [index, definition] of definitions.entries()) {
@@ -129,7 +172,19 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
               licenseSha256: "e".repeat(64),
               manifestSha256: "f".repeat(64),
             }
-          : {
+          : definition.platform === "linux"
+            ? {
+                portable: true,
+                sha256: "b".repeat(64),
+                sourceArchiveSha256: "d".repeat(64),
+                sourceRevision: "1".repeat(40),
+                licenseSha256: "e".repeat(64),
+                manifestSha256: "f".repeat(64),
+                codeSigned: false,
+                signatureMode: "unsigned",
+                trustedSignature: false,
+              }
+            : {
               portable: true,
               sha256: "b".repeat(64),
               sourceBinarySha256: "a".repeat(64),
@@ -142,7 +197,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
               trustedSignature: false,
             },
       signing:
-        definition.platform === "windows"
+        definition.platform === "windows" || definition.platform === "linux"
           ? { mode: "unsigned", inspected: true, verified: false }
           : {
               mode: "adhoc",
@@ -151,7 +206,10 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
               verified: false,
               developerId: false,
             },
-      runtimeSmoke: { passed: true },
+      runtimeSmoke:
+        definition.platform === "linux"
+          ? { passed: true, displayServer: "xvfb" }
+          : { passed: true },
       ...(definition.platform === "windows"
         ? {
             webview2: {
@@ -160,7 +218,25 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
               sha256: "c".repeat(64),
             },
           }
-        : {
+        : definition.platform === "linux"
+          ? {
+              flatpak: {
+                appId: "com.dohc.viewer",
+                runtime: "org.gnome.Platform",
+                runtimeVersion: "50",
+                hostMinimum: "ubuntu-20.04",
+                permissions: [
+                  "--socket=wayland",
+                  "--socket=fallback-x11",
+                  "--device=dri",
+                  "--share=ipc",
+                  "--filesystem=/media:rw",
+                  "--filesystem=/run/media:rw",
+                  "--filesystem=/mnt:rw",
+                ],
+              },
+            }
+          : {
             notarization: { verified: false, stapled: false },
             gatekeeper:
               definition.architecture === "arm64"
@@ -224,7 +300,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
     root,
   );
   const manifest = JSON.parse(await readFile(path.join(output, "release-manifest.json"), "utf8"));
-  assert.equal(manifest.assets.length, 3);
+  assert.equal(manifest.assets.length, 4);
   assert.equal(manifest.distribution.signingMode, "unsigned");
   assert.equal(manifest.distribution.trustedPublisher, false);
   assert.equal(
@@ -240,5 +316,5 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
   const checksumLines = (await readFile(path.join(output, "SHA256SUMS.txt"), "utf8"))
     .trim()
     .split("\n");
-  assert.equal(checksumLines.length, 4);
+  assert.equal(checksumLines.length, 5);
 });

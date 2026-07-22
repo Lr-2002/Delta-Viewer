@@ -80,15 +80,29 @@ async function verify(options) {
   if (!tagMatch) throw new Error(`release tag must be v<semver>, got ${options.tag}`);
   const version = tagMatch[1];
 
-  const [packageJson, cargoToml, cargoLock, tauriConfig, macConfig, windowsConfig, changelog] =
+  const [
+    packageJson,
+    cargoToml,
+    cargoLock,
+    tauriConfig,
+    linuxConfig,
+    flatpakManifest,
+    macConfig,
+    windowsConfig,
+    changelog,
+    metainfo,
+  ] =
     await Promise.all([
       readJson(options.root, "package.json"),
       readFile(path.join(options.root, "src-tauri/Cargo.toml"), "utf8"),
       readFile(path.join(options.root, "src-tauri/Cargo.lock"), "utf8"),
       readJson(options.root, "src-tauri/tauri.conf.json"),
+      readJson(options.root, "src-tauri/tauri.linux.conf.json"),
+      readJson(options.root, "packaging/flatpak/com.dohc.viewer.json"),
       readJson(options.root, "src-tauri/tauri.macos.conf.json"),
       readJson(options.root, "src-tauri/tauri.windows.conf.json"),
       readFile(path.join(options.root, "CHANGELOG.md"), "utf8"),
+      readFile(path.join(options.root, "packaging/flatpak/com.dohc.viewer.metainfo.xml"), "utf8"),
     ]);
 
   const versions = {
@@ -114,6 +128,49 @@ async function verify(options) {
   if (!windowsConfig.bundle?.targets?.includes("nsis")) throw new Error("Windows NSIS target is missing");
   if (windowsConfig.bundle?.windows?.webviewInstallMode?.type !== "offlineInstaller") {
     throw new Error("Windows formal releases must embed the offline WebView2 installer");
+  }
+  const linuxBundle = linuxConfig.bundle;
+  const linuxDeb = linuxBundle?.linux?.deb;
+  if (!linuxBundle?.targets?.includes("deb") || !linuxDeb) {
+    throw new Error("Linux deb target is missing");
+  }
+  for (const dependency of [
+    "libwebkit2gtk-4.1-0",
+    "libgtk-3-0",
+    "libayatana-appindicator3-1",
+    "librsvg2-2",
+  ]) {
+    if (!linuxDeb.depends?.includes(dependency)) {
+      throw new Error(`Linux deb dependency is missing: ${dependency}`);
+    }
+  }
+  if (
+    flatpakManifest["app-id"] !== "com.dohc.viewer" ||
+    flatpakManifest.runtime !== "org.gnome.Platform" ||
+    flatpakManifest["runtime-version"] !== "50" ||
+    flatpakManifest.sdk !== "org.gnome.Sdk" ||
+    flatpakManifest.command !== "dohc-viewer"
+  ) {
+    throw new Error("Flatpak app id, runtime, SDK, or command is invalid");
+  }
+  for (const permission of [
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri",
+    "--share=ipc",
+    "--filesystem=/media:rw",
+    "--filesystem=/run/media:rw",
+    "--filesystem=/mnt:rw",
+  ]) {
+    if (!flatpakManifest["finish-args"]?.includes(permission)) {
+      throw new Error(`Flatpak permission is missing: ${permission}`);
+    }
+  }
+  if (flatpakManifest["finish-args"]?.some((permission) => permission.includes("network"))) {
+    throw new Error("Flatpak must not request network access");
+  }
+  if (!metainfo.includes("<id>com.dohc.viewer</id>")) {
+    throw new Error("Flatpak AppStream metainfo has the wrong application id");
   }
 
   const tagType = runGit(options.root, ["cat-file", "-t", `refs/tags/${options.tag}`]);
@@ -149,6 +206,8 @@ async function verify(options) {
       windows: "unsigned-nsis-x64-offline-webview2",
       macos: ["untrusted-adhoc-sealed-dmg-arm64", "untrusted-adhoc-sealed-dmg-x64"],
       macosMinimumSystemVersion: "12.0",
+      linux: "unsigned-flatpak-ubuntu-20.04+-x64",
+      linuxRuntime: "org.gnome.Platform//50",
     },
   };
 }

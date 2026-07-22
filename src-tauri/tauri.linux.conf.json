@@ -1,0 +1,26 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "targets": ["deb"],
+    "resources": {
+      "resources/bin/ffmpeg": "bin/ffmpeg",
+      "resources/licenses/FFmpeg.txt": "licenses/FFmpeg.txt",
+      "resources/ffmpeg-manifest.json": "ffmpeg-manifest.json"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1",
+          "librsvg2-2"
+        ],
+        "section": "utils",
+        "priority": "optional",
+        "files": {
+          "../packaging/flatpak/com.dohc.viewer.metainfo.xml": "/usr/share/metainfo/com.dohc.viewer.metainfo.xml"
+        }
+      }
+    }
+  }
+}

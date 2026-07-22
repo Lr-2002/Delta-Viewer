@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.dohc.viewer</id>
+  <name>DOHC Viewer</name>
+  <summary>Inspect and export DOHC recordings from removable media</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <description>
+    <p>DOHC Viewer imports recording sessions from an SD card, checks media and data health, and exports MCAP, HDF5, and LeRobot v2 datasets.</p>
+  </description>
+  <launchable type="desktop-id">com.dohc.viewer.desktop</launchable>
+  <provides>
+    <binary>dohc-viewer</binary>
+  </provides>
+  <url type="homepage">https://github.com/Lr-2002/Delta-Viewer</url>
+</component>

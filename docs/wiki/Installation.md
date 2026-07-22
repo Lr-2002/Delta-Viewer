@@ -1,6 +1,6 @@
 # 安装与升级
 
-只从项目的 [GitHub Releases](https://github.com/Lr-2002/Delta-Viewer/releases) 下载安装包。当前发布通道没有可信发布者签名，Release 标题、说明和三个文件名都必须显示 `UNSIGNED`。macOS app 带有用于验证包完整性的本地 ad-hoc seal，但没有 Apple Developer ID 或 notarization。Release 页面没有完整的三平台产物时，不应使用 Actions 临时 artifact 或本地 debug bundle。
+只从项目的 [GitHub Releases](https://github.com/Lr-2002/Delta-Viewer/releases) 下载安装包。当前发布通道没有可信发布者签名，Release 标题、说明和四个安装包文件名都必须显示 `UNSIGNED`。macOS app 带有用于验证包完整性的本地 ad-hoc seal，但没有 Apple Developer ID 或 notarization；Ubuntu 文件是没有可信发行者签名的 Flatpak bundle。Release 页面没有完整的 Windows、两种 macOS 架构和 Ubuntu 产物时，不应使用 Actions 临时 artifact 或本地 debug bundle。
 
 ## Windows 10/11 x64
 
@@ -18,20 +18,42 @@ Apple Silicon 机器下载 `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`；In
 
 DOHC Viewer 本身不提供 ext4 驱动。需要读取现有 ext4 采集卡时，先按[macOS 使用 Paragon extFS 只读访问 ext4 SD 卡](Paragon-extFS-macOS)安装第三方驱动并确认卷为只读，再从 Viewer 选择系统已经挂载的卡根目录。不得把源卡挂载为可写。
 
+## Ubuntu 20.04 及以上 x86_64
+
+Ubuntu 使用 `DOHC-Viewer_<version>_UNSIGNED_ubuntu-x64.flatpak`。`.deb` 只是 CI 将 Tauri 应用封装进 Flatpak 的中间产物，不是 Ubuntu 20.04 的正式安装包。首次安装 Flatpak 和 Flathub remote：
+
+```bash
+sudo apt update
+sudo apt install flatpak
+flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install --user ./DOHC-Viewer_<version>_UNSIGNED_ubuntu-x64.flatpak
+flatpak run com.dohc.viewer
+```
+
+Ubuntu 内核原生支持 ext4，不需要 Paragon。先让系统以只读方式挂载源 SD 卡，再在 Viewer 中选择卡根目录。正式 Flatpak 只预授权 `/media`、`/run/media` 和 `/mnt` 三类常见可移动介质路径，不请求网络权限；若卡挂载在其他位置，请改挂载到上述目录之一。应用仍会把 session 复制到 Flatpak 的用户 local-data 后再检查，不会直接修改源卡。
+
+当前只支持 x86_64 Ubuntu，ARM64 不在发布范围内。GNOME 50 runtime 由 Flatpak 从 Flathub 管理，不要求主机自带 WebKitGTK 4.1。
+
 ## 校验下载文件
 
-同一 Release 中的 `SHA256SUMS.txt` 记录三个安装器和 `release-manifest.json` 的 SHA-256。
+同一 Release 中的 `SHA256SUMS.txt` 记录四个安装器和 `release-manifest.json` 的 SHA-256。
 
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\DOHC-Viewer_0.15.3_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\DOHC-Viewer_0.16.0_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
 ```
 
 macOS：
 
 ```bash
-shasum -a 256 DOHC-Viewer_0.15.3_UNSIGNED_macos-arm64.dmg
+shasum -a 256 DOHC-Viewer_0.16.0_UNSIGNED_macos-arm64.dmg
+```
+
+Ubuntu：
+
+```bash
+sha256sum DOHC-Viewer_0.16.0_UNSIGNED_ubuntu-x64.flatpak
 ```
 
 结果必须与 `SHA256SUMS.txt` 中对应文件完全一致。GitHub CLI 用户还可以用 `gh attestation verify <file> --repo Lr-2002/Delta-Viewer` 验证构建 provenance。

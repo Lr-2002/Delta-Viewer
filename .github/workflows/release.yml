@@ -87,6 +87,7 @@ jobs:
       - name: Run shared release gate
         run: |
           pnpm check:release-scripts
+          pnpm check:linux
           pnpm check
 
       - name: Upload release metadata
@@ -384,9 +385,127 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  linux:
+    name: Ubuntu 20.04+ x86_64 unsigned Flatpak
+    needs: prepare
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      FFMPEG_SOURCE_URL: https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2
+      FFMPEG_SOURCE_SHA256: 9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7
+      FFMPEG_SOURCE_REVISION: 38b88335f99e76ed89ff3c93f877fdefce736c13
+      FFMPEG_BUILD_ID: ffmpeg-8.1.2-dohc-minimal-lgpl
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Install Linux, Flatpak, and smoke-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            dbus-x11 \
+            file \
+            flatpak \
+            flatpak-builder \
+            jq \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf \
+            xvfb
+
+      - name: Install GNOME 50 Flatpak runtime and SDK
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
+
+      - name: Reverify release checkout
+        run: node scripts/verify-release.mjs --tag "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and stage reviewed Linux FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_archive="$RUNNER_TEMP/ffmpeg-n8.1.2.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error \
+            "$FFMPEG_SOURCE_URL" --output "$source_archive"
+          bash scripts/build-ffmpeg-linux.sh \
+            --source-archive "$source_archive" \
+            --expected-source-sha256 "$FFMPEG_SOURCE_SHA256" \
+            --source-url "$FFMPEG_SOURCE_URL" \
+            --source-revision "$FFMPEG_SOURCE_REVISION" \
+            --build-id "$FFMPEG_BUILD_ID"
+
+      - name: Build unsigned Linux Debian input package
+        run: pnpm tauri build --ci --bundles deb --no-sign
+
+      - name: Build Flatpak bundle from Debian input
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb="$(find src-tauri/target -type f -path '*/release/bundle/deb/*.deb' -print -quit)"
+          [[ -n "$deb" ]] || { echo "Tauri did not produce a Debian package" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          bash scripts/build-flatpak.sh \
+            --deb "$deb" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --output "$RUNNER_TEMP/release-assets/DOHC-Viewer_${{ needs.prepare.outputs.version }}_UNSIGNED_ubuntu-x64.flatpak"
+
+      - name: Verify Flatpak permissions, startup, and bundled resources
+        shell: bash
+        run: |
+          bash scripts/verify-release-linux.sh \
+            --bundle "$RUNNER_TEMP/release-assets/DOHC-Viewer_${{ needs.prepare.outputs.version }}_UNSIGNED_ubuntu-x64.flatpak" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --tag "${{ needs.prepare.outputs.tag }}" \
+            --commit "${{ needs.prepare.outputs.commit }}" \
+            --output-directory "$RUNNER_TEMP/release-assets"
+
+      - name: Attest Ubuntu Flatpak provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.prepare.outputs.version }}_UNSIGNED_ubuntu-x64.flatpak
+
+      - name: Upload verified Ubuntu release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-ubuntu-x64
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
     name: Publish complete GitHub Release
-    needs: [prepare, windows, macos]
+    needs: [prepare, windows, macos, linux]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -443,7 +562,7 @@ jobs:
               [[ -z "$existing_asset" ]] || gh release delete-asset "$TAG" "$existing_asset" --yes
             done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
           else
-            notes=$'WARNING: This release has no trusted publisher signature. Windows will show an unknown-publisher or SmartScreen warning. The macOS app has a valid local ad-hoc resource seal but no Developer ID or notarization, so first launch requires the standard System Settings > Privacy & Security > Open Anyway override. Verify SHA256SUMS.txt before use.\n\nCompiled installers are attached for Windows x64, macOS Apple Silicon, and macOS Intel. All three passed dependency, bundled-resource, install or mount, startup, and checksum gates before publication. The macOS jobs also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, and Apple notarization are intentionally not claimed.\n\nUser guide: https://github.com/${{ github.repository }}/wiki'
+            notes=$'WARNING: This release has no trusted publisher signature. Windows will show an unknown-publisher or SmartScreen warning. The macOS app has a valid local ad-hoc resource seal but no Developer ID or notarization, so first launch requires the standard System Settings > Privacy & Security > Open Anyway override. The Ubuntu package is an unsigned Flatpak bundle; install it with Flatpak and verify SHA256SUMS.txt before use.\n\nCompiled installers are attached for Windows x64, macOS Apple Silicon, macOS Intel, and Ubuntu 20.04+ x86_64. All four passed dependency, bundled-resource, install or mount, startup, and checksum gates before publication. The macOS jobs also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, Apple notarization, and trusted Flatpak signing are intentionally not claimed.\n\nUser guide: https://github.com/${{ github.repository }}/wiki'
             create_args=("$TAG" --verify-tag --draft --title "DOHC Viewer $TAG (UNSIGNED)" --generate-notes --notes "$notes")
             if [[ "$PRERELEASE" == "true" ]]; then create_args+=(--prerelease); fi
             gh release create "${create_args[@]}"

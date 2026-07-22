@@ -433,7 +433,8 @@ fn publish_noreplace_platform(source: &Path, destination: &Path) -> std::io::Res
 
 fn is_unsupported_fat(filesystem: &str) -> bool {
     let normalized = filesystem.trim().to_ascii_uppercase();
-    normalized.starts_with("FAT") && normalized != "EXFAT"
+    (normalized.starts_with("FAT") && normalized != "EXFAT")
+        || matches!(normalized.as_str(), "VFAT" | "MSDOS")
 }
 
 fn unix_millis() -> u64 {
@@ -549,14 +550,156 @@ fn platform_volume_details(path: &Path) -> (String, Option<String>, String) {
     )
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Eq, PartialEq)]
+struct LinuxMountInfo {
+    device: String,
+    mount_point: PathBuf,
+    filesystem: String,
+    source: String,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn decode_mountinfo_path(value: &str) -> PathBuf {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && index + 3 < bytes.len()
+            && bytes[index + 1..=index + 3]
+                .iter()
+                .all(|byte| matches!(byte, b'0'..=b'7'))
+        {
+            let byte = (bytes[index + 1] - b'0') * 64
+                + (bytes[index + 2] - b'0') * 8
+                + (bytes[index + 3] - b'0');
+            decoded.push(byte);
+            index += 4;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    PathBuf::from(String::from_utf8_lossy(&decoded).into_owned())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_mountinfo(contents: &str) -> Vec<LinuxMountInfo> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let (mount_fields, filesystem_fields) = line.split_once(" - ")?;
+            let mount_fields = mount_fields.split_ascii_whitespace().collect::<Vec<_>>();
+            let mut filesystem_fields = filesystem_fields.split_ascii_whitespace();
+            if mount_fields.len() < 6 {
+                return None;
+            }
+            Some(LinuxMountInfo {
+                device: mount_fields[2].to_string(),
+                mount_point: decode_mountinfo_path(mount_fields[4]),
+                filesystem: filesystem_fields.next()?.to_string(),
+                source: filesystem_fields
+                    .next()
+                    .map(|value| decode_mountinfo_path(value).display().to_string())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_mount_for_path<'a>(
+    path: &Path,
+    mounts: &'a [LinuxMountInfo],
+) -> Option<&'a LinuxMountInfo> {
+    mounts
+        .iter()
+        .filter(|mount| path.starts_with(&mount.mount_point))
+        .max_by_key(|mount| mount.mount_point.components().count())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_device_is_removable(device: &str) -> bool {
+    let Ok(mut device_path) = fs::canonicalize(Path::new("/sys/dev/block").join(device)) else {
+        return false;
+    };
+    loop {
+        if fs::read_to_string(device_path.join("removable")).is_ok_and(|value| value.trim() == "1")
+        {
+            return true;
+        }
+        if !device_path.pop() || device_path == Path::new("/sys") {
+            return false;
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_drive_type(mount: &LinuxMountInfo, device_is_removable: bool) -> String {
+    let filesystem = mount.filesystem.to_ascii_lowercase();
+    let remote = matches!(
+        filesystem.as_str(),
+        "9p" | "afs"
+            | "ceph"
+            | "cifs"
+            | "davfs"
+            | "davfs2"
+            | "fuse.sshfs"
+            | "glusterfs"
+            | "nfs"
+            | "nfs4"
+            | "smb3"
+    ) || mount.source.starts_with("//");
+    if remote {
+        return "remote".into();
+    }
+    if matches!(filesystem.as_str(), "iso9660" | "udf") {
+        return "optical".into();
+    }
+    if matches!(filesystem.as_str(), "ramfs" | "tmpfs") {
+        return "ramdisk".into();
+    }
+    let mount_point = mount.mount_point.to_string_lossy();
+    if device_is_removable
+        || mount_point == "/media"
+        || mount_point.starts_with("/media/")
+        || mount_point == "/run/media"
+        || mount_point.starts_with("/run/media/")
+        || mount_point == "/mnt"
+        || mount_point.starts_with("/mnt/")
+    {
+        "removable".into()
+    } else {
+        "fixed".into()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn platform_volume_details(path: &Path) -> (String, Option<String>, String) {
+    let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let Ok(contents) = fs::read_to_string("/proc/self/mountinfo") else {
+        return (resolved.display().to_string(), None, "unknown".into());
+    };
+    let mounts = parse_linux_mountinfo(&contents);
+    let Some(mount) = linux_mount_for_path(&resolved, &mounts) else {
+        return (resolved.display().to_string(), None, "unknown".into());
+    };
+    (
+        mount.mount_point.display().to_string(),
+        Some(mount.filesystem.clone()),
+        linux_drive_type(mount, linux_device_is_removable(&mount.device)),
+    )
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn platform_volume_details(path: &Path) -> (String, Option<String>, String) {
     (path.display().to_string(), None, "unknown".into())
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::volume_info;
     use super::{
         cleanup_partial_import, create_import_partial, inspect_import, is_unsupported_fat,
@@ -571,8 +714,39 @@ mod tests {
     fn rejects_legacy_fat_but_allows_exfat() {
         assert!(is_unsupported_fat("FAT32"));
         assert!(is_unsupported_fat("fat16"));
+        assert!(is_unsupported_fat("vfat"));
+        assert!(is_unsupported_fat("msdos"));
         assert!(!is_unsupported_fat("exFAT"));
         assert!(!is_unsupported_fat("NTFS"));
+    }
+
+    #[test]
+    fn parses_linux_mountinfo_and_selects_the_deepest_mount() {
+        let mounts = super::parse_linux_mountinfo(
+            "36 25 0:32 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
+             48 36 8:17 / /media/user/DOHC\\040CARD rw,nosuid,nodev - exfat /dev/sdb1 rw\n\
+             malformed\n",
+        );
+        assert_eq!(mounts.len(), 2);
+        let selected = super::linux_mount_for_path(
+            PathBuf::from("/media/user/DOHC CARD/session").as_path(),
+            &mounts,
+        )
+        .unwrap();
+        assert_eq!(selected.filesystem, "exfat");
+        assert_eq!(selected.mount_point, PathBuf::from("/media/user/DOHC CARD"));
+        assert_eq!(super::linux_drive_type(selected, false), "removable");
+    }
+
+    #[test]
+    fn classifies_linux_network_mounts_as_remote() {
+        let mount = super::LinuxMountInfo {
+            device: "0:42".into(),
+            mount_point: PathBuf::from("/mnt/team"),
+            filesystem: "nfs4".into(),
+            source: "server:/records".into(),
+        };
+        assert_eq!(super::linux_drive_type(&mount, true), "remote");
     }
 
     #[cfg(target_os = "macos")]
@@ -583,6 +757,17 @@ mod tests {
         assert!(matches!(
             volume.drive_type.as_str(),
             "fixed" | "removable" | "remote"
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reports_linux_volume_details() {
+        let volume = volume_info(std::env::temp_dir().as_path()).unwrap();
+        assert!(volume.filesystem.is_some());
+        assert!(matches!(
+            volume.drive_type.as_str(),
+            "fixed" | "removable" | "remote" | "ramdisk"
         ));
     }
 

@@ -11,6 +11,7 @@ import {
   readFile,
   readlink,
   readdir,
+  rm,
   rmdir,
   stat,
   unlink,
@@ -275,6 +276,9 @@ function expectedFfmpegPlatform() {
   if (process.platform === "win32") {
     return `win32-${process.arch}`;
   }
+  if (process.platform === "linux") {
+    return "linux-x64";
+  }
   throw new Error(`bundling is not configured for ${process.platform}`);
 }
 
@@ -418,6 +422,8 @@ async function findBundleArtifacts(notBefore) {
     await addMatches("dmg", ".dmg");
   } else if (process.platform === "win32") {
     await addMatches("nsis", ".exe");
+  } else if (process.platform === "linux") {
+    await addMatches("deb", ".deb");
   }
   if (artifacts.length === 0) {
     throw new Error("bundle command succeeded but no platform artifact was found");
@@ -525,6 +531,40 @@ async function verifyMacDmg(dmgPath, expectedVersion, dependency) {
   }
 }
 
+async function verifyLinuxDeb(debPath, dependency) {
+  const debInfo = await stat(debPath);
+  if (!debInfo.isFile() || debInfo.size < 1_000_000) {
+    throw new Error("Linux Debian artifact is empty or implausibly small");
+  }
+  const extractRoot = await mkdtemp(path.join(tmpdir(), "dohc-viewer-deb-"));
+  try {
+    captureRequired("dpkg-deb", ["--extract", debPath, extractRoot], 8 * 1024 * 1024);
+    const executable = path.join(extractRoot, "usr/bin/dohc-viewer");
+    const binary = path.join(extractRoot, "usr/lib/dohc-viewer/bin/ffmpeg");
+    const license = path.join(extractRoot, "usr/lib/dohc-viewer/licenses/FFmpeg.txt");
+    const manifest = path.join(extractRoot, "usr/lib/dohc-viewer/ffmpeg-manifest.json");
+    const [executableInfo, binaryInfo, binaryHash, licenseHash, manifestHash] = await Promise.all([
+      stat(executable),
+      stat(binary),
+      sha256(binary),
+      sha256(license),
+      sha256(manifest),
+    ]);
+    if (!executableInfo.isFile() || (executableInfo.mode & 0o111) === 0) {
+      throw new Error("Linux Debian main executable is missing or not executable");
+    }
+    if (!binaryInfo.isFile() || (binaryInfo.mode & 0o111) === 0) {
+      throw new Error("Linux Debian FFmpeg is missing or not executable");
+    }
+    if (binaryHash !== dependency.sha256) throw new Error("Linux Debian FFmpeg hash differs from staged dependency");
+    if (licenseHash !== dependency.licenseSha256) throw new Error("Linux Debian FFmpeg license differs from staged dependency");
+    if (manifestHash !== dependency.manifestSha256) throw new Error("Linux Debian FFmpeg manifest differs from staged dependency");
+    return { sizeBytes: debInfo.size, format: "deb", executableSizeBytes: executableInfo.size };
+  } finally {
+    await rm(extractRoot, { recursive: true, force: true });
+  }
+}
+
 async function verifyBundleArtifacts(artifactPaths, report) {
   if (process.platform === "darwin") {
     const app = artifactPaths.find((artifact) => artifact.endsWith(".app"));
@@ -547,6 +587,15 @@ async function verifyBundleArtifacts(artifactPaths, report) {
       throw new Error("Windows NSIS artifact is empty or not a file");
     }
     return { paths: artifactPaths, installerSizeBytes: installerInfo.size };
+  }
+
+  if (process.platform === "linux") {
+    const deb = artifactPaths.find((artifact) => artifact.endsWith(".deb"));
+    if (!deb) throw new Error("Linux bundle verification requires a Debian artifact");
+    return {
+      paths: artifactPaths,
+      deb: await verifyLinuxDeb(path.join(root, deb), report.ffmpeg),
+    };
   }
 
   throw new Error(`bundle artifact verification is not configured for ${process.platform}`);
@@ -749,6 +798,13 @@ async function main() {
           "Windows debug NSIS bundle",
           commands.pnpm,
           pnpmArguments(["tauri", "build", "--debug", "--no-sign", "--ci"]),
+        );
+      } else if (process.platform === "linux") {
+        await runCommand(
+          report,
+          "Linux debug Debian bundle",
+          commands.pnpm,
+          pnpmArguments(["tauri", "build", "--debug", "--bundles", "deb", "--no-sign", "--ci"]),
         );
       } else {
         throw new Error(`bundle verification is not configured for ${process.platform}`);

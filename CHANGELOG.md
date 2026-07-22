@@ -2,6 +2,17 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.16.0 - 2026-07-22
+
+- Added Ubuntu 20.04+ x86_64 support through an unsigned Flatpak bundle using
+  the pinned GNOME 50 runtime; the Ubuntu 22.04 `.deb` is retained only as the
+  Flatpak build input.
+- Added Linux `/proc/self/mountinfo` volume detection, removable-device
+  classification, remote-volume rejection, and `vfat`/`msdos` FAT32 safeguards.
+- Added reproducible Linux FFmpeg staging, Flatpak build/verification scripts,
+  AppStream metadata, runtime permission checks, Xvfb startup smoke, and a
+  four-installer release completeness gate.
+
 ## 0.15.3 - 2026-07-22
 
 - Removed the second local-destination dialog. Selecting an SD card now creates

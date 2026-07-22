@@ -58,6 +58,13 @@ function expectedArtifacts(version) {
       installer: `DOHC-Viewer_${version}_UNSIGNED_macos-x64.dmg`,
       report: `DOHC-Viewer_${version}_macos-x64.verification.json`,
     },
+    {
+      key: "ubuntu-x64",
+      platform: "linux",
+      architecture: "x64",
+      installer: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-x64.flatpak`,
+      report: `DOHC-Viewer_${version}_linux-x64.verification.json`,
+    },
   ];
 }
 
@@ -163,6 +170,30 @@ async function validateArtifact(options, expected, version) {
   ) {
     throw new Error(`${expected.report} has incomplete macOS FFmpeg source evidence`);
   }
+  if (
+    expected.platform === "linux" &&
+    (report.signing?.mode !== "unsigned" ||
+      report.signing?.verified !== false ||
+      report.ffmpeg?.codeSigned !== false ||
+      report.ffmpeg?.signatureMode !== "unsigned" ||
+      report.ffmpeg?.trustedSignature !== false ||
+      !/^[0-9a-f]{64}$/.test(report.ffmpeg?.sourceArchiveSha256 ?? "") ||
+      !/^[0-9a-f]{40}$/.test(report.ffmpeg?.sourceRevision ?? ""))
+  ) {
+    throw new Error(`${expected.report} has incomplete Linux FFmpeg source evidence`);
+  }
+  if (expected.platform === "linux") {
+    if (
+      report.flatpak?.appId !== "com.dohc.viewer" ||
+      report.flatpak?.runtime !== "org.gnome.Platform" ||
+      report.flatpak?.runtimeVersion !== "50" ||
+      report.flatpak?.hostMinimum !== "ubuntu-20.04" ||
+      report.flatpak?.permissions?.includes("--share=network") ||
+      report.runtimeSmoke?.displayServer !== "xvfb"
+    ) {
+      throw new Error(`${expected.report} has incomplete Flatpak runtime evidence`);
+    }
+  }
   return {
     ...expected,
     sourcePath: installerPath,
@@ -206,7 +237,7 @@ async function main() {
   const expected = expectedArtifacts(version);
   const inputEntries = await readdir(options.input);
   const unexpectedInstallers = inputEntries.filter(
-    (name) => /\.(?:dmg|exe)$/i.test(name) && !expected.some((item) => item.installer === name),
+    (name) => /\.(?:dmg|exe|flatpak)$/i.test(name) && !expected.some((item) => item.installer === name),
   );
   if (unexpectedInstallers.length > 0) {
     throw new Error(`unexpected installer artifacts: ${unexpectedInstallers.join(", ")}`);
@@ -229,7 +260,7 @@ async function main() {
       signingMode: "unsigned",
       trustedPublisher: false,
       warning:
-        "These installers are not signed by a trusted publisher or notarized. The macOS app has a valid local ad-hoc seal but still requires the standard Gatekeeper user override. Verify SHA256SUMS.txt before use.",
+        "These installers are not signed by a trusted publisher or notarized. The macOS app has a valid local ad-hoc seal but still requires the standard Gatekeeper user override; the Ubuntu package is an unsigned Flatpak bundle. Verify SHA256SUMS.txt before use.",
     },
     assets: verified.map(({ sourcePath: _sourcePath, report: _report, ...item }) => item),
   };
