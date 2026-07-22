@@ -2,7 +2,7 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
-## Unreleased
+## 0.15.3 - 2026-07-22
 
 - Removed the second local-destination dialog. Selecting an SD card now creates
   a managed app-local-data workspace and automatically imports every discovered
