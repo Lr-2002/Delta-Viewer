@@ -63,6 +63,7 @@ async function main() {
   requireCondition(flatpakManifest.runtime === "org.gnome.Platform", "Flatpak runtime must be GNOME Platform");
   requireCondition(flatpakManifest["runtime-version"] === "50", "Flatpak runtime version must be pinned to GNOME 50");
   requireCondition(flatpakManifest.sdk === "org.gnome.Sdk", "Flatpak SDK must match the GNOME runtime");
+  requireCondition(flatpakManifest.branch === "stable", "Flatpak branch must be stable");
   requireCondition(flatpakManifest.command === "dohc-viewer", "Flatpak command is incorrect");
   const finishArgs = new Set(flatpakManifest["finish-args"] ?? []);
   for (const permission of [

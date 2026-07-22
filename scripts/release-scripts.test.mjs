@@ -74,6 +74,7 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
     runtime: "org.gnome.Platform",
     "runtime-version": "50",
     sdk: "org.gnome.Sdk",
+    branch: "stable",
     command: "dohc-viewer",
     "finish-args": [
       "--socket=wayland",

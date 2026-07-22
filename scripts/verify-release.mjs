@@ -163,9 +163,10 @@ async function verify(options) {
     flatpakManifest.runtime !== "org.gnome.Platform" ||
     flatpakManifest["runtime-version"] !== "50" ||
     flatpakManifest.sdk !== "org.gnome.Sdk" ||
+    flatpakManifest.branch !== "stable" ||
     flatpakManifest.command !== "dohc-viewer"
   ) {
-    throw new Error("Flatpak app id, runtime, SDK, or command is invalid");
+    throw new Error("Flatpak app id, runtime, SDK, branch, or command is invalid");
   }
   for (const permission of [
     "--socket=wayland",
