@@ -8,6 +8,7 @@ import {
   demoFrameUrl,
   DEMO_EPISODE_ROOT,
   loadDemoFixture,
+  type DemoFixture,
 } from "./demoFixture";
 import type {
   AuthStatus,
@@ -32,9 +33,17 @@ import type {
 
 export const DEMO_ROOT = DEMO_EPISODE_ROOT;
 
+const SESSION_ACTIVATION_DEMO_SOURCE_ROOT = "demo://session-activation";
+const SESSION_ACTIVATION_DEMO_EPISODES = [
+  { root: `${SESSION_ACTIVATION_DEMO_SOURCE_ROOT}/session-a`, name: "session-a" },
+  { root: `${SESSION_ACTIVATION_DEMO_SOURCE_ROOT}/session-b`, name: "session-b" },
+  { root: `${SESSION_ACTIVATION_DEMO_SOURCE_ROOT}/session-c`, name: "session-c" },
+] as const;
+
 const demoAccounts = new Map<string, { displayName: string; password: string }>();
 const demoAnnotations = new Map<string, EpisodeAnnotation>();
 let demoCurrentUser: UserIdentity | null = null;
+let sessionActivationRetryAttempts = 0;
 
 export async function getAuthStatus(): Promise<AuthStatus> {
   if (isTauriRuntime()) return invoke<AuthStatus>("get_auth_status");
@@ -160,6 +169,10 @@ export async function revealOutput(path: string): Promise<void> {
 
 export async function scanSource(path: string): Promise<ScanResult> {
   if (isTauriRuntime()) return invoke<ScanResult>("scan_source", { path });
+  if (isSessionActivationDemoScenario()) {
+    sessionActivationRetryAttempts = 0;
+    return buildSessionActivationDemoScan(await loadDemoFixture());
+  }
   const episode = demoEpisodeSummary(path, await loadDemoFixture());
   return {
     sourceRoot: path,
@@ -288,6 +301,19 @@ function classifyDemoError(message: string): string {
 export async function loadEpisode(path: string): Promise<EpisodeData> {
   if (isTauriRuntime()) return invoke<EpisodeData>("load_episode", { path });
   const fixture = await loadDemoFixture();
+  const sessionActivationEpisode = sessionActivationDemoEpisode(path);
+  if (sessionActivationEpisode) {
+    if (path.endsWith("/session-c")) {
+      sessionActivationRetryAttempts += 1;
+      await delay(180);
+      throw new Error(`DEMO_RETRY_FAILURE_${sessionActivationRetryAttempts}`);
+    }
+    if (path.endsWith("/session-b")) await delay(180);
+    return {
+      summary: sessionActivationDemoSummary(sessionActivationEpisode, fixture),
+      states: createDemoStates(fixture),
+    };
+  }
   return {
     summary: demoEpisodeSummary(path, fixture),
     states: createDemoStates(fixture),
@@ -405,4 +431,48 @@ export async function onTaskProgress(
 ): Promise<UnlistenFn> {
   if (!isTauriRuntime()) return () => undefined;
   return listen<TaskProgress>("task-progress", (event) => callback(event.payload));
+}
+
+function isSessionActivationDemoScenario(): boolean {
+  return !isTauriRuntime()
+    && new URLSearchParams(window.location.search).get("demoScenario") === "session-activation";
+}
+
+function sessionActivationDemoEpisode(root: string) {
+  return SESSION_ACTIVATION_DEMO_EPISODES.find((episode) => episode.root === root);
+}
+
+function buildSessionActivationDemoScan(fixture: DemoFixture): ScanResult {
+  const episodes = SESSION_ACTIVATION_DEMO_EPISODES.map((episode) => (
+    sessionActivationDemoSummary(episode, fixture)
+  ));
+  const totalFiles = episodes.reduce((total, episode) => total + episode.totalFiles, 0);
+  const totalBytes = episodes.reduce((total, episode) => total + episode.totalBytes, 0);
+  return {
+    sourceRoot: SESSION_ACTIVATION_DEMO_SOURCE_ROOT,
+    episodes,
+    totalFiles,
+    totalBytes,
+    volume: {
+      root: SESSION_ACTIVATION_DEMO_SOURCE_ROOT,
+      filesystem: "memory",
+      driveType: "ramdisk",
+      totalBytes: 1_000_000,
+      availableBytes: 800_000,
+    },
+  };
+}
+
+function sessionActivationDemoSummary(
+  episode: (typeof SESSION_ACTIVATION_DEMO_EPISODES)[number],
+  fixture: DemoFixture,
+) {
+  return {
+    ...demoEpisodeSummary(episode.root, fixture),
+    name: episode.name,
+  };
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }

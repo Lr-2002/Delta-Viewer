@@ -119,6 +119,8 @@ function App() {
   const didAutoLoad = useRef(false);
   const didCheckPartials = useRef(false);
   const episodeLoadInFlight = useRef(false);
+  const episodeButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const episodeFocusRestoreToken = useRef(0);
   const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
   const playbackFps = fpsOverride ?? estimatedFps;
 
@@ -238,14 +240,19 @@ function App() {
     }
   }
 
-  async function loadEpisodeForReview(episode: EpisodeSummary, force = false) {
+  async function loadEpisodeForReview(
+    episode: EpisodeSummary,
+    force = false,
+    restoreFocus = false,
+  ) {
     if (episodeLoadInFlight.current) return;
-    setSelectedEpisode(episode);
+    selectEpisode(episode);
     if (!force && data && loadedEpisodeSourceRoot === episode.root) {
       setPlaying(false);
       setView("review");
       return;
     }
+    const focusRestoreToken = restoreFocus ? ++episodeFocusRestoreToken.current : null;
     episodeLoadInFlight.current = true;
     setError("");
     setNotice("");
@@ -268,7 +275,20 @@ function App() {
       episodeLoadInFlight.current = false;
       setBusy(false);
       setProgress(null);
+      if (focusRestoreToken !== null) restoreEpisodeFocus(episode.root, focusRestoreToken);
     }
+  }
+
+  function selectEpisode(episode: EpisodeSummary) {
+    setSelectedEpisode(episode);
+    if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
+  }
+
+  function restoreEpisodeFocus(episodeRoot: string, token: number) {
+    window.requestAnimationFrame(() => {
+      if (episodeFocusRestoreToken.current !== token) return;
+      episodeButtonRefs.current.get(episodeRoot)?.focus();
+    });
   }
 
   async function importDiscoveredEpisodes(result: ScanResult): Promise<Record<string, string>> {
@@ -718,19 +738,20 @@ function App() {
                     type="button"
                     className={`episode-item${selectedEpisode?.root === episode.root ? " selected" : ""}`}
                     key={episode.root}
+                    ref={(element) => {
+                      if (element) episodeButtonRefs.current.set(episode.root, element);
+                      else episodeButtonRefs.current.delete(episode.root);
+                    }}
                     aria-pressed={selectedEpisode?.root === episode.root}
                     disabled={busy}
                     title={activationHint}
                     aria-label={`${episode.name}：${activationHint}`}
-                    onClick={() => {
-                      setSelectedEpisode(episode);
-                      if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
-                    }}
-                    onDoubleClick={() => void loadEpisodeForReview(episode)}
+                    onClick={() => selectEpisode(episode)}
+                    onDoubleClick={() => void loadEpisodeForReview(episode, false, true)}
                     onKeyDown={(event) => {
                       if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
                       event.preventDefault();
-                      void loadEpisodeForReview(episode);
+                      void loadEpisodeForReview(episode, false, true);
                     }}
                   >
                     <span className="episode-item-top">
