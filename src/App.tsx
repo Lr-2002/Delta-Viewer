@@ -118,6 +118,7 @@ function App() {
   const frameRef = useRef(0);
   const didAutoLoad = useRef(false);
   const didCheckPartials = useRef(false);
+  const episodeLoadInFlight = useRef(false);
   const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
   const playbackFps = fpsOverride ?? estimatedFps;
 
@@ -238,12 +239,14 @@ function App() {
   }
 
   async function loadEpisodeForReview(episode: EpisodeSummary, force = false) {
+    if (episodeLoadInFlight.current) return;
     setSelectedEpisode(episode);
     if (!force && data && loadedEpisodeSourceRoot === episode.root) {
       setPlaying(false);
       setView("review");
       return;
     }
+    episodeLoadInFlight.current = true;
     setError("");
     setNotice("");
     setCurrentOperationError(false);
@@ -262,6 +265,7 @@ function App() {
       setEpisodeImportStates((current) => ({ ...current, [episode.root]: "error" }));
       await reportFailure("load_episode", reason, episode.root);
     } finally {
+      episodeLoadInFlight.current = false;
       setBusy(false);
       setProgress(null);
     }
@@ -706,6 +710,9 @@ function App() {
             {scan?.episodes.length ? (
               scan.episodes.map((episode) => {
                 const importState = episodeImportStates[episode.root] ?? "pending";
+                const activationHint = importState === "error"
+                  ? "单击选择；双击或按 Enter/空格重试导入"
+                  : "单击选择；双击或按 Enter/空格进入回放";
                 return (
                   <button
                     type="button"
@@ -713,12 +720,18 @@ function App() {
                     key={episode.root}
                     aria-pressed={selectedEpisode?.root === episode.root}
                     disabled={busy}
-                    title={importState === "error" ? "双击重试导入" : "双击进入回放"}
+                    title={activationHint}
+                    aria-label={`${episode.name}：${activationHint}`}
                     onClick={() => {
                       setSelectedEpisode(episode);
                       if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
                     }}
                     onDoubleClick={() => void loadEpisodeForReview(episode)}
+                    onKeyDown={(event) => {
+                      if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
+                      event.preventDefault();
+                      void loadEpisodeForReview(episode);
+                    }}
                   >
                     <span className="episode-item-top">
                       <Images size={16} />

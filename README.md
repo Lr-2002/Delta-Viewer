@@ -50,7 +50,8 @@ in the Wiki.
 4. Create an isolated workspace under the current user's app-local data,
    preflight its capacity and filesystem support, and copy each session there.
    The first successful session opens automatically; the left list shows every
-   session's import status and opens one with a double click.
+   session's import status. A single click selects it; double-click it or press
+   Enter/Space while it has keyboard focus to open it.
 5. Identify any safely cleanable incomplete imports before publishing a
    completed local copy.
 6. Verify every destination file by size and BLAKE3, then write a format-v2
