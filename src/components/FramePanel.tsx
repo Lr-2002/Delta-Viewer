@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { ImageOff } from "lucide-react";
 import { frameUrl } from "../lib/backend";
+import {
+  FRAME_READ_AHEAD_FRAMES,
+  FrameCache,
+  frameRequestKey,
+  frameStreamKey,
+  type CachedFrame,
+} from "../lib/frame-cache";
 import type { StreamSummary } from "../types";
 
 interface FramePanelProps {
@@ -10,45 +17,72 @@ interface FramePanelProps {
   playing?: boolean;
   className?: string;
 }
+
+const frameCache = new FrameCache(async (request) => {
+  const source = await frameUrl(request.root, request.stream, request.frameId);
+  await decodeFrame(source);
+  return source;
+});
+
+function decodeFrame(source: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      // `decode()` lets the visible image swap only after pixels are ready.
+      void image.decode().then(resolve, resolve);
+    };
+    image.onerror = () => reject(new Error("Unable to decode frame image"));
+    image.src = source;
+  });
+}
+
 export function FramePanel({ root, stream, frameId, playing = false, className = "" }: FramePanelProps) {
-  const requestKey = `${root}\0${stream.name}\0${frameId}`;
-  const [frame, setFrame] = useState<{
-    key: string;
-    source: string;
-    status: "loading" | "ready" | "failed";
-  }>(() => ({ key: requestKey, source: "", status: "loading" }));
-  const current = frame.key === requestKey
-    ? frame
-    : { key: requestKey, source: "", status: "loading" as const };
+  const requestKey = frameRequestKey({ root, stream: stream.name, frameId });
+  const streamKey = frameStreamKey(root, stream.name);
+  const [displayedFrame, setDisplayedFrame] = useState<CachedFrame | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
+  const displayed = displayedFrame?.streamKey === streamKey ? displayedFrame : null;
 
   useEffect(() => {
     let active = true;
-    const key = `${root}\0${stream.name}\0${frameId}`;
-    setFrame({ key, source: "", status: "loading" });
-    frameUrl(root, stream.name, frameId)
-      .then((url) => {
-        if (active) setFrame({ key, source: url, status: "loading" });
+    setStatus("loading");
+    frameCache.request({ root, stream: stream.name, frameId })
+      .then((frame) => {
+        if (active) {
+          setDisplayedFrame(frame);
+          setStatus("ready");
+        }
       })
       .catch(() => {
-        if (active) setFrame({ key, source: "", status: "failed" });
+        if (active) {
+          // A failed requested frame must not leave an older frame looking current.
+          setDisplayedFrame((current) => current?.streamKey === streamKey ? null : current);
+          setStatus("failed");
+        }
       });
+    if (playing) {
+      const lastFrame = stream.lastFrame ?? frameId;
+      const readAheadEnd = Math.min(lastFrame, frameId + FRAME_READ_AHEAD_FRAMES);
+      for (let nextFrame = frameId + 1; nextFrame <= readAheadEnd; nextFrame += 1) {
+        frameCache.prefetch({ root, stream: stream.name, frameId: nextFrame });
+      }
+    }
     return () => {
       active = false;
     };
-  }, [frameId, root, stream.name]);
+  }, [frameId, playing, root, stream.lastFrame, stream.name, streamKey]);
 
   return (
     <figure className={`frame-panel ${className}`}>
-      {current.source && current.status !== "failed" ? (
+      {displayed ? (
         <img
-          src={current.source}
-          alt={`${stream.label} frame ${frameId}`}
-          onLoad={() => setFrame((value) => value.key === requestKey
-            ? { ...value, status: "ready" }
-            : value)}
-          onError={() => setFrame((value) => value.key === requestKey
-            ? { key: requestKey, source: "", status: "failed" }
-            : value)}
+          src={displayed.source}
+          alt={`${stream.label} frame ${displayed.frameId}`}
+          onError={() => {
+            if (displayed.key !== requestKey) return;
+            setDisplayedFrame(null);
+            setStatus("failed");
+          }}
         />
       ) : null}
       <figcaption>
@@ -57,8 +91,8 @@ export function FramePanel({ root, stream, frameId, playing = false, className =
           {stream.width && stream.height ? `${stream.width}×${stream.height}` : "—"}
         </span>
       </figcaption>
-      {current.status === "loading" && !playing ? <span className="frame-loading">解码中</span> : null}
-      {current.status === "failed" ? (
+      {status === "loading" && !playing ? <span className="frame-loading">解码中</span> : null}
+      {status === "failed" ? (
         <span className="frame-error">
           <ImageOff size={18} aria-hidden="true" />
           帧不可用
