@@ -123,18 +123,21 @@ export function FramePanel({
 
   useEffect(() => {
     let active = true;
-    setStatus("loading");
+    const effectRequestKey = requestKey;
+    if (requestedKeyRef.current === effectRequestKey) setStatus("loading");
     frameCache.requestCurrent({ root, stream: stream.name, frameId })
       .then((frame) => {
-        if (active) {
-          stageFrame(frame);
-        }
+        if (
+          !active
+          || requestedKeyRef.current !== effectRequestKey
+          || frame.key !== effectRequestKey
+        ) return;
+        stageFrame(frame);
       })
       .catch(() => {
-        if (active) {
-          clearCurrentStreamFrames();
-          setStatus("failed");
-        }
+        if (!active || requestedKeyRef.current !== effectRequestKey) return;
+        clearCurrentStreamFrames();
+        setStatus("failed");
       });
     if (playing) {
       const streamEnd = stream.lastFrame ?? playbackEndFrame;
