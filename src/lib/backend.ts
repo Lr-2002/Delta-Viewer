@@ -2,11 +2,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import {
+  createDemoStates,
+  demoEpisodeSummary,
+  demoFrameUrl,
+  DEMO_EPISODE_ROOT,
+  loadDemoFixture,
+} from "./demoFixture";
 import type {
   AuthStatus,
   EpisodeAnnotation,
   EpisodeData,
-  EpisodeSummary,
   ExportFormat,
   ExportRange,
   ExportResult,
@@ -18,14 +24,13 @@ import type {
   ReportExportResult,
   SaveAnnotationRequest,
   ScanResult,
-  StateRecord,
   TaskProgress,
   TaskDefinition,
   UserIdentity,
   ValidationReport,
 } from "../types";
 
-export const DEMO_ROOT = "/Users/w/Projects/DOHC_Viewer/data/raw/2026-07-13_07-34-12";
+export const DEMO_ROOT = DEMO_EPISODE_ROOT;
 
 const demoAccounts = new Map<string, { displayName: string; password: string }>();
 const demoAnnotations = new Map<string, EpisodeAnnotation>();
@@ -155,7 +160,7 @@ export async function revealOutput(path: string): Promise<void> {
 
 export async function scanSource(path: string): Promise<ScanResult> {
   if (isTauriRuntime()) return invoke<ScanResult>("scan_source", { path });
-  const episode = await buildDemoSummary(path);
+  const episode = demoEpisodeSummary(path, await loadDemoFixture());
   return {
     sourceRoot: path,
     episodes: [episode],
@@ -272,6 +277,7 @@ export async function listOperationErrors(): Promise<OperationErrorRecord[]> {
 
 function classifyDemoError(message: string): string {
   const normalized = message.toLowerCase();
+  if (message.includes("DEMO_FIXTURE_UNAVAILABLE")) return "DEMO_FIXTURE_UNAVAILABLE";
   return normalized.includes("operation not allowed")
     || normalized.includes("operation not permitted")
     || normalized.includes("permission denied")
@@ -281,8 +287,11 @@ function classifyDemoError(message: string): string {
 
 export async function loadEpisode(path: string): Promise<EpisodeData> {
   if (isTauriRuntime()) return invoke<EpisodeData>("load_episode", { path });
-  const [summary, states] = await Promise.all([buildDemoSummary(path), loadDemoStates(path)]);
-  return { summary, states };
+  const fixture = await loadDemoFixture();
+  return {
+    summary: demoEpisodeSummary(path, fixture),
+    states: createDemoStates(fixture),
+  };
 }
 
 export async function validateEpisode(path: string): Promise<ValidationReport> {
@@ -377,7 +386,7 @@ function demoRangeSuffix(range: ExportRange): string {
 
 export async function frameUrl(root: string, stream: string, frameId: number): Promise<string> {
   if (!isTauriRuntime()) {
-    return `/@fs${root}/${stream}/${frameId}.jpg`;
+    return demoFrameUrl(stream, frameId);
   }
   const payload = await invoke<{ mimeType: string; data: string }>("read_frame", {
     root,
@@ -396,77 +405,4 @@ export async function onTaskProgress(
 ): Promise<UnlistenFn> {
   if (!isTauriRuntime()) return () => undefined;
   return listen<TaskProgress>("task-progress", (event) => callback(event.payload));
-}
-
-async function loadDemoStates(root: string): Promise<StateRecord[]> {
-  const response = await fetch(`/@fs${root}/states.jsonl`);
-  if (!response.ok) throw new Error(`无法载入样本状态数据: ${response.status}`);
-  const text = await response.text();
-  return text
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const raw = JSON.parse(line) as {
-        frame_id: number;
-        capture_time_ns: number;
-        position: [number, number, number];
-        velocity: [number, number, number];
-        quaternion: [number, number, number, number];
-        euler: [number, number, number];
-        omega: [number, number, number];
-        confidence: number;
-      };
-      const timestamp = line.match(/"capture_time_ns"\s*:\s*(\d+)/)?.[1] ?? String(raw.capture_time_ns);
-      return {
-        frameId: raw.frame_id,
-        captureTimeNs: timestamp,
-        position: raw.position,
-        velocity: raw.velocity,
-        quaternion: raw.quaternion,
-        euler: raw.euler,
-        omega: raw.omega,
-        confidence: raw.confidence,
-      };
-    });
-}
-
-async function buildDemoSummary(root: string): Promise<EpisodeSummary> {
-  return {
-    root,
-    name: "2026-07-13_07-34-12",
-    totalFiles: 981,
-    totalBytes: 80_531_730,
-    stateCount: 196,
-    startTimeNs: "1783928052087173494",
-    endTimeNs: "1783928062419877176",
-    streams: [
-      demoStream("cam0", "Camera 0", 1920, 1080, 31_072_290),
-      demoStream("cam1", "Camera 1", 1280, 720, 11_367_788),
-      demoStream("cam2", "Camera 2", 1280, 720, 13_771_441),
-      demoStream("t265_left", "T265 Left", 848, 800, 11_863_300),
-      demoStream("t265_right", "T265 Right", 848, 800, 12_367_534),
-    ],
-  };
-}
-
-function demoStream(
-  name: string,
-  label: string,
-  width: number,
-  height: number,
-  totalBytes: number,
-) {
-  return {
-    name,
-    label,
-    frameCount: 196,
-    firstFrame: 0,
-    lastFrame: 195,
-    missingFrames: [],
-    missingFrameCount: 0,
-    totalBytes,
-    width,
-    height,
-    channels: name.startsWith("t265") ? 1 : 3,
-  };
 }

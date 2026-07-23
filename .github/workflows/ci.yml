@@ -61,6 +61,15 @@ jobs:
       - name: Run release checks
         run: pnpm check
 
+      - name: Run required browser demo regression checks
+        env:
+          DEMO_FLOW_REQUIRE_BROWSER: "1"
+          PLAYWRIGHT_BROWSER_EXECUTABLE: /usr/bin/google-chrome
+        run: |
+          test -x "$PLAYWRIGHT_BROWSER_EXECUTABLE"
+          "$PLAYWRIGHT_BROWSER_EXECUTABLE" --version
+          pnpm test:demo-flow
+
       - name: Check Ubuntu deb and Flatpak packaging contract
         run: pnpm check:linux
 

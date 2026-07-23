@@ -10,6 +10,7 @@
     "check:exfat-macos": "node scripts/exfat-smoke-macos.mjs",
     "check:full": "node scripts/release-check.mjs --full",
     "check:bundle": "node scripts/release-check.mjs --full --bundle",
+    "test:demo-flow": "node --test scripts/demo-flow.test.mjs",
     "check:linux": "node scripts/check-linux-package.mjs",
     "check:release-scripts": "node --test scripts/release-scripts.test.mjs",
     "check:wiki": "node scripts/check-wiki.mjs",
