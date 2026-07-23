@@ -2,11 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import {
+  createDemoStates,
+  demoEpisodeSummary,
+  demoFrameUrl,
+  DEMO_EPISODE_ROOT,
+  loadDemoFixture,
+  type DemoFixture,
+} from "./demoFixture";
 import type {
   AuthStatus,
   EpisodeAnnotation,
   EpisodeData,
-  EpisodeSummary,
   ExportFormat,
   ExportRange,
   ExportResult,
@@ -18,18 +25,25 @@ import type {
   ReportExportResult,
   SaveAnnotationRequest,
   ScanResult,
-  StateRecord,
   TaskProgress,
   TaskDefinition,
   UserIdentity,
   ValidationReport,
 } from "../types";
 
-export const DEMO_ROOT = "/Users/w/Projects/DOHC_Viewer/data/raw/2026-07-13_07-34-12";
+export const DEMO_ROOT = DEMO_EPISODE_ROOT;
+
+const SESSION_ACTIVATION_DEMO_SOURCE_ROOT = "demo://session-activation";
+const SESSION_ACTIVATION_DEMO_EPISODES = [
+  { root: `${SESSION_ACTIVATION_DEMO_SOURCE_ROOT}/session-a`, name: "session-a" },
+  { root: `${SESSION_ACTIVATION_DEMO_SOURCE_ROOT}/session-b`, name: "session-b" },
+  { root: `${SESSION_ACTIVATION_DEMO_SOURCE_ROOT}/session-c`, name: "session-c" },
+] as const;
 
 const demoAccounts = new Map<string, { displayName: string; password: string }>();
 const demoAnnotations = new Map<string, EpisodeAnnotation>();
 let demoCurrentUser: UserIdentity | null = null;
+let sessionActivationRetryAttempts = 0;
 
 export async function getAuthStatus(): Promise<AuthStatus> {
   if (isTauriRuntime()) return invoke<AuthStatus>("get_auth_status");
@@ -155,7 +169,11 @@ export async function revealOutput(path: string): Promise<void> {
 
 export async function scanSource(path: string, operationId: number): Promise<ScanResult> {
   if (isTauriRuntime()) return invoke<ScanResult>("scan_source", { path, operationId });
-  const episode = await buildDemoSummary(path);
+  if (isSessionActivationDemoScenario()) {
+    sessionActivationRetryAttempts = 0;
+    return buildSessionActivationDemoScan(await loadDemoFixture());
+  }
+  const episode = demoEpisodeSummary(path, await loadDemoFixture());
   return {
     sourceRoot: path,
     episodes: [episode],
@@ -276,6 +294,7 @@ export async function listOperationErrors(): Promise<OperationErrorRecord[]> {
 
 function classifyDemoError(message: string): string {
   const normalized = message.toLowerCase();
+  if (message.includes("DEMO_FIXTURE_UNAVAILABLE")) return "DEMO_FIXTURE_UNAVAILABLE";
   return normalized.includes("operation not allowed")
     || normalized.includes("operation not permitted")
     || normalized.includes("permission denied")
@@ -285,8 +304,24 @@ function classifyDemoError(message: string): string {
 
 export async function loadEpisode(path: string, operationId: number): Promise<EpisodeData> {
   if (isTauriRuntime()) return invoke<EpisodeData>("load_episode", { path, operationId });
-  const [summary, states] = await Promise.all([buildDemoSummary(path), loadDemoStates(path)]);
-  return { summary, states };
+  const fixture = await loadDemoFixture();
+  const sessionActivationEpisode = sessionActivationDemoEpisode(path);
+  if (sessionActivationEpisode) {
+    if (path.endsWith("/session-c")) {
+      sessionActivationRetryAttempts += 1;
+      await delay(180);
+      throw new Error(`DEMO_RETRY_FAILURE_${sessionActivationRetryAttempts}`);
+    }
+    if (path.endsWith("/session-b")) await delay(180);
+    return {
+      summary: sessionActivationDemoSummary(sessionActivationEpisode, fixture),
+      states: createDemoStates(fixture),
+    };
+  }
+  return {
+    summary: demoEpisodeSummary(path, fixture),
+    states: createDemoStates(fixture),
+  };
 }
 
 export async function validateEpisode(path: string, operationId: number): Promise<ValidationReport> {
@@ -385,7 +420,7 @@ function demoRangeSuffix(range: ExportRange): string {
 
 export async function frameUrl(root: string, stream: string, frameId: number): Promise<string> {
   if (!isTauriRuntime()) {
-    return `/@fs${root}/${stream}/${frameId}.jpg`;
+    return demoFrameUrl(stream, frameId);
   }
   const payload = await invoke<{ mimeType: string; data: string }>("read_frame", {
     root,
@@ -407,75 +442,46 @@ export async function onTaskProgress(
   return listen<TaskProgress>("task-progress", (event) => callback(event.payload));
 }
 
-async function loadDemoStates(root: string): Promise<StateRecord[]> {
-  const response = await fetch(`/@fs${root}/states.jsonl`);
-  if (!response.ok) throw new Error(`无法载入样本状态数据: ${response.status}`);
-  const text = await response.text();
-  return text
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const raw = JSON.parse(line) as {
-        frame_id: number;
-        capture_time_ns: number;
-        position: [number, number, number];
-        velocity: [number, number, number];
-        quaternion: [number, number, number, number];
-        euler: [number, number, number];
-        omega: [number, number, number];
-        confidence: number;
-      };
-      const timestamp = line.match(/"capture_time_ns"\s*:\s*(\d+)/)?.[1] ?? String(raw.capture_time_ns);
-      return {
-        frameId: raw.frame_id,
-        captureTimeNs: timestamp,
-        position: raw.position,
-        velocity: raw.velocity,
-        quaternion: raw.quaternion,
-        euler: raw.euler,
-        omega: raw.omega,
-        confidence: raw.confidence,
-      };
-    });
+function isSessionActivationDemoScenario(): boolean {
+  return !isTauriRuntime()
+    && new URLSearchParams(window.location.search).get("demoScenario") === "session-activation";
 }
 
-async function buildDemoSummary(root: string): Promise<EpisodeSummary> {
+function sessionActivationDemoEpisode(root: string) {
+  return SESSION_ACTIVATION_DEMO_EPISODES.find((episode) => episode.root === root);
+}
+
+function buildSessionActivationDemoScan(fixture: DemoFixture): ScanResult {
+  const episodes = SESSION_ACTIVATION_DEMO_EPISODES.map((episode) => (
+    sessionActivationDemoSummary(episode, fixture)
+  ));
+  const totalFiles = episodes.reduce((total, episode) => total + episode.totalFiles, 0);
+  const totalBytes = episodes.reduce((total, episode) => total + episode.totalBytes, 0);
   return {
-    root,
-    name: "2026-07-13_07-34-12",
-    totalFiles: 981,
-    totalBytes: 80_531_730,
-    stateCount: 196,
-    startTimeNs: "1783928052087173494",
-    endTimeNs: "1783928062419877176",
-    streams: [
-      demoStream("cam0", "Camera 0", 1920, 1080, 31_072_290),
-      demoStream("cam1", "Camera 1", 1280, 720, 11_367_788),
-      demoStream("cam2", "Camera 2", 1280, 720, 13_771_441),
-      demoStream("t265_left", "T265 Left", 848, 800, 11_863_300),
-      demoStream("t265_right", "T265 Right", 848, 800, 12_367_534),
-    ],
+    sourceRoot: SESSION_ACTIVATION_DEMO_SOURCE_ROOT,
+    episodes,
+    totalFiles,
+    totalBytes,
+    volume: {
+      root: SESSION_ACTIVATION_DEMO_SOURCE_ROOT,
+      filesystem: "memory",
+      driveType: "ramdisk",
+      totalBytes: 1_000_000,
+      availableBytes: 800_000,
+    },
   };
 }
 
-function demoStream(
-  name: string,
-  label: string,
-  width: number,
-  height: number,
-  totalBytes: number,
+function sessionActivationDemoSummary(
+  episode: (typeof SESSION_ACTIVATION_DEMO_EPISODES)[number],
+  fixture: DemoFixture,
 ) {
   return {
-    name,
-    label,
-    frameCount: 196,
-    firstFrame: 0,
-    lastFrame: 195,
-    missingFrames: [],
-    missingFrameCount: 0,
-    totalBytes,
-    width,
-    height,
-    channels: name.startsWith("t265") ? 1 : 3,
+    ...demoEpisodeSummary(episode.root, fixture),
+    name: episode.name,
   };
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }

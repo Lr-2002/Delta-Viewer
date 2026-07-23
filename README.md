@@ -50,7 +50,8 @@ in the Wiki.
 4. Create an isolated workspace under the current user's app-local data,
    preflight its capacity and filesystem support, and copy each session there.
    The first successful session opens automatically; the left list shows every
-   session's import status and opens one with a double click.
+   session's import status. A single click selects it; double-click it or press
+   Enter/Space while it has keyboard focus to open it.
 5. Identify any safely cleanable incomplete imports before publishing a
    completed local copy.
 6. Verify every destination file by size and BLAKE3, then write a format-v2
@@ -179,13 +180,18 @@ pnpm install
 pnpm tauri:dev
 ```
 
-Frontend-only development uses an in-memory demo account and the local sample.
-Create the demo account on the login screen; refreshing the page resets demo
-accounts and annotations:
+Frontend-only development uses an in-memory demo account and the checked-in
+`public/demo/fixture.json` metadata fixture. It does not serve the private
+`data/raw` recording or widen Vite filesystem access. Create the demo account
+on the login screen; refreshing the page resets demo accounts and annotations:
 
 ```bash
 pnpm dev
 ```
+
+Run the browser-demo regression gate with `pnpm test:demo-flow`. CI requires a
+Chrome executable for this command and fails rather than skipping the gate when
+the browser is unavailable.
 
 Run the fast local gate with:
 
