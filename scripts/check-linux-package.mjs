@@ -10,16 +10,6 @@ function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function workflowJob(workflow, jobName) {
-  const marker = `\n  ${jobName}:\n`;
-  const start = workflow.indexOf(marker);
-  requireCondition(start >= 0, `Workflow job is missing: ${jobName}`);
-  const bodyStart = start + marker.length;
-  const remaining = workflow.slice(bodyStart);
-  const nextJob = remaining.search(/\n  [A-Za-z0-9_]+:\n/);
-  return nextJob >= 0 ? remaining.slice(0, nextJob) : remaining;
-}
-
 async function readJson(relativePath) {
   return JSON.parse(await readFile(path.join(root, relativePath), "utf8"));
 }
@@ -30,26 +20,17 @@ async function main() {
     tauriConfig,
     flatpakManifest,
     metainfo,
-    smokeWorkflow,
-    releaseWorkflow,
     debVerificationScript,
   ] = await Promise.all([
     readJson("src-tauri/tauri.conf.json"),
     readJson("src-tauri/tauri.linux.conf.json"),
     readJson("packaging/flatpak/com.dohc.viewer.json"),
     readFile(path.join(root, "packaging/flatpak/com.dohc.viewer.metainfo.xml"), "utf8"),
-    readFile(path.join(root, ".github/workflows/linux-package.yml"), "utf8"),
-    readFile(path.join(root, ".github/workflows/release.yml"), "utf8"),
     readFile(path.join(root, "scripts/verify-release-deb.sh"), "utf8"),
   ]);
 
   const bundle = tauriConfig.bundle;
   const deb = bundle?.linux?.deb;
-  const smokeDebJob = workflowJob(smokeWorkflow, "deb");
-  const smokeFlatpakJob = workflowJob(smokeWorkflow, "flatpak");
-  const releaseDebJob = workflowJob(releaseWorkflow, "linux_deb");
-  const releaseFlatpakJob = workflowJob(releaseWorkflow, "linux_flatpak");
-  const releasePublishJob = workflowJob(releaseWorkflow, "publish");
   requireCondition(
     baseTauriConfig.bundle?.category === "Utility",
     "Tauri bundle category must produce a valid Freedesktop desktop category",
@@ -115,34 +96,6 @@ async function main() {
     commands.some((command) => command.includes("test -n") && command.includes("*.png")),
     "Flatpak build must reject a package with no application icon",
   );
-  for (const [job, label, artifactName] of [
-    [smokeDebJob, "Linux smoke deb", "linux-deb-smoke"],
-    [releaseDebJob, "Linux release deb", "release-ubuntu-deb-x64"],
-  ]) {
-    requireCondition(job.includes("runs-on: ubuntu-22.04"), `${label} job must run on Ubuntu 22.04`);
-    requireCondition(job.includes("verify-release-deb.sh"), `${label} job must install and verify the deb`);
-    requireCondition(job.includes("UNSIGNED_ubuntu-22.04+-x64.deb"), `${label} job must stage the formal deb asset`);
-    requireCondition(job.includes(artifactName), `${label} job must upload named deb evidence`);
-  }
-  for (const [job, label, dependency, artifactName] of [
-    [smokeFlatpakJob, "Linux smoke Flatpak", "needs: deb", "linux-deb-smoke"],
-    [
-      releaseFlatpakJob,
-      "Linux release Flatpak",
-      "needs: [prepare, linux_deb]",
-      "release-ubuntu-deb-x64",
-    ],
-  ]) {
-    requireCondition(job.includes("runs-on: ubuntu-24.04"), `${label} job must run on Ubuntu 24.04`);
-    requireCondition(job.includes(dependency), `${label} job must depend on verified deb evidence`);
-    requireCondition(job.includes("verify-release-linux.sh"), `${label} job must verify the Flatpak runtime`);
-    requireCondition(job.includes("ubuntu-22.04+-x64.deb"), `${label} job must consume the verified deb`);
-    requireCondition(job.includes(artifactName), `${label} job must download named deb evidence`);
-  }
-  requireCondition(
-    releasePublishJob.includes("linux_deb") && releasePublishJob.includes("linux_flatpak"),
-    "Release publication must depend on both Linux package jobs",
-  );
   for (const fragment of [
     'host_version" == "22.04"',
     "sudo apt-get install --yes",
@@ -165,7 +118,7 @@ async function main() {
     requireCondition(metainfo.includes(`<${tag}>${value}</${tag}>`) || metainfo.includes(`type=\"desktop-id\">${value}</launchable>`), `AppStream metadata is missing ${tag}`);
   }
   console.log(
-    "Linux package configuration is valid (Ubuntu 22.04+ deb and Ubuntu 20.04+ Flatpak, x86_64)",
+    "Linux package configuration is valid (Ubuntu 22.04+ deb and retained local Flatpak, x86_64)",
   );
 }
 

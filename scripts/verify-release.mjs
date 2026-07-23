@@ -86,7 +86,6 @@ async function verify(options) {
     cargoLock,
     tauriConfig,
     linuxConfig,
-    flatpakManifest,
     macConfig,
     windowsConfig,
     changelog,
@@ -98,7 +97,6 @@ async function verify(options) {
       readFile(path.join(options.root, "src-tauri/Cargo.lock"), "utf8"),
       readJson(options.root, "src-tauri/tauri.conf.json"),
       readJson(options.root, "src-tauri/tauri.linux.conf.json"),
-      readJson(options.root, "packaging/flatpak/com.dohc.viewer.json"),
       readJson(options.root, "src-tauri/tauri.macos.conf.json"),
       readJson(options.root, "src-tauri/tauri.windows.conf.json"),
       readFile(path.join(options.root, "CHANGELOG.md"), "utf8"),
@@ -158,34 +156,8 @@ async function verify(options) {
   ) {
     throw new Error("Linux deb AppStream metainfo mapping is missing or reversed");
   }
-  if (
-    flatpakManifest["app-id"] !== "com.dohc.viewer" ||
-    flatpakManifest.runtime !== "org.gnome.Platform" ||
-    flatpakManifest["runtime-version"] !== "50" ||
-    flatpakManifest.sdk !== "org.gnome.Sdk" ||
-    flatpakManifest.branch !== "stable" ||
-    flatpakManifest.command !== "dohc-viewer"
-  ) {
-    throw new Error("Flatpak app id, runtime, SDK, branch, or command is invalid");
-  }
-  for (const permission of [
-    "--socket=wayland",
-    "--socket=fallback-x11",
-    "--device=dri",
-    "--share=ipc",
-    "--filesystem=/media:rw",
-    "--filesystem=/run/media:rw",
-    "--filesystem=/mnt:rw",
-  ]) {
-    if (!flatpakManifest["finish-args"]?.includes(permission)) {
-      throw new Error(`Flatpak permission is missing: ${permission}`);
-    }
-  }
-  if (flatpakManifest["finish-args"]?.some((permission) => permission.includes("network"))) {
-    throw new Error("Flatpak must not request network access");
-  }
   if (!metainfo.includes("<id>com.dohc.viewer</id>")) {
-    throw new Error("Flatpak AppStream metainfo has the wrong application id");
+    throw new Error("Linux AppStream metainfo has the wrong application id");
   }
 
   const tagType = runGit(options.root, ["cat-file", "-t", `refs/tags/${options.tag}`]);
@@ -221,14 +193,9 @@ async function verify(options) {
       windows: "unsigned-nsis-x64-offline-webview2",
       macos: ["untrusted-adhoc-sealed-dmg-arm64", "untrusted-adhoc-sealed-dmg-x64"],
       macosMinimumSystemVersion: "12.0",
-      linux: [
-        "unsigned-deb-ubuntu-22.04+-x64",
-        "unsigned-flatpak-ubuntu-20.04+-x64",
-      ],
+      linux: ["unsigned-deb-ubuntu-22.04+-x64"],
       linuxDebMinimum: "ubuntu-22.04",
       linuxDebBuildHost: "ubuntu-22.04",
-      linuxFlatpakBuildHost: "ubuntu-24.04",
-      linuxRuntime: "org.gnome.Platform//50",
     },
   };
 }

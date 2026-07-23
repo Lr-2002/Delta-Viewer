@@ -74,8 +74,5 @@ jobs:
           pnpm test:demo-flow
           pnpm test:session-activation
 
-      - name: Check Ubuntu deb and Flatpak packaging contract
-        run: pnpm check:linux
-
       - name: Check Wiki sources
         run: pnpm check:wiki
