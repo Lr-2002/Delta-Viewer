@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "test:concurrency": "node --test scripts/operation-scope.test.mjs",
+    "test:concurrency:browser": "node scripts/concurrency-state-smoke.mjs",
     "check": "node scripts/release-check.mjs --quick",
     "check:exfat-macos": "node scripts/exfat-smoke-macos.mjs",
     "check:full": "node scripts/release-check.mjs --full",

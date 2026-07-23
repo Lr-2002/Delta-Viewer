@@ -57,6 +57,7 @@ import {
   validateEpisode,
 } from "./lib/backend";
 import { formatBytes, shortPath } from "./lib/format";
+import { OperationScope, type OperationToken } from "./lib/operationScope";
 import type {
   AuthStatus,
   EpisodeAnnotation,
@@ -118,8 +119,35 @@ function App() {
   const frameRef = useRef(0);
   const didAutoLoad = useRef(false);
   const didCheckPartials = useRef(false);
+  const operationScopeRef = useRef(new OperationScope());
+  const sourcePickerOpenRef = useRef(false);
   const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
   const playbackFps = fpsOverride ?? estimatedFps;
+
+  function beginOperation(): OperationToken | null {
+    const operation = operationScopeRef.current.begin();
+    if (!operation) return null;
+    setBusy(true);
+    setProgress(null);
+    return operation;
+  }
+
+  function isCurrentOperation(operation: OperationToken): boolean {
+    return operationScopeRef.current.isCurrent(operation);
+  }
+
+  function resetOperationFeedback(operation: OperationToken) {
+    if (!isCurrentOperation(operation)) return;
+    setError("");
+    setNotice("");
+    setCurrentOperationError(false);
+  }
+
+  function finishOperation(operation: OperationToken) {
+    if (!operationScopeRef.current.finish(operation)) return;
+    setBusy(false);
+    setProgress(null);
+  }
 
   useEffect(() => {
     void refreshAuthStatus();
@@ -151,7 +179,9 @@ function App() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void onTaskProgress((nextProgress) => setProgress(nextProgress)).then((cleanup) => {
+    void onTaskProgress((nextProgress) => {
+      if (operationScopeRef.current.current()) setProgress(nextProgress);
+    }).then((cleanup) => {
       unlisten = cleanup;
     });
     return () => unlisten?.();
@@ -194,10 +224,9 @@ function App() {
   }, [clipEndFrame, data, playbackFps, playing, speed]);
 
   async function openSource(path: string, autoLoad = false) {
-    setError("");
-    setNotice("");
-    setCurrentOperationError(false);
-    setBusy(true);
+    const owner = beginOperation();
+    if (!owner) return;
+    resetOperationFeedback(owner);
     let operation = "scan_source";
     try {
       const result = await scanSource(path);
@@ -212,7 +241,7 @@ function App() {
       resetLoadedData();
       if (autoLoad && first) {
         operation = "import_source";
-        const importedRoots = await importDiscoveredEpisodes(result);
+        const importedRoots = await importDiscoveredEpisodes(result, owner);
         const firstReady = result.episodes.find((episode) => importedRoots[episode.root]) ?? null;
         if (firstReady) {
           setSelectedEpisode(firstReady);
@@ -221,33 +250,36 @@ function App() {
         }
       }
     } catch (reason) {
-      await reportFailure(operation, reason, path);
+      await reportFailure(operation, reason, path, owner);
     } finally {
-      setBusy(false);
-      setProgress(null);
+      finishOperation(owner);
     }
   }
 
   async function chooseSource() {
+    if (sourcePickerOpenRef.current || operationScopeRef.current.current()) return;
+    sourcePickerOpenRef.current = true;
     try {
       const path = await chooseDirectory("选择 SD 卡根目录");
       if (path) await openSource(path, true);
     } catch (reason) {
-      await reportFailure("choose_source", reason);
+      if (!operationScopeRef.current.current()) await reportFailure("choose_source", reason);
+    } finally {
+      sourcePickerOpenRef.current = false;
     }
   }
 
   async function loadEpisodeForReview(episode: EpisodeSummary, force = false) {
+    if (operationScopeRef.current.current()) return;
     setSelectedEpisode(episode);
     if (!force && data && loadedEpisodeSourceRoot === episode.root) {
       setPlaying(false);
       setView("review");
       return;
     }
-    setError("");
-    setNotice("");
-    setCurrentOperationError(false);
-    setBusy(true);
+    const owner = beginOperation();
+    if (!owner) return;
+    resetOperationFeedback(owner);
     try {
       let root = importedEpisodeRoots[episode.root] ?? episode.root;
       if (isTauriRuntime() && !importedEpisodeRoots[episode.root]) {
@@ -260,14 +292,16 @@ function App() {
       await loadAndValidate(root, episode.root);
     } catch (reason) {
       setEpisodeImportStates((current) => ({ ...current, [episode.root]: "error" }));
-      await reportFailure("load_episode", reason, episode.root);
+      await reportFailure("load_episode", reason, episode.root, owner);
     } finally {
-      setBusy(false);
-      setProgress(null);
+      finishOperation(owner);
     }
   }
 
-  async function importDiscoveredEpisodes(result: ScanResult): Promise<Record<string, string>> {
+  async function importDiscoveredEpisodes(
+    result: ScanResult,
+    owner: OperationToken,
+  ): Promise<Record<string, string>> {
     if (!isTauriRuntime()) {
       const demoRoots = Object.fromEntries(result.episodes.map((episode) => [episode.root, episode.root]));
       setImportedEpisodeRoots(demoRoots);
@@ -300,7 +334,7 @@ function App() {
         }
         failed += 1;
         setEpisodeImportStates((current) => ({ ...current, [episode.root]: "error" }));
-        await reportFailure("import_episode", reason, episode.root);
+        await reportFailure("import_episode", reason, episode.root, owner);
       }
     }
 
@@ -336,24 +370,34 @@ function App() {
     return imported;
   }
 
-  async function reportFailure(operation: string, reason: unknown, path = sourcePath) {
+  async function reportFailure(
+    operation: string,
+    reason: unknown,
+    path = sourcePath,
+    owner?: OperationToken,
+  ) {
+    if (owner && !isCurrentOperation(owner)) return;
     const message = toMessage(reason);
     if (message.includes("任务已取消")) {
-      setNotice("任务已取消");
+      if (!owner || isCurrentOperation(owner)) setNotice("任务已取消");
       return;
     }
-    setError(presentOperationError(message));
-    setCurrentOperationError(true);
+    if (!owner || isCurrentOperation(owner)) {
+      setError(presentOperationError(message));
+      setCurrentOperationError(true);
+    }
     try {
       const record = await recordOperationError({
         operation,
         message,
         sourcePath: path || null,
       });
-      setOperationErrors((current) => [
-        record,
-        ...current.filter((item) => item.id !== record.id),
-      ].slice(0, 200));
+      if (!owner || isCurrentOperation(owner)) {
+        setOperationErrors((current) => [
+          record,
+          ...current.filter((item) => item.id !== record.id),
+        ].slice(0, 200));
+      }
     } catch (historyError) {
       console.error("Failed to persist operation error history", historyError);
     }
@@ -400,7 +444,7 @@ function App() {
   }
 
   async function logout() {
-    if (busy) return;
+    if (operationScopeRef.current.current()) return;
     try {
       await logoutLocalAccount();
       resetLoadedData();
@@ -479,7 +523,7 @@ function App() {
   }
 
   async function runExport() {
-    if (!data) return;
+    if (!data || operationScopeRef.current.current()) return;
     const range: ExportRange = { startFrame: clipStartFrame, endFrame: clipEndFrame };
     const rangeStatus = statusForRange(report, range);
     if (rangeStatus === "error") return;
@@ -494,10 +538,9 @@ function App() {
     }
     const destinationParent = await chooseDirectory(`选择 ${exportFormatLabel(exportFormat)} 导出目录`);
     if (!destinationParent) return;
-    setError("");
-    setNotice("");
-    setCurrentOperationError(false);
-    setBusy(true);
+    const owner = beginOperation();
+    if (!owner) return;
+    resetOperationFeedback(owner);
     setExportResult(null);
     try {
       const result = await exportEpisode(
@@ -510,29 +553,36 @@ function App() {
       setExportResult(result);
       setNotice(`已导出 ${exportFormatLabel(exportFormat)}（帧 ${range.startFrame}–${range.endFrame}）：${shortPath(result.outputPath, 72)}`);
     } catch (reason) {
-      await reportFailure("export_episode", reason, data.summary.root);
+      await reportFailure("export_episode", reason, data.summary.root, owner);
     } finally {
-      setBusy(false);
-      setProgress(null);
+      finishOperation(owner);
     }
   }
 
   async function runReportExport() {
-    if (!data || !report) return;
+    if (!data || !report || operationScopeRef.current.current()) return;
     const destinationParent = await chooseDirectory("选择检查报告导出目录");
     if (!destinationParent) return;
-    setError("");
-    setNotice("");
-    setCurrentOperationError(false);
-    setBusy(true);
+    const owner = beginOperation();
+    if (!owner) return;
+    resetOperationFeedback(owner);
     try {
       const result = await exportValidationReport(data.summary.root, destinationParent);
       setNotice(`检查报告已导出：${shortPath(result.outputPath, 72)}`);
     } catch (reason) {
-      await reportFailure("export_validation_report", reason, data.summary.root);
+      await reportFailure("export_validation_report", reason, data.summary.root, owner);
     } finally {
-      setBusy(false);
-      setProgress(null);
+      finishOperation(owner);
+    }
+  }
+
+  async function cancelCurrentOperation() {
+    const owner = operationScopeRef.current.current();
+    if (!owner) return;
+    try {
+      await cancelTask();
+    } catch (reason) {
+      await reportFailure("cancel_task", reason, sourcePath, owner);
     }
   }
 
@@ -671,7 +721,7 @@ function App() {
         />
       ) : null}
 
-      {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelTask()} /> : null}
+      {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
       {error ? (
         <div className="alert-banner alert-error" role="alert">
           <CircleAlert size={17} />
@@ -697,7 +747,7 @@ function App() {
               <span className="section-kicker">SOURCE</span>
               <h1>记录</h1>
             </div>
-            <button className="icon-button" type="button" onClick={() => void chooseSource()} title="重新扫描" aria-label="重新扫描">
+            <button className="icon-button" type="button" onClick={() => void chooseSource()} disabled={busy} title="重新扫描" aria-label="重新扫描">
               <RotateCcw size={17} />
             </button>
           </div>
