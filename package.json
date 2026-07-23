@@ -13,6 +13,7 @@
     "test:demo-flow": "node --test scripts/demo-flow.test.mjs",
     "check:linux": "node scripts/check-linux-package.mjs",
     "check:release-scripts": "node --test scripts/release-scripts.test.mjs",
+    "test:session-activation": "node --test scripts/session-activation.test.mjs",
     "check:wiki": "node scripts/check-wiki.mjs",
     "check:windows-cross": "node scripts/windows-cross-check.mjs",
     "preview": "vite preview --host 0.0.0.0",

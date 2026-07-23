@@ -69,6 +69,7 @@ jobs:
           test -x "$PLAYWRIGHT_BROWSER_EXECUTABLE"
           "$PLAYWRIGHT_BROWSER_EXECUTABLE" --version
           pnpm test:demo-flow
+          pnpm test:session-activation
 
       - name: Check Ubuntu deb and Flatpak packaging contract
         run: pnpm check:linux
