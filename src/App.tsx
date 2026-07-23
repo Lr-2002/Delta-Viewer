@@ -136,6 +136,15 @@ function App() {
     return operationScopeRef.current.isCurrent(operation);
   }
 
+  function ensureOperationActive(operation: OperationToken) {
+    if (
+      !isCurrentOperation(operation)
+      || operationScopeRef.current.isCancellationRequested(operation)
+    ) {
+      throw new Error("任务已取消");
+    }
+  }
+
   function resetOperationFeedback(operation: OperationToken) {
     if (!isCurrentOperation(operation)) return;
     setError("");
@@ -180,7 +189,8 @@ function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void onTaskProgress((nextProgress) => {
-      if (operationScopeRef.current.current()) setProgress(nextProgress);
+      const owner = operationScopeRef.current.current();
+      if (owner?.id === nextProgress.operationId) setProgress(nextProgress);
     }).then((cleanup) => {
       unlisten = cleanup;
     });
@@ -198,14 +208,7 @@ function App() {
     didCheckPartials.current = true;
     const destination = window.localStorage.getItem(LAST_MANAGED_IMPORT_ROOT);
     if (!destination) return;
-    void (async () => {
-      try {
-        const partials = await listPartialImports(destination);
-        if (partials.length) await maybeCleanupPartials(destination, partials);
-      } catch (reason) {
-        await reportFailure("cleanup_partial_import", reason, destination);
-      }
-    })();
+    void runStartupPartialCleanup(destination);
   }, [authStatus?.currentUser?.username]);
 
   useEffect(() => {
@@ -229,7 +232,8 @@ function App() {
     resetOperationFeedback(owner);
     let operation = "scan_source";
     try {
-      const result = await scanSource(path);
+      const result = await scanSource(path, owner.id);
+      ensureOperationActive(owner);
       setSourcePath(result.sourceRoot);
       setScan(result);
       setImportedEpisodeRoots({});
@@ -242,11 +246,12 @@ function App() {
       if (autoLoad && first) {
         operation = "import_source";
         const importedRoots = await importDiscoveredEpisodes(result, owner);
+        ensureOperationActive(owner);
         const firstReady = result.episodes.find((episode) => importedRoots[episode.root]) ?? null;
         if (firstReady) {
           setSelectedEpisode(firstReady);
           operation = "load_and_validate";
-          await loadAndValidate(importedRoots[firstReady.root], firstReady.root);
+          await loadAndValidate(importedRoots[firstReady.root], firstReady.root, owner);
         }
       }
     } catch (reason) {
@@ -283,15 +288,18 @@ function App() {
     try {
       let root = importedEpisodeRoots[episode.root] ?? episode.root;
       if (isTauriRuntime() && !importedEpisodeRoots[episode.root]) {
-        const destinationParent = await prepareImportDestination(scan?.sourceRoot ?? episode.root);
-        const imported = await importOneEpisode(episode, destinationParent);
+        const destinationParent = await prepareImportDestination(scan?.sourceRoot ?? episode.root, owner);
+        const imported = await importOneEpisode(episode, destinationParent, owner);
+        ensureOperationActive(owner);
         root = imported.destination;
         setImportedEpisodeRoots((current) => ({ ...current, [episode.root]: root }));
         setNotice(`已自动导入本地，BLAKE3 ${imported.datasetBlake3.slice(0, 16)}…`);
       }
-      await loadAndValidate(root, episode.root);
+      await loadAndValidate(root, episode.root, owner);
     } catch (reason) {
-      setEpisodeImportStates((current) => ({ ...current, [episode.root]: "error" }));
+      if (!toMessage(reason).includes("任务已取消")) {
+        setEpisodeImportStates((current) => ({ ...current, [episode.root]: "error" }));
+      }
       await reportFailure("load_episode", reason, episode.root, owner);
     } finally {
       finishOperation(owner);
@@ -302,6 +310,7 @@ function App() {
     result: ScanResult,
     owner: OperationToken,
   ): Promise<Record<string, string>> {
+    ensureOperationActive(owner);
     if (!isTauriRuntime()) {
       const demoRoots = Object.fromEntries(result.episodes.map((episode) => [episode.root, episode.root]));
       setImportedEpisodeRoots(demoRoots);
@@ -311,15 +320,16 @@ function App() {
       return demoRoots;
     }
 
-    const destinationParent = await prepareImportDestination(result.sourceRoot);
+    const destinationParent = await prepareImportDestination(result.sourceRoot, owner);
     const importedRoots: Record<string, string> = {};
     let failed = 0;
     let importedBytes = 0;
-    let cancelled = false;
     for (const [index, episode] of result.episodes.entries()) {
+      ensureOperationActive(owner);
       setNotice(`正在自动导入 ${index + 1}/${result.episodes.length}：${episode.name}`);
       try {
-        const imported = await importOneEpisode(episode, destinationParent);
+        const imported = await importOneEpisode(episode, destinationParent, owner);
+        ensureOperationActive(owner);
         importedRoots[episode.root] = imported.destination;
         importedBytes += imported.totalBytes;
         setImportedEpisodeRoots((current) => ({
@@ -329,8 +339,7 @@ function App() {
       } catch (reason) {
         if (toMessage(reason).includes("任务已取消")) {
           setNotice("自动导入已取消");
-          cancelled = true;
-          break;
+          throw reason;
         }
         failed += 1;
         setEpisodeImportStates((current) => ({ ...current, [episode.root]: "error" }));
@@ -338,9 +347,8 @@ function App() {
       }
     }
 
-    if (cancelled) {
-      setError(`自动导入已取消，已完成 ${Object.keys(importedRoots).length}/${result.episodes.length} 个 session。`);
-    } else if (failed) {
+    ensureOperationActive(owner);
+    if (failed) {
       setError(`自动导入完成，但有 ${failed}/${result.episodes.length} 个 session 失败；详细信息已保存到错误历史。`);
     } else {
       setNotice(`已自动导入 ${result.episodes.length} 个 session（${formatBytes(importedBytes)}）`);
@@ -348,26 +356,51 @@ function App() {
     return importedRoots;
   }
 
-  async function prepareImportDestination(sourceRoot: string): Promise<string> {
+  async function prepareImportDestination(
+    sourceRoot: string,
+    owner: OperationToken,
+  ): Promise<string> {
+    ensureOperationActive(owner);
     const destinationParent = await prepareImportWorkspace(sourceRoot);
+    ensureOperationActive(owner);
     window.localStorage.setItem(LAST_MANAGED_IMPORT_ROOT, destinationParent);
     const partials = await listPartialImports(destinationParent);
-    if (partials.length) await maybeCleanupPartials(destinationParent, partials);
+    ensureOperationActive(owner);
+    if (partials.length) await maybeCleanupPartials(destinationParent, partials, owner);
     return destinationParent;
   }
 
   async function importOneEpisode(
     episode: EpisodeSummary,
     destinationParent: string,
+    owner: OperationToken,
   ) {
+    ensureOperationActive(owner);
     setEpisodeImportStates((current) => ({ ...current, [episode.root]: "importing" }));
-    const preflight = await inspectImportDestination(episode.root, destinationParent);
+    const preflight = await inspectImportDestination(episode.root, destinationParent, owner.id);
+    ensureOperationActive(owner);
     if (!preflight.canImport) {
       throw new Error(preflight.issues.map((issue) => `${issue.code}: ${issue.message}`).join("；"));
     }
-    const imported = await importEpisode(episode.root, destinationParent);
+    const imported = await importEpisode(episode.root, destinationParent, owner.id);
+    ensureOperationActive(owner);
     setEpisodeImportStates((current) => ({ ...current, [episode.root]: "ready" }));
     return imported;
+  }
+
+  async function runStartupPartialCleanup(destination: string) {
+    const owner = beginOperation();
+    if (!owner) return;
+    resetOperationFeedback(owner);
+    try {
+      const partials = await listPartialImports(destination);
+      ensureOperationActive(owner);
+      if (partials.length) await maybeCleanupPartials(destination, partials, owner);
+    } catch (reason) {
+      await reportFailure("cleanup_partial_import", reason, destination, owner);
+    } finally {
+      finishOperation(owner);
+    }
   }
 
   async function reportFailure(
@@ -403,10 +436,18 @@ function App() {
     }
   }
 
-  async function loadAndValidate(root: string, sourceEpisodeRoot: string) {
-    const loaded = await loadEpisode(root);
-    const checked = await validateEpisode(root);
+  async function loadAndValidate(
+    root: string,
+    sourceEpisodeRoot: string,
+    owner: OperationToken,
+  ) {
+    ensureOperationActive(owner);
+    const loaded = await loadEpisode(root, owner.id);
+    ensureOperationActive(owner);
+    const checked = await validateEpisode(root, owner.id);
+    ensureOperationActive(owner);
     const savedAnnotation = await loadEpisodeAnnotation(root);
+    ensureOperationActive(owner);
     setData(loaded);
     setReport(checked);
     setAnnotation(savedAnnotation);
@@ -549,7 +590,9 @@ function App() {
         exportFormat,
         acknowledgeWarnings,
         range,
+        owner.id,
       );
+      ensureOperationActive(owner);
       setExportResult(result);
       setNotice(`已导出 ${exportFormatLabel(exportFormat)}（帧 ${range.startFrame}–${range.endFrame}）：${shortPath(result.outputPath, 72)}`);
     } catch (reason) {
@@ -567,7 +610,8 @@ function App() {
     if (!owner) return;
     resetOperationFeedback(owner);
     try {
-      const result = await exportValidationReport(data.summary.root, destinationParent);
+      const result = await exportValidationReport(data.summary.root, destinationParent, owner.id);
+      ensureOperationActive(owner);
       setNotice(`检查报告已导出：${shortPath(result.outputPath, 72)}`);
     } catch (reason) {
       await reportFailure("export_validation_report", reason, data.summary.root, owner);
@@ -579,8 +623,9 @@ function App() {
   async function cancelCurrentOperation() {
     const owner = operationScopeRef.current.current();
     if (!owner) return;
+    operationScopeRef.current.requestCancellation(owner);
     try {
-      await cancelTask();
+      await cancelTask(owner.id);
     } catch (reason) {
       await reportFailure("cancel_task", reason, sourcePath, owner);
     }
@@ -597,14 +642,19 @@ function App() {
   async function maybeCleanupPartials(
     destinationParent: string,
     partials: PartialImport[],
+    owner: OperationToken,
   ): Promise<void> {
+    ensureOperationActive(owner);
     const confirmed = await confirmAction(
       `在该目录发现 ${partials.length} 个由 DOHC Viewer 标记的未完成导入。是否安全清理？`,
       "清理未完成导入",
     );
+    ensureOperationActive(owner);
     if (!confirmed) return;
     for (const partial of partials) {
-      await cleanupPartialImport(destinationParent, partial.path);
+      ensureOperationActive(owner);
+      await cleanupPartialImport(destinationParent, partial.path, owner.id);
+      ensureOperationActive(owner);
     }
     setNotice(`已清理 ${partials.length} 个未完成导入`);
   }

@@ -155,6 +155,7 @@ export interface ReportExportResult {
 }
 
 export interface TaskProgress {
+  operationId: number;
   task: TaskName;
   phase: string;
   current: number;

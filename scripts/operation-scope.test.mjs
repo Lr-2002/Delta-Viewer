@@ -77,7 +77,24 @@ test("cancellation leaves ownership active until its operation settles", () => {
   assert.ok(scan);
   const cancellationOwner = scope.current();
   assert.equal(cancellationOwner, scan);
+  assert.equal(scope.requestCancellation(scan), true);
+  assert.equal(scope.isCancellationRequested(scan), true);
   assert.equal(scope.isCurrent(cancellationOwner), true);
   assert.equal(scope.finish(scan), true);
   assert.equal(scope.current(), null);
+});
+
+test("a delayed cancellation cannot transfer to a later operation id", () => {
+  const scope = new OperationScope();
+  const first = scope.begin();
+
+  assert.ok(first);
+  assert.equal(scope.requestCancellation(first), true);
+  assert.equal(scope.finish(first), true);
+
+  const second = scope.begin();
+  assert.ok(second);
+  assert.notEqual(second.id, first.id);
+  assert.equal(scope.requestCancellation(first), false);
+  assert.equal(scope.isCancellationRequested(second), false);
 });

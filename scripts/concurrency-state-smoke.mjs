@@ -104,8 +104,18 @@ try {
     const callbacks = new Map();
     const listeners = new Map();
     let nextCallbackId = 1;
-    let activeScan = null;
-    const calls = { scanSource: 0, cancelTask: 0, loadEpisode: 0 };
+    let activeTask = null;
+    let startupPartialPending = true;
+    let importAttempt = 0;
+    const calls = {
+      scanSource: 0,
+      scanOperationIds: [],
+      cleanupPartialImport: 0,
+      importEpisode: 0,
+      loadEpisode: 0,
+      validateEpisode: 0,
+      cancelOperationIds: [],
+    };
     const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JrJ4AAAAASUVORK5CYII=";
     const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right"].map((name) => ({
       name,
@@ -120,21 +130,22 @@ try {
       height: 1,
       channels: 3,
     }));
-    const episode = {
-      root: "/source/episode-1",
-      name: "episode-1",
+    const makeEpisode = (name) => ({
+      root: `/source/${name}`,
+      name,
       totalFiles: 6,
       totalBytes: 6,
       stateCount: 1,
       startTimeNs: "1",
       endTimeNs: "1",
       streams,
-    };
+    });
+    const episodes = [makeEpisode("episode-1"), makeEpisode("episode-2")];
     const scan = {
       sourceRoot: "/source",
-      episodes: [episode],
-      totalFiles: 6,
-      totalBytes: 6,
+      episodes,
+      totalFiles: 12,
+      totalBytes: 12,
       volume: {
         root: "/source",
         filesystem: "exFAT",
@@ -145,7 +156,7 @@ try {
     };
     const report = {
       formatVersion: 3,
-      episodeRoot: episode.root,
+      episodeRoot: episodes[0].root,
       parsedStateCount: 1,
       imageValidationMode: "sampled",
       imageSamplePercentages: [1, 25, 50, 73, 99],
@@ -161,22 +172,66 @@ try {
         status: "ok",
       })),
     };
+    const partial = {
+      path: "/managed-imports/.partial-episode",
+      name: ".partial-episode",
+      sourceName: "episode-previous",
+      createdAtMs: 1,
+    };
 
+    function beginTask(kind, operationId) {
+      if (activeTask) throw new Error("A native task is already active.");
+      return new Promise((resolve, reject) => {
+        activeTask = { kind, operationId, resolve, reject };
+      });
+    }
+
+    function activeSnapshot() {
+      return activeTask
+        ? { kind: activeTask.kind, operationId: activeTask.operationId }
+        : null;
+    }
+
+    function takeActiveTask() {
+      if (!activeTask) throw new Error("No active native task.");
+      const task = activeTask;
+      activeTask = null;
+      return task;
+    }
+
+    function importResult(sourcePath) {
+      const name = sourcePath.split("/").at(-1);
+      return {
+        destination: `/managed-imports/${name}`,
+        totalFiles: 6,
+        totalBytes: 6,
+        datasetBlake3: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        elapsedMs: 1,
+      };
+    }
+
+    window.localStorage.setItem("dohc-viewer:last-managed-import-root", "/managed-imports");
     window.__concurrencyMock = {
       calls,
       listenerCount(event) {
         return listeners.get(event)?.length ?? 0;
       },
+      activeTask: activeSnapshot,
       emitProgress(payload) {
         for (const handler of listeners.get("task-progress") ?? []) {
           callbacks.get(handler)?.({ event: "task-progress", id: handler, payload });
         }
       },
-      resolveActiveScan() {
-        if (!activeScan) throw new Error("No active scan to resolve.");
-        const scanToResolve = activeScan;
-        activeScan = null;
-        scanToResolve.resolve(scan);
+      resolveActiveTask(value) {
+        const task = takeActiveTask();
+        if (task.kind === "cleanup") startupPartialPending = false;
+        task.resolve(value ?? (task.kind === "scan" ? scan : undefined));
+      },
+      rejectActiveTask(message) {
+        takeActiveTask().reject(new Error(message));
+      },
+      cancelWith(operationId) {
+        return window.__TAURI_INTERNALS__.invoke("cancel_task", { operationId });
       },
     };
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
@@ -196,34 +251,46 @@ try {
         callbacks.delete(id);
       },
       async invoke(command, args = {}) {
+        if (command === "plugin:event|listen") {
+          const current = listeners.get(args.event) ?? [];
+          listeners.set(args.event, [...current, args.handler]);
+          return args.handler;
+        }
+        if (command === "plugin:event|unlisten") return null;
+        if (command === "plugin:dialog|open") return "/source";
+        if (command === "plugin:dialog|message") {
+          return args.buttons?.OkCancelCustom?.[0] ?? args.buttons?.OkCustom ?? "Ok";
+        }
+        if (command.startsWith("plugin:dialog|")) return true;
+
         switch (command) {
-          case "plugin:event|listen": {
-            const current = listeners.get(args.event) ?? [];
-            listeners.set(args.event, [...current, args.handler]);
-            return args.handler;
-          }
-          case "plugin:event|unlisten":
-            return null;
-          case "plugin:dialog|open":
-            return "/source";
-          case "plugin:dialog|message":
-            return "OK";
           case "get_auth_status":
             return { hasAccounts: true, currentUser: { username: "tester", displayName: "Tester" } };
           case "list_task_definitions":
-            return [];
           case "list_operation_errors":
             return [];
+          case "record_operation_error":
+            return {
+              formatVersion: 1,
+              id: `error-${Date.now()}`,
+              occurredAtMs: Date.now(),
+              operation: args.request.operation,
+              code: "OPERATION_FAILED",
+              message: args.request.message,
+              sourcePath: args.request.sourcePath,
+              processedBy: { username: "tester", displayName: "Tester" },
+            };
           case "scan_source":
             calls.scanSource += 1;
-            if (activeScan) throw new Error("A native task is already active.");
-            return new Promise((resolve, reject) => {
-              activeScan = { resolve, reject };
-            });
+            calls.scanOperationIds.push(args.operationId);
+            return beginTask("scan", args.operationId);
           case "prepare_import_workspace":
             return "/managed-imports";
           case "list_partial_imports":
-            return [];
+            return startupPartialPending ? [partial] : [];
+          case "cleanup_partial_import":
+            calls.cleanupPartialImport += 1;
+            return beginTask("cleanup", args.operationId);
           case "inspect_import_destination":
             return {
               canImport: true,
@@ -235,17 +302,14 @@ try {
               partials: [],
             };
           case "import_episode":
-            return {
-              destination: "/managed-imports/episode-1",
-              totalFiles: 6,
-              totalBytes: 6,
-              datasetBlake3: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-              elapsedMs: 1,
-            };
+            calls.importEpisode += 1;
+            importAttempt += 1;
+            if (importAttempt === 2) return beginTask("import", args.operationId);
+            return importResult(args.sourcePath);
           case "load_episode":
             calls.loadEpisode += 1;
             return {
-              summary: episode,
+              summary: episodes[0],
               states: [{
                 frameId: 0,
                 captureTimeNs: "1",
@@ -258,19 +322,18 @@ try {
               }],
             };
           case "validate_episode":
+            calls.validateEpisode += 1;
             return report;
           case "load_episode_annotation":
             return null;
           case "read_frame":
             return { mimeType: "image/png", data: png };
           case "cancel_task": {
-            calls.cancelTask += 1;
-            if (activeScan) {
-              const scanToCancel = activeScan;
-              activeScan = null;
-              queueMicrotask(() => scanToCancel.reject(new Error("\u4efb\u52a1\u5df2\u53d6\u6d88")));
-            }
-            return null;
+            calls.cancelOperationIds.push(args.operationId);
+            if (!activeTask || activeTask.operationId !== args.operationId) return false;
+            const task = takeActiveTask();
+            queueMicrotask(() => task.reject(new Error("\u4efb\u52a1\u5df2\u53d6\u6d88")));
+            return true;
           }
           default:
             return null;
@@ -281,49 +344,128 @@ try {
 
   await page.goto(url, { waitUntil: "networkidle" });
   await page.locator(".app-shell").waitFor();
-  console.log("browser-smoke: app loaded");
   await page.waitForFunction(() => window.__concurrencyMock.listenerCount("task-progress") >= 1);
-  console.log("browser-smoke: progress listener registered");
+  console.log("browser-smoke: app and progress listener loaded");
 
   const chooseSource = page.locator(".topbar-actions button.button-secondary");
-  await chooseSource.evaluate((button) => {
-    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  });
-  await page.waitForFunction(() => window.__concurrencyMock.calls.scanSource === 1);
-  console.log("browser-smoke: overlapping scan request blocked");
-
   const rescan = page.locator(".sidebar-heading .icon-button");
-  await page.waitForFunction(() => document.querySelector(".sidebar-heading .icon-button")?.disabled === true);
+  await page.waitForFunction(() => window.__concurrencyMock.calls.cleanupPartialImport === 1);
+  const cleanup = await page.evaluate(() => window.__concurrencyMock.activeTask());
+  assert.equal(cleanup?.kind, "cleanup");
   assert.equal(await chooseSource.isDisabled(), true);
   assert.equal(await rescan.isDisabled(), true);
+  await page.evaluate((operationId) => window.__concurrencyMock.emitProgress({
+    operationId,
+    task: "import",
+    phase: "Startup cleanup",
+    current: 1,
+    total: 1,
+    bytesDone: 1,
+    totalBytes: 1,
+    currentPath: "/managed-imports/.partial-episode",
+    elapsedMs: 1,
+  }), cleanup.operationId);
+  await page.locator(".progress-strip").waitFor();
+  console.log("browser-smoke: startup cleanup owns the UI and blocks rescan");
+  await page.evaluate(() => window.__concurrencyMock.resolveActiveTask());
+  await page.waitForFunction(() => !document.querySelector(".progress-strip"));
+  await page.waitForFunction(() => document.querySelector(".sidebar-heading .icon-button")?.disabled === false);
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.scanSource), 0);
 
-  await page.evaluate(() => window.__concurrencyMock.emitProgress({
+  await chooseSource.click();
+  await page.waitForFunction(() => window.__concurrencyMock.calls.scanSource === 1);
+  const firstScan = await page.evaluate(() => window.__concurrencyMock.activeTask());
+  assert.equal(firstScan?.kind, "scan");
+  await page.evaluate((operationId) => window.__concurrencyMock.emitProgress({
+    operationId,
     task: "scan",
-    phase: "Scanning",
+    phase: "Late cleanup progress",
+    current: 1,
+    total: 1,
+    bytesDone: 1,
+    totalBytes: 1,
+    currentPath: "/managed-imports",
+    elapsedMs: 1,
+  }), cleanup.operationId);
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator(".progress-strip").count(), 0);
+  await page.evaluate((operationId) => window.__concurrencyMock.emitProgress({
+    operationId,
+    task: "scan",
+    phase: "Scanning source",
     current: 1,
     total: 2,
     bytesDone: 1,
     totalBytes: 2,
     currentPath: "/source",
     elapsedMs: 1,
-  }));
+  }), firstScan.operationId);
   await page.locator(".progress-strip").waitFor();
-  console.log("browser-smoke: active scan controls disabled");
+  assert.match(await page.locator(".progress-strip").innerText(), /Scanning source/);
   if (screenshotTarget) {
     await mkdir(path.dirname(screenshotTarget), { recursive: true });
     await page.screenshot({ path: screenshotTarget, fullPage: true });
   }
+  await page.evaluate(() => window.__concurrencyMock.resolveActiveTask());
+  await page.waitForFunction(() => {
+    const active = window.__concurrencyMock.activeTask();
+    return window.__concurrencyMock.calls.importEpisode === 2 && active?.kind === "import";
+  });
+  const stagedImport = await page.evaluate(() => window.__concurrencyMock.activeTask());
+  assert.equal(stagedImport?.operationId, firstScan.operationId);
+  const delayedCancelAccepted = await page.evaluate((operationId) => window.__concurrencyMock.cancelWith(operationId), cleanup.operationId);
+  assert.equal(delayedCancelAccepted, false);
+  assert.deepEqual(await page.evaluate(() => window.__concurrencyMock.activeTask()), stagedImport);
+  await page.evaluate((operationId) => window.__concurrencyMock.emitProgress({
+    operationId,
+    task: "import",
+    phase: "Importing second episode",
+    current: 2,
+    total: 2,
+    bytesDone: 6,
+    totalBytes: 12,
+    currentPath: "/source/episode-2",
+    elapsedMs: 1,
+  }), stagedImport.operationId);
+  await page.waitForFunction(() => document.querySelector(".progress-strip")?.textContent?.includes("Importing second episode"));
+  const cancel = page.locator(".progress-strip .icon-button");
+  await cancel.click();
+  await page.waitForFunction((operationId) => window.__concurrencyMock.calls.cancelOperationIds.includes(operationId), stagedImport.operationId);
+  await page.waitForFunction(() => !document.querySelector(".progress-strip"));
+  await page.waitForFunction(() => document.querySelector(".sidebar-heading .icon-button")?.disabled === false);
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.loadEpisode), 0);
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.validateEpisode), 0);
+  console.log("browser-smoke: staged automatic import cancellation stops follow-on load and validate");
 
-  await page.evaluate(() => window.__concurrencyMock.resolveActiveScan());
+  await rescan.click();
+  await page.waitForFunction(() => window.__concurrencyMock.calls.scanSource === 2);
+  await page.evaluate(() => window.__concurrencyMock.rejectActiveTask("已有任务正在运行，请先等待或取消当前任务"));
+  await page.locator(".alert-error").waitFor();
+  assert.match(await page.locator(".alert-error").innerText(), /已有任务正在运行/);
+  await page.waitForFunction(() => document.querySelector(".sidebar-heading .icon-button")?.disabled === false);
+  console.log("browser-smoke: native rejection restores controls and shows an owned error");
+
+  await rescan.click();
+  await page.waitForFunction(() => window.__concurrencyMock.calls.scanSource === 3);
+  const finalScan = await page.evaluate(() => window.__concurrencyMock.activeTask());
+  await page.evaluate((operationId) => window.__concurrencyMock.emitProgress({
+    operationId,
+    task: "scan",
+    phase: "Final scan",
+    current: 2,
+    total: 2,
+    bytesDone: 2,
+    totalBytes: 2,
+    currentPath: "/source",
+    elapsedMs: 1,
+  }), finalScan.operationId);
+  await page.evaluate(() => window.__concurrencyMock.resolveActiveTask());
   await page.waitForFunction(() => window.__concurrencyMock.calls.loadEpisode === 1);
-  console.log("browser-smoke: scan completion advanced to load");
   await page.locator(".camera-grid img").first().waitFor();
   await page.waitForFunction(() => [...document.querySelectorAll(".camera-grid img")]
     .every((image) => image.naturalWidth > 0));
   await page.waitForFunction(() => !document.querySelector(".progress-strip"));
   assert.equal(await rescan.isDisabled(), false);
-  console.log("browser-smoke: normal completion restored controls");
 
   for (const viewport of [
     { width: 1440, height: 920 },
@@ -331,36 +473,28 @@ try {
     { width: 390, height: 844 },
   ]) {
     await page.setViewportSize(viewport);
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    const layout = await page.evaluate(() => {
+      const overflow = [...document.querySelectorAll("*")]
+        .filter((element) => element.scrollWidth > window.innerWidth)
+        .slice(0, 3)
+        .map((element) => ({
+          className: element.className,
+          scrollWidth: element.scrollWidth,
+          tagName: element.tagName,
+        }));
+      return { innerWidth: window.innerWidth, overflow, scrollWidth: document.documentElement.scrollWidth };
+    });
+    assert.ok(
+      layout.scrollWidth <= layout.innerWidth,
+      `${viewport.width}px viewport overflowed: ${JSON.stringify(layout)}`,
+    );
   }
-  await page.setViewportSize({ width: 1440, height: 920 });
-  console.log("browser-smoke: responsive viewports clear");
-
-  await rescan.click();
-  await page.waitForFunction(() => window.__concurrencyMock.calls.scanSource === 2);
-  await page.evaluate(() => window.__concurrencyMock.emitProgress({
-    task: "scan",
-    phase: "Rescanning",
-    current: 1,
-    total: 2,
-    bytesDone: 1,
-    totalBytes: 2,
-    currentPath: "/source",
-    elapsedMs: 1,
-  }));
-  const cancel = page.locator(".progress-strip .icon-button");
-  await cancel.waitFor();
-  await cancel.click();
-  await page.waitForFunction(() => window.__concurrencyMock.calls.cancelTask === 1);
-  console.log("browser-smoke: cancellation requested");
-  await page.waitForFunction(() => !document.querySelector(".progress-strip"));
-  await page.waitForFunction(() => document.querySelector(".alert-notice") !== null);
-  assert.equal(await rescan.isDisabled(), false);
+  console.log("browser-smoke: completed flow renders five images without responsive overflow");
 
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(failedRequests, []);
-  console.log("Concurrency browser smoke passed: overlap, completion, cancellation, responsive layout.");
+  console.log("Concurrency browser smoke passed: startup cleanup, delayed ownership, cancellation, failure, completion, responsive layout.");
 } catch (error) {
   throw new Error(`${error}\nVite output:\n${viteOutput}`);
 } finally {

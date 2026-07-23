@@ -61,6 +61,9 @@ jobs:
       - name: Run release checks
         run: pnpm check
 
+      - name: Run browser operation-ownership smoke test
+        run: pnpm test:concurrency:browser
+
       - name: Check Ubuntu deb and Flatpak packaging contract
         run: pnpm check:linux
 

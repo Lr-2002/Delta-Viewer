@@ -260,6 +260,14 @@ pub struct ProgressPayload {
     pub elapsed_ms: u128,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProgressEvent {
+    #[serde(flatten)]
+    pub progress: ProgressPayload,
+    pub operation_id: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManifestEntry {
