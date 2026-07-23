@@ -24,50 +24,102 @@ use model::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, State};
 use validation_cache::ValidationCache;
 
 #[derive(Clone)]
 pub struct TaskControl {
+    active: Arc<Mutex<Option<ActiveTask>>>,
+}
+
+struct ActiveTask {
+    operation_id: u64,
     cancelled: Arc<AtomicBool>,
-    active: Arc<AtomicBool>,
 }
 
 impl Default for TaskControl {
     fn default() -> Self {
         Self {
-            cancelled: Arc::new(AtomicBool::new(false)),
-            active: Arc::new(AtomicBool::new(false)),
+            active: Arc::new(Mutex::new(None)),
         }
     }
 }
 
 impl TaskControl {
-    fn start(&self) -> Result<TaskGuard, String> {
-        self.active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| "已有任务正在运行，请先等待或取消当前任务".to_string())?;
-        self.cancelled.store(false, Ordering::Release);
+    fn start(&self, operation_id: u64) -> Result<TaskGuard, String> {
+        if operation_id == 0 {
+            return Err("操作标识无效".to_string());
+        }
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "任务控制状态不可用，请重试".to_string())?;
+        if active.is_some() {
+            return Err("已有任务正在运行，请先等待或取消当前任务".to_string());
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        *active = Some(ActiveTask {
+            operation_id,
+            cancelled: cancelled.clone(),
+        });
         Ok(TaskGuard {
             active: self.active.clone(),
+            operation_id,
+            cancelled,
         })
+    }
+
+    fn cancel(&self, operation_id: u64) -> bool {
+        let Ok(active) = self.active.lock() else {
+            return false;
+        };
+        let Some(active) = active.as_ref() else {
+            return false;
+        };
+        if active.operation_id != operation_id {
+            return false;
+        }
+        active.cancelled.store(true, Ordering::Release);
+        true
     }
 }
 
 struct TaskGuard {
-    active: Arc<AtomicBool>,
+    active: Arc<Mutex<Option<ActiveTask>>>,
+    operation_id: u64,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl TaskGuard {
+    fn cancelled(&self) -> Arc<AtomicBool> {
+        self.cancelled.clone()
+    }
+
+    #[cfg(test)]
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
 }
 
 impl Drop for TaskGuard {
     fn drop(&mut self) {
-        self.active.store(false, Ordering::Release);
+        let Ok(mut active) = self.active.lock() else {
+            return;
+        };
+        if active.as_ref().is_some_and(|current| {
+            current.operation_id == self.operation_id
+                && Arc::ptr_eq(&current.cancelled, &self.cancelled)
+        }) {
+            *active = None;
+        }
     }
 }
 
-fn emit_task_start(app: &AppHandle, task: &str, phase: &str, path: &str) {
-    source::emit_progress(
+fn emit_task_start(app: &AppHandle, operation_id: u64, task: &str, phase: &str, path: &str) {
+    source::emit_progress_for_operation(
         Some(app),
+        operation_id,
         ProgressPayload {
             task: task.into(),
             phase: phase.into(),
@@ -198,13 +250,15 @@ async fn scan_source(
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
     path: String,
+    operation_id: u64,
 ) -> Result<ScanResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let task = control.start()?;
-    let cancelled = control.cancelled.clone();
-    emit_task_start(&app, "scan", "准备扫描", &path);
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    emit_task_start(&app, operation_id, "scan", "准备扫描", &path);
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
+        let _progress = source::enter_operation_progress(operation_id);
         source::scan_source(Path::new(&path), Some(&app), &cancelled)
     })
     .await
@@ -218,13 +272,15 @@ async fn load_episode(
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
     path: String,
+    operation_id: u64,
 ) -> Result<EpisodeData, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let task = control.start()?;
-    let cancelled = control.cancelled.clone();
-    emit_task_start(&app, "scan", "准备加载记录", &path);
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    emit_task_start(&app, operation_id, "scan", "准备加载记录", &path);
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
+        let _progress = source::enter_operation_progress(operation_id);
         source::load_episode(Path::new(&path), Some(&app), &cancelled)
     })
     .await
@@ -239,19 +295,21 @@ async fn validate_episode(
     control: State<'_, TaskControl>,
     cache: State<'_, ValidationCache>,
     path: String,
+    operation_id: u64,
 ) -> Result<ValidationReport, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let task = control.start()?;
-    let cancelled = control.cancelled.clone();
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
     let cache = cache.inner().clone();
     let reports_dir = app
         .path()
         .app_local_data_dir()
         .map_err(|error| format!("无法定位应用报告目录: {error}"))?
         .join("reports");
-    emit_task_start(&app, "validate", "准备数据检查", &path);
+    emit_task_start(&app, operation_id, "validate", "准备数据检查", &path);
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ValidationReport> {
         let _task = task;
+        let _progress = source::enter_operation_progress(operation_id);
         let root = Path::new(&path);
         let before = source::episode_fingerprint(root, &cancelled)?;
         let mut report = validation::validate_episode(root, Some(&app), &cancelled)?;
@@ -277,13 +335,21 @@ async fn import_episode(
     control: State<'_, TaskControl>,
     source_path: String,
     destination_parent: String,
+    operation_id: u64,
 ) -> Result<ImportResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let task = control.start()?;
-    let cancelled = control.cancelled.clone();
-    emit_task_start(&app, "import", "导入预检", &destination_parent);
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    emit_task_start(
+        &app,
+        operation_id,
+        "import",
+        "导入预检",
+        &destination_parent,
+    );
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
+        let _progress = source::enter_operation_progress(operation_id);
         importer::import_episode(
             Path::new(&source_path),
             Path::new(&destination_parent),
@@ -349,13 +415,21 @@ async fn inspect_import_destination(
     control: State<'_, TaskControl>,
     source_path: String,
     destination_parent: String,
+    operation_id: u64,
 ) -> Result<ImportPreflight, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let task = control.start()?;
-    let cancelled = control.cancelled.clone();
-    emit_task_start(&app, "import", "检查导入目标", &destination_parent);
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    emit_task_start(
+        &app,
+        operation_id,
+        "import",
+        "检查导入目标",
+        &destination_parent,
+    );
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
+        let _progress = source::enter_operation_progress(operation_id);
         storage::inspect_import(
             Path::new(&source_path),
             Path::new(&destination_parent),
@@ -369,16 +443,34 @@ async fn inspect_import_destination(
 
 #[tauri::command]
 async fn cleanup_partial_import(
+    app: AppHandle,
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
     destination_parent: String,
     partial_path: String,
+    operation_id: u64,
 ) -> Result<(), String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let task = control.start()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    emit_task_start(
+        &app,
+        operation_id,
+        "import",
+        "清理未完成导入",
+        &partial_path,
+    );
+    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<()> {
         let _task = task;
-        storage::cleanup_partial_import(Path::new(&destination_parent), Path::new(&partial_path))
+        let _progress = source::enter_operation_progress(operation_id);
+        if cancelled.load(Ordering::Acquire) {
+            return Err(error::AppError::Cancelled);
+        }
+        storage::cleanup_partial_import(Path::new(&destination_parent), Path::new(&partial_path))?;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(error::AppError::Cancelled);
+        }
+        Ok(())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -405,6 +497,7 @@ async fn export_episode(
     control: State<'_, TaskControl>,
     cache: State<'_, ValidationCache>,
     request: ExportCommandRequest,
+    operation_id: u64,
 ) -> Result<ExportResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let ExportCommandRequest {
@@ -414,13 +507,14 @@ async fn export_episode(
         acknowledge_warnings,
         range,
     } = request;
-    let task = control.start()?;
-    let cancelled = control.cancelled.clone();
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
     let cache = cache.inner().clone();
     let data_root = app_data_root(&app)?;
-    emit_task_start(&app, "export", "准备导出", &source_path);
+    emit_task_start(&app, operation_id, "export", "准备导出", &source_path);
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ExportResult> {
         let _task = task;
+        let _progress = source::enter_operation_progress(operation_id);
         let root = Path::new(&source_path);
         let fingerprint = source::episode_fingerprint(root, &cancelled)?;
         let report = cache.report_for(root, &fingerprint)?;
@@ -451,14 +545,22 @@ async fn export_validation_report(
     cache: State<'_, ValidationCache>,
     source_path: String,
     destination_parent: String,
+    operation_id: u64,
 ) -> Result<ReportExportResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let task = control.start()?;
-    let cancelled = control.cancelled.clone();
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
     let cache = cache.inner().clone();
-    emit_task_start(&app, "export", "准备导出检查报告", &source_path);
+    emit_task_start(
+        &app,
+        operation_id,
+        "export",
+        "准备导出检查报告",
+        &source_path,
+    );
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ReportExportResult> {
         let _task = task;
+        let _progress = source::enter_operation_progress(operation_id);
         let root = Path::new(&source_path);
         let fingerprint = source::episode_fingerprint(root, &cancelled)?;
         let report = cache.report_for(root, &fingerprint)?;
@@ -476,8 +578,8 @@ async fn export_validation_report(
 }
 
 #[tauri::command]
-fn cancel_task(control: State<'_, TaskControl>) {
-    control.cancelled.store(true, Ordering::Relaxed);
+fn cancel_task(control: State<'_, TaskControl>, operation_id: u64) -> bool {
+    control.cancel(operation_id)
 }
 
 #[tauri::command]
@@ -542,9 +644,25 @@ mod tests {
     #[test]
     fn allows_only_one_long_task() {
         let control = TaskControl::default();
-        let first = control.start().unwrap();
-        assert!(control.start().is_err());
+        let first = control.start(1).unwrap();
+        assert!(control.start(2).is_err());
         drop(first);
-        assert!(control.start().is_ok());
+        assert!(control.start(2).is_ok());
+    }
+
+    #[test]
+    fn delayed_cancellation_cannot_target_a_new_operation() {
+        let control = TaskControl::default();
+        let first = control.start(101).unwrap();
+
+        assert!(!control.cancel(202));
+        assert!(!first.is_cancelled());
+        assert!(control.cancel(101));
+        assert!(first.is_cancelled());
+
+        drop(first);
+        let second = control.start(202).unwrap();
+        assert!(!control.cancel(101));
+        assert!(!second.is_cancelled());
     }
 }

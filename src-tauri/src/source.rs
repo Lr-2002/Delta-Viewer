@@ -1,11 +1,12 @@
 use crate::error::{AppError, AppResult};
 use crate::model::{
     EpisodeData, EpisodeSummary, ProgressPayload, RawStateRecord, ScanResult, StateRecord,
-    StreamSummary, STREAM_NAMES,
+    StreamSummary, TaskProgressEvent, STREAM_NAMES,
 };
 use crate::storage;
 use blake3::Hasher;
 use image::ImageReader;
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -14,6 +15,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
+
+thread_local! {
+    static PROGRESS_OPERATION_ID: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+pub struct ProgressOperationScope {
+    previous: Option<u64>,
+}
+
+pub fn enter_operation_progress(operation_id: u64) -> ProgressOperationScope {
+    let previous = PROGRESS_OPERATION_ID.with(|current| current.replace(Some(operation_id)));
+    ProgressOperationScope { previous }
+}
+
+impl Drop for ProgressOperationScope {
+    fn drop(&mut self) {
+        PROGRESS_OPERATION_ID.with(|current| current.set(self.previous));
+    }
+}
 
 pub struct StreamFiles {
     pub frames: Vec<(u64, PathBuf)>,
@@ -455,9 +475,25 @@ fn check_cancelled(cancelled: &AtomicBool) -> AppResult<()> {
     }
 }
 
-pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
+pub fn emit_progress_for_operation(
+    app: Option<&AppHandle>,
+    operation_id: u64,
+    payload: ProgressPayload,
+) {
     if let Some(app) = app {
-        let _ = app.emit("task-progress", payload);
+        let _ = app.emit(
+            "task-progress",
+            TaskProgressEvent {
+                progress: payload,
+                operation_id,
+            },
+        );
+    }
+}
+
+pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
+    if let Some(operation_id) = PROGRESS_OPERATION_ID.with(Cell::get) {
+        emit_progress_for_operation(app, operation_id, payload);
     }
 }
 

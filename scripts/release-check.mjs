@@ -687,6 +687,12 @@ async function main() {
       commands.pnpm,
       pnpmArguments(["build"]),
     );
+    await runCommand(
+      report,
+      "operation ownership concurrency tests",
+      commands.pnpm,
+      pnpmArguments(["test:concurrency"]),
+    );
     await runCommand(report, "Rust format check", commands.cargo, [
       "fmt",
       "--manifest-path",

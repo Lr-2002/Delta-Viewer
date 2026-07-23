@@ -61,6 +61,9 @@ jobs:
       - name: Run release checks
         run: pnpm check
 
+      - name: Run browser operation-ownership smoke test
+        run: pnpm test:concurrency:browser
+
       - name: Run required browser demo regression checks
         env:
           DEMO_FLOW_REQUIRE_BROWSER: "1"

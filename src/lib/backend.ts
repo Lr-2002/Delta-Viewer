@@ -167,8 +167,8 @@ export async function revealOutput(path: string): Promise<void> {
   if (isTauriRuntime()) await revealItemInDir(path);
 }
 
-export async function scanSource(path: string): Promise<ScanResult> {
-  if (isTauriRuntime()) return invoke<ScanResult>("scan_source", { path });
+export async function scanSource(path: string, operationId: number): Promise<ScanResult> {
+  if (isTauriRuntime()) return invoke<ScanResult>("scan_source", { path, operationId });
   if (isSessionActivationDemoScenario()) {
     sessionActivationRetryAttempts = 0;
     return buildSessionActivationDemoScan(await loadDemoFixture());
@@ -192,6 +192,7 @@ export async function scanSource(path: string): Promise<ScanResult> {
 export async function inspectImportDestination(
   sourcePath: string,
   destinationParent: string,
+  operationId: number,
 ): Promise<ImportPreflight> {
   if (!isTauriRuntime()) {
     return {
@@ -213,6 +214,7 @@ export async function inspectImportDestination(
   return invoke<ImportPreflight>("inspect_import_destination", {
     sourcePath,
     destinationParent,
+    operationId,
   });
 }
 
@@ -224,14 +226,16 @@ export async function listPartialImports(destinationParent: string): Promise<Par
 export async function cleanupPartialImport(
   destinationParent: string,
   partialPath: string,
+  operationId: number,
 ): Promise<void> {
   if (!isTauriRuntime()) return;
-  await invoke("cleanup_partial_import", { destinationParent, partialPath });
+  await invoke("cleanup_partial_import", { destinationParent, partialPath, operationId });
 }
 
 export async function importEpisode(
   sourcePath: string,
   destinationParent: string,
+  operationId: number,
 ): Promise<ImportResult> {
   if (!isTauriRuntime()) {
     return {
@@ -242,7 +246,7 @@ export async function importEpisode(
       elapsedMs: 4380,
     };
   }
-  return invoke<ImportResult>("import_episode", { sourcePath, destinationParent });
+  return invoke<ImportResult>("import_episode", { sourcePath, destinationParent, operationId });
 }
 
 export async function prepareImportWorkspace(sourcePath: string): Promise<string> {
@@ -298,8 +302,8 @@ function classifyDemoError(message: string): string {
     : "OPERATION_FAILED";
 }
 
-export async function loadEpisode(path: string): Promise<EpisodeData> {
-  if (isTauriRuntime()) return invoke<EpisodeData>("load_episode", { path });
+export async function loadEpisode(path: string, operationId: number): Promise<EpisodeData> {
+  if (isTauriRuntime()) return invoke<EpisodeData>("load_episode", { path, operationId });
   const fixture = await loadDemoFixture();
   const sessionActivationEpisode = sessionActivationDemoEpisode(path);
   if (sessionActivationEpisode) {
@@ -320,8 +324,8 @@ export async function loadEpisode(path: string): Promise<EpisodeData> {
   };
 }
 
-export async function validateEpisode(path: string): Promise<ValidationReport> {
-  if (isTauriRuntime()) return invoke<ValidationReport>("validate_episode", { path });
+export async function validateEpisode(path: string, operationId: number): Promise<ValidationReport> {
+  if (isTauriRuntime()) return invoke<ValidationReport>("validate_episode", { path, operationId });
   return {
     formatVersion: 3,
     episodeRoot: path,
@@ -353,11 +357,13 @@ export async function validateEpisode(path: string): Promise<ValidationReport> {
 export async function exportValidationReport(
   sourcePath: string,
   destinationParent: string,
+  operationId: number,
 ): Promise<ReportExportResult> {
   if (isTauriRuntime()) {
     return invoke<ReportExportResult>("export_validation_report", {
       sourcePath,
       destinationParent,
+      operationId,
     });
   }
   return {
@@ -373,6 +379,7 @@ export async function exportEpisode(
   format: ExportFormat,
   acknowledgeWarnings: boolean,
   range: ExportRange,
+  operationId: number,
 ): Promise<ExportResult> {
   if (isTauriRuntime()) {
     return invoke<ExportResult>("export_episode", {
@@ -383,6 +390,7 @@ export async function exportEpisode(
         acknowledgeWarnings,
         range,
       },
+      operationId,
     });
   }
   const annotation = demoAnnotations.get(sourcePath);
@@ -422,8 +430,9 @@ export async function frameUrl(root: string, stream: string, frameId: number): P
   return `data:${payload.mimeType};base64,${payload.data}`;
 }
 
-export async function cancelTask(): Promise<void> {
-  if (isTauriRuntime()) await invoke("cancel_task");
+export async function cancelTask(operationId: number): Promise<boolean> {
+  if (isTauriRuntime()) return invoke<boolean>("cancel_task", { operationId });
+  return false;
 }
 
 export async function onTaskProgress(
