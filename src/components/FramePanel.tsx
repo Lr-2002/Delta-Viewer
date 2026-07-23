@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ImageOff } from "lucide-react";
 import { frameUrl } from "../lib/backend";
 import {
-  FRAME_READ_AHEAD_FRAMES,
   FrameCache,
   frameRequestKey,
   frameStreamKey,
@@ -15,6 +14,7 @@ interface FramePanelProps {
   stream: StreamSummary;
   frameId: number;
   playing?: boolean;
+  playbackEndFrame: number;
   className?: string;
 }
 
@@ -23,6 +23,14 @@ const frameCache = new FrameCache(async (request) => {
   await decodeFrame(source);
   return source;
 });
+
+type FrameSlot = CachedFrame | null;
+type FrameSlots = [FrameSlot, FrameSlot];
+type FrameSlotIndex = 0 | 1;
+
+function alternateSlot(slot: FrameSlotIndex): FrameSlotIndex {
+  return slot === 0 ? 1 : 0;
+}
 
 function decodeFrame(source: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -36,55 +44,127 @@ function decodeFrame(source: string): Promise<void> {
   });
 }
 
-export function FramePanel({ root, stream, frameId, playing = false, className = "" }: FramePanelProps) {
+export function FramePanel({
+  root,
+  stream,
+  frameId,
+  playing = false,
+  playbackEndFrame,
+  className = "",
+}: FramePanelProps) {
   const requestKey = frameRequestKey({ root, stream: stream.name, frameId });
   const streamKey = frameStreamKey(root, stream.name);
-  const [displayedFrame, setDisplayedFrame] = useState<CachedFrame | null>(null);
+  const [frames, setFrames] = useState<FrameSlots>([null, null]);
+  const [visibleSlot, setVisibleSlot] = useState<FrameSlotIndex>(0);
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
-  const displayed = displayedFrame?.streamKey === streamKey ? displayedFrame : null;
+  const framesRef = useRef<FrameSlots>([null, null]);
+  const imageRefs = useRef<[HTMLImageElement | null, HTMLImageElement | null]>([null, null]);
+  const requestedKeyRef = useRef(requestKey);
+  const stagedSlotRef = useRef<FrameSlotIndex | null>(null);
+  const visibleSlotRef = useRef<FrameSlotIndex>(0);
+  function stageFrame(frame: CachedFrame) {
+    const current = framesRef.current[visibleSlotRef.current];
+    if (current?.streamKey === frame.streamKey && current.key === frame.key) {
+      setStatus("ready");
+      return;
+    }
+
+    const targetSlot = current?.streamKey === frame.streamKey
+      ? alternateSlot(visibleSlotRef.current)
+      : visibleSlotRef.current;
+    const nextFrames = [...framesRef.current] as FrameSlots;
+    nextFrames[targetSlot] = frame;
+    framesRef.current = nextFrames;
+    stagedSlotRef.current = targetSlot;
+    setFrames(nextFrames);
+  }
+
+  function showStagedFrame(slot: FrameSlotIndex, frame: CachedFrame) {
+    if (
+      stagedSlotRef.current !== slot
+      || requestedKeyRef.current !== frame.key
+      || framesRef.current[slot]?.key !== frame.key
+    ) return;
+
+    visibleSlotRef.current = slot;
+    stagedSlotRef.current = null;
+    setVisibleSlot(slot);
+    setStatus("ready");
+  }
+
+  function handleFrameError(slot: FrameSlotIndex, frame: CachedFrame) {
+    if (requestedKeyRef.current !== frame.key || framesRef.current[slot]?.key !== frame.key) return;
+
+    const nextFrames = [...framesRef.current] as FrameSlots;
+    nextFrames[slot] = null;
+    framesRef.current = nextFrames;
+    if (stagedSlotRef.current === slot) stagedSlotRef.current = null;
+    setFrames(nextFrames);
+    setStatus("failed");
+  }
+
+  useEffect(() => {
+    const slot = stagedSlotRef.current;
+    if (slot === null) return;
+    const frame = frames[slot];
+    const image = imageRefs.current[slot];
+    if (frame && image?.complete && image.naturalWidth > 0) showStagedFrame(slot, frame);
+  }, [frames]);
+
+  useLayoutEffect(() => {
+    requestedKeyRef.current = requestKey;
+  }, [requestKey]);
 
   useEffect(() => {
     let active = true;
     setStatus("loading");
-    frameCache.request({ root, stream: stream.name, frameId })
+    frameCache.requestCurrent({ root, stream: stream.name, frameId })
       .then((frame) => {
         if (active) {
-          setDisplayedFrame(frame);
-          setStatus("ready");
+          stageFrame(frame);
         }
       })
       .catch(() => {
         if (active) {
-          // A failed requested frame must not leave an older frame looking current.
-          setDisplayedFrame((current) => current?.streamKey === streamKey ? null : current);
           setStatus("failed");
         }
       });
     if (playing) {
-      const lastFrame = stream.lastFrame ?? frameId;
-      const readAheadEnd = Math.min(lastFrame, frameId + FRAME_READ_AHEAD_FRAMES);
-      for (let nextFrame = frameId + 1; nextFrame <= readAheadEnd; nextFrame += 1) {
-        frameCache.prefetch({ root, stream: stream.name, frameId: nextFrame });
-      }
+      const streamEnd = stream.lastFrame ?? playbackEndFrame;
+      frameCache.scheduleReadAhead({
+        root,
+        stream: stream.name,
+        frameId,
+        endFrame: Math.min(playbackEndFrame, streamEnd),
+      });
+    } else {
+      frameCache.discardReadAhead(root, stream.name);
     }
     return () => {
       active = false;
+      frameCache.discardReadAhead(root, stream.name);
     };
-  }, [frameId, playing, root, stream.lastFrame, stream.name, streamKey]);
+  }, [frameId, playbackEndFrame, playing, root, stream.lastFrame, stream.name, streamKey]);
 
   return (
     <figure className={`frame-panel ${className}`}>
-      {displayed ? (
-        <img
-          src={displayed.source}
-          alt={`${stream.label} frame ${displayed.frameId}`}
-          onError={() => {
-            if (displayed.key !== requestKey) return;
-            setDisplayedFrame(null);
-            setStatus("failed");
-          }}
-        />
-      ) : null}
+      {frames.map((frame, slot) => {
+        const slotIndex = slot as FrameSlotIndex;
+        if (!frame || frame.streamKey !== streamKey) return null;
+        const isVisible = slotIndex === visibleSlot;
+        return (
+          <img
+            key={`frame-slot-${slot}`}
+            ref={(image) => { imageRefs.current[slotIndex] = image; }}
+            className="frame-image"
+            src={frame.source}
+            alt={`${stream.label} frame ${frame.frameId}`}
+            aria-hidden={!isVisible}
+            onLoad={() => showStagedFrame(slotIndex, frame)}
+            onError={() => handleFrameError(slotIndex, frame)}
+          />
+        );
+      })}
       <figcaption>
         <span>{stream.label}</span>
         <span className="frame-resolution">

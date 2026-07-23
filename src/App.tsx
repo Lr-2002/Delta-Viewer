@@ -931,6 +931,7 @@ function App() {
                           stream={stream}
                           frameId={currentFrame}
                           playing={playing}
+                          playbackEndFrame={clipEndFrame}
                           className={`camera-${index}`}
                         />
                       ))}

@@ -58,6 +58,12 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Chromium for playback coverage
+        run: pnpm exec playwright-core install --with-deps chromium
+
+      - name: Run playback regression coverage
+        run: pnpm test:playback
+
       - name: Run release checks
         run: pnpm check
 

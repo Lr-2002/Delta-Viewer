@@ -12,10 +12,17 @@ const browserPath = process.env.PLAYWRIGHT_CHROMIUM
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/usr/bin/google-chrome",
     "/usr/bin/chromium",
-  ].find(existsSync);
+  ].find(existsSync)
+  ?? chromium.executablePath();
 
 const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
-const delayedFrame = 1;
+const visibleImageSelector = ".camera-grid img[aria-hidden='false']";
+
+function delayForFrame(frameId) {
+  if (frameId === 1) return 300;
+  if (frameId === 2 || frameId === 3) return 220;
+  return 0;
+}
 
 function demoStates() {
   return Array.from({ length: 196 }, (_, frameId) => JSON.stringify({
@@ -39,7 +46,8 @@ function frameSvg(stream, frameId) {
   </svg>`;
 }
 
-test("keeps decoded tiles visible while a paused frame read is delayed", { skip: !browserPath }, async () => {
+test("keeps decoded tiles visible through delayed playback and honors the clip end", async () => {
+  assert.ok(existsSync(browserPath), "Chromium is required; run `pnpm exec playwright-core install chromium`");
   const server = await createServer({
     root,
     logLevel: "error",
@@ -57,6 +65,7 @@ test("keeps decoded tiles visible while a paused frame read is delayed", { skip:
   const browser = await chromium.launch({ executablePath: browserPath, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
   const consoleErrors = [];
+  const imageFrameIds = [];
   const pageErrors = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
@@ -82,7 +91,9 @@ test("keeps decoded tiles visible while a paused frame read is delayed", { skip:
       }
       const [, stream, rawFrameId] = match;
       const frameId = Number(rawFrameId);
-      if (frameId === delayedFrame) await new Promise((resolve) => setTimeout(resolve, 300));
+      imageFrameIds.push(frameId);
+      const delay = delayForFrame(frameId);
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
       await route.fulfill({
         contentType: "image/svg+xml",
         headers: { "cache-control": "public, max-age=3600" },
@@ -98,16 +109,16 @@ test("keeps decoded tiles visible while a paused frame read is delayed", { skip:
     await page.getByRole("button", { name: "创建并登录" }).click();
 
     await page.waitForFunction(() => {
-      const images = [...document.querySelectorAll(".camera-grid img")];
+      const images = [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")];
       return images.length === 5 && images.every((image) => image.naturalWidth > 0);
     });
-    const initialSources = await page.locator(".camera-grid img").evaluateAll((images) => images.map((image) => image.getAttribute("src")));
+    const initialSources = await page.locator(visibleImageSelector).evaluateAll((images) => images.map((image) => image.getAttribute("src")));
 
     await page.getByRole("button", { name: "下一帧" }).click();
     await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 1 / 195"));
     await page.waitForTimeout(100);
 
-    const duringDelay = await page.locator(".camera-grid img").evaluateAll((images) => images.map((image) => ({
+    const duringDelay = await page.locator(visibleImageSelector).evaluateAll((images) => images.map((image) => ({
       source: image.getAttribute("src"),
       naturalWidth: image.naturalWidth,
       alt: image.getAttribute("alt"),
@@ -116,19 +127,44 @@ test("keeps decoded tiles visible while a paused frame read is delayed", { skip:
     assert.deepEqual(duringDelay.map((image) => image.source), initialSources);
     assert.ok(duringDelay.every((image) => image.naturalWidth > 0 && image.alt?.endsWith("frame 0")));
 
+    await page.waitForFunction(() => {
+      const images = [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")];
+      return images.length === 5 && images.every((image) => image.getAttribute("alt")?.endsWith("frame 1"));
+    });
+    const frameOneSources = await page.locator(visibleImageSelector).evaluateAll((images) => images.map((image) => image.getAttribute("src")));
+    assert.equal(await page.locator(".frame-error").count(), 0);
+
+    await page.getByLabel("裁剪结束帧").fill("3");
+    await page.waitForFunction(() => document.querySelector(".trim-summary")?.textContent?.includes("帧 0–3"));
+    await page.getByRole("button", { name: "播放" }).click();
+    await page.waitForFunction(() => {
+      const frame = Number(document.querySelector(".frame-counter")?.textContent?.match(/帧\s+(\d+)/)?.[1]);
+      return frame >= 2;
+    });
+    await page.waitForTimeout(100);
+    const duringPlayback = await page.locator(visibleImageSelector).evaluateAll((images) => images.map((image) => ({
+      alt: image.getAttribute("alt"),
+      source: image.getAttribute("src"),
+      width: image.naturalWidth,
+    })));
+    assert.equal(duringPlayback.length, 5);
+    assert.deepEqual(duringPlayback.map((image) => image.source), frameOneSources);
+    assert.ok(duringPlayback.every((image) => image.width > 0 && image.alt?.endsWith("frame 1")), JSON.stringify(duringPlayback));
     const screenshotPath = process.env.PLAYBACK_SCREENSHOT_PATH;
     if (screenshotPath) await page.screenshot({ path: screenshotPath, fullPage: true });
 
+    await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 3 / 195"));
+    await page.getByRole("button", { name: "播放" }).waitFor();
     await page.waitForFunction(() => {
-      const images = [...document.querySelectorAll(".camera-grid img")];
-      return images.length === 5 && images.every((image) => image.getAttribute("alt")?.endsWith("frame 1"));
+      const images = [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")];
+      return images.length === 5 && images.every((image) => image.getAttribute("alt")?.endsWith("frame 3"));
     });
-    assert.equal(await page.locator(".frame-error").count(), 0);
+    assert.ok(imageFrameIds.every((frameId) => frameId <= 3));
     for (const viewport of [{ width: 960, height: 680 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       await page.waitForTimeout(100);
       const layout = await page.evaluate(() => ({
-        imageCount: document.querySelectorAll(".camera-grid img").length,
+        imageCount: document.querySelectorAll(".camera-grid img[aria-hidden='false']").length,
         offenders: [...document.querySelectorAll("*")]
           .filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)
           .slice(0, 5)
