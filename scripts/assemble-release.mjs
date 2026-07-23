@@ -66,14 +66,6 @@ function expectedArtifacts(version) {
       installer: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
       report: `DOHC-Viewer_${version}_linux-deb-x64.verification.json`,
     },
-    {
-      key: "ubuntu-flatpak-x64",
-      platform: "linux",
-      architecture: "x64",
-      packageKind: "flatpak",
-      installer: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-x64.flatpak`,
-      report: `DOHC-Viewer_${version}_linux-flatpak-x64.verification.json`,
-    },
   ];
 }
 
@@ -191,18 +183,6 @@ async function validateArtifact(options, expected, version) {
   ) {
     throw new Error(`${expected.report} has incomplete Linux FFmpeg source evidence`);
   }
-  if (expected.packageKind === "flatpak") {
-    if (
-      report.flatpak?.appId !== "com.dohc.viewer" ||
-      report.flatpak?.runtime !== "org.gnome.Platform" ||
-      report.flatpak?.runtimeVersion !== "50" ||
-      report.flatpak?.hostMinimum !== "ubuntu-20.04" ||
-      report.flatpak?.permissions?.includes("--share=network") ||
-      report.runtimeSmoke?.displayServer !== "xvfb"
-    ) {
-      throw new Error(`${expected.report} has incomplete Flatpak runtime evidence`);
-    }
-  }
   if (expected.packageKind === "deb") {
     const requiredDependencies = [
       "libwebkit2gtk-4.1-0",
@@ -297,7 +277,7 @@ async function main() {
       signingMode: "unsigned",
       trustedPublisher: false,
       warning:
-        "These installers are not signed by a trusted publisher or notarized. The macOS app has a valid local ad-hoc seal but still requires the standard Gatekeeper user override; the Ubuntu deb and Flatpak packages are unsigned. Verify SHA256SUMS.txt before use.",
+        "These installers are not signed by a trusted publisher or notarized. The macOS app has a valid local ad-hoc seal but still requires the standard Gatekeeper user override; the Ubuntu deb package is unsigned. Verify SHA256SUMS.txt before use.",
     },
     assets: verified.map(({ sourcePath: _sourcePath, report: _report, ...item }) => item),
   };

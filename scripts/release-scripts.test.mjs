@@ -69,23 +69,6 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
       windows: { webviewInstallMode: { type: "offlineInstaller" } },
     },
   });
-  await writeJson(path.join(testRoot, "packaging/flatpak/com.dohc.viewer.json"), {
-    "app-id": "com.dohc.viewer",
-    runtime: "org.gnome.Platform",
-    "runtime-version": "50",
-    sdk: "org.gnome.Sdk",
-    branch: "stable",
-    command: "dohc-viewer",
-    "finish-args": [
-      "--socket=wayland",
-      "--socket=fallback-x11",
-      "--device=dri",
-      "--share=ipc",
-      "--filesystem=/media:rw",
-      "--filesystem=/run/media:rw",
-      "--filesystem=/mnt:rw",
-    ],
-  });
   await writeFile(
     path.join(testRoot, "packaging/flatpak/com.dohc.viewer.metainfo.xml"),
     "<component><id>com.dohc.viewer</id></component>\n",
@@ -108,13 +91,9 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
     "untrusted-adhoc-sealed-dmg-arm64",
     "untrusted-adhoc-sealed-dmg-x64",
   ]);
-  assert.deepEqual(metadata.packaging.linux, [
-    "unsigned-deb-ubuntu-22.04+-x64",
-    "unsigned-flatpak-ubuntu-20.04+-x64",
-  ]);
+  assert.deepEqual(metadata.packaging.linux, ["unsigned-deb-ubuntu-22.04+-x64"]);
   assert.equal(metadata.packaging.linuxDebMinimum, "ubuntu-22.04");
   assert.equal(metadata.packaging.linuxDebBuildHost, "ubuntu-22.04");
-  assert.equal(metadata.packaging.linuxFlatpakBuildHost, "ubuntu-24.04");
 
   run("git", ["tag", "-d", "v1.2.3"], testRoot);
   run("git", ["tag", "v1.2.3"], testRoot);
@@ -160,13 +139,6 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
       packageKind: "deb",
       suffix: "ubuntu-22.04+-x64.deb",
       reportSuffix: "linux-deb-x64.verification.json",
-    },
-    {
-      platform: "linux",
-      architecture: "x64",
-      packageKind: "flatpak",
-      suffix: "ubuntu-x64.flatpak",
-      reportSuffix: "linux-flatpak-x64.verification.json",
     },
   ];
 
@@ -257,24 +229,6 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
                 ],
                 installationMethod: "apt-local-deb",
                 sandboxed: false,
-              },
-            }
-          : definition.packageKind === "flatpak"
-          ? {
-              flatpak: {
-                appId: "com.dohc.viewer",
-                runtime: "org.gnome.Platform",
-                runtimeVersion: "50",
-                hostMinimum: "ubuntu-20.04",
-                permissions: [
-                  "--socket=wayland",
-                  "--socket=fallback-x11",
-                  "--device=dri",
-                  "--share=ipc",
-                  "--filesystem=/media:rw",
-                  "--filesystem=/run/media:rw",
-                  "--filesystem=/mnt:rw",
-                ],
               },
             }
           : {
@@ -369,7 +323,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
     root,
   );
   const manifest = JSON.parse(await readFile(path.join(output, "release-manifest.json"), "utf8"));
-  assert.equal(manifest.assets.length, 5);
+  assert.equal(manifest.assets.length, 4);
   assert.equal(manifest.distribution.signingMode, "unsigned");
   assert.equal(manifest.distribution.trustedPublisher, false);
   assert.equal(
@@ -386,12 +340,23 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
     manifest.assets.find((asset) => asset.key === "ubuntu-deb-x64").packageKind,
     "deb",
   );
-  assert.equal(
-    manifest.assets.find((asset) => asset.key === "ubuntu-flatpak-x64").packageKind,
-    "flatpak",
-  );
+  assert.equal(manifest.assets.some((asset) => asset.key === "ubuntu-flatpak-x64"), false);
   const checksumLines = (await readFile(path.join(output, "SHA256SUMS.txt"), "utf8"))
     .trim()
     .split("\n");
-  assert.equal(checksumLines.length, 6);
+  assert.equal(checksumLines.length, 5);
+
+  const flatpakInstaller = path.join(
+    input,
+    `DOHC-Viewer_${version}_UNSIGNED_ubuntu-x64.flatpak`,
+  );
+  await writeFile(flatpakInstaller, Buffer.alloc(1_000_001));
+  const flatpakOutput = path.join(testRoot, "flatpak-output");
+  const unexpectedFlatpak = spawnSync(
+    process.execPath,
+    [assembleScript, "--input", input, "--output", flatpakOutput, "--tag", tag, "--commit", commit],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.notEqual(unexpectedFlatpak.status, 0);
+  assert.match(unexpectedFlatpak.stderr, /unexpected installer artifacts/);
 });

@@ -6,8 +6,7 @@ exporting it through independent format adapters.
 
 Official packaging targets Windows 10/11 x64, macOS 12 or later on Apple
 Silicon and Intel, and Ubuntu 22.04 or later on x86_64 through a native deb.
-An Ubuntu 20.04+ Flatpak remains available as the compatibility package. The
-first field-acceptance target remains Windows. The frontend is React/TypeScript
+The first field-acceptance target remains Windows. The frontend is React/TypeScript
 and the data path is implemented in Rust so
 directory scans, hashing, image checks, and exports do not block the UI.
 
@@ -26,16 +25,14 @@ Installers are published on [GitHub Releases](https://github.com/Lr-2002/Delta-V
 - `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`
 - `DOHC-Viewer_<version>_UNSIGNED_macos-x64.dmg`
 - `DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`
-- `DOHC-Viewer_<version>_UNSIGNED_ubuntu-x64.flatpak`
 
 The current release channel has no trusted publisher signature. Windows can
 show an unknown-publisher or SmartScreen warning. The macOS app is ad-hoc sealed
 so its nested code and resources can be verified, but it has no Developer ID or
-notarization and therefore requires Apple's one-time Gatekeeper override. The
-Ubuntu 22.04+ users should use the unsigned native deb; the unsigned Flatpak
-uses the GNOME 50 runtime and requires the standard Flathub remote. A release
-is made public only after all five installers pass dependency, resource,
-install or mount, startup, and checksum gates. Verify
+notarization and therefore requires Apple's one-time Gatekeeper override.
+Ubuntu 22.04+ users should use the unsigned native deb. A release is made
+public only after all four installers pass dependency, resource, install or
+mount, startup, and checksum gates. Verify
 `SHA256SUMS.txt` before use; detailed installation and usage instructions live
 in the Wiki.
 
@@ -91,8 +88,7 @@ recover forgotten passwords, or synchronize between computers.
 The runtime has no SSH or other network data path. SSH was used only once to
 retrieve the development sample from the current ext4 card. Ubuntu can mount
 ext4 with the Linux kernel. The native deb can select any mounted path allowed
-by the current user; the Flatpak can select cards under `/media`, `/run/media`,
-or `/mnt`. The complete
+by the current user. The complete
 command sequence is in the [Wiki installation guide](https://github.com/Lr-2002/Delta-Viewer/wiki/Installation).
 
 ## Data layout
@@ -333,9 +329,7 @@ tag (or a manual rerun of one). It builds Windows x64, macOS arm64, macOS x64,
 and Ubuntu x64 on native GitHub-hosted runners. Windows uses reviewed,
 hash-pinned FFmpeg and offline WebView2 inputs. Each macOS runner builds a
 minimal LGPL FFmpeg from a pinned official source archive and commit. The
-Ubuntu 22.04 runner installs and starts the generated deb. A downstream Ubuntu
-24.04 job downloads that exact verified deb and builds/tests the GNOME 50
-Flatpak compatibility package.
+Ubuntu 22.04 runner installs and starts the generated deb.
 
 The Windows job verifies that DOHC assets have no Authenticode signature. The
 macOS jobs apply and strictly verify a local ad-hoc seal, reject Developer ID or
@@ -346,7 +340,7 @@ a product-only XProtect error still fails. Both paths also check bundled FFmpeg,
 offline WebView2 on Windows, installer or DMG contents, and an installed-copy
 startup smoke. The final job recomputes all SHA-256 values, emits a release
 manifest and GitHub provenance attestations, and publishes the draft only when
-the complete five-installer set matches. Release titles, asset names, notes,
+the complete four-installer set matches. Release titles, asset names, notes,
 reports, and the manifest all carry the `UNSIGNED` state because no trusted
 publisher identity is present.
 
