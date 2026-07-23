@@ -188,6 +188,10 @@ on the login screen; refreshing the page resets demo accounts and annotations:
 pnpm dev
 ```
 
+Run the browser-demo regression gate with `pnpm test:demo-flow`. CI requires a
+Chrome executable for this command and fails rather than skipping the gate when
+the browser is unavailable.
+
 Run the fast local gate with:
 
 ```bash

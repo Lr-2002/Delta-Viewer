@@ -3,6 +3,22 @@ import type { EpisodeSummary, StateRecord } from "../types";
 export const DEMO_EPISODE_ROOT = "/demo/2026-07-13_07-34-12";
 export const DEMO_FIXTURE_PATH = "/demo/fixture.json";
 
+const DEMO_V1_CONTRACT = {
+  name: "2026-07-13_07-34-12",
+  totalFiles: 981,
+  totalBytes: 80_531_730,
+  stateCount: 196,
+  startTimeNs: "1783928052087173494",
+  endTimeNs: "1783928062419877176",
+  streams: [
+    { name: "cam0", label: "Camera 0", width: 1920, height: 1080, channels: 3, totalBytes: 31_072_290 },
+    { name: "cam1", label: "Camera 1", width: 1280, height: 720, channels: 3, totalBytes: 11_367_788 },
+    { name: "cam2", label: "Camera 2", width: 1280, height: 720, channels: 3, totalBytes: 13_771_441 },
+    { name: "t265_left", label: "T265 Left", width: 848, height: 800, channels: 1, totalBytes: 11_863_300 },
+    { name: "t265_right", label: "T265 Right", width: 848, height: 800, channels: 1, totalBytes: 12_367_534 },
+  ],
+} as const;
+
 interface DemoFixtureStream {
   name: string;
   label: string;
@@ -28,7 +44,13 @@ export interface DemoFixture {
 let fixturePromise: Promise<DemoFixture> | undefined;
 
 export function loadDemoFixture(): Promise<DemoFixture> {
-  fixturePromise ??= fetchDemoFixture();
+  if (!fixturePromise) {
+    const request = fetchDemoFixture();
+    fixturePromise = request;
+    void request.catch(() => {
+      if (fixturePromise === request) fixturePromise = undefined;
+    });
+  }
   return fixturePromise;
 }
 
@@ -57,18 +79,17 @@ export function createDemoStates(fixture: DemoFixture): StateRecord[] {
   const { stateCount, startTimeNs, endTimeNs } = fixture.episode;
   const start = BigInt(startTimeNs);
   const end = BigInt(endTimeNs);
-  const stableFrameCount = Math.min(180, stateCount);
+  const stableFrameCount = 180;
   const stableDelta = 33_900_000n;
-  const stableSpan = BigInt(Math.max(0, stableFrameCount - 1)) * stableDelta;
-  const warningFrameCount = Math.max(0, stateCount - stableFrameCount);
-  const warningDelta = warningFrameCount
-    ? (end - start - stableSpan) / BigInt(warningFrameCount)
-    : stableDelta;
+  const stableSpan = BigInt(stableFrameCount - 1) * stableDelta;
+  const warningFrameCount = stateCount - stableFrameCount;
+  const warningSpan = end - start - stableSpan;
 
   return Array.from({ length: stateCount }, (_, frameId) => {
     const timestamp = frameId < stableFrameCount
       ? start + BigInt(frameId) * stableDelta
-      : start + stableSpan + BigInt(frameId - stableFrameCount + 1) * warningDelta;
+      : start + stableSpan
+        + (warningSpan * BigInt(frameId - stableFrameCount + 1)) / BigInt(warningFrameCount);
     const phase = frameId / 30;
     return {
       frameId,
@@ -146,18 +167,20 @@ function parseDemoFixture(value: unknown): DemoFixture {
     };
   });
 
-  return {
+  const fixture: DemoFixture = {
     formatVersion: 1,
     episode: {
       name: requiredString(episode, "name", "样例清单缺少记录标识"),
       totalFiles: requiredPositiveInteger(episode, "totalFiles", "样例清单缺少记录统计"),
       totalBytes: requiredPositiveInteger(episode, "totalBytes", "样例清单缺少记录统计"),
       stateCount: requiredPositiveInteger(episode, "stateCount", "样例清单缺少记录统计"),
-      startTimeNs: requiredString(episode, "startTimeNs", "样例清单缺少记录标识"),
-      endTimeNs: requiredString(episode, "endTimeNs", "样例清单缺少记录标识"),
+      startTimeNs: requiredDecimalTimestamp(episode, "startTimeNs"),
+      endTimeNs: requiredDecimalTimestamp(episode, "endTimeNs"),
       streams,
     },
   };
+  validateDemoV1Contract(fixture);
+  return fixture;
 }
 
 function fixtureError(detail: string): Error {
@@ -184,4 +207,42 @@ function requiredPositiveInteger(record: Record<string, unknown>, key: string, e
   const value = record[key];
   if (!isPositiveInteger(value)) throw fixtureError(error);
   return value;
+}
+
+function requiredDecimalTimestamp(record: Record<string, unknown>, key: string): string {
+  const value = requiredString(record, key, "样例清单时间轴无效");
+  if (!/^(?:0|[1-9]\d*)$/.test(value)) throw fixtureError("样例清单时间轴无效");
+  return value;
+}
+
+function validateDemoV1Contract(fixture: DemoFixture): void {
+  const { episode } = fixture;
+  const expected = DEMO_V1_CONTRACT;
+  if (BigInt(episode.startTimeNs) >= BigInt(episode.endTimeNs)) {
+    throw fixtureError("样例清单时间轴无效");
+  }
+  if (
+    episode.name !== expected.name
+    || episode.totalFiles !== expected.totalFiles
+    || episode.totalBytes !== expected.totalBytes
+    || episode.stateCount !== expected.stateCount
+    || episode.startTimeNs !== expected.startTimeNs
+    || episode.endTimeNs !== expected.endTimeNs
+  ) {
+    throw fixtureError("样例清单与 v1 演示契约不一致");
+  }
+  for (const [index, stream] of episode.streams.entries()) {
+    const expectedStream = expected.streams[index];
+    if (
+      !expectedStream
+      || stream.name !== expectedStream.name
+      || stream.label !== expectedStream.label
+      || stream.width !== expectedStream.width
+      || stream.height !== expectedStream.height
+      || stream.channels !== expectedStream.channels
+      || stream.totalBytes !== expectedStream.totalBytes
+    ) {
+      throw fixtureError("样例清单与 v1 演示契约不一致");
+    }
+  }
 }
