@@ -179,9 +179,10 @@ pnpm install
 pnpm tauri:dev
 ```
 
-Frontend-only development uses an in-memory demo account and the local sample.
-Create the demo account on the login screen; refreshing the page resets demo
-accounts and annotations:
+Frontend-only development uses an in-memory demo account and the checked-in
+`public/demo/fixture.json` metadata fixture. It does not serve the private
+`data/raw` recording or widen Vite filesystem access. Create the demo account
+on the login screen; refreshing the page resets demo accounts and annotations:
 
 ```bash
 pnpm dev

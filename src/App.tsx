@@ -1090,6 +1090,7 @@ function formatHistoryTime(value: number): string {
 
 function operationErrorLabel(code: string): string {
   const labels: Record<string, string> = {
+    DEMO_FIXTURE_UNAVAILABLE: "演示样例不可用",
     PERMISSION_DENIED: "权限错误",
     INSUFFICIENT_SPACE: "空间不足",
     PATH_NOT_FOUND: "路径失效",
