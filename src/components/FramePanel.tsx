@@ -92,14 +92,20 @@ export function FramePanel({
     setStatus("ready");
   }
 
+  function clearCurrentStreamFrames() {
+    const nextFrames = framesRef.current.map((frame) => (
+      frame?.streamKey === streamKey ? null : frame
+    )) as FrameSlots;
+    framesRef.current = nextFrames;
+    stagedSlotRef.current = null;
+    setFrames(nextFrames);
+  }
+
   function handleFrameError(slot: FrameSlotIndex, frame: CachedFrame) {
     if (requestedKeyRef.current !== frame.key || framesRef.current[slot]?.key !== frame.key) return;
 
-    const nextFrames = [...framesRef.current] as FrameSlots;
-    nextFrames[slot] = null;
-    framesRef.current = nextFrames;
-    if (stagedSlotRef.current === slot) stagedSlotRef.current = null;
-    setFrames(nextFrames);
+    // A failed replacement must not leave the previous frame visible as the current one.
+    clearCurrentStreamFrames();
     setStatus("failed");
   }
 
@@ -126,6 +132,7 @@ export function FramePanel({
       })
       .catch(() => {
         if (active) {
+          clearCurrentStreamFrames();
           setStatus("failed");
         }
       });

@@ -15,38 +15,9 @@ const browserPath = process.env.PLAYWRIGHT_CHROMIUM
   ].find(existsSync)
   ?? chromium.executablePath();
 
-const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
 const visibleImageSelector = ".camera-grid img[aria-hidden='false']";
 
-function delayForFrame(frameId) {
-  if (frameId === 1) return 300;
-  if (frameId === 2 || frameId === 3) return 220;
-  return 0;
-}
-
-function demoStates() {
-  return Array.from({ length: 196 }, (_, frameId) => JSON.stringify({
-    frame_id: frameId,
-    capture_time_ns: 1783928052087173494 + frameId * 33_900_000,
-    position: [frameId, 0, 0],
-    velocity: [0, 0, 0],
-    quaternion: [0, 0, 0, 1],
-    euler: [0, 0, 0],
-    omega: [0, 0, 0],
-    confidence: 1,
-  })).join("\n");
-}
-
-function frameSvg(stream, frameId) {
-  const palette = ["#29405c", "#395f3c", "#6d4545", "#5d4e7d", "#5c5130"];
-  const color = palette[streams.indexOf(stream)];
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
-    <rect width="320" height="180" fill="${color}"/>
-    <text x="160" y="96" fill="white" font-family="sans-serif" font-size="56" text-anchor="middle">${stream} ${frameId}</text>
-  </svg>`;
-}
-
-test("keeps decoded tiles visible through delayed playback and honors the clip end", async () => {
+test("keeps decoded tiles visible through delayed playback, honors the clip end, and clears failed replacements", async () => {
   assert.ok(existsSync(browserPath), "Chromium is required; run `pnpm exec playwright-core install chromium`");
   const server = await createServer({
     root,
@@ -65,7 +36,6 @@ test("keeps decoded tiles visible through delayed playback and honors the clip e
   const browser = await chromium.launch({ executablePath: browserPath, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
   const consoleErrors = [];
-  const imageFrameIds = [];
   const pageErrors = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
@@ -73,32 +43,33 @@ test("keeps decoded tiles visible through delayed playback and honors the clip e
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
   try {
-    await page.context().route("**/*", async (route) => {
-      const url = new URL(route.request().url());
-      if (!url.pathname.includes("/@fs/")) {
-        await route.continue();
-        return;
-      }
-      const pathname = url.pathname;
-      if (pathname.endsWith("/states.jsonl")) {
-        await route.fulfill({ contentType: "application/json", body: demoStates() });
-        return;
-      }
-      const match = pathname.match(/\/(cam0|cam1|cam2|t265_left|t265_right)\/(\d+)\.jpg$/);
-      if (!match) {
-        await route.fulfill({ status: 404, contentType: "text/plain", body: "not found" });
-        return;
-      }
-      const [, stream, rawFrameId] = match;
-      const frameId = Number(rawFrameId);
-      imageFrameIds.push(frameId);
-      const delay = delayForFrame(frameId);
-      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-      await route.fulfill({
-        contentType: "image/svg+xml",
-        headers: { "cache-control": "public, max-age=3600" },
-        body: frameSvg(stream, frameId),
-      });
+    // The browser demo now uses data URLs, so delay only FramePanel's off-DOM decode preloader.
+    await page.addInitScript(() => {
+      const nativeImage = window.Image;
+      const sourceDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+      const control = { rejectedFrameId: null, requestedFrameIds: [] };
+      Object.defineProperty(window, "__playbackFrameControl", { configurable: true, value: control });
+
+      window.Image = function PlaybackTestImage(...args) {
+        const image = new nativeImage(...args);
+        Object.defineProperty(image, "src", {
+          configurable: true,
+          get: () => sourceDescriptor?.get?.call(image),
+          set: (source) => {
+            const match = decodeURIComponent(String(source)).match(/FRAME\s+(\d+)/);
+            const frameId = match ? Number(match[1]) : null;
+            if (frameId !== null) control.requestedFrameIds.push(frameId);
+            if (frameId === control.rejectedFrameId) {
+              window.queueMicrotask(() => image.onerror?.(new Event("error")));
+              return;
+            }
+            const delay = frameId === 1 ? 300 : frameId === 2 || frameId === 3 ? 220 : 0;
+            if (delay) window.setTimeout(() => sourceDescriptor?.set?.call(image, source), delay);
+            else sourceDescriptor?.set?.call(image, source);
+          },
+        });
+        return image;
+      };
     });
 
     await page.goto(url);
@@ -159,7 +130,8 @@ test("keeps decoded tiles visible through delayed playback and honors the clip e
       const images = [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")];
       return images.length === 5 && images.every((image) => image.getAttribute("alt")?.endsWith("frame 3"));
     });
-    assert.ok(imageFrameIds.every((frameId) => frameId <= 3));
+    const readAheadFrameIds = await page.evaluate(() => window.__playbackFrameControl.requestedFrameIds);
+    assert.ok(readAheadFrameIds.every((frameId) => frameId <= 3));
     for (const viewport of [{ width: 960, height: 680 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       await page.waitForTimeout(100);
@@ -181,8 +153,22 @@ test("keeps decoded tiles visible through delayed playback and honors the clip e
     }
     assert.deepEqual(consoleErrors, []);
     assert.deepEqual(pageErrors, []);
+
+    await page.getByLabel("裁剪结束帧").fill("4");
+    await page.waitForFunction(() => document.querySelector(".trim-summary")?.textContent?.includes("帧 0–4"));
+    await page.evaluate(() => { window.__playbackFrameControl.rejectedFrameId = 4; });
+    await page.getByRole("button", { name: "下一帧" }).click();
+    await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 4 / 195"));
+    await page.waitForFunction(() => (
+      document.querySelectorAll(".camera-grid .frame-error").length === 5
+      && document.querySelectorAll(".camera-grid img[aria-hidden='false']").length === 0
+    ));
+    assert.equal(await page.locator(visibleImageSelector).count(), 0);
+    assert.equal(await page.locator(".camera-grid .frame-error").count(), 5);
+    const failureScreenshotPath = process.env.PLAYBACK_FAILURE_SCREENSHOT_PATH;
+    if (failureScreenshotPath) await page.screenshot({ path: failureScreenshotPath, fullPage: true });
+    assert.deepEqual(pageErrors, []);
   } finally {
-    await page.context().unrouteAll({ behavior: "ignoreErrors" });
     await browser.close();
     await server.close();
   }
