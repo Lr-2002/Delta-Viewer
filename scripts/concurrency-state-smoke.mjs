@@ -55,6 +55,68 @@ async function waitFor(check, description, timeoutMs = 10_000) {
   throw new Error(`Timed out waiting for ${description}${lastError ? `: ${lastError}` : ""}`);
 }
 
+async function waitForLayoutSettle(page) {
+  await page.evaluate(async () => {
+    await document.fonts?.ready;
+
+    const root = document.documentElement;
+    const body = document.body;
+    const stableFramesRequired = 3;
+    const snapshot = () => [
+      window.innerWidth,
+      window.innerHeight,
+      root.clientWidth,
+      root.clientHeight,
+      root.scrollWidth,
+      root.scrollHeight,
+      body?.clientWidth ?? 0,
+      body?.clientHeight ?? 0,
+      body?.scrollWidth ?? 0,
+      body?.scrollHeight ?? 0,
+    ].join(":");
+
+    await new Promise((resolve, reject) => {
+      let animationFrame = 0;
+      let stableFrames = 0;
+      let previous = "";
+      let resized = false;
+      const observer = new ResizeObserver(() => { resized = true; });
+      const cleanup = () => {
+        observer.disconnect();
+        cancelAnimationFrame(animationFrame);
+        clearTimeout(timeout);
+      };
+      const timeout = window.setTimeout(() => {
+        const lastSnapshot = snapshot();
+        cleanup();
+        reject(new Error(`Layout did not settle after viewport resize: ${lastSnapshot}`));
+      }, 5_000);
+      const sample = () => {
+        const next = snapshot();
+        if (resized || next !== previous) {
+          previous = next;
+          stableFrames = 0;
+          resized = false;
+        } else {
+          stableFrames += 1;
+        }
+
+        if (stableFrames >= stableFramesRequired) {
+          cleanup();
+          resolve();
+          return;
+        }
+
+        animationFrame = requestAnimationFrame(sample);
+      };
+
+      observer.observe(root);
+      if (body) observer.observe(body);
+      animationFrame = requestAnimationFrame(sample);
+    });
+  });
+}
+
 async function stop(child) {
   if (child.exitCode !== null) return;
   child.kill("SIGTERM");
@@ -473,6 +535,7 @@ try {
     { width: 390, height: 844 },
   ]) {
     await page.setViewportSize(viewport);
+    await waitForLayoutSettle(page);
     const layout = await page.evaluate(() => {
       const overflow = [...document.querySelectorAll("*")]
         .filter((element) => element.scrollWidth > window.innerWidth)
