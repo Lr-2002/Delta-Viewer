@@ -5,19 +5,25 @@ import { after, before, test } from "node:test";
 import { createServer } from "vite";
 import { chromium } from "playwright-core";
 
-const browserExecutable = [
-  process.env.PLAYWRIGHT_BROWSER_EXECUTABLE,
-  process.env.CHROME_BIN,
-  process.env.CHROME_PATH,
+const requireBrowser = process.env.DIALOG_RECOVERY_REQUIRE_BROWSER === "1";
+const configuredBrowser = process.env.PLAYWRIGHT_BROWSER_EXECUTABLE
+  ?? process.env.CHROME_BIN
+  ?? process.env.CHROME_PATH;
+const browserCandidates = configuredBrowser ? [configuredBrowser] : [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
   "/usr/bin/google-chrome",
   "/usr/bin/google-chrome-stable",
   "/usr/bin/chromium",
   "/usr/bin/chromium-browser",
-].find((candidate) => candidate && existsSync(candidate));
+];
+const browserExecutable = browserCandidates.find((candidate) => existsSync(candidate));
 
-if (!browserExecutable) {
+if (!browserExecutable && requireBrowser) {
+  test("native dialog recovery", () => {
+    assert.fail("DIALOG_RECOVERY_REQUIRE_BROWSER is set but no supported Chromium executable is available");
+  });
+} else if (!browserExecutable) {
   test("native dialog recovery", { skip: "No supported Chromium executable is installed" }, () => {});
 } else {
   let browser;
@@ -46,7 +52,7 @@ if (!browserExecutable) {
     await server?.close();
   });
 
-  test("rejected native export dialogs use the visible recovery and operation-history path", { timeout: 30_000 }, async () => {
+  test("native export dialogs recover rejected calls and preserve successful export behavior", { timeout: 30_000 }, async () => {
     const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
     const consoleErrors = [];
     const pageErrors = [];
@@ -232,10 +238,20 @@ if (!browserExecutable) {
               return { mimeType: "image/png", data: png };
             case "export_episode":
               calls.exportEpisode += 1;
-              return null;
+              return {
+                outputPath: "/destination/episode.mcap",
+                totalFiles: 1,
+                totalBytes: 42,
+                elapsedMs: 1,
+              };
             case "export_validation_report":
               calls.exportValidationReport += 1;
-              return null;
+              return {
+                outputPath: "/destination/episode-report.json",
+                totalFiles: 1,
+                totalBytes: 42,
+                elapsedMs: 1,
+              };
             default:
               return null;
           }
@@ -264,14 +280,30 @@ if (!browserExecutable) {
       await page.locator(".check-heading-actions button").click();
       await expectFailure(page, "REPORT_DIRECTORY_DIALOG_FAILURE", 3, "export_validation_report");
 
+      await page.locator(".view-tabs button").nth(2).click();
+      await page.locator(".export-button").click();
+      await page.waitForFunction(() => window.__dialogRecoveryMock.calls.exportEpisode === 1);
+      await page.locator(".export-result").waitFor();
+      assert.match(await page.locator(".export-result").innerText(), /episode\.mcap/);
+      assert.equal(await page.locator(".alert-error").count(), 0);
+      assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.records.length), 3);
+
+      await page.locator(".view-tabs button").nth(1).click();
+      await page.locator(".check-heading-actions button").click();
+      await page.waitForFunction(() => window.__dialogRecoveryMock.calls.exportValidationReport === 1);
+      await page.waitForFunction(() => [...document.querySelectorAll(".alert-notice")]
+        .some((element) => element.textContent?.includes("检查报告已导出")));
+      assert.equal(await page.locator(".alert-error").count(), 0);
+      assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.records.length), 3);
+
       await page.getByLabel("操作错误历史").click();
       await page.waitForFunction(() => document.querySelectorAll(".operation-history-row").length === 3);
       const historyText = await page.locator(".operation-history").innerText();
       assert.match(historyText, /CONFIRM_DIALOG_FAILURE/);
       assert.match(historyText, /EXPORT_DIRECTORY_DIALOG_FAILURE/);
       assert.match(historyText, /REPORT_DIRECTORY_DIALOG_FAILURE/);
-      assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.exportEpisode), 0);
-      assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.exportValidationReport), 0);
+      assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.exportEpisode), 1);
+      assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.exportValidationReport), 1);
       assert.deepEqual(pageErrors, []);
       assert.deepEqual(consoleErrors, []);
       assert.deepEqual(failedRequests, []);
