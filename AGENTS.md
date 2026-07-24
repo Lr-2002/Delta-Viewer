@@ -121,8 +121,9 @@ pnpm check:full
 pnpm check:bundle
 ```
 
-`pnpm check` 是快速门禁，包含前端 production build、Rust format、Clippy
-`-D warnings` 和常规 Rust tests。`check:full` 额外运行两个私有样例测试和
+`pnpm check` 是快速门禁，包含前端 production build、operation ownership 与
+issue-locate 回归 fixtures、Rust format、Clippy `-D warnings` 和常规 Rust
+tests。`check:full` 额外运行两个私有样例测试和
 Tauri debug no-bundle build；`check:bundle` 再生成当前平台 unsigned debug
 bundle；macOS 无头环境使用 `scripts/make-dmg.sh` 生成内容等价的 DMG，Linux
 生成并检查 `.deb` 内的主程序和资源。`check:linux` 在任意开发平台静态验证

@@ -64,7 +64,7 @@ jobs:
       - name: Run playback regression coverage
         run: pnpm test:playback
 
-      - name: Run release checks
+      - name: Run shared release gate (including issue-location regression)
         run: pnpm check
 
       - name: Run browser operation-ownership smoke test

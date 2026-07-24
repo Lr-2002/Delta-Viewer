@@ -195,9 +195,10 @@ Run the fast local gate with:
 pnpm check
 ```
 
-This runs the frontend production build, Rust format check, Clippy with warnings
-denied, and the regular Rust suite. Every run writes an ignored JSON evidence
-report under `artifacts/release-check/`.
+This runs the frontend production build, operation-ownership and issue-location
+regression fixtures, Rust format check, Clippy with warnings denied, and the
+regular Rust suite. Every run writes an ignored JSON evidence report under
+`artifacts/release-check/`.
 
 The private sample is excluded from Git. Run both real-data tests plus a Tauri
 debug application build with:
