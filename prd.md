@@ -4,10 +4,10 @@
 | --- | --- |
 | 产品名称 | DOHC Viewer |
 | 文档版本 | 0.17 |
-| 应用版本基线 | 0.17.1 |
+| 应用版本基线 | 0.17.2 |
 | 文档状态 | 安全 Alpha，四安装器 unsigned GitHub Release CD 与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64/x64；Ubuntu 22.04+ x86_64 deb |
-| 文档日期 | 2026-07-22 |
+| 文档日期 | 2026-07-24 |
 | 产品负责人 | 待指定 |
 | 技术负责人 | 待指定 |
 
@@ -15,7 +15,7 @@
 
 本文定义 DOHC Viewer 的产品边界、数据契约、用户流程、功能需求、非功能需求和发布验收标准。产品、设计、开发和测试均以本文为共同基线。
 
-本文同时记录当前 `0.17.1` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
+本文同时记录当前 `0.17.2` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
 
 ## 2. 背景与问题
 
@@ -821,7 +821,13 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - Ubuntu 24.04 Flatpak job 依赖并下载上述 artifact，从同一 deb 构建 GNOME 50 bundle，再执行 runtime、权限、资源和 10 秒 Xvfb 启动检查；不重新编译另一个 deb。
 - final job 分别接收 deb/Flatpak 报告和安装器，五个安装器全部匹配后才公开 Release。
 
-### 14.24 当前 CI/CD 包范围
+### 14.24 `0.17.2` 交互恢复与问题定位修复
+
+- 原生导出确认和目标目录选择失败统一进入可见错误与操作历史恢复路径，成功导出和报告导出行为保持不变。
+- mocked-Tauri browser 回归覆盖变为 CI 必跑门禁；缺少支持的浏览器时会失败，而不会跳过。
+- stream-scoped issue 定位会选择实际受影响帧；没有可同步 state 时会明确反馈，不再静默落到相邻 state 帧。
+
+### 14.25 当前 CI/CD 包范围
 
 - 主 CI 不再运行 Ubuntu packaging smoke；独立的 Linux package smoke workflow 已移除。
 - GitHub Release 只发布 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x86_64 deb；Flatpak 本地打包定义不进入 CI/CD。

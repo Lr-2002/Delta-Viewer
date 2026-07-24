@@ -2,6 +2,16 @@
 
 All application releases have a dedicated release commit and annotated Git tag.
 
+## 0.17.2 - 2026-07-24
+
+- Routed rejected native export confirmations and destination pickers through the
+  visible error and operation-history recovery path, while preserving successful
+  export and report-export behavior.
+- Made the mocked-Tauri dialog recovery suite a required browser CI gate so a
+  missing browser cannot silently skip the regression coverage.
+- Corrected stream-scoped issue locating so valid stream frames are selected
+  without clamping to unrelated state bounds.
+
 ## 0.17.1 - 2026-07-22
 
 - Kept native deb construction, `apt` installation, and startup verification on
