@@ -41,7 +41,7 @@ function usage() {
   console.log(`Usage: node scripts/release-check.mjs [options]
 
 Profiles:
-  --quick                         Build, format, lint, and unit tests (default)
+  --quick                         Build, regression fixtures, format, lint, and unit tests (default)
   --full                          Quick checks plus private-sample tests and a Tauri build
 
 Options:
@@ -692,6 +692,12 @@ async function main() {
       "operation ownership concurrency tests",
       commands.pnpm,
       pnpmArguments(["test:concurrency"]),
+    );
+    await runCommand(
+      report,
+      "issue location regression tests",
+      commands.pnpm,
+      pnpmArguments(["test:issue-locate"]),
     );
     await runCommand(report, "Rust format check", commands.cargo, [
       "fmt",

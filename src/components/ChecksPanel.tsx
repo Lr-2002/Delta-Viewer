@@ -9,14 +9,14 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { formatDuration } from "../lib/format";
-import type { EpisodeData, ValidationReport } from "../types";
+import type { EpisodeData, ValidationIssue, ValidationReport } from "../types";
 
 interface ChecksPanelProps {
   data: EpisodeData;
   report: ValidationReport | null;
   busy: boolean;
   onExportReport: () => void;
-  onLocateIssue: (frameId: number) => void;
+  onLocateIssue: (issue: ValidationIssue) => void;
 }
 
 type CheckStatus = "ok" | "warning" | "error";
@@ -155,7 +155,7 @@ export function ChecksPanel({
                 <button
                   className="icon-button issue-locate"
                   type="button"
-                  onClick={() => onLocateIssue(issue.frameId as number)}
+                  onClick={() => onLocateIssue(issue)}
                   title={`定位到帧 ${issue.frameId}`}
                   aria-label={`定位到帧 ${issue.frameId}`}
                 >
