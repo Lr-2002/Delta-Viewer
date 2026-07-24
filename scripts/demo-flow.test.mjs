@@ -115,6 +115,30 @@ if (!browserExecutable) {
     await context.close();
   });
 
+  test("a state-scoped issue locates its matching playback frame", async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    const page = await context.newPage();
+    const consoleErrors = [];
+    const pageErrors = [];
+    const failedRequests = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("requestfailed", (request) => failedRequests.push(request.url()));
+
+    await registerDemoAccount(page, baseUrl, "issue-locate");
+    await page.getByRole("button", { name: "检查" }).click();
+    await page.getByRole("button", { name: "定位到帧 180" }).click();
+    await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 180 / 195"));
+    await page.locator('img[alt="Camera 0 frame 180"]').waitFor();
+
+    assert.deepEqual(consoleErrors, []);
+    assert.deepEqual(pageErrors, []);
+    assert.deepEqual(failedRequests, []);
+    await context.close();
+  });
+
   test("a missing fixture reports an actionable error before demo import", async () => {
     const context = await browser.newContext({ viewport: { width: 960, height: 680 } });
     const page = await context.newPage();

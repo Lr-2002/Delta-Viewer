@@ -17,6 +17,7 @@
     "check:release-scripts": "node --test scripts/release-scripts.test.mjs",
     "test:session-activation": "node --test scripts/session-activation.test.mjs",
     "test:playback": "node --test --experimental-strip-types scripts/frame-cache.test.mjs scripts/playback-rendering.test.mjs",
+    "test:issue-locate": "node --test --experimental-strip-types scripts/issue-locate.test.mjs",
     "check:wiki": "node scripts/check-wiki.mjs",
     "check:windows-cross": "node scripts/windows-cross-check.mjs",
     "preview": "vite preview --host 0.0.0.0",

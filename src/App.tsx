@@ -57,6 +57,7 @@ import {
   validateEpisode,
 } from "./lib/backend";
 import { formatBytes, shortPath } from "./lib/format";
+import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate";
 import { OperationScope, type OperationToken } from "./lib/operationScope";
 import type {
   AuthStatus,
@@ -72,6 +73,7 @@ import type {
   ScanResult,
   TaskProgress,
   TaskDefinition,
+  ValidationIssue,
   ValidationReport,
 } from "./types";
 
@@ -682,13 +684,20 @@ function App() {
     setNotice(`已清理 ${partials.length} 个未完成导入`);
   }
 
-  function locateIssue(frameId: number) {
+  function locateIssue(issue: ValidationIssue) {
     if (!data) return;
-    const target = Math.max(getMinFrame(data), Math.min(getMaxFrame(data), frameId));
+    const location = resolveIssueLocation(data, issue);
+    if (location.kind === "unavailable") {
+      setNotice(location.message);
+      return;
+    }
+
+    const target = location.frameId;
     setPlaying(false);
     if (target < clipStartFrame) setClipStartFrame(target);
     if (target > clipEndFrame) setClipEndFrame(target);
     setExportResult(null);
+    setNotice("");
     frameRef.current = target;
     setCurrentFrame(target);
     setView("review");
@@ -700,8 +709,8 @@ function App() {
     return index;
   }, [data]);
   const currentState = stateByFrame.get(currentFrame) ?? null;
-  const maxFrame = data ? getMaxFrame(data) : 0;
-  const minFrame = data ? getMinFrame(data) : 0;
+  const playbackBounds = data ? getPlaybackFrameBounds(data) : { minFrame: 0, maxFrame: 0 };
+  const { minFrame, maxFrame } = playbackBounds;
   const status = currentOperationError ? "error" : report?.status ?? (data ? "warning" : "idle");
   const clipRange: ExportRange = { startFrame: clipStartFrame, endFrame: clipEndFrame };
   const clipStateCount = useMemo(
@@ -1160,25 +1169,11 @@ function StatusBadge({ status }: { status: "ok" | "warning" | "error" | "idle" }
 }
 
 function getMaxFrame(data: EpisodeData): number {
-  let maximum = -1;
-  for (const state of data.states) {
-    if (state.frameId >= 0) maximum = Math.max(maximum, state.frameId);
-  }
-  if (maximum >= 0) return maximum;
-  for (const stream of data.summary.streams) maximum = Math.max(maximum, stream.lastFrame ?? -1);
-  return Math.max(0, maximum);
+  return getPlaybackFrameBounds(data).maxFrame;
 }
 
 function getMinFrame(data: EpisodeData): number {
-  let minimum = Number.POSITIVE_INFINITY;
-  for (const state of data.states) {
-    if (state.frameId >= 0) minimum = Math.min(minimum, state.frameId);
-  }
-  if (Number.isFinite(minimum)) return minimum;
-  for (const stream of data.summary.streams) {
-    if (stream.firstFrame !== null) minimum = Math.min(minimum, stream.firstFrame);
-  }
-  return Number.isFinite(minimum) ? minimum : 0;
+  return getPlaybackFrameBounds(data).minFrame;
 }
 
 function formatStateTime(data: EpisodeData, captureTimeNs: string): string {
