@@ -33,6 +33,7 @@ jobs:
       version: ${{ steps.metadata.outputs.version }}
       commit: ${{ steps.metadata.outputs.commit }}
       tag_object: ${{ steps.metadata.outputs.tag_object }}
+      trusted_main_commit: ${{ steps.metadata.outputs.trusted_main_commit }}
       prerelease: ${{ steps.metadata.outputs.prerelease }}
     steps:
       - name: Check out annotated tag
@@ -74,12 +75,16 @@ jobs:
         run: |
           set -euo pipefail
           metadata="$RUNNER_TEMP/release-metadata.json"
-          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --output "$metadata"
+          git fetch --force origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --trusted-main-ref "origin/main" --output "$metadata"
           {
             echo "tag=$(jq -r .tag "$metadata")"
             echo "version=$(jq -r .version "$metadata")"
             echo "commit=$(jq -r .commit "$metadata")"
             echo "tag_object=$(jq -r .tagObject "$metadata")"
+            echo "trusted_main_commit=$(jq -r .trustedMainCommit "$metadata")"
             echo "prerelease=$(jq -r .prerelease "$metadata")"
           } >> "$GITHUB_OUTPUT"
 
@@ -143,8 +148,8 @@ jobs:
       - name: Reverify immutable release provenance
         shell: pwsh
         run: |
-          git fetch --force origin "refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
-          node scripts/verify-release.mjs --tag "$env:RELEASE_TAG" --expected-commit "$env:RELEASE_COMMIT" --expected-tag-object "$env:RELEASE_TAG_OBJECT"
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
+          node scripts/verify-release.mjs --tag "$env:RELEASE_TAG" --expected-commit "$env:RELEASE_COMMIT" --expected-tag-object "$env:RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
@@ -325,8 +330,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT"
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
@@ -453,8 +458,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT"
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
@@ -533,8 +538,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT"
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}

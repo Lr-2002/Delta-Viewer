@@ -20,7 +20,7 @@ async function writeJson(filePath, value) {
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-test("verify-release accepts only a clean exact annotated version tag", async () => {
+test("verify-release accepts only a clean trusted-main annotated version tag", async () => {
   const testRoot = await mkdtemp(path.join(tmpdir(), "dohc-release-tag-"));
   await mkdir(path.join(testRoot, "src-tauri"), { recursive: true });
   await mkdir(path.join(testRoot, "packaging/flatpak"), { recursive: true });
@@ -80,13 +80,31 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
   run("git", ["config", "user.email", "release-test@example.invalid"], testRoot);
   run("git", ["add", "--all"], testRoot);
   run("git", ["commit", "-qm", "release fixture"], testRoot);
+  const mainCommit = run("git", ["rev-parse", "HEAD"], testRoot);
+  run("git", ["update-ref", "refs/remotes/origin/main", mainCommit], testRoot);
   run("git", ["tag", "-a", "v1.2.3", "-m", "DOHC Viewer v1.2.3"], testRoot);
 
   const output = path.join(path.dirname(testRoot), `${path.basename(testRoot)}-metadata.json`);
-  run(process.execPath, [verifyScript, "--root", testRoot, "--tag", "v1.2.3", "--output", output], root);
+  run(
+    process.execPath,
+    [
+      verifyScript,
+      "--root",
+      testRoot,
+      "--tag",
+      "v1.2.3",
+      "--trusted-main-ref",
+      "origin/main",
+      "--output",
+      output,
+    ],
+    root,
+  );
   const metadata = JSON.parse(await readFile(output, "utf8"));
   assert.equal(metadata.version, "1.2.3");
-  assert.equal(metadata.commit, run("git", ["rev-parse", "HEAD"], testRoot));
+  assert.equal(metadata.commit, mainCommit);
+  assert.equal(metadata.trustedMainRef, "origin/main");
+  assert.equal(metadata.trustedMainCommit, mainCommit);
   assert.equal(metadata.tagObject, run("git", ["rev-parse", "refs/tags/v1.2.3"], testRoot));
   const originalTagObject = metadata.tagObject;
   run("git", ["commit", "--allow-empty", "-qm", "retarget fixture"], testRoot);
@@ -109,8 +127,23 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
   );
   assert.notEqual(retargetedCommit.status, 0);
   assert.match(retargetedCommit.stderr, /tag commit .* does not match expected/);
+  const nonMainTag = spawnSync(
+    process.execPath,
+    [
+      verifyScript,
+      "--root",
+      testRoot,
+      "--tag",
+      "v1.2.3",
+      "--trusted-main-ref",
+      "origin/main",
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.notEqual(nonMainTag.status, 0);
+  assert.match(nonMainTag.stderr, /is not reachable from trusted main ref origin\/main/);
   run("git", ["tag", "-d", "v1.2.3"], testRoot);
-  run("git", ["tag", "-a", "v1.2.3", "-m", "DOHC Viewer v1.2.3"], testRoot);
+  run("git", ["tag", "-a", "v1.2.3", mainCommit, "-m", "DOHC Viewer v1.2.3"], testRoot);
   assert.deepEqual(metadata.packaging.macos, [
     "untrusted-adhoc-sealed-dmg-arm64",
     "untrusted-adhoc-sealed-dmg-x64",

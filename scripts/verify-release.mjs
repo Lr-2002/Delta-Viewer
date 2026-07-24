@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ function usage() {
 Options:
   --expected-commit <sha> Require the annotated tag to peel to this commit.
   --expected-tag-object <sha> Require this exact annotated tag object.
+  --trusted-main-ref <ref> Require the tag commit to be reachable from this protected ref.
   --output <path>   Write verification metadata as JSON.
   --root <path>     Verify another checkout (used by tests).
   --help            Show this help.
@@ -20,14 +21,30 @@ Options:
 }
 
 function parseArguments(argv) {
-  const options = { root: defaultRoot, output: null, tag: null, expectedCommit: null, expectedTagObject: null };
+  const options = {
+    root: defaultRoot,
+    output: null,
+    tag: null,
+    expectedCommit: null,
+    expectedTagObject: null,
+    trustedMainRef: "origin/main",
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--help") {
       usage();
       process.exit(0);
     }
-    if (!["--tag", "--output", "--root", "--expected-commit", "--expected-tag-object"].includes(argument)) {
+    if (
+      ![
+        "--tag",
+        "--output",
+        "--root",
+        "--expected-commit",
+        "--expected-tag-object",
+        "--trusted-main-ref",
+      ].includes(argument)
+    ) {
       throw new Error(`unknown argument: ${argument}`);
     }
     const value = argv[index + 1];
@@ -40,6 +57,7 @@ function parseArguments(argv) {
     if (argument === "--root") options.root = path.resolve(value);
     if (argument === "--expected-commit") options.expectedCommit = value;
     if (argument === "--expected-tag-object") options.expectedTagObject = value;
+    if (argument === "--trusted-main-ref") options.trustedMainRef = value;
   }
   if (!options.tag) throw new Error("--tag is required");
   return options;
@@ -56,6 +74,21 @@ function runGit(root, args) {
     const stderr = error?.stderr?.toString().trim();
     throw new Error(`git ${args.join(" ")} failed${stderr ? `: ${stderr}` : ""}`);
   }
+}
+
+function isGitAncestor(root, ancestor, descendant) {
+  const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) {
+    throw new Error(`git merge-base --is-ancestor failed: ${result.error.message}`);
+  }
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  const stderr = result.stderr?.trim();
+  throw new Error(`git merge-base --is-ancestor failed${stderr ? `: ${stderr}` : ""}`);
 }
 
 function packageVersionFromToml(contents) {
@@ -178,6 +211,16 @@ async function verify(options) {
   if (options.expectedCommit && taggedCommit !== options.expectedCommit) {
     throw new Error(`tag commit ${taggedCommit} does not match expected ${options.expectedCommit}`);
   }
+  const trustedMainCommit = runGit(options.root, [
+    "rev-parse",
+    "--verify",
+    `${options.trustedMainRef}^{commit}`,
+  ]);
+  if (!isGitAncestor(options.root, taggedCommit, trustedMainCommit)) {
+    throw new Error(
+      `tag commit ${taggedCommit} is not reachable from trusted main ref ${options.trustedMainRef} (${trustedMainCommit})`,
+    );
+  }
   const status = runGit(options.root, ["status", "--porcelain=v1", "--untracked-files=all"]);
   if (status !== "") throw new Error("release checkout is not clean");
   const annotation = runGit(options.root, [
@@ -194,6 +237,8 @@ async function verify(options) {
     version,
     commit: head,
     tagObject,
+    trustedMainRef: options.trustedMainRef,
+    trustedMainCommit,
     prerelease: version.includes("-"),
     verifiedAtUtc: new Date().toISOString(),
     versions,
