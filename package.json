@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "test:concurrency": "node --test scripts/operation-scope.test.mjs",
     "test:concurrency:browser": "node scripts/concurrency-state-smoke.mjs",
+    "test:dialog-recovery": "node --test scripts/dialog-recovery.test.mjs",
     "check": "node scripts/release-check.mjs --quick",
     "check:exfat-macos": "node scripts/exfat-smoke-macos.mjs",
     "check:full": "node scripts/release-check.mjs --full",
