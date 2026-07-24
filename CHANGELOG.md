@@ -11,6 +11,9 @@ All application releases have a dedicated release commit and annotated Git tag.
   missing browser cannot silently skip the regression coverage.
 - Corrected stream-scoped issue locating so valid stream frames are selected
   without clamping to unrelated state bounds.
+- Retired the Ubuntu Flatpak from the published and CI-supported v0.17.2
+  release path. The Ubuntu 22.04+ x86_64 deb is the only supported Linux
+  release asset, and Ubuntu 20.04 has no v0.17.2 binary.
 
 ## 0.17.1 - 2026-07-22
 

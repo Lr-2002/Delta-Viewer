@@ -87,6 +87,30 @@ test("verify-release accepts only a clean exact annotated version tag", async ()
   const metadata = JSON.parse(await readFile(output, "utf8"));
   assert.equal(metadata.version, "1.2.3");
   assert.equal(metadata.commit, run("git", ["rev-parse", "HEAD"], testRoot));
+  assert.equal(metadata.tagObject, run("git", ["rev-parse", "refs/tags/v1.2.3"], testRoot));
+  const originalTagObject = metadata.tagObject;
+  run("git", ["commit", "--allow-empty", "-qm", "retarget fixture"], testRoot);
+  run("git", ["tag", "-f", "-a", "v1.2.3", "-m", "retargeted tag"], testRoot);
+  const retargeted = spawnSync(process.execPath, [verifyScript, "--root", testRoot, "--tag", "v1.2.3", "--expected-tag-object", originalTagObject], { cwd: root, encoding: "utf8" });
+  assert.notEqual(retargeted.status, 0);
+  assert.match(retargeted.stderr, /tag object .* does not match expected/);
+  const retargetedCommit = spawnSync(
+    process.execPath,
+    [
+      verifyScript,
+      "--root",
+      testRoot,
+      "--tag",
+      "v1.2.3",
+      "--expected-commit",
+      metadata.commit,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.notEqual(retargetedCommit.status, 0);
+  assert.match(retargetedCommit.stderr, /tag commit .* does not match expected/);
+  run("git", ["tag", "-d", "v1.2.3"], testRoot);
+  run("git", ["tag", "-a", "v1.2.3", "-m", "DOHC Viewer v1.2.3"], testRoot);
   assert.deepEqual(metadata.packaging.macos, [
     "untrusted-adhoc-sealed-dmg-arm64",
     "untrusted-adhoc-sealed-dmg-x64",

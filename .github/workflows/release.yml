@@ -32,6 +32,7 @@ jobs:
       tag: ${{ steps.metadata.outputs.tag }}
       version: ${{ steps.metadata.outputs.version }}
       commit: ${{ steps.metadata.outputs.commit }}
+      tag_object: ${{ steps.metadata.outputs.tag_object }}
       prerelease: ${{ steps.metadata.outputs.prerelease }}
     steps:
       - name: Check out annotated tag
@@ -78,6 +79,7 @@ jobs:
             echo "tag=$(jq -r .tag "$metadata")"
             echo "version=$(jq -r .version "$metadata")"
             echo "commit=$(jq -r .commit "$metadata")"
+            echo "tag_object=$(jq -r .tagObject "$metadata")"
             echo "prerelease=$(jq -r .prerelease "$metadata")"
           } >> "$GITHUB_OUTPUT"
 
@@ -116,10 +118,10 @@ jobs:
       WEBVIEW2_URL: https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/5a16eb19-26ed-4f1b-996e-b438848bb74a/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
       WEBVIEW2_SHA256: 9915c97304977e2d11877b03e07a7fcdd10d4277b2297c5a5113d414fc6ae6b3
     steps:
-      - name: Check out release tag
+      - name: Check out prepared release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
 
       - name: Set up pnpm
@@ -138,10 +140,15 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
-      - name: Reverify release checkout
-        run: node scripts/verify-release.mjs --tag "$env:RELEASE_TAG"
+      - name: Reverify immutable release provenance
+        shell: pwsh
+        run: |
+          git fetch --force origin "refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
+          node scripts/verify-release.mjs --tag "$env:RELEASE_TAG" --expected-commit "$env:RELEASE_COMMIT" --expected-tag-object "$env:RELEASE_TAG_OBJECT"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -291,10 +298,10 @@ jobs:
       FFMPEG_SOURCE_REVISION: 38b88335f99e76ed89ff3c93f877fdefce736c13
       FFMPEG_BUILD_ID: ffmpeg-8.1.2-dohc-minimal-lgpl
     steps:
-      - name: Check out release tag
+      - name: Check out prepared release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
 
       - name: Set up pnpm
@@ -314,10 +321,16 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
 
-      - name: Reverify release checkout
-        run: node scripts/verify-release.mjs --tag "$RELEASE_TAG"
+      - name: Reverify immutable release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -398,10 +411,10 @@ jobs:
       FFMPEG_SOURCE_REVISION: 38b88335f99e76ed89ff3c93f877fdefce736c13
       FFMPEG_BUILD_ID: ffmpeg-8.1.2-dohc-minimal-lgpl
     steps:
-      - name: Check out release tag
+      - name: Check out prepared release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
 
       - name: Set up pnpm
@@ -436,10 +449,16 @@ jobs:
             patchelf \
             xvfb
 
-      - name: Reverify release checkout
-        run: node scripts/verify-release.mjs --tag "$RELEASE_TAG"
+      - name: Reverify immutable release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -499,16 +518,27 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - name: Check out release tag
+      - name: Check out prepared release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Reverify immutable release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT"
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
 
       - name: Download all verified platform artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -550,6 +580,7 @@ jobs:
             done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
           else
             notes=$'WARNING: This release has no trusted publisher signature. Windows will show an unknown-publisher or SmartScreen warning. The macOS app has a valid local ad-hoc resource seal but no Developer ID or notarization, so first launch requires the standard System Settings > Privacy & Security > Open Anyway override. The Ubuntu deb package is unsigned; verify SHA256SUMS.txt before use.\n\nFour compiled installers are attached: Windows x64, macOS Apple Silicon, macOS Intel, and Ubuntu 22.04+ x86_64 deb. All four passed dependency, bundled-resource, install or mount, startup, and checksum gates before publication. The macOS jobs also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, Apple notarization, and trusted Linux package signing are intentionally not claimed.\n\nUser guide: https://github.com/${{ github.repository }}/wiki'
+            notes+=$'\n\nMigration: v0.17.2 no longer publishes or CI-supports the Ubuntu Flatpak. The Ubuntu 22.04+ x86_64 deb is the only supported Linux release asset; Ubuntu 20.04 has no v0.17.2 binary.'
             create_args=("$TAG" --verify-tag --draft --title "DOHC Viewer $TAG (UNSIGNED)" --generate-notes --notes "$notes")
             if [[ "$PRERELEASE" == "true" ]]; then create_args+=(--prerelease); fi
             gh release create "${create_args[@]}"

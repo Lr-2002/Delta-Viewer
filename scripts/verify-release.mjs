@@ -11,6 +11,8 @@ function usage() {
   console.log(`Usage: node scripts/verify-release.mjs --tag <vX.Y.Z> [options]
 
 Options:
+  --expected-commit <sha> Require the annotated tag to peel to this commit.
+  --expected-tag-object <sha> Require this exact annotated tag object.
   --output <path>   Write verification metadata as JSON.
   --root <path>     Verify another checkout (used by tests).
   --help            Show this help.
@@ -18,14 +20,14 @@ Options:
 }
 
 function parseArguments(argv) {
-  const options = { root: defaultRoot, output: null, tag: null };
+  const options = { root: defaultRoot, output: null, tag: null, expectedCommit: null, expectedTagObject: null };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--help") {
       usage();
       process.exit(0);
     }
-    if (!["--tag", "--output", "--root"].includes(argument)) {
+    if (!["--tag", "--output", "--root", "--expected-commit", "--expected-tag-object"].includes(argument)) {
       throw new Error(`unknown argument: ${argument}`);
     }
     const value = argv[index + 1];
@@ -36,6 +38,8 @@ function parseArguments(argv) {
     if (argument === "--tag") options.tag = value;
     if (argument === "--output") options.output = path.resolve(value);
     if (argument === "--root") options.root = path.resolve(value);
+    if (argument === "--expected-commit") options.expectedCommit = value;
+    if (argument === "--expected-tag-object") options.expectedTagObject = value;
   }
   if (!options.tag) throw new Error("--tag is required");
   return options;
@@ -162,10 +166,17 @@ async function verify(options) {
 
   const tagType = runGit(options.root, ["cat-file", "-t", `refs/tags/${options.tag}`]);
   if (tagType !== "tag") throw new Error(`${options.tag} is not an annotated tag`);
+  const tagObject = runGit(options.root, ["rev-parse", `refs/tags/${options.tag}`]);
+  if (options.expectedTagObject && tagObject !== options.expectedTagObject) {
+    throw new Error(`tag object ${tagObject} does not match expected ${options.expectedTagObject}`);
+  }
   const head = runGit(options.root, ["rev-parse", "HEAD"]);
   const taggedCommit = runGit(options.root, ["rev-list", "-n", "1", options.tag]);
   if (head !== taggedCommit) {
     throw new Error(`HEAD ${head} is not the commit referenced by ${options.tag} (${taggedCommit})`);
+  }
+  if (options.expectedCommit && taggedCommit !== options.expectedCommit) {
+    throw new Error(`tag commit ${taggedCommit} does not match expected ${options.expectedCommit}`);
   }
   const status = runGit(options.root, ["status", "--porcelain=v1", "--untracked-files=all"]);
   if (status !== "") throw new Error("release checkout is not clean");
@@ -182,6 +193,7 @@ async function verify(options) {
     tag: options.tag,
     version,
     commit: head,
+    tagObject,
     prerelease: version.includes("-"),
     verifiedAtUtc: new Date().toISOString(),
     versions,
