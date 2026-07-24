@@ -592,15 +592,21 @@ function App() {
     const rangeStatus = statusForRange(report, range);
     if (rangeStatus === "error") return;
     let acknowledgeWarnings = false;
-    if (rangeStatus === "warning") {
-      const warningCount = report?.issues.filter((issue) => issueInRange(issue, range) && issue.severity === "warning").length ?? 0;
-      acknowledgeWarnings = await confirmAction(
-        `当前裁剪片段包含 ${warningCount} 条数据警告。导出不会修复这些问题，是否继续？`,
-        "确认带警告导出",
-      );
-      if (!acknowledgeWarnings) return;
+    let destinationParent: string | null = null;
+    try {
+      if (rangeStatus === "warning") {
+        const warningCount = report?.issues.filter((issue) => issueInRange(issue, range) && issue.severity === "warning").length ?? 0;
+        acknowledgeWarnings = await confirmAction(
+          `当前裁剪片段包含 ${warningCount} 条数据警告。导出不会修复这些问题，是否继续？`,
+          "确认带警告导出",
+        );
+        if (!acknowledgeWarnings) return;
+      }
+      destinationParent = await chooseDirectory(`选择 ${exportFormatLabel(exportFormat)} 导出目录`);
+    } catch (reason) {
+      await reportFailure("export_episode", reason, data.summary.root);
+      return;
     }
-    const destinationParent = await chooseDirectory(`选择 ${exportFormatLabel(exportFormat)} 导出目录`);
     if (!destinationParent) return;
     const owner = beginOperation();
     if (!owner) return;
@@ -627,7 +633,13 @@ function App() {
 
   async function runReportExport() {
     if (!data || !report || operationScopeRef.current.current()) return;
-    const destinationParent = await chooseDirectory("选择检查报告导出目录");
+    let destinationParent: string | null = null;
+    try {
+      destinationParent = await chooseDirectory("选择检查报告导出目录");
+    } catch (reason) {
+      await reportFailure("export_validation_report", reason, data.summary.root);
+      return;
+    }
     if (!destinationParent) return;
     const owner = beginOperation();
     if (!owner) return;
