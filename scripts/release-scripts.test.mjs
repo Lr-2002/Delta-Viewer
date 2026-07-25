@@ -168,13 +168,14 @@ test("release controller is sourced only from successful protected-main CI", asy
 
   assert.match(
     workflow,
-    /^on:\n  workflow_run:\n    workflows:\n      - CI\n    types:\n      - completed\n    branches:\n      - main\n/m,
+    /^on:\n  workflow_run:\n    workflows:\n      - CI\n    types:\n      - completed\n    branches:\n      - main\n\npermissions:/m,
   );
   assert.doesNotMatch(workflow, /^  push:/m);
   assert.doesNotMatch(workflow, /^  workflow_dispatch:/m);
   assert.doesNotMatch(workflow, /github\.event\.workflow_run\.head_branch/);
-  assert.doesNotMatch(workflow, /contents: write/);
+  assert.doesNotMatch(workflow, /^\s+contents: write$/m);
   assert.doesNotMatch(workflow, /github\.token/);
+  assert.doesNotMatch(workflow, /RELEASE_AUTH_TOKEN/);
   assert.match(
     workflow,
     /if: \$\{\{ github\.event\.workflow_run\.conclusion == 'success' \}\}/,
@@ -185,7 +186,10 @@ test("release controller is sourced only from successful protected-main CI", asy
   assert.match(workflow, /git push origin "refs\/tags\/\$tag"/);
   assert.match(workflow, /controller:[\s\S]*?environment: release/);
   assert.match(workflow, /publish:[\s\S]*?environment: release/);
-  assert.match(workflow, /GH_TOKEN: \$\{\{ secrets\.RELEASE_AUTH_TOKEN \}\}/);
+  assert.match(workflow, /actions\/create-github-app-token@/);
+  assert.match(workflow, /app-id: \$\{\{ secrets\.RELEASE_APP_ID \}\}/);
+  assert.match(workflow, /private-key: \$\{\{ secrets\.RELEASE_APP_PRIVATE_KEY \}\}/);
+  assert.match(workflow, /GH_TOKEN: \$\{\{ steps\.release_authority\.outputs\.token \}\}/);
 });
 
 test("assemble-release rejects partial sets and emits checksums for a complete set", async () => {
