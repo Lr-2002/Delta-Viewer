@@ -14,6 +14,7 @@ Options:
   --expected-commit <sha> Require the annotated tag to peel to this commit.
   --expected-tag-object <sha> Require this exact annotated tag object.
   --trusted-main-ref <ref> Require the tag commit to be reachable from this protected ref.
+  --expected-trusted-main-commit <sha> Require the protected ref to remain at this recorded commit.
   --output <path>   Write verification metadata as JSON.
   --root <path>     Verify another checkout (used by tests).
   --help            Show this help.
@@ -27,6 +28,7 @@ function parseArguments(argv) {
     tag: null,
     expectedCommit: null,
     expectedTagObject: null,
+    expectedTrustedMainCommit: null,
     trustedMainRef: "origin/main",
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -42,6 +44,7 @@ function parseArguments(argv) {
         "--root",
         "--expected-commit",
         "--expected-tag-object",
+        "--expected-trusted-main-commit",
         "--trusted-main-ref",
       ].includes(argument)
     ) {
@@ -57,6 +60,7 @@ function parseArguments(argv) {
     if (argument === "--root") options.root = path.resolve(value);
     if (argument === "--expected-commit") options.expectedCommit = value;
     if (argument === "--expected-tag-object") options.expectedTagObject = value;
+    if (argument === "--expected-trusted-main-commit") options.expectedTrustedMainCommit = value;
     if (argument === "--trusted-main-ref") options.trustedMainRef = value;
   }
   if (!options.tag) throw new Error("--tag is required");
@@ -216,6 +220,14 @@ async function verify(options) {
     "--verify",
     `${options.trustedMainRef}^{commit}`,
   ]);
+  if (
+    options.expectedTrustedMainCommit &&
+    trustedMainCommit !== options.expectedTrustedMainCommit
+  ) {
+    throw new Error(
+      `trusted main ref ${options.trustedMainRef} (${trustedMainCommit}) does not match expected protected main commit ${options.expectedTrustedMainCommit}`,
+    );
+  }
   if (!isGitAncestor(options.root, taggedCommit, trustedMainCommit)) {
     throw new Error(
       `tag commit ${taggedCommit} is not reachable from trusted main ref ${options.trustedMainRef} (${trustedMainCommit})`,
@@ -239,6 +251,7 @@ async function verify(options) {
     tagObject,
     trustedMainRef: options.trustedMainRef,
     trustedMainCommit,
+    expectedTrustedMainCommit: options.expectedTrustedMainCommit,
     prerelease: version.includes("-"),
     verifiedAtUtc: new Date().toISOString(),
     versions,

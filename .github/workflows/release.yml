@@ -35,7 +35,7 @@ jobs:
       version: ${{ steps.bind.outputs.version }}
       commit: ${{ steps.bind.outputs.commit }}
       tag_object: ${{ steps.bind.outputs.tag_object }}
-      trusted_main_commit: ${{ steps.bind.outputs.trusted_main_commit }}
+      protected_main_commit: ${{ steps.bind.outputs.protected_main_commit }}
       prerelease: ${{ steps.bind.outputs.prerelease }}
     steps:
       - name: Check out exact CI-passed commit
@@ -88,9 +88,9 @@ jobs:
           }
 
           git fetch --force origin "+refs/heads/main:refs/remotes/origin/main"
-          trusted_main_commit="$(git rev-parse origin/main)"
-          [[ "$release_commit" == "$trusted_main_commit" ]] || {
-            echo "CI commit $release_commit is no longer the protected main head $trusted_main_commit" >&2
+          protected_main_commit="$(git rev-parse origin/main)"
+          [[ "$release_commit" == "$protected_main_commit" ]] || {
+            echo "CI commit $release_commit is no longer the protected main head $protected_main_commit" >&2
             exit 1
           }
           [[ "$(git rev-parse HEAD)" == "$release_commit" ]] || {
@@ -105,26 +105,33 @@ jobs:
             exit 1
           }
 
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            git fetch --force origin "+refs/tags/$tag:refs/tags/$tag"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "$tag" "$release_commit" -m "DOHC Viewer $tag"
-            tag_object="$(git rev-parse "refs/tags/$tag")"
-            git push origin "refs/tags/$tag"
-            git fetch --force origin "+refs/tags/$tag:refs/tags/$tag"
-            [[ "$(git rev-parse "refs/tags/$tag")" == "$tag_object" ]] || {
-              echo "Remote release tag object changed during creation" >&2
-              exit 1
-            }
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          tag_result="$(node scripts/create-release-tag.mjs \
+            --tag "$tag" \
+            --commit "$release_commit" \
+            --expected-main "$protected_main_commit" \
+            --repository "$GITHUB_REPOSITORY" \
+            --server-url "${{ github.server_url }}")"
+          echo "$tag_result"
+          tag_object="$(jq -r .tagObject <<< "$tag_result")"
+          [[ "$tag_object" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Atomic release tag controller did not return an annotated tag object" >&2
+            exit 1
+          }
+          git fetch --force origin "+refs/tags/$tag:refs/tags/$tag"
+          [[ "$(git rev-parse "refs/tags/$tag")" == "$tag_object" ]] || {
+            echo "Remote release tag object differs from the atomic transaction result" >&2
+            exit 1
+          }
 
           metadata="$RUNNER_TEMP/release-metadata.json"
           node scripts/verify-release.mjs \
             --tag "$tag" \
             --expected-commit "$release_commit" \
+            --expected-tag-object "$tag_object" \
             --trusted-main-ref "origin/main" \
+            --expected-trusted-main-commit "$protected_main_commit" \
             --output "$metadata"
 
           if gh release view "$tag" --json isDraft --jq .isDraft >/dev/null 2>&1; then
@@ -141,7 +148,7 @@ jobs:
             echo "version=$(jq -r .version "$metadata")"
             echo "commit=$(jq -r .commit "$metadata")"
             echo "tag_object=$(jq -r .tagObject "$metadata")"
-            echo "trusted_main_commit=$(jq -r .trustedMainCommit "$metadata")"
+            echo "protected_main_commit=$protected_main_commit"
             echo "prerelease=$(jq -r .prerelease "$metadata")"
           } >> "$GITHUB_OUTPUT"
 
@@ -155,7 +162,7 @@ jobs:
       version: ${{ steps.metadata.outputs.version }}
       commit: ${{ steps.metadata.outputs.commit }}
       tag_object: ${{ steps.metadata.outputs.tag_object }}
-      trusted_main_commit: ${{ steps.metadata.outputs.trusted_main_commit }}
+      protected_main_commit: ${{ steps.metadata.outputs.protected_main_commit }}
       prerelease: ${{ steps.metadata.outputs.prerelease }}
     steps:
       - name: Check out bound release commit
@@ -205,19 +212,21 @@ jobs:
             --expected-commit "$RELEASE_COMMIT" \
             --expected-tag-object "$RELEASE_TAG_OBJECT" \
             --trusted-main-ref "origin/main" \
+            --expected-trusted-main-commit "$RELEASE_PROTECTED_MAIN_COMMIT" \
             --output "$metadata"
           {
             echo "tag=$(jq -r .tag "$metadata")"
             echo "version=$(jq -r .version "$metadata")"
             echo "commit=$(jq -r .commit "$metadata")"
             echo "tag_object=$(jq -r .tagObject "$metadata")"
-            echo "trusted_main_commit=$(jq -r .trustedMainCommit "$metadata")"
+            echo "protected_main_commit=$RELEASE_PROTECTED_MAIN_COMMIT"
             echo "prerelease=$(jq -r .prerelease "$metadata")"
           } >> "$GITHUB_OUTPUT"
         env:
           RELEASE_TAG: ${{ needs.controller.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.controller.outputs.commit }}
           RELEASE_TAG_OBJECT: ${{ needs.controller.outputs.tag_object }}
+          RELEASE_PROTECTED_MAIN_COMMIT: ${{ needs.controller.outputs.protected_main_commit }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -280,11 +289,12 @@ jobs:
         shell: pwsh
         run: |
           git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
-          node scripts/verify-release.mjs --tag "$env:RELEASE_TAG" --expected-commit "$env:RELEASE_COMMIT" --expected-tag-object "$env:RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main"
+          node scripts/verify-release.mjs --tag "$env:RELEASE_TAG" --expected-commit "$env:RELEASE_COMMIT" --expected-tag-object "$env:RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main" --expected-trusted-main-commit "$env:RELEASE_PROTECTED_MAIN_COMMIT"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
           RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+          RELEASE_PROTECTED_MAIN_COMMIT: ${{ needs.prepare.outputs.protected_main_commit }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -462,11 +472,12 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main" --expected-trusted-main-commit "$RELEASE_PROTECTED_MAIN_COMMIT"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
           RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+          RELEASE_PROTECTED_MAIN_COMMIT: ${{ needs.prepare.outputs.protected_main_commit }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -590,11 +601,12 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main" --expected-trusted-main-commit "$RELEASE_PROTECTED_MAIN_COMMIT"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
           RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+          RELEASE_PROTECTED_MAIN_COMMIT: ${{ needs.prepare.outputs.protected_main_commit }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -693,11 +705,12 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main" --expected-trusted-main-commit "$RELEASE_PROTECTED_MAIN_COMMIT"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
           RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+          RELEASE_PROTECTED_MAIN_COMMIT: ${{ needs.prepare.outputs.protected_main_commit }}
 
       - name: Download all verified platform artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
