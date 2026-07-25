@@ -1,32 +1,132 @@
 name: Release installers
 
 on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing annotated vX.Y.Z tag to release
-        required: true
-        type: string
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: release-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   NODE_VERSION: "22"
   PNPM_VERSION: "10.12.1"
   RUST_VERSION: "1.97.1"
 
 jobs:
+  controller:
+    name: Bind protected-main CI release commit
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      should_release: ${{ steps.bind.outputs.should_release }}
+      tag: ${{ steps.bind.outputs.tag }}
+      version: ${{ steps.bind.outputs.version }}
+      commit: ${{ steps.bind.outputs.commit }}
+      tag_object: ${{ steps.bind.outputs.tag_object }}
+      trusted_main_commit: ${{ steps.bind.outputs.trusted_main_commit }}
+      prerelease: ${{ steps.bind.outputs.prerelease }}
+    steps:
+      - name: Check out exact CI-passed commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Create or verify the bound annotated release tag
+        id: bind
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTH_TOKEN }}
+          RELEASE_AUTH_TOKEN: ${{ secrets.RELEASE_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          [[ -n "$RELEASE_AUTH_TOKEN" ]] || {
+            echo "Missing protected release environment secret RELEASE_AUTH_TOKEN" >&2
+            exit 1
+          }
+          git remote set-url origin "https://x-access-token:${RELEASE_AUTH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          release_commit="${{ github.event.workflow_run.head_sha }}"
+          [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "workflow_run did not provide a full commit SHA" >&2
+            exit 1
+          }
+
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main"
+          trusted_main_commit="$(git rev-parse origin/main)"
+          [[ "$release_commit" == "$trusted_main_commit" ]] || {
+            echo "CI commit $release_commit is no longer the protected main head $trusted_main_commit" >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == "$release_commit" ]] || {
+            echo "Checked-out commit does not match the CI-passed commit" >&2
+            exit 1
+          }
+
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]] || {
+            echo "Package version does not produce a valid release tag: $tag" >&2
+            exit 1
+          }
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            git fetch --force origin "+refs/tags/$tag:refs/tags/$tag"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" "$release_commit" -m "DOHC Viewer $tag"
+            tag_object="$(git rev-parse "refs/tags/$tag")"
+            git push origin "refs/tags/$tag"
+            git fetch --force origin "+refs/tags/$tag:refs/tags/$tag"
+            [[ "$(git rev-parse "refs/tags/$tag")" == "$tag_object" ]] || {
+              echo "Remote release tag object changed during creation" >&2
+              exit 1
+            }
+          fi
+
+          metadata="$RUNNER_TEMP/release-metadata.json"
+          node scripts/verify-release.mjs \
+            --tag "$tag" \
+            --expected-commit "$release_commit" \
+            --trusted-main-ref "origin/main" \
+            --output "$metadata"
+
+          if gh release view "$tag" --json isDraft --jq .isDraft >/dev/null 2>&1; then
+            is_draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
+            [[ "$is_draft" == "true" ]] || {
+              echo "A published release already exists for immutable tag $tag" >&2
+              exit 1
+            }
+          fi
+
+          {
+            echo "should_release=true"
+            echo "tag=$(jq -r .tag "$metadata")"
+            echo "version=$(jq -r .version "$metadata")"
+            echo "commit=$(jq -r .commit "$metadata")"
+            echo "tag_object=$(jq -r .tagObject "$metadata")"
+            echo "trusted_main_commit=$(jq -r .trustedMainCommit "$metadata")"
+            echo "prerelease=$(jq -r .prerelease "$metadata")"
+          } >> "$GITHUB_OUTPUT"
+
   prepare:
-    name: Verify release tag
+    name: Verify bound release tag
+    needs: controller
+    if: ${{ needs.controller.outputs.should_release == 'true' }}
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.metadata.outputs.tag }}
@@ -36,10 +136,10 @@ jobs:
       trusted_main_commit: ${{ steps.metadata.outputs.trusted_main_commit }}
       prerelease: ${{ steps.metadata.outputs.prerelease }}
     steps:
-      - name: Check out annotated tag
+      - name: Check out bound release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.controller.outputs.commit }}
           fetch-depth: 0
 
       - name: Set up pnpm
@@ -78,7 +178,12 @@ jobs:
           git fetch --force origin \
             "+refs/heads/main:refs/remotes/origin/main" \
             "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --trusted-main-ref "origin/main" --output "$metadata"
+          node scripts/verify-release.mjs \
+            --tag "$RELEASE_TAG" \
+            --expected-commit "$RELEASE_COMMIT" \
+            --expected-tag-object "$RELEASE_TAG_OBJECT" \
+            --trusted-main-ref "origin/main" \
+            --output "$metadata"
           {
             echo "tag=$(jq -r .tag "$metadata")"
             echo "version=$(jq -r .version "$metadata")"
@@ -87,6 +192,10 @@ jobs:
             echo "trusted_main_commit=$(jq -r .trustedMainCommit "$metadata")"
             echo "prerelease=$(jq -r .prerelease "$metadata")"
           } >> "$GITHUB_OUTPUT"
+        env:
+          RELEASE_TAG: ${{ needs.controller.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.controller.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.controller.outputs.tag_object }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -518,8 +627,9 @@ jobs:
     name: Publish complete GitHub Release
     needs: [prepare, windows, macos, linux_deb]
     runs-on: ubuntu-24.04
+    environment: release
     permissions:
-      contents: write
+      contents: read
       id-token: write
       attestations: write
     steps:
@@ -567,13 +677,17 @@ jobs:
       - name: Publish only after every unsigned installer passed
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_AUTH_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
           ASSET_DIR: ${{ runner.temp }}/release-assets
         run: |
           set -euo pipefail
+          [[ -n "$GH_TOKEN" ]] || {
+            echo "Missing protected release environment secret RELEASE_AUTH_TOKEN" >&2
+            exit 1
+          }
           if gh release view "$TAG" >/dev/null 2>&1; then
             is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
             [[ "$is_draft" == "true" ]] || {
