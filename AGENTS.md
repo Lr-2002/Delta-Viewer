@@ -453,10 +453,18 @@ pnpm tauri:build
 Changelog 条目是唯一发布信号；当对应的 `vX.Y.Z` 不存在时，controller 使用当前
 仓库的 `GITHUB_TOKEN` 自动创建 annotated tag。普通提交保持已发布版本号时跳过
 Release，不要求独立 release commit、手工 tag、GitHub App 凭据或 release
-Environment。prepare job 重新验证 tag 类型、HEAD、clean checkout、Changelog 和
-四处应用版本，然后运行 `pnpm check`。Windows x64、macOS arm64、macOS x64 和
-Ubuntu x64 在原生 runner 上构建；所有 job 使用锁定 commit SHA 的 Actions，并固定
-Node 22、pnpm 10.12.1 和 Rust 1.97.1。
+Environment。完整 `pnpm check` 和 release workflow 回归只在 CI 对同一 commit 运行
+一次；controller 再验证 main HEAD、clean checkout、annotated tag、Changelog 和四处
+应用版本后，四个平台直接并行构建，不得在 CD 中重复完整 CI。Windows x64、macOS
+arm64、macOS x64 和 Ubuntu x64 在原生 runner 上构建；所有 job 使用锁定 commit SHA
+的 Actions，并固定 Node 22、pnpm 10.12.1 和 Rust 1.97.1。
+
+CI 和四个平台使用固定 commit 的 `Swatinem/rust-cache` v2.9.1 缓存 Cargo 依赖编译
+结果。cache key 必须按 CI/平台/目标架构隔离，并包含 action 自动计算的 Rust 工具链、
+Cargo manifests/lockfile 和编译环境指纹；PR 不得写入 main 的 CI cache。保持默认
+`cache-all-crates:false`/`cache-workspace-crates:false` 和 `CARGO_INCREMENTAL=0`，不得
+缓存 workspace crate、最终 app、DMG、NSIS、deb、签名/封印结果或 verification report。
+缓存命中只能加速重新编译，每次 Release 仍必须重新组装并执行全部平台验证。
 
 当前 release channel 是显式 unsigned，即没有可信发布者身份。Windows FFmpeg、许可证、构建说明和
 WebView2 exact URL/SHA-256 固定在 workflow；macOS arm64/x64 从固定 archive hash 和

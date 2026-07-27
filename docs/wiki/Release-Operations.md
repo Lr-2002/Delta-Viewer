@@ -27,6 +27,13 @@ Release 标题、说明、安装器文件名、verification report 和 manifest 
 只为当前运行申请 `contents: write`，其他 job 保持只读；当前 unsigned 通道不使用
 GitHub App ID、private key 或 release Environment。
 
+完整代码门禁和 release workflow 回归只在 CI 对同一 commit 执行一次。CI 成功后，
+controller 仍会重新核对 main HEAD、clean checkout、版本、Changelog 和 annotated tag，
+但不会再次运行完整 `pnpm check`；四个平台从 controller 直接并行开始。CI 与每个平台
+使用按操作系统、架构、Rust 工具链和 Cargo lockfile 隔离的依赖编译缓存。缓存不包含
+应用 workspace crate、增量编译产物、安装包、封印结果或验证报告，每次 Release 仍会
+重新组装并执行全部安装、启动、资源、封印和 hash 门禁。
+
 ## 固定依赖
 
 Windows job 固定以下内容：

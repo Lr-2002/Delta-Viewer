@@ -334,6 +334,14 @@ reviewed, hash-pinned FFmpeg and offline WebView2 inputs. Each macOS runner
 builds a minimal LGPL FFmpeg from a pinned official source archive and commit.
 The Ubuntu 22.04 runner installs and starts the generated deb.
 
+The exact commit runs the full code and release-workflow gate once in CI. After
+that succeeds, the release controller rechecks the immutable tag, main HEAD,
+versions, and Changelog without repeating the full gate, so all four native
+package jobs can start immediately. CI and package jobs use isolated Cargo
+dependency caches keyed by platform, target, Rust toolchain, and Cargo inputs.
+Workspace crates, incremental outputs, installers, seals, and verification
+reports are not cached; every installer is rebuilt, packaged, and verified.
+
 Every release requires a unique, dated, non-empty entry for the current version
 at the top of the dated entries in `CHANGELOG.md`. The release gate rejects
 missing, duplicate, stale, invalid-date, empty, or placeholder entries before

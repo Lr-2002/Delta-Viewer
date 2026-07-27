@@ -45,6 +45,16 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy, rustfmt
 
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: "./src-tauri -> target"
+          key: ci-ubuntu-x64
+          cache-bin: "false"
+          cache-all-crates: "false"
+          cache-workspace-crates: "false"
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
       - name: Install Tauri build dependencies
         run: |
           sudo apt-get update
@@ -63,6 +73,9 @@ jobs:
 
       - name: Run playback regression coverage
         run: pnpm test:playback
+
+      - name: Run release workflow regression coverage
+        run: pnpm check:release-scripts
 
       - name: Run shared release gate (including issue-location regression)
         run: pnpm check

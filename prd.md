@@ -546,8 +546,9 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 ### 12.4 正式 CD 与 GitHub Release
 
-- `.github/workflows/release.yml` 在 `main` CI 成功后核对 HEAD、clean checkout、完整 Changelog 条目和四处应用版本，并使用该次运行的 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag；当前 unsigned 通道不依赖 GitHub App 凭据或 release Environment。Changelog 缺失、重复、未置顶、日期无效、为空或仅含占位文本时，必须在 tag 创建前失败。
+- `.github/workflows/release.yml` 在 `main` CI 成功后核对 HEAD、clean checkout、完整 Changelog 条目和四处应用版本，并使用该次运行的 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag；当前 unsigned 通道不依赖 GitHub App 凭据或 release Environment。Changelog 缺失、重复、未置顶、日期无效、为空或仅含占位文本时，必须在 tag 创建前失败。完整 `pnpm check` 与 release workflow 回归只在 CI 对同一 commit 执行一次，CD 不重复该门禁。
 - Windows x64、macOS arm64、macOS x64、Ubuntu x86_64 使用原生 hosted runner 构建；Node、pnpm、Rust 和全部 GitHub Actions 固定版本或 commit。
+- CI 与四个平台可恢复按平台/目标架构和 Rust/Cargo 环境隔离的依赖编译缓存；只有受信任的 main/release 运行可写共享 cache。workspace crate、增量编译产物和最终 installer 不得进入 cache，每次 Release 必须重新组装并执行完整安装、启动、资源、封印和 hash 验证。
 - Windows 固定 reviewed FFmpeg binary/license/build notice 与 WebView2 exact Microsoft URL/SHA-256；macOS 从固定官方 FFmpeg source archive hash/Git revision 构建两个原生架构。
 - Windows 检查 DOHC 产物为 unsigned、Microsoft WebView2 签名、NSIS 内嵌 hash、silent install/startup/uninstall；macOS 检查 ad-hoc sealed nested code/resources、没有 Developer ID/notarization claim、DMG 挂载、资源 hash、synthetic-quarantine Gatekeeper 分类和复制后直接启动。
 - Release 标题、说明、四个 installer 名称、verification report 和 manifest 必须显示 `UNSIGNED`；后续引入签名时恢复 Authenticode、timestamp、Developer ID、Gatekeeper、notarization 和可信 Linux 包发布门禁。
@@ -841,6 +842,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 - 主 CI 不再运行 Ubuntu packaging smoke；独立的 Linux package smoke workflow 已移除。
 - `main` 允许直接推送但禁止删除和 force-push；CI 成功和统一版本变更共同触发自动 annotated tag，无独立 release commit、手工 tag、GitHub App 凭据或 release Environment。
+- CI 是同一 commit 的唯一完整代码门禁；Release controller 只重复不可变 tag、main HEAD、版本和 Changelog 验证，四个平台随后直接并行构建。CI 与各原生平台使用隔离的 Cargo 依赖缓存，最终安装包和验证结果始终重新生成。
 - GitHub Release 只发布 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x86_64 deb。
 - Flatpak manifest、构建脚本和验证脚本已从仓库移除；Release 汇总对意外出现的 Flatpak 产物保持拒绝。
 

@@ -301,6 +301,49 @@ test("release controller auto-tags the successful main commit with GITHUB_TOKEN"
   );
 });
 
+test("CI owns the shared gate and release jobs use isolated dependency caches", async () => {
+  const [ciWorkflow, releaseWorkflow] = await Promise.all([
+    readFile(path.join(root, ".github/workflows/ci.yml"), "utf8"),
+    readFile(path.join(root, ".github/workflows/release.yml"), "utf8"),
+  ]);
+  const rustCacheRef =
+    "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1";
+
+  assert.ok(
+    ciWorkflow.indexOf("pnpm check:release-scripts") < ciWorkflow.indexOf("run: pnpm check\n"),
+    "release workflow regressions must pass before the shared CI gate completes",
+  );
+  assert.doesNotMatch(releaseWorkflow, /^  prepare:/m);
+  assert.doesNotMatch(releaseWorkflow, /pnpm check(?::release-scripts)?/);
+  for (const job of ["windows", "macos", "linux_deb"]) {
+    assert.match(
+      releaseWorkflow,
+      new RegExp(
+        `^  ${job}:[\\s\\S]*?^    needs: controller\\n    if: \\$\\{\\{ needs\\.controller\\.outputs\\.should_release == 'true' \\}\\}`,
+        "m",
+      ),
+    );
+  }
+  assert.match(
+    releaseWorkflow,
+    /^    needs: \[controller, windows, macos, linux_deb\]$/m,
+  );
+
+  assert.equal(ciWorkflow.split(rustCacheRef).length - 1, 1);
+  assert.equal(releaseWorkflow.split(rustCacheRef).length - 1, 3);
+  assert.match(ciWorkflow, /key: ci-ubuntu-x64/);
+  assert.match(releaseWorkflow, /key: release-windows-x64/);
+  assert.match(releaseWorkflow, /key: release-\$\{\{ matrix\.target \}\}/);
+  assert.match(releaseWorkflow, /key: release-linux-x64/);
+  assert.doesNotMatch(`${ciWorkflow}\n${releaseWorkflow}`, /cache-(?:all|workspace)-crates: "true"/);
+  assert.equal(`${ciWorkflow}\n${releaseWorkflow}`.split('cache-bin: "false"').length - 1, 4);
+  assert.equal(`${ciWorkflow}\n${releaseWorkflow}`.split('cache-all-crates: "false"').length - 1, 4);
+  assert.equal(
+    `${ciWorkflow}\n${releaseWorkflow}`.split('cache-workspace-crates: "false"').length - 1,
+    4,
+  );
+});
+
 test("assemble-release rejects partial sets and emits checksums for a complete set", async () => {
   const testRoot = await mkdtemp(path.join(tmpdir(), "dohc-release-assets-"));
   const input = path.join(testRoot, "input");
