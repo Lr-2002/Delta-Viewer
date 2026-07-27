@@ -5,6 +5,8 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.6 - 2026-07-27
+
 - Retired macOS Intel/x64 from future releases; CD now publishes Windows x64,
   macOS arm64, and the Ubuntu 22.04+ x86_64 deb as one verified set.
 - Added authenticated batch export for locally annotated full episodes, with
