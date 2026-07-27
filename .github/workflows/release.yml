@@ -1,43 +1,174 @@
 name: Release installers
 
 on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing annotated vX.Y.Z tag to release
-        required: true
-        type: string
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: release-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   NODE_VERSION: "22"
   PNPM_VERSION: "10.12.1"
   RUST_VERSION: "1.97.1"
 
 jobs:
+  controller:
+    name: Bind protected-main CI release commit
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      should_release: ${{ steps.bind.outputs.should_release }}
+      tag: ${{ steps.bind.outputs.tag }}
+      version: ${{ steps.bind.outputs.version }}
+      commit: ${{ steps.bind.outputs.commit }}
+      tag_object: ${{ steps.bind.outputs.tag_object }}
+      protected_main_commit: ${{ steps.bind.outputs.protected_main_commit }}
+      prerelease: ${{ steps.bind.outputs.prerelease }}
+    steps:
+      - name: Check out exact CI-passed commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Require dedicated release authority
+        shell: bash
+        env:
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_APP_ID" && -n "$RELEASE_APP_PRIVATE_KEY" ]] || {
+            echo "Missing protected release environment App credentials" >&2
+            exit 1
+          }
+
+      - name: Mint dedicated release authority token
+        id: release_authority
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: Create or verify the bound annotated release tag
+        id: bind
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.release_authority.outputs.token }}
+          RELEASE_APP_TOKEN: ${{ steps.release_authority.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          [[ -n "$RELEASE_APP_TOKEN" ]] || {
+            echo "Dedicated release authority token was not issued" >&2
+            exit 1
+          }
+          git remote set-url origin "https://x-access-token:${RELEASE_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          release_commit="${{ github.event.workflow_run.head_sha }}"
+          [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "workflow_run did not provide a full commit SHA" >&2
+            exit 1
+          }
+
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main"
+          protected_main_commit="$(git rev-parse origin/main)"
+          [[ "$release_commit" == "$protected_main_commit" ]] || {
+            echo "CI commit $release_commit is no longer the protected main head $protected_main_commit" >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == "$release_commit" ]] || {
+            echo "Checked-out commit does not match the CI-passed commit" >&2
+            exit 1
+          }
+
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]] || {
+            echo "Package version does not produce a valid release tag: $tag" >&2
+            exit 1
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          tag_result="$(node scripts/create-release-tag.mjs \
+            --tag "$tag" \
+            --commit "$release_commit" \
+            --expected-main "$protected_main_commit" \
+            --repository "$GITHUB_REPOSITORY" \
+            --server-url "${{ github.server_url }}")"
+          echo "$tag_result"
+          tag_object="$(jq -r .tagObject <<< "$tag_result")"
+          [[ "$tag_object" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Atomic release tag controller did not return an annotated tag object" >&2
+            exit 1
+          }
+          git fetch --force origin "+refs/tags/$tag:refs/tags/$tag"
+          [[ "$(git rev-parse "refs/tags/$tag")" == "$tag_object" ]] || {
+            echo "Remote release tag object differs from the atomic transaction result" >&2
+            exit 1
+          }
+
+          metadata="$RUNNER_TEMP/release-metadata.json"
+          node scripts/verify-release.mjs \
+            --tag "$tag" \
+            --expected-commit "$release_commit" \
+            --expected-tag-object "$tag_object" \
+            --trusted-main-ref "origin/main" \
+            --expected-trusted-main-commit "$protected_main_commit" \
+            --output "$metadata"
+
+          if gh release view "$tag" --json isDraft --jq .isDraft >/dev/null 2>&1; then
+            is_draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
+            [[ "$is_draft" == "true" ]] || {
+              echo "A published release already exists for immutable tag $tag" >&2
+              exit 1
+            }
+          fi
+
+          {
+            echo "should_release=true"
+            echo "tag=$(jq -r .tag "$metadata")"
+            echo "version=$(jq -r .version "$metadata")"
+            echo "commit=$(jq -r .commit "$metadata")"
+            echo "tag_object=$(jq -r .tagObject "$metadata")"
+            echo "protected_main_commit=$protected_main_commit"
+            echo "prerelease=$(jq -r .prerelease "$metadata")"
+          } >> "$GITHUB_OUTPUT"
+
   prepare:
-    name: Verify release tag
+    name: Verify bound release tag
+    needs: controller
+    if: ${{ needs.controller.outputs.should_release == 'true' }}
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.metadata.outputs.tag }}
       version: ${{ steps.metadata.outputs.version }}
       commit: ${{ steps.metadata.outputs.commit }}
+      tag_object: ${{ steps.metadata.outputs.tag_object }}
+      protected_main_commit: ${{ steps.metadata.outputs.protected_main_commit }}
       prerelease: ${{ steps.metadata.outputs.prerelease }}
     steps:
-      - name: Check out annotated tag
+      - name: Check out bound release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.controller.outputs.commit }}
           fetch-depth: 0
 
       - name: Set up pnpm
@@ -73,13 +204,29 @@ jobs:
         run: |
           set -euo pipefail
           metadata="$RUNNER_TEMP/release-metadata.json"
-          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --output "$metadata"
+          git fetch --force origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs \
+            --tag "$RELEASE_TAG" \
+            --expected-commit "$RELEASE_COMMIT" \
+            --expected-tag-object "$RELEASE_TAG_OBJECT" \
+            --trusted-main-ref "origin/main" \
+            --expected-trusted-main-commit "$RELEASE_PROTECTED_MAIN_COMMIT" \
+            --output "$metadata"
           {
             echo "tag=$(jq -r .tag "$metadata")"
             echo "version=$(jq -r .version "$metadata")"
             echo "commit=$(jq -r .commit "$metadata")"
+            echo "tag_object=$(jq -r .tagObject "$metadata")"
+            echo "protected_main_commit=$RELEASE_PROTECTED_MAIN_COMMIT"
             echo "prerelease=$(jq -r .prerelease "$metadata")"
           } >> "$GITHUB_OUTPUT"
+        env:
+          RELEASE_TAG: ${{ needs.controller.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.controller.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.controller.outputs.tag_object }}
+          RELEASE_PROTECTED_MAIN_COMMIT: ${{ needs.controller.outputs.protected_main_commit }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -116,10 +263,10 @@ jobs:
       WEBVIEW2_URL: https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/5a16eb19-26ed-4f1b-996e-b438848bb74a/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
       WEBVIEW2_SHA256: 9915c97304977e2d11877b03e07a7fcdd10d4277b2297c5a5113d414fc6ae6b3
     steps:
-      - name: Check out release tag
+      - name: Check out prepared release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
 
       - name: Set up pnpm
@@ -138,10 +285,16 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
-      - name: Reverify release checkout
-        run: node scripts/verify-release.mjs --tag "$env:RELEASE_TAG"
+      - name: Reverify immutable release provenance
+        shell: pwsh
+        run: |
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
+          node scripts/verify-release.mjs --tag "$env:RELEASE_TAG" --expected-commit "$env:RELEASE_COMMIT" --expected-tag-object "$env:RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main" --expected-trusted-main-commit "$env:RELEASE_PROTECTED_MAIN_COMMIT"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+          RELEASE_PROTECTED_MAIN_COMMIT: ${{ needs.prepare.outputs.protected_main_commit }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -291,10 +444,10 @@ jobs:
       FFMPEG_SOURCE_REVISION: 38b88335f99e76ed89ff3c93f877fdefce736c13
       FFMPEG_BUILD_ID: ffmpeg-8.1.2-dohc-minimal-lgpl
     steps:
-      - name: Check out release tag
+      - name: Check out prepared release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
 
       - name: Set up pnpm
@@ -314,10 +467,17 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
 
-      - name: Reverify release checkout
-        run: node scripts/verify-release.mjs --tag "$RELEASE_TAG"
+      - name: Reverify immutable release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main" --expected-trusted-main-commit "$RELEASE_PROTECTED_MAIN_COMMIT"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+          RELEASE_PROTECTED_MAIN_COMMIT: ${{ needs.prepare.outputs.protected_main_commit }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -398,10 +558,10 @@ jobs:
       FFMPEG_SOURCE_REVISION: 38b88335f99e76ed89ff3c93f877fdefce736c13
       FFMPEG_BUILD_ID: ffmpeg-8.1.2-dohc-minimal-lgpl
     steps:
-      - name: Check out release tag
+      - name: Check out prepared release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
 
       - name: Set up pnpm
@@ -436,10 +596,17 @@ jobs:
             patchelf \
             xvfb
 
-      - name: Reverify release checkout
-        run: node scripts/verify-release.mjs --tag "$RELEASE_TAG"
+      - name: Reverify immutable release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main" --expected-trusted-main-commit "$RELEASE_PROTECTED_MAIN_COMMIT"
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+          RELEASE_PROTECTED_MAIN_COMMIT: ${{ needs.prepare.outputs.protected_main_commit }}
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -494,21 +661,56 @@ jobs:
     name: Publish complete GitHub Release
     needs: [prepare, windows, macos, linux_deb]
     runs-on: ubuntu-24.04
+    environment: release
     permissions:
-      contents: write
+      contents: read
       id-token: write
       attestations: write
     steps:
-      - name: Check out release tag
+      - name: Check out prepared release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
+
+      - name: Require dedicated release authority
+        shell: bash
+        env:
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_APP_ID" && -n "$RELEASE_APP_PRIVATE_KEY" ]] || {
+            echo "Missing protected release environment App credentials" >&2
+            exit 1
+          }
+
+      - name: Mint dedicated release authority token
+        id: release_authority
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Reverify immutable release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main" "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --expected-tag-object "$RELEASE_TAG_OBJECT" --trusted-main-ref "origin/main" --expected-trusted-main-commit "$RELEASE_PROTECTED_MAIN_COMMIT"
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+          RELEASE_PROTECTED_MAIN_COMMIT: ${{ needs.prepare.outputs.protected_main_commit }}
 
       - name: Download all verified platform artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -532,13 +734,17 @@ jobs:
       - name: Publish only after every unsigned installer passed
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.release_authority.outputs.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
           ASSET_DIR: ${{ runner.temp }}/release-assets
         run: |
           set -euo pipefail
+          [[ -n "$GH_TOKEN" ]] || {
+            echo "Dedicated release authority token was not issued" >&2
+            exit 1
+          }
           if gh release view "$TAG" >/dev/null 2>&1; then
             is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
             [[ "$is_draft" == "true" ]] || {
@@ -550,6 +756,7 @@ jobs:
             done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
           else
             notes=$'WARNING: This release has no trusted publisher signature. Windows will show an unknown-publisher or SmartScreen warning. The macOS app has a valid local ad-hoc resource seal but no Developer ID or notarization, so first launch requires the standard System Settings > Privacy & Security > Open Anyway override. The Ubuntu deb package is unsigned; verify SHA256SUMS.txt before use.\n\nFour compiled installers are attached: Windows x64, macOS Apple Silicon, macOS Intel, and Ubuntu 22.04+ x86_64 deb. All four passed dependency, bundled-resource, install or mount, startup, and checksum gates before publication. The macOS jobs also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, Apple notarization, and trusted Linux package signing are intentionally not claimed.\n\nUser guide: https://github.com/${{ github.repository }}/wiki'
+            notes+=$'\n\nMigration: v0.17.2 no longer publishes or CI-supports the Ubuntu Flatpak. The Ubuntu 22.04+ x86_64 deb is the only supported Linux release asset; Ubuntu 20.04 has no v0.17.2 binary.'
             create_args=("$TAG" --verify-tag --draft --title "DOHC Viewer $TAG (UNSIGNED)" --generate-notes --notes "$notes")
             if [[ "$PRERELEASE" == "true" ]]; then create_args+=(--prerelease); fi
             gh release create "${create_args[@]}"
