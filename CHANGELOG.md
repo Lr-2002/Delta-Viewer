@@ -5,11 +5,16 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.5 - 2026-07-27
+
 - Made a unique, dated, non-empty `CHANGELOG.md` entry mandatory for every
   release and publish that curated entry directly in the GitHub Release notes.
 - Ignore macOS AppleDouble `._*` and `.DS_Store` metadata consistently during
   source statistics, fingerprinting, frame validation, and explicit imports,
   while retaining errors for actual malformed JPEG frame names.
+- Reduced repeat CI from 5 minutes 54 seconds to 2 minutes 59 seconds with
+  isolated Rust dependency caches, and removed the duplicate full gate from CD
+  while preserving every platform packaging and runtime verification.
 
 ## 0.17.4 - 2026-07-27
 
