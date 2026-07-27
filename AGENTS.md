@@ -27,7 +27,7 @@ DOHC_Viewer/
   README.md                      用户/构建入口
   AGENTS.md                      本开发指南
   .github/workflows/
-    release.yml                 四个安装包 CD 与原子发布门禁
+    release.yml                 四个安装包 CD 与完整集合发布门禁
     wiki.yml                    docs/wiki 到 GitHub Wiki 的同步流程
   docs/wiki/                    GitHub Wiki 的可审查唯一源文件
   src/                           React/TypeScript UI
@@ -62,15 +62,13 @@ DOHC_Viewer/
     examples/stress-check.rs     压力验收 CLI；正式模式默认开启
   scripts/release-check.mjs      跨平台 quick/full/bundle 发布检查
   scripts/verify-release.mjs     annotated tag、版本与打包契约门禁
-  packaging/flatpak/             保留的本地 Flatpak manifest 和 AppStream metadata（不进入 CI/CD）
+  packaging/linux/               Ubuntu deb 的 AppStream metadata
   scripts/assemble-release.mjs   四个产物/报告汇总与 SHA-256 manifest
   scripts/build-ffmpeg-linux.sh  Linux x64 最小 LGPL FFmpeg 源码构建
-  scripts/build-flatpak.sh       保留的本地 deb 到 Flatpak bundle 工具
   scripts/build-ffmpeg-macos.sh 固定源码构建最小 LGPL FFmpeg
   scripts/seal-macos-app-adhoc.sh macOS app 嵌套代码与资源 ad-hoc 封印
   scripts/verify-release-macos.sh DMG 封印、Gatekeeper、挂载与启动检查
   scripts/verify-release-deb.sh Ubuntu deb 元数据、apt 安装、资源与启动检查
-  scripts/verify-release-linux.sh 保留的本地 Flatpak 权限、资源、安装与启动检查
   scripts/verify-release-windows.ps1 unsigned NSIS 安装启动卸载检查
   scripts/check-wiki.mjs         Wiki 页面和内部链接检查
   scripts/windows-cross-check.mjs macOS/Linux 到 Windows x64 MSVC 条件编译检查
@@ -127,7 +125,7 @@ tests。`check:full` 额外运行两个私有样例测试和
 Tauri debug no-bundle build；`check:bundle` 再生成当前平台 unsigned debug
 bundle；macOS 无头环境使用 `scripts/make-dmg.sh` 生成内容等价的 DMG，Linux
 生成并检查 `.deb` 内的主程序和资源。`check:linux` 在任意开发平台静态验证
-deb 依赖/安装门禁，以及保留的本地 Flatpak runtime、离线权限和 Tauri 资源配置；该命令不在 CI/CD 中运行。三者均通过 `scripts/release-check.mjs` 写入 ignored 的
+deb 依赖/安装门禁、AppStream metadata 和 Tauri 资源配置；该命令不在 CI/CD 中运行。三者均通过 `scripts/release-check.mjs` 写入 ignored 的
 `artifacts/release-check/*.json`，报告 schemaVersion 当前为 1。debug bundle
 成功不能替代签名发布和目标机器验收。
 
@@ -450,10 +448,14 @@ pnpm tauri:build
 
 ### 10.4 GitHub Release CD
 
-`.github/workflows/release.yml` 只处理已经存在的 annotated `vX.Y.Z` tag。prepare job
-重新验证 tag 类型、HEAD、clean checkout、Changelog 以及四处应用版本，然后运行
-`pnpm check`。Windows x64、macOS arm64、macOS x64 和 Ubuntu x64 在原生 runner 上构建；所有
-job 使用锁定 commit SHA 的 Actions，并固定 Node 22、pnpm 10.12.1 和 Rust 1.97.1。
+`.github/workflows/release.yml` 在 `main` 的 CI 成功后运行。四处应用版本和带日期的
+Changelog 条目是唯一发布信号；当对应的 `vX.Y.Z` 不存在时，controller 使用当前
+仓库的 `GITHUB_TOKEN` 自动创建 annotated tag。普通提交保持已发布版本号时跳过
+Release，不要求独立 release commit、手工 tag、GitHub App 凭据或 release
+Environment。prepare job 重新验证 tag 类型、HEAD、clean checkout、Changelog 和
+四处应用版本，然后运行 `pnpm check`。Windows x64、macOS arm64、macOS x64 和
+Ubuntu x64 在原生 runner 上构建；所有 job 使用锁定 commit SHA 的 Actions，并固定
+Node 22、pnpm 10.12.1 和 Rust 1.97.1。
 
 当前 release channel 是显式 unsigned，即没有可信发布者身份。Windows FFmpeg、许可证、构建说明和
 WebView2 exact URL/SHA-256 固定在 workflow；macOS arm64/x64 从固定 archive hash 和
@@ -510,20 +512,20 @@ GitHub Wiki，不直接在网页维护分叉版本。
 - 不使用 `git reset --hard`、宽泛递归删除或不受控清理命令。
 - 原始数据只保存在 ignored 目录；需要共享测试数据时创建最小、脱敏、明确许可的 fixture。
 - 不提交 `dist/`、`node_modules/`、`src-tauri/target/`、generated schemas 或临时截图。
-- 除非任务明确要求，不自动创建 commit、tag 或 release。
+- 除非任务明确要求，不在本地自动创建 commit、tag 或 release；版本变更推送后由
+  GitHub Actions 按发布契约自动创建 tag 和 Release。
 - 修改行为时同步更新相关文档；不要把“已实现”状态提前写入 PRD。
 
-当前产品开发明确要求每个应用版本都有独立 commit 和 annotated tag。创建版本时必须：
+`main` 允许直接推送，但禁止删除和 force-push；CI 仍是自动发布的前置条件。创建版本时必须：
 
-1. 保持 `package.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 的 semver 一致。
+1. 保持 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 的 semver 一致。
 2. 更新 `CHANGELOG.md` 和 PRD 实现状态。
 3. 至少运行 `pnpm check:full`；平台包变更还要运行相应 bundle 检查，并确认私有数据、staged FFmpeg、报告和构建产物未暂存。
-4. 创建一个包含完整版本内容的 release commit，例如 `release: v0.2.0`。
-5. 在 release commit 上运行 `node scripts/release-check.mjs --quick --require-clean`，确认版本一致且工作区干净。
-6. 在该 commit 上创建 annotated tag，例如 `git tag -a v0.2.0 -m "DOHC Viewer v0.2.0"`。
-7. 测试失败、报告 failed、版本不一致或工作区混入无关文件时不得打 tag。
+4. 将完整版本内容作为普通开发提交直接推送或合并到 `main`，不创建独立 release commit。
+5. CI 成功后由 `release.yml` 自动创建 annotated `vX.Y.Z` tag；不要手工创建、移动或覆盖版本 tag。
+6. 测试失败、报告 failed、版本不一致或工作区混入无关文件时不得发布。
 
-tag 推送后，GitHub Release 只能由 `release.yml` 生成。不要手工上传或只发布单一平台；
+自动 tag 创建后，GitHub Release 只能由 `release.yml` 生成。不要手工上传或只发布单一平台；
 当前 unsigned channel 必须保留全部警告和文件名标记。CD 因依赖或 smoke 失败时可重跑
 同一 draft，代码修复则进入新版本和新 tag。未来签名模式的修改也必须进入新版本，
 不得覆盖现有 unsigned tag。GitHub Wiki 的可编辑源保留在主仓库，Wiki Git 仓库只接收同步 commit。

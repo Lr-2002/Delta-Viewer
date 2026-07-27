@@ -141,7 +141,7 @@ async function verify(options) {
       readJson(options.root, "src-tauri/tauri.macos.conf.json"),
       readJson(options.root, "src-tauri/tauri.windows.conf.json"),
       readFile(path.join(options.root, "CHANGELOG.md"), "utf8"),
-      readFile(path.join(options.root, "packaging/flatpak/com.dohc.viewer.metainfo.xml"), "utf8"),
+      readFile(path.join(options.root, "packaging/linux/com.dohc.viewer.metainfo.xml"), "utf8"),
     ]);
 
   const versions = {
@@ -193,7 +193,7 @@ async function verify(options) {
   }
   if (
     linuxDeb.files?.["/usr/share/metainfo/com.dohc.viewer.metainfo.xml"] !==
-    "../packaging/flatpak/com.dohc.viewer.metainfo.xml"
+    "../packaging/linux/com.dohc.viewer.metainfo.xml"
   ) {
     throw new Error("Linux deb AppStream metainfo mapping is missing or reversed");
   }

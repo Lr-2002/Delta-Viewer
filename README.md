@@ -325,12 +325,15 @@ explicitly unsigned; Authenticode remains a later production-hardening gate.
 
 ## GitHub release CD
 
-`.github/workflows/release.yml` runs only for an existing annotated `vX.Y.Z`
-tag (or a manual rerun of one). It builds Windows x64, macOS arm64, macOS x64,
-and Ubuntu x64 on native GitHub-hosted runners. Windows uses reviewed,
-hash-pinned FFmpeg and offline WebView2 inputs. Each macOS runner builds a
-minimal LGPL FFmpeg from a pinned official source archive and commit. The
-Ubuntu 22.04 runner installs and starts the generated deb.
+`.github/workflows/release.yml` runs after CI succeeds on `main`. A coordinated
+version change in `package.json`, Cargo, Tauri, and Changelog is the release
+signal; the workflow creates the missing annotated `vX.Y.Z` tag with the
+repository `GITHUB_TOKEN`. Ordinary commits that keep an already released
+version do not create another release. It builds Windows x64, macOS arm64,
+macOS x64, and Ubuntu x64 on native GitHub-hosted runners. Windows uses
+reviewed, hash-pinned FFmpeg and offline WebView2 inputs. Each macOS runner
+builds a minimal LGPL FFmpeg from a pinned official source archive and commit.
+The Ubuntu 22.04 runner installs and starts the generated deb.
 
 The Windows job verifies that DOHC assets have no Authenticode signature. The
 macOS jobs apply and strictly verify a local ad-hoc seal, reject Developer ID or

@@ -1,9 +1,14 @@
 # DOHC Viewer Changelog
 
-All application releases have a dedicated release commit and annotated Git tag.
+Application releases use immutable annotated Git tags created automatically
+after `main` CI succeeds for a coordinated version change.
 
-## 0.17.2 - 2026-07-24
+## 0.17.2 - 2026-07-27
 
+- Simplified Release CD to use the repository `GITHUB_TOKEN`, automatically
+  create the immutable annotated version tag after successful `main` CI, and
+  publish the complete four-installer draft without a dedicated release commit,
+  GitHub App credentials, or release Environment.
 - Routed rejected native export confirmations and destination pickers through the
   visible error and operation-history recovery path, while preserving successful
   export and report-export behavior.
@@ -11,9 +16,10 @@ All application releases have a dedicated release commit and annotated Git tag.
   missing browser cannot silently skip the regression coverage.
 - Corrected stream-scoped issue locating so valid stream frames are selected
   without clamping to unrelated state bounds.
-- Retired the Ubuntu Flatpak from the published and CI-supported v0.17.2
-  release path. The Ubuntu 22.04+ x86_64 deb is the only supported Linux
-  release asset, and Ubuntu 20.04 has no v0.17.2 binary.
+- Removed the Flatpak manifest, build script, verification script, and active
+  packaging references. The Ubuntu 22.04+ x86_64 deb is the only supported
+  Linux release asset, Ubuntu 20.04 has no v0.17.2 binary, and release assembly
+  rejects unexpected Flatpak assets.
 
 ## 0.17.1 - 2026-07-22
 

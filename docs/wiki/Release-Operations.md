@@ -1,6 +1,9 @@
 # 发布维护指南
 
-Release CD 定义在 `.github/workflows/release.yml`。它只接受已经存在的 annotated `vX.Y.Z` tag，并要求 tag、`package.json`、`Cargo.toml`、`Cargo.lock`、Tauri config 和 Changelog 版本完全一致。
+Release CD 定义在 `.github/workflows/release.yml`。`main` 的 CI 成功后，workflow
+检查 `package.json`、`Cargo.toml`、`Cargo.lock`、Tauri config 和带日期 Changelog
+版本是否一致；当对应的 `vX.Y.Z` 不存在时，使用仓库 `GITHUB_TOKEN` 自动创建
+annotated tag。普通提交保持已发布版本号时不重复发布。
 
 ## 当前发布模式
 
@@ -14,6 +17,10 @@ Release CD 定义在 `.github/workflows/release.yml`。它只接受已经存在�
 - GitHub build provenance attestations。
 
 Release 标题、说明、安装器文件名、verification report 和 manifest 都必须显示 `UNSIGNED`，不得宣称 Authenticode、Developer ID、Apple notarization 或可信 Linux 包签名已完成。macOS app/main/FFmpeg 必须有本地 ad-hoc seal，但报告必须同时记录 `trustedPublisher:false`。四个构建产物全部成功后，publish job 才创建或更新 draft；远端资产名称与本地集合一致后才解除 draft。已经公开的相同 tag 不允许覆盖。
+
+`main` 允许直接推送，但禁止删除和 force-push。Release controller 和 publish job
+只为当前运行申请 `contents: write`，其他 job 保持只读；当前 unsigned 通道不使用
+GitHub App ID、private key 或 release Environment。
 
 ## 固定依赖
 
@@ -53,13 +60,14 @@ final job 重新读取四份报告和安装器，生成 manifest/checksums/prove
 
 签名凭据不得进入仓库、日志、artifact、报告或 manifest。
 
-## Tag 前门槛
+## 版本发布门槛
 
 1. 更新四处应用版本、Changelog、PRD 和用户文档。
 2. 在本地私有标准样例上运行 `pnpm check:full`；平台变更运行对应 bundle/目标测试。
 3. 确认 staged FFmpeg、私有数据、报告和构建产物没有进入 Git。
-4. 创建独立 release commit，在 clean 状态运行 `node scripts/release-check.mjs --quick --require-clean`。
-5. 创建并推送 annotated tag。不得移动或复用失败 tag；代码修复进入下一版本。
+4. 将完整版本内容作为普通提交直接推送或合并到 `main`，不创建独立 release commit。
+5. CI 成功后由 workflow 自动创建 annotated tag、构建四个安装包并先写入 draft；四份验证全部通过后自动公开。
+6. 不手工创建、移动或覆盖版本 tag；已创建 tag 对应的代码需要修复时进入下一版本。
 
 ## Wiki 发布
 

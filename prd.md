@@ -7,7 +7,7 @@
 | 应用版本基线 | 0.17.2 |
 | 文档状态 | 安全 Alpha，四安装器 unsigned GitHub Release CD 与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64/x64；Ubuntu 22.04+ x86_64 deb |
-| 文档日期 | 2026-07-24 |
+| 文档日期 | 2026-07-27 |
 | 产品负责人 | 待指定 |
 | 技术负责人 | 待指定 |
 
@@ -53,12 +53,12 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-016 | v0.13 起 warning/error 检查结果必须在后台自动生成本地审计报告；ok 不自动生成。报告只写入应用本地数据目录，不上传网络、不写源卡或导入副本；同一 episode 路径和数据指纹在同一报告版本下去重。 |
 | D-017 | v0.14 起进入数据工作区前必须登录本地账号；账号不连接服务器、不提供远程权限体系，密码仅保存 Argon2id 哈希和系统随机盐。账号用于本机处理归因。 |
 | D-018 | v0.14 起标注记录绑定规范化 episode 路径与数据指纹，使用任务目录、可编辑任务描述和 `{prefix}-{NNN}` 轨迹编码。首个任务为 `close_oven`，前缀为 `oven`；标注只写应用 local-data，并以追加修订保留处理人历史。 |
-| D-019 | Release CD 只从 clean exact annotated tag 构建，并且必须同时完成 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x64 deb 四个安装包；当前阶段允许公开显式 `UNSIGNED` 的完整集合，但标题、说明、文件名、报告和 manifest 必须一致披露。未来签名产物必须使用新版本/tag，不覆盖 unsigned 资产。 |
+| D-019 | 四处应用版本和带日期 Changelog 条目是唯一发布信号；`main` CI 成功后由 GitHub Actions 使用仓库 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag，并从该 clean exact tag 同时构建 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x64 deb 四个安装包。普通提交保持已发布版本号时跳过 Release；当前阶段允许公开显式 `UNSIGNED` 的完整集合，但标题、说明、文件名、报告和 manifest 必须一致披露。未来签名产物必须使用新版本/tag，不覆盖 unsigned 资产。 |
 | D-020 | 用户文档使用 GitHub Wiki；`docs/wiki` 是可审查的唯一源，由 workflow 同步，避免网页内容与代码版本分叉。 |
 | D-021 | unsigned macOS app 仍必须对 FFmpeg、主程序和完整 bundle 生成结构有效的 ad-hoc seal；发布门禁必须在 synthetic quarantine 下区分“无可信身份/未公证”的预期策略拒绝、由已知良性 control app 复现的 runner XProtect 服务错误，以及 invalid signature/damaged 的产品包结构错误。 |
 | D-022 | v0.16 起所有用户可见的扫描、导入、加载、检查和导出操作错误都要以不可覆盖的本地 JSON 记录保存；记录包含时间、操作、稳定错误码、原始消息、源路径和处理账号，界面提供最近 200 条历史回读。权限类消息统一归类为 `PERMISSION_DENIED`，不得只在顶部短暂显示。 |
 | D-023 | v0.16 起选择 SD 卡目录后自动导入发现的全部 session；目标目录由应用在当前用户可写的 app-local-data 下自动管理，不再显示本地目标选择框。首个成功导入的 session 自动进入检查和回放，其他 session 在左侧显示导入状态并可双击进入。 |
-| D-024 | Flatpak 打包定义保留为本地工具，不进入当前 CI/CD 或 GitHub Release。Ubuntu 可原生只读挂载 ext4 SD 卡。 |
+| D-024 | 产品不支持 Flatpak；仓库不保留 Flatpak manifest、构建脚本或验证脚本，CI/CD 与 GitHub Release 也不得生成 Flatpak。Ubuntu 可原生只读挂载 ext4 SD 卡。 |
 | D-025 | Ubuntu 22.04+ x86_64 通过原生 `.deb` 正式分发，由 Ubuntu 22.04 runner 构建并通过 `apt` 真实安装、依赖/资源回读和 Xvfb 启动检查。该 deb 是当前唯一进入 GitHub Release 的 Ubuntu 安装包。 |
 
 ## 4. 产品目标
@@ -543,7 +543,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 ### 12.4 正式 CD 与 GitHub Release
 
-- `.github/workflows/release.yml` 只接受已经存在的 annotated `vX.Y.Z` tag，并核对 HEAD、clean checkout、Changelog 和四处应用版本。
+- `.github/workflows/release.yml` 在 `main` CI 成功后核对 HEAD、clean checkout、Changelog 和四处应用版本，并使用该次运行的 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag；当前 unsigned 通道不依赖 GitHub App 凭据或 release Environment。
 - Windows x64、macOS arm64、macOS x64、Ubuntu x86_64 使用原生 hosted runner 构建；Node、pnpm、Rust 和全部 GitHub Actions 固定版本或 commit。
 - Windows 固定 reviewed FFmpeg binary/license/build notice 与 WebView2 exact Microsoft URL/SHA-256；macOS 从固定官方 FFmpeg source archive hash/Git revision 构建两个原生架构。
 - Windows 检查 DOHC 产物为 unsigned、Microsoft WebView2 签名、NSIS 内嵌 hash、silent install/startup/uninstall；macOS 检查 ad-hoc sealed nested code/resources、没有 Developer ID/notarization claim、DMG 挂载、资源 hash、synthetic-quarantine Gatekeeper 分类和复制后直接启动。
@@ -553,7 +553,8 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 ### 12.5 版本管理
 
-- `package.json`、`Cargo.toml` 和 `tauri.conf.json` 版本必须一致。
+- `package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 版本必须一致。
+- 版本变更是唯一 Release 信号；完整版本内容作为普通开发提交进入 `main`，不创建独立 release commit，也不手工创建或推送版本 tag。
 - Manifest `format_version`、HDF5 `format_version` 和产品 semver 独立管理。
 - LeRobot `codebase_version` 明确固定为 v2.1，升级需要新 adapter 行为和兼容性测试。
 
@@ -601,10 +602,10 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 | AT-024 | 分别检查 warning、error、ok 数据并重复检查 warning 数据 | warning/error 在应用 local-data 自动生成 format-v3 报告，重复检查复用同一路径且源指纹不变；ok 不生成；检查页按错误/警告/通过排序并显示后台报告状态 |
 | AT-025 | 首次创建账号、错误密码登录、正确登录、退出后直接调用数据 IPC | 密码文件不含明文；错误密码拒绝；正确登录成功；退出后数据 IPC 返回 `AUTH_REQUIRED` |
 | AT-026 | 两个 episode 选择 `close_oven` 并保存，第一条再由另一账号编辑描述 | 依次得到 `oven-001`/`oven-002` 且不能复用；修订历史保留两个处理人；三种导出以轨迹码命名并回读标注元数据 |
-| AT-027 | 推送 clean exact annotated release tag | CD 同时生成文件名带 `UNSIGNED` 的 Windows x64 NSIS、macOS arm64/x64 DMG 和 Ubuntu 22.04+ x86_64 deb；四者均披露无可信发布者身份并通过依赖、安装或挂载、启动和 hash 检查；macOS 还通过 strict ad-hoc seal 与 synthetic-quarantine Gatekeeper 分类，Ubuntu deb 通过 Xvfb 启动检查后才公开 Release |
+| AT-027 | 将统一版本号和带日期 Changelog 的版本提交推送到 `main`，CI 成功 | workflow 自动创建不可改写的 annotated tag，并同时生成文件名带 `UNSIGNED` 的 Windows x64 NSIS、macOS arm64/x64 DMG 和 Ubuntu 22.04+ x86_64 deb；四者均披露无可信发布者身份并通过依赖、安装或挂载、启动和 hash 检查；macOS 还通过 strict ad-hoc seal 与 synthetic-quarantine Gatekeeper 分类，Ubuntu deb 通过 Xvfb 启动检查，完整 draft 才自动公开 |
 | AT-028 | 修改 `docs/wiki` 并合入 main | 页面与内部链接检查通过后同步 GitHub Wiki；网页文档与仓库源一致 |
 | AT-029 | 对 macOS Release app 添加 quarantine 并执行分发策略检查 | app/main/FFmpeg 的 nested code 与 sealed resources 严格校验通过；策略报告 ad-hoc identity/missing notary ticket，或内部 XProtect 错误被独立最小 control app 同样复现并显式记录；不出现产品独有 XProtect、invalid signature、missing resources 或 damaged |
-| AT-030 | 推送 main、创建 PR 或手动触发 CI | 通用 CI 不运行 Ubuntu packaging contract；仓库没有独立 Linux package smoke workflow，保留的本地 Flatpak 配置不触发 CI/CD |
+| AT-030 | 检查 Linux 打包配置和 Release 产物集合 | 仓库没有 Flatpak manifest、构建或验证脚本；Linux 打包契约只接受 Ubuntu 22.04+ x86_64 deb，Release 汇总发现 Flatpak 产物时拒绝发布 |
 | AT-031 | 在干净 Ubuntu 22.04 CI 用 `apt` 安装原生 deb | package/version/amd64/依赖正确，无 deb 签名声明；应用 binary、desktop、metainfo、icon、FFmpeg/许可证/manifest 完整且动态库无缺失，并在 Xvfb + D-Bus 中保持运行 10 秒 |
 
 ## 14. 当前实现状态
@@ -683,7 +684,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 ### 14.6 `0.5.0` 发布工程边界
 
 - `pnpm check` 统一快速门禁；`check:full` 加入两个真实样例测试和 Tauri no-bundle build；`check:bundle` 生成当前平台 unsigned debug 包。
-- 每次门禁都会在 ignored 目录原子发布机器可读报告，release commit 后可用 `--require-clean` 阻止脏工作区 tag。
+- 每次门禁都会在 ignored 目录原子发布机器可读报告；当时可用 `--require-clean` 检查独立 release commit，该流程现已由版本驱动的 GitHub Actions 自动 tag 取代。
 - 两个平台 staging 都要求已知 SHA-256、来源、build ID、许可证和 `mpeg4` encoder，并拒绝 `--enable-nonfree`；Windows 额外验证 PE x64，macOS 检查非系统动态库。
 - Homebrew FFmpeg 被正确标记为 `portable:false`，只能用于显式本机 debug 验证，不能作为可发布 sidecar。
 - GAP-002 仍未关闭：门禁和证据格式已完成，但 Windows 最终分发二进制、完整许可证组合与编码策略仍需负责人批准并在目标构建机验证。
@@ -796,26 +797,24 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 导入失败不会丢失已完成项；每个失败 session 立即记录操作历史并继续队列，顶部错误历史保留最近 200 条，原始 `Operation not permitted`/`operation not allowed` 归类为 `PERMISSION_DENIED`。
 - app-local-data 工作区不写入源卡，导入目标不再由用户选择；导出目录仍由用户在导出动作时选择。PRD、Wiki、browser demo、Rust 单元测试和前端 production build 同步更新。
 
-### 14.20 `0.16.0` Ubuntu Flatpak 分发
+### 14.20 历史：`0.16.0` Ubuntu Flatpak 分发（已退役）
 
 - Linux 卷信息现在通过 `/proc/self/mountinfo` 的最长挂载点匹配识别文件系统、远程卷和可移动块设备；Linux `vfat`/`msdos` 与 Windows FAT/FAT32 一样被导出目标预检阻断，exFAT 保持支持。
-- `src-tauri/tauri.linux.conf.json` 生成 Ubuntu 24.04 `.deb` 中间包，资源包含 Linux x86_64 最小 LGPL FFmpeg、许可证和 provenance manifest。
-- `packaging/flatpak/com.dohc.viewer.json` 固定 GNOME 50 runtime/SDK、App ID 和 SD 卡路径权限；不包含 network 权限。AppStream metadata、desktop 文件和本地 `.deb` 解包步骤由同一 manifest 管理。
-- Release job 在 Ubuntu 24.04 生成 `DOHC-Viewer_<version>_UNSIGNED_ubuntu-x64.flatpak`，安装 bundle 后回读 runtime/permissions、应用资源 hash 和 FFmpeg encoder，并在 Xvfb + D-Bus 中执行 10 秒启动 smoke；报告加入四平台集合与最终 SHA-256 manifest。
-- Ubuntu 20.04+ 通过 Flatpak 获得运行时兼容性；不要求主机安装 WebKitGTK 4.1，也不把 `.deb` 作为 20.04 正式安装入口。Ubuntu 原生支持 ext4，用户只需以只读方式挂载 SD 卡。
+- `0.16.0` 曾从 Ubuntu deb 中间包生成 GNOME 50 Flatpak，并验证离线权限、资源和启动。
+- 该兼容路径已在 `0.17.2` 退出发布范围；随后连同本地 manifest、构建脚本和验证脚本一并移除。Ubuntu 原生支持 ext4，用户只需以只读方式挂载 SD 卡。
 
 ### 14.21 `0.16.1` 回放加载提示优化
 
 - 五路同步连续播放期间隐藏每帧切换产生的“解码中”覆盖层，避免文案反复遮挡画面。
 - 暂停、拖动或单帧步进时仍保留加载状态，真实的“帧不可用”错误继续显示。
 
-### 14.22 `0.17.0` Ubuntu 原生 deb 分发候选
+### 14.22 历史：`0.17.0` Ubuntu 原生 deb 分发候选
 
 - Ubuntu 22.04+ x86_64 新增正式原生 deb 安装入口，文件名显式记录最低系统版本；Ubuntu 20.04+ GNOME 50 Flatpak 继续作为兼容包。
 - Linux release/smoke job 固定在 Ubuntu 22.04，先从固定源码构建 FFmpeg 和 deb，再用 `apt` 安装实际产物，验证 package/version/architecture/依赖、ELF 动态库、desktop/AppStream/icon、FFmpeg 资源和 10 秒 Xvfb 启动。
 - Ubuntu 22.04 CI 的 deb 构建、`apt` 安装、资源回读和 Xvfb 启动检查通过；随后同一 runner 的旧 `flatpak-builder` 无法在 GNOME 50 SDK 中调用 `appstream-compose`，完整集合门禁按设计阻止公开 Release。`v0.17.0` tag 保持不变且没有公开资产，由 `0.17.1` 取代。
 
-### 14.23 `0.17.1` Linux 分离 runner 发布
+### 14.23 历史：`0.17.1` Linux 分离 runner 发布
 
 - deb 构建和真实安装验证继续固定在 Ubuntu 22.04；成功后把 deb 与独立 verification report 作为不可变 job artifact 上传。
 - Ubuntu 24.04 Flatpak job 依赖并下载上述 artifact，从同一 deb 构建 GNOME 50 bundle，再执行 runtime、权限、资源和 10 秒 Xvfb 启动检查；不重新编译另一个 deb。
@@ -830,7 +829,9 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 ### 14.25 当前 CI/CD 包范围
 
 - 主 CI 不再运行 Ubuntu packaging smoke；独立的 Linux package smoke workflow 已移除。
-- GitHub Release 只发布 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x86_64 deb；Flatpak 本地打包定义不进入 CI/CD。
+- `main` 允许直接推送但禁止删除和 force-push；CI 成功和统一版本变更共同触发自动 annotated tag，无独立 release commit、手工 tag、GitHub App 凭据或 release Environment。
+- GitHub Release 只发布 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x86_64 deb。
+- Flatpak manifest、构建脚本和验证脚本已从仓库移除；Release 汇总对意外出现的 Flatpak 产物保持拒绝。
 
 ## 15. 里程碑
 

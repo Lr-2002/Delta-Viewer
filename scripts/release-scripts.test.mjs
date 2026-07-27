@@ -6,13 +6,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import {
-  buildAtomicTagRequest,
-  decodePktLines,
-  parseReceivePackAdvertisement,
-  parseReceivePackResult,
-  requireExactProtectedMain,
-} from "./create-release-tag.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const verifyScript = path.join(root, "scripts/verify-release.mjs");
@@ -30,7 +23,7 @@ async function writeJson(filePath, value) {
 test("verify-release accepts only a clean trusted-main annotated version tag", async () => {
   const testRoot = await mkdtemp(path.join(tmpdir(), "dohc-release-tag-"));
   await mkdir(path.join(testRoot, "src-tauri"), { recursive: true });
-  await mkdir(path.join(testRoot, "packaging/flatpak"), { recursive: true });
+  await mkdir(path.join(testRoot, "packaging/linux"), { recursive: true });
   await writeJson(path.join(testRoot, "package.json"), { version: "1.2.3" });
   await writeFile(
     path.join(testRoot, "src-tauri/Cargo.toml"),
@@ -64,7 +57,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
           ],
           files: {
             "/usr/share/metainfo/com.dohc.viewer.metainfo.xml":
-              "../packaging/flatpak/com.dohc.viewer.metainfo.xml",
+              "../packaging/linux/com.dohc.viewer.metainfo.xml",
           },
         },
       },
@@ -77,7 +70,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
     },
   });
   await writeFile(
-    path.join(testRoot, "packaging/flatpak/com.dohc.viewer.metainfo.xml"),
+    path.join(testRoot, "packaging/linux/com.dohc.viewer.metainfo.xml"),
     "<component><id>com.dohc.viewer</id></component>\n",
   );
   await writeFile(path.join(testRoot, "CHANGELOG.md"), "# Changelog\n\n## 1.2.3 - 2026-07-21\n");
@@ -199,7 +192,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
   assert.match(lightweight.stderr, /not an annotated tag/);
 });
 
-test("release controller is sourced only from successful protected-main CI", async () => {
+test("release controller auto-tags the successful main commit with GITHUB_TOKEN", async () => {
   const workflow = await readFile(path.join(root, ".github/workflows/release.yml"), "utf8");
 
   assert.match(
@@ -209,117 +202,26 @@ test("release controller is sourced only from successful protected-main CI", asy
   assert.doesNotMatch(workflow, /^  push:/m);
   assert.doesNotMatch(workflow, /^  workflow_dispatch:/m);
   assert.doesNotMatch(workflow, /github\.event\.workflow_run\.head_branch/);
-  assert.doesNotMatch(workflow, /^\s+contents: write$/m);
-  assert.doesNotMatch(workflow, /github\.token/);
-  assert.doesNotMatch(workflow, /RELEASE_AUTH_TOKEN/);
+  assert.match(workflow, /group: release-main/);
+  assert.match(workflow, /controller:[\s\S]*?permissions:\n\s+contents: write/);
+  assert.match(workflow, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(
     workflow,
     /if: \$\{\{ github\.event\.workflow_run\.conclusion == 'success' \}\}/,
   );
   assert.match(workflow, /ref: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/);
-  assert.match(workflow, /release_commit="\$\{\{ github\.event\.workflow_run\.head_sha \}\}"/);
-  assert.doesNotMatch(workflow, /git push origin "refs\/tags\/\$tag"/);
-  assert.match(workflow, /node scripts\/create-release-tag\.mjs/);
-  assert.match(workflow, /--expected-main "\$protected_main_commit"/);
-  assert.match(workflow, /protected_main_commit: \$\{\{ steps\.bind\.outputs\.protected_main_commit \}\}/);
-  assert.match(workflow, /--expected-trusted-main-commit "\$RELEASE_PROTECTED_MAIN_COMMIT"/);
-  assert.match(workflow, /controller:[\s\S]*?environment: release/);
-  assert.match(workflow, /publish:[\s\S]*?environment: release/);
-  assert.match(workflow, /actions\/create-github-app-token@/);
-  assert.match(workflow, /app-id: \$\{\{ secrets\.RELEASE_APP_ID \}\}/);
-  assert.match(workflow, /private-key: \$\{\{ secrets\.RELEASE_APP_PRIVATE_KEY \}\}/);
-  assert.match(workflow, /GH_TOKEN: \$\{\{ steps\.release_authority\.outputs\.token \}\}/);
-});
-
-function pktLine(payload) {
-  const length = Buffer.byteLength(payload) + 4;
-  return Buffer.from(`${length.toString(16).padStart(4, "0")}${payload}`, "binary");
-}
-
-test("atomic release-tag request binds creation to the recorded protected-main SHA", () => {
-  const recordedMain = "a".repeat(40);
-  const advancedMain = "b".repeat(40);
-  const tagObject = "c".repeat(40);
-  const advertisement = Buffer.concat([
-    pktLine("# service=git-receive-pack\n"),
-    Buffer.from("0000", "ascii"),
-    pktLine(
-      `${recordedMain} refs/heads/main\0report-status-v2 side-band-64k atomic object-format=sha1\n`,
-    ),
-    Buffer.from("0000", "ascii"),
-  ]);
-  const parsed = parseReceivePackAdvertisement(advertisement);
-  requireExactProtectedMain(parsed, recordedMain);
-  const request = buildAtomicTagRequest({
-    expectedMainCommit: recordedMain,
-    tag: "v1.2.3",
-    tagObject,
-    capabilities: parsed.capabilities,
-    pack: Buffer.from("PACK", "ascii"),
-  });
-  const commands = decodePktLines(request.subarray(0, request.length - 4))
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((line) => line.toString("utf8"));
-  assert.match(commands[0], new RegExp(`^${recordedMain} ${recordedMain} refs/heads/main\\0`));
-  assert.match(commands[0], /\batomic\b/);
-  assert.equal(commands[1], `${"0".repeat(40)} ${tagObject} refs/tags/v1.2.3\n`);
-
-  const advancedAdvertisement = Buffer.concat([
-    pktLine("# service=git-receive-pack\n"),
-    Buffer.from("0000", "ascii"),
-    pktLine(
-      `${advancedMain} refs/heads/main\0report-status-v2 side-band-64k atomic object-format=sha1\n`,
-    ),
-    Buffer.from("0000", "ascii"),
-  ]);
-  assert.throws(
-    () => requireExactProtectedMain(parseReceivePackAdvertisement(advancedAdvertisement), recordedMain),
-    /protected main advanced or differs/,
+  assert.match(workflow, /release_commit="\$RELEASE_COMMIT"/);
+  assert.match(workflow, /git tag -a \"\$tag\" \"\$release_commit\"/);
+  assert.match(workflow, /git push origin \"refs\/tags\/\$tag\"/);
+  assert.ok(
+    workflow.indexOf("node scripts/verify-release.mjs") <
+      workflow.indexOf('git push origin "refs/tags/$tag"'),
+    "release metadata must be verified before the immutable tag is pushed",
   );
-});
-
-test("atomic release-tag transaction rejects a main advance after controller binding", async () => {
-  const testRoot = await mkdtemp(path.join(tmpdir(), "dohc-atomic-release-tag-"));
-  const origin = path.join(testRoot, "origin.git");
-  const checkout = path.join(testRoot, "checkout");
-  run("git", ["init", "--bare", "-q", origin], root);
-  run("git", ["init", "-q", checkout], root);
-  run("git", ["config", "user.name", "Release Test"], checkout);
-  run("git", ["config", "user.email", "release-test@example.invalid"], checkout);
-  run("git", ["commit", "--allow-empty", "-qm", "recorded protected main"], checkout);
-  run("git", ["branch", "-M", "main"], checkout);
-  run("git", ["remote", "add", "origin", origin], checkout);
-  run("git", ["push", "-q", "origin", "main"], checkout);
-  const recordedMain = run("git", ["rev-parse", "HEAD"], checkout);
-  run("git", ["tag", "-a", "v1.2.3", recordedMain, "-m", "DOHC Viewer v1.2.3"], checkout);
-  const tagObject = run("git", ["rev-parse", "refs/tags/v1.2.3"], checkout);
-  const pack = spawnSync("git", ["pack-objects", "--stdout", "--revs"], {
-    cwd: checkout,
-    input: `${tagObject}\n^${recordedMain}\n`,
-    encoding: null,
-  });
-  assert.equal(pack.status, 0, pack.stderr?.toString());
-
-  run("git", ["commit", "--allow-empty", "-qm", "main advanced after controller binding"], checkout);
-  run("git", ["push", "-q", "origin", "main"], checkout);
-  const request = buildAtomicTagRequest({
-    expectedMainCommit: recordedMain,
-    tag: "v1.2.3",
-    tagObject,
-    capabilities: new Set(["report-status-v2", "side-band-64k", "atomic", "object-format=sha1"]),
-    pack: pack.stdout,
-  });
-  const receive = spawnSync("git", ["receive-pack", "--stateless-rpc", origin], {
-    input: request,
-    encoding: null,
-  });
-  assert.equal(receive.status, 0, receive.stderr?.toString());
-  const statusLines = parseReceivePackResult(receive.stdout);
-  assert.ok(statusLines.some((line) => line.startsWith("ng refs/heads/main")), statusLines.join("\n"));
-  assert.ok(statusLines.some((line) => line.startsWith("ng refs/tags/v1.2.3")), statusLines.join("\n"));
-  const remoteTag = spawnSync("git", ["--git-dir", origin, "show-ref", "--verify", "--quiet", "refs/tags/v1.2.3"]);
-  assert.equal(remoteTag.status, 1);
+  assert.doesNotMatch(workflow, /RELEASE_APP_ID|RELEASE_APP_PRIVATE_KEY|RELEASE_APP_TOKEN/);
+  assert.doesNotMatch(workflow, /create-github-app-token|create-release-tag\.mjs/);
+  assert.doesNotMatch(workflow, /environment: release/);
+  assert.match(workflow, /publish:[\s\S]*?contents: write/);
 });
 
 test("assemble-release rejects partial sets and emits checksums for a complete set", async () => {

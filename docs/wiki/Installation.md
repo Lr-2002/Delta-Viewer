@@ -31,7 +31,7 @@ sudo apt install ./DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb
 
 原生 deb 可以选择当前 Linux 用户有权读取的已挂载 SD 卡目录。Ubuntu 内核原生支持 ext4，不需要 Paragon；仍应先以只读方式挂载源卡，DOHC Viewer 会把 session 复制到当前用户的 app-local-data 后再检查，不会直接修改源卡。当前只支持 x86_64 Ubuntu，ARM64 不在发布范围内。
 
-从 `v0.17.2` 起，不再发布或 CI 支持 Ubuntu Flatpak。Ubuntu 22.04 及以上 x86_64 deb 是唯一受支持的 Linux 发布安装包；Ubuntu 20.04 没有 `v0.17.2` 二进制安装包。
+项目不支持 Flatpak，也不保留 Flatpak 打包工具。Ubuntu 22.04 及以上 x86_64 deb 是唯一受支持的 Linux 发布安装包；Ubuntu 20.04 没有当前版本的二进制安装包。
 
 ## 校验下载文件
 
