@@ -271,8 +271,8 @@ jobs:
       FFMPEG_NOTICE_URL: https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/win32-x64.README
       FFMPEG_NOTICE_SHA256: a636a7183c58006351acbaf35303c0ed85c6e1320fd4e80de453ba6157de6311
       FFMPEG_BUILD_ID: ffmpeg-static-b6.1.1-gyan-6.1.1-essentials
-      WEBVIEW2_URL: https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/5a16eb19-26ed-4f1b-996e-b438848bb74a/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
-      WEBVIEW2_SHA256: 9915c97304977e2d11877b03e07a7fcdd10d4277b2297c5a5113d414fc6ae6b3
+      WEBVIEW2_URL: https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/d06c217f-cef1-471d-a639-fad978ef4a40/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
+      WEBVIEW2_SHA256: 477c6a0cf79d29fdbfca3ea337fabe952a439b5da38d025cd2c59cc65a87947d
     steps:
       - name: Check out prepared release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

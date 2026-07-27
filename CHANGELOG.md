@@ -3,6 +3,14 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 0.17.3 - 2026-07-27
+
+- Refreshed the reviewed Microsoft WebView2 x64 offline-installer URL and
+  SHA-256 after the upstream fixed link moved to a new signed payload.
+- Superseded the unpublished `v0.17.2` tag, whose macOS and Ubuntu packages
+  passed but whose Windows embedded-payload hash gate correctly blocked the
+  complete GitHub Release.
+
 ## 0.17.2 - 2026-07-27
 
 - Simplified Release CD to use the repository `GITHUB_TOKEN`, automatically

@@ -4,7 +4,7 @@
 | --- | --- |
 | 产品名称 | DOHC Viewer |
 | 文档版本 | 0.17 |
-| 应用版本基线 | 0.17.2 |
+| 应用版本基线 | 0.17.3 |
 | 文档状态 | 安全 Alpha，四安装器 unsigned GitHub Release CD 与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64/x64；Ubuntu 22.04+ x86_64 deb |
 | 文档日期 | 2026-07-27 |
@@ -15,7 +15,7 @@
 
 本文定义 DOHC Viewer 的产品边界、数据契约、用户流程、功能需求、非功能需求和发布验收标准。产品、设计、开发和测试均以本文为共同基线。
 
-本文同时记录当前 `0.17.2` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
+本文同时记录当前 `0.17.3` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
 
 ## 2. 背景与问题
 
@@ -826,7 +826,12 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - mocked-Tauri browser 回归覆盖变为 CI 必跑门禁；缺少支持的浏览器时会失败，而不会跳过。
 - stream-scoped issue 定位会选择实际受影响帧；没有可同步 state 时会明确反馈，不再静默落到相邻 state 帧。
 
-### 14.25 当前 CI/CD 包范围
+### 14.25 `0.17.3` Windows 发布依赖刷新
+
+- Microsoft WebView2 x64 offline installer 的固定链接切换到新 payload 后，workflow 更新为新的 exact filestreamingservice URL 和 SHA-256，仍要求 Microsoft Authenticode 有效并回读 NSIS 内嵌 hash。
+- `v0.17.2` 的 macOS arm64/x64 与 Ubuntu deb 验证通过，但 Windows 内嵌 payload 与旧审核 hash 不一致；完整集合门禁按设计阻止公开 Release，tag 保持不变并由 `0.17.3` 取代。
+
+### 14.26 当前 CI/CD 包范围
 
 - 主 CI 不再运行 Ubuntu packaging smoke；独立的 Linux package smoke workflow 已移除。
 - `main` 允许直接推送但禁止删除和 force-push；CI 成功和统一版本变更共同触发自动 annotated tag，无独立 release commit、手工 tag、GitHub App 凭据或 release Environment。
