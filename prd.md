@@ -53,7 +53,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-016 | v0.13 起 warning/error 检查结果必须在后台自动生成本地审计报告；ok 不自动生成。报告只写入应用本地数据目录，不上传网络、不写源卡或 episode；同一 episode 路径和数据指纹在同一报告版本下去重。 |
 | D-017 | v0.14 起进入数据工作区前必须登录本地账号；账号不连接服务器、不提供远程权限体系，密码仅保存 Argon2id 哈希和系统随机盐。账号用于本机处理归因。 |
 | D-018 | 标注记录绑定规范化 episode 路径与数据指纹，使用本地可创建任务、可编辑任务描述和 `{prefix}-{NNN}` 轨迹编码。首个内置任务为 `close_oven`，前缀为 `oven`；新任务只输入名称，由系统生成稳定 ID/前缀；标注只写应用 local-data，并以追加修订保留处理人历史。 |
-| D-019 | 四处应用版本和带日期 Changelog 条目是唯一发布信号；`main` CI 成功后由 GitHub Actions 使用仓库 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag，并从该 clean exact tag 同时构建 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x64 deb 四个安装包。普通提交保持已发布版本号时跳过 Release；当前阶段允许公开显式 `UNSIGNED` 的完整集合，但标题、说明、文件名、报告和 manifest 必须一致披露。未来签名产物必须使用新版本/tag，不覆盖 unsigned 资产。 |
+| D-019 | 四处应用版本和完整 Changelog 条目是唯一发布信号；当前版本必须是 `CHANGELOG.md` 第一条带日期的版本记录、只能出现一次并至少包含一条具体变更，GitHub Release 正文必须直接展示该条目。`main` CI 成功后由 GitHub Actions 使用仓库 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag，并从该 clean exact tag 同时构建 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x64 deb 四个安装包。普通提交保持已发布版本号时跳过 Release；当前阶段允许公开显式 `UNSIGNED` 的完整集合，但标题、说明、文件名、报告和 manifest 必须一致披露。未来签名产物必须使用新版本/tag，不覆盖 unsigned 资产。 |
 | D-020 | 用户文档使用 GitHub Wiki；`docs/wiki` 是可审查的唯一源，由 workflow 同步，避免网页内容与代码版本分叉。 |
 | D-021 | unsigned macOS app 仍必须对 FFmpeg、主程序和完整 bundle 生成结构有效的 ad-hoc seal；发布门禁必须在 synthetic quarantine 下区分“无可信身份/未公证”的预期策略拒绝、由已知良性 control app 复现的 runner XProtect 服务错误，以及 invalid signature/damaged 的产品包结构错误。 |
 | D-022 | v0.16 起所有用户可见的扫描、导入、加载、检查和导出操作错误都要以不可覆盖的本地 JSON 记录保存；记录包含时间、操作、稳定错误码、原始消息、源路径和处理账号，界面提供最近 200 条历史回读。权限类消息统一归类为 `PERMISSION_DENIED`，不得只在顶部短暂显示。 |
@@ -544,7 +544,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 ### 12.4 正式 CD 与 GitHub Release
 
-- `.github/workflows/release.yml` 在 `main` CI 成功后核对 HEAD、clean checkout、Changelog 和四处应用版本，并使用该次运行的 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag；当前 unsigned 通道不依赖 GitHub App 凭据或 release Environment。
+- `.github/workflows/release.yml` 在 `main` CI 成功后核对 HEAD、clean checkout、完整 Changelog 条目和四处应用版本，并使用该次运行的 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag；当前 unsigned 通道不依赖 GitHub App 凭据或 release Environment。Changelog 缺失、重复、未置顶、日期无效、为空或仅含占位文本时，必须在 tag 创建前失败。
 - Windows x64、macOS arm64、macOS x64、Ubuntu x86_64 使用原生 hosted runner 构建；Node、pnpm、Rust 和全部 GitHub Actions 固定版本或 commit。
 - Windows 固定 reviewed FFmpeg binary/license/build notice 与 WebView2 exact Microsoft URL/SHA-256；macOS 从固定官方 FFmpeg source archive hash/Git revision 构建两个原生架构。
 - Windows 检查 DOHC 产物为 unsigned、Microsoft WebView2 签名、NSIS 内嵌 hash、silent install/startup/uninstall；macOS 检查 ad-hoc sealed nested code/resources、没有 Developer ID/notarization claim、DMG 挂载、资源 hash、synthetic-quarantine Gatekeeper 分类和复制后直接启动。
@@ -555,6 +555,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 ### 12.5 版本管理
 
 - `package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 版本必须一致。
+- 每次 Release 必须有唯一、带合法日期且非空的当前版本 Changelog；Release 正文从该条目生成并直接展示具体变更，不能用自动 commit 列表或 compare 链接代替。
 - 版本变更是唯一 Release 信号；完整版本内容作为普通开发提交进入 `main`，不创建独立 release commit，也不手工创建或推送版本 tag。
 - Manifest `format_version`、HDF5 `format_version` 和产品 semver 独立管理。
 - LeRobot `codebase_version` 明确固定为 v2.1，升级需要新 adapter 行为和兼容性测试。

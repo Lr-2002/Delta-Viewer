@@ -7,9 +7,69 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { formatReleaseChangelog, parseReleaseChangelog } from "./release-changelog.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const verifyScript = path.join(root, "scripts/verify-release.mjs");
 const assembleScript = path.join(root, "scripts/assemble-release.mjs");
+
+test("release changelog requires a unique, first, dated, non-empty version entry", () => {
+  const valid = `# Changelog
+
+## Unreleased
+
+- Work planned for a later release.
+
+## 1.2.3 - 2026-07-21
+
+- Added the required release notes.
+- Fixed the installer check.
+
+## 1.2.2 - 2026-07-20
+
+- Previous release.
+`;
+  const entry = parseReleaseChangelog(valid, "1.2.3");
+  assert.deepEqual(entry, {
+    version: "1.2.3",
+    date: "2026-07-21",
+    body: "- Added the required release notes.\n- Fixed the installer check.",
+    changeCount: 2,
+  });
+  assert.equal(
+    formatReleaseChangelog(entry),
+    "## Changelog\n\n### 1.2.3 - 2026-07-21\n\n- Added the required release notes.\n- Fixed the installer check.\n",
+  );
+
+  assert.throws(
+    () => parseReleaseChangelog("# Changelog\n\n## 1.2.3 - 2026-07-21\n", "1.2.3"),
+    /must contain at least one change bullet/,
+  );
+  assert.throws(
+    () =>
+      parseReleaseChangelog(
+        "# Changelog\n\n## 1.2.2 - 2026-07-20\n\n- Old.\n\n## 1.2.3 - 2026-07-21\n\n- New.\n",
+        "1.2.3",
+      ),
+    /must list 1\.2\.3 as its first dated release entry/,
+  );
+  assert.throws(
+    () =>
+      parseReleaseChangelog(
+        "# Changelog\n\n## 1.2.3 - 2026-07-21\n\n- One.\n\n## 1.2.3 - 2026-07-22\n\n- Two.\n",
+        "1.2.3",
+      ),
+    /must contain exactly one dated 1\.2\.3 release heading/,
+  );
+  assert.throws(
+    () => parseReleaseChangelog("# Changelog\n\n## 1.2.3 - 2026-02-30\n\n- Change.\n", "1.2.3"),
+    /invalid calendar date/,
+  );
+  assert.throws(
+    () => parseReleaseChangelog("# Changelog\n\n## 1.2.3 - 2026-07-21\n\n- TODO\n", "1.2.3"),
+    /contains a placeholder/,
+  );
+});
 
 function run(command, args, cwd) {
   return execFileSync(command, args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
@@ -73,7 +133,10 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
     path.join(testRoot, "packaging/linux/com.dohc.viewer.metainfo.xml"),
     "<component><id>com.dohc.viewer</id></component>\n",
   );
-  await writeFile(path.join(testRoot, "CHANGELOG.md"), "# Changelog\n\n## 1.2.3 - 2026-07-21\n");
+  await writeFile(
+    path.join(testRoot, "CHANGELOG.md"),
+    "# Changelog\n\n## 1.2.3 - 2026-07-21\n\n- Added a tested release change.\n",
+  );
 
   run("git", ["init", "-q"], testRoot);
   run("git", ["config", "user.name", "Release Test"], testRoot);
@@ -108,6 +171,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
   assert.equal(metadata.trustedMainRef, "origin/main");
   assert.equal(metadata.trustedMainCommit, mainCommit);
   assert.equal(metadata.tagObject, run("git", ["rev-parse", "refs/tags/v1.2.3"], testRoot));
+  assert.deepEqual(metadata.changelog, { date: "2026-07-21", changeCount: 1 });
   const originalTagObject = metadata.tagObject;
 
   run("git", ["commit", "--allow-empty", "-qm", "advance protected main fixture"], testRoot);
@@ -222,6 +286,19 @@ test("release controller auto-tags the successful main commit with GITHUB_TOKEN"
   assert.doesNotMatch(workflow, /create-github-app-token|create-release-tag\.mjs/);
   assert.doesNotMatch(workflow, /environment: release/);
   assert.match(workflow, /publish:[\s\S]*?contents: write/);
+  assert.match(workflow, /node scripts\/release-changelog\.mjs/);
+  assert.match(workflow, /--notes-file "\$notes_file"/);
+  assert.match(workflow, /grep -Fq "### \$VERSION - " <<< "\$release_body"/);
+  assert.ok(
+    workflow.indexOf("node scripts/release-changelog.mjs") <
+      workflow.indexOf('gh release create "${create_args[@]}"'),
+    "the required changelog must be rendered before a draft release is created",
+  );
+  assert.ok(
+    workflow.indexOf('grep -Fq "### $VERSION - " <<< "$release_body"') <
+      workflow.indexOf('gh release edit "${edit_args[@]}"'),
+    "the release body must contain the required changelog before publication",
+  );
 });
 
 test("assemble-release rejects partial sets and emits checksums for a complete set", async () => {

@@ -5,6 +5,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { parseReleaseChangelog } from "./release-changelog.mjs";
+
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function usage() {
@@ -129,7 +131,7 @@ async function verify(options) {
     linuxConfig,
     macConfig,
     windowsConfig,
-    changelog,
+    changelogContents,
     metainfo,
   ] =
     await Promise.all([
@@ -156,9 +158,7 @@ async function verify(options) {
     }
   }
 
-  if (!new RegExp(`^## ${version.replaceAll(".", "\\.")} - \\d{4}-\\d{2}-\\d{2}$`, "m").test(changelog)) {
-    throw new Error(`CHANGELOG.md has no dated ${version} release heading`);
-  }
+  const changelog = parseReleaseChangelog(changelogContents, version);
   if (tauriConfig.bundle?.active !== true) throw new Error("Tauri bundling is not active");
   if (tauriConfig.bundle?.category !== "Utility") {
     throw new Error("Tauri bundle category must be Utility");
@@ -255,6 +255,10 @@ async function verify(options) {
     prerelease: version.includes("-"),
     verifiedAtUtc: new Date().toISOString(),
     versions,
+    changelog: {
+      date: changelog.date,
+      changeCount: changelog.changeCount,
+    },
     distribution: {
       signingMode: "unsigned",
       trustedPublisher: false,

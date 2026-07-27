@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## Unreleased
+
+- Made a unique, dated, non-empty `CHANGELOG.md` entry mandatory for every
+  release and publish that curated entry directly in the GitHub Release notes.
+
 ## 0.17.4 - 2026-07-27
 
 - Read and validate sessions directly from the mounted read-only source in the

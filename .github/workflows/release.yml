@@ -710,6 +710,12 @@ jobs:
             --tag "${{ needs.prepare.outputs.tag }}" \
             --commit "${{ needs.prepare.outputs.commit }}"
 
+      - name: Render required release changelog
+        run: |
+          node scripts/release-changelog.mjs \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --output "$RUNNER_TEMP/release-changelog.md"
+
       - name: Attest final release set
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
@@ -723,8 +729,23 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
           ASSET_DIR: ${{ runner.temp }}/release-assets
+          CHANGELOG_NOTES: ${{ runner.temp }}/release-changelog.md
         run: |
           set -euo pipefail
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes_file" <<EOF
+          WARNING: This release has no trusted publisher signature. Windows will show an unknown-publisher or SmartScreen warning. The macOS app has a valid local ad-hoc resource seal but no Developer ID or notarization, so first launch requires the standard System Settings > Privacy & Security > Open Anyway override. The Ubuntu deb package is unsigned; verify SHA256SUMS.txt before use.
+
+          Four compiled installers are attached: Windows x64, macOS Apple Silicon, macOS Intel, and Ubuntu 22.04+ x86_64 deb. All four passed dependency, bundled-resource, install or mount, startup, and checksum gates before publication. The macOS jobs also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, Apple notarization, and trusted Linux package signing are intentionally not claimed.
+
+          User guide: https://github.com/${{ github.repository }}/wiki
+
+          Linux distribution: this release publishes only the Ubuntu 22.04+ x86_64 deb. Flatpak is not supported, and Ubuntu 20.04 has no binary.
+
+          EOF
+          cat "$CHANGELOG_NOTES" >> "$notes_file"
+          printf '\nFull version history: https://github.com/${{ github.repository }}/blob/%s/CHANGELOG.md\n' "$TAG" >> "$notes_file"
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
             [[ "$is_draft" == "true" ]] || {
@@ -734,13 +755,15 @@ jobs:
             while IFS= read -r existing_asset; do
               [[ -z "$existing_asset" ]] || gh release delete-asset "$TAG" "$existing_asset" --yes
             done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+            gh release edit "$TAG" --title "DOHC Viewer $TAG (UNSIGNED)" --notes-file "$notes_file"
           else
-            notes=$'WARNING: This release has no trusted publisher signature. Windows will show an unknown-publisher or SmartScreen warning. The macOS app has a valid local ad-hoc resource seal but no Developer ID or notarization, so first launch requires the standard System Settings > Privacy & Security > Open Anyway override. The Ubuntu deb package is unsigned; verify SHA256SUMS.txt before use.\n\nFour compiled installers are attached: Windows x64, macOS Apple Silicon, macOS Intel, and Ubuntu 22.04+ x86_64 deb. All four passed dependency, bundled-resource, install or mount, startup, and checksum gates before publication. The macOS jobs also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, Apple notarization, and trusted Linux package signing are intentionally not claimed.\n\nUser guide: https://github.com/${{ github.repository }}/wiki'
-            notes+=$'\n\nLinux distribution: this release publishes only the Ubuntu 22.04+ x86_64 deb. Flatpak is not supported, and Ubuntu 20.04 has no binary.'
-            create_args=("$TAG" --verify-tag --draft --title "DOHC Viewer $TAG (UNSIGNED)" --generate-notes --notes "$notes")
+            create_args=("$TAG" --verify-tag --draft --title "DOHC Viewer $TAG (UNSIGNED)" --notes-file "$notes_file")
             if [[ "$PRERELEASE" == "true" ]]; then create_args+=(--prerelease); fi
             gh release create "${create_args[@]}"
           fi
+
+          release_body="$(gh release view "$TAG" --json body --jq .body)"
+          grep -Fq "### $VERSION - " <<< "$release_body"
 
           gh release upload "$TAG" "$ASSET_DIR"/* --clobber
           find "$ASSET_DIR" -maxdepth 1 -type f -exec basename {} \; | sort > "$RUNNER_TEMP/local-assets.txt"

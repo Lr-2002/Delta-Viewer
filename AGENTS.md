@@ -519,7 +519,7 @@ GitHub Wiki，不直接在网页维护分叉版本。
 `main` 允许直接推送，但禁止删除和 force-push；CI 仍是自动发布的前置条件。创建版本时必须：
 
 1. 保持 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 的 semver 一致。
-2. 更新 `CHANGELOG.md` 和 PRD 实现状态。
+2. 每次 Release 必须在 `CHANGELOG.md` 新增唯一、带合法日期且至少包含一条具体变更的当前版本条目；当前版本必须是第一条带日期的版本记录，`Unreleased` 或 `TBD` 不能替代。GitHub Release 正文必须直接展示该条目，不能只放 commit compare 链接。同步更新 PRD 实现状态。
 3. 至少运行 `pnpm check:full`；平台包变更还要运行相应 bundle 检查，并确认私有数据、staged FFmpeg、报告和构建产物未暂存。
 4. 将完整版本内容作为普通开发提交直接推送或合并到 `main`，不创建独立 release commit。
 5. CI 成功后由 `release.yml` 自动创建 annotated `vX.Y.Z` tag；不要手工创建、移动或覆盖版本 tag。

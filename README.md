@@ -334,6 +334,12 @@ reviewed, hash-pinned FFmpeg and offline WebView2 inputs. Each macOS runner
 builds a minimal LGPL FFmpeg from a pinned official source archive and commit.
 The Ubuntu 22.04 runner installs and starts the generated deb.
 
+Every release requires a unique, dated, non-empty entry for the current version
+at the top of the dated entries in `CHANGELOG.md`. The release gate rejects
+missing, duplicate, stale, invalid-date, empty, or placeholder entries before
+tag creation, and the publish job includes the curated entry directly in the
+GitHub Release body.
+
 The Windows job verifies that DOHC assets have no Authenticode signature. The
 macOS jobs apply and strictly verify a local ad-hoc seal, reject Developer ID or
 notarization claims, and run a policy check under synthetic quarantine. If a
