@@ -16,7 +16,7 @@ GitHub Release 提供以下安装产物：
 2. 阅读[快速开始](Quick-Start)，完成账号登录、SD 卡选择和只读加载。
 3. 在[数据检查](Data-Validation)中理解错误、警告、通过和 JPEG 抽检范围。
 4. 使用[回放与裁剪](Playback-and-Clipping)复核五路画面并选择轨迹范围。
-5. 完成[账号与数据标注](Accounts-and-Annotations)后，按需要执行[数据导出](Data-Export)。
+5. 完成[账号与数据标注](Accounts-and-Annotations)后，按需要执行单条或本机标注[批量数据导出](Data-Export)。
 
 ## 支持的数据
 

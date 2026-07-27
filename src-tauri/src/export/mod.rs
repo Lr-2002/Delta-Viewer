@@ -1,6 +1,9 @@
+mod batch;
 mod hdf5;
 mod lerobot;
 mod mcap;
+
+pub(crate) use batch::{export_annotated_episodes, BatchExportJob};
 
 use crate::error::{AppError, AppResult};
 use crate::model::{

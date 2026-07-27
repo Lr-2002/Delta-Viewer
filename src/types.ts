@@ -35,6 +35,11 @@ export interface EpisodeAnnotation {
   updatedAtMs: number;
 }
 
+export interface AnnotatedEpisodeSummary {
+  annotation: EpisodeAnnotation;
+  sourceAvailable: boolean;
+}
+
 export interface SaveAnnotationRequest {
   sourcePath: string;
   taskId: string;
@@ -210,6 +215,29 @@ export interface ExportResult {
   elapsedMs: number;
   range: ExportRange;
   stateCount: number;
+}
+
+export interface BatchExportItemResult {
+  episodeId: string;
+  trajectoryCode: string;
+  sourcePath: string;
+  status: "exported" | "failed";
+  validationStatus: "ok" | "warning" | "error" | null;
+  result: ExportResult | null;
+  error: string | null;
+}
+
+export interface BatchExportResult {
+  format: ExportFormat;
+  destinationParent: string;
+  requestedCount: number;
+  exportedCount: number;
+  failedCount: number;
+  cancelled: boolean;
+  totalFiles: number;
+  totalBytes: number;
+  elapsedMs: number;
+  items: BatchExportItemResult[];
 }
 
 export type MetricKey = "position" | "velocity" | "euler" | "omega";

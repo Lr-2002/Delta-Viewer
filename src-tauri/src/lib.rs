@@ -17,11 +17,11 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use identity::AuthState;
 use model::{
-    AuthStatus, CreateTaskRequest, EpisodeAnnotation, EpisodeData, ExportCommandRequest,
-    ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord,
-    PartialImport, ProgressPayload, RecordOperationErrorRequest, RegisterAccountRequest,
-    ReportExportResult, SaveAnnotationRequest, ScanResult, TaskDefinition, UserIdentity,
-    ValidationReport,
+    AnnotatedEpisodeSummary, AuthStatus, BatchExportCommandRequest, BatchExportResult,
+    CreateTaskRequest, EpisodeAnnotation, EpisodeData, ExportCommandRequest, ExportResult,
+    FramePayload, ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
+    ProgressPayload, RecordOperationErrorRequest, RegisterAccountRequest, ReportExportResult,
+    SaveAnnotationRequest, ScanResult, TaskDefinition, UserIdentity, ValidationReport,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -266,6 +266,19 @@ async fn save_episode_annotation(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_annotated_episodes(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Vec<AnnotatedEpisodeSummary>, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || annotations::list_annotations(&data_root))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -562,6 +575,46 @@ async fn export_episode(
 }
 
 #[tauri::command]
+async fn export_annotated_episodes(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    cache: State<'_, ValidationCache>,
+    request: BatchExportCommandRequest,
+    operation_id: u64,
+) -> Result<BatchExportResult, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let destination_parent = request.destination_parent.clone();
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let cache = cache.inner().clone();
+    let data_root = app_data_root(&app)?;
+    let reports_dir = data_root.join("reports");
+    emit_task_start(
+        &app,
+        operation_id,
+        "export",
+        "准备批量导出",
+        &destination_parent,
+    );
+    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<BatchExportResult> {
+        let _task = task;
+        let _progress = source::enter_operation_progress(operation_id);
+        export::export_annotated_episodes(export::BatchExportJob {
+            request,
+            data_root: &data_root,
+            reports_dir: &reports_dir,
+            cache: &cache,
+            app: Some(&app),
+            cancelled: &cancelled,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn export_validation_report(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -643,6 +696,7 @@ pub fn run() {
             suggest_trajectory_code,
             load_episode_annotation,
             save_episode_annotation,
+            list_annotated_episodes,
             scan_source,
             load_episode,
             validate_episode,
@@ -654,6 +708,7 @@ pub fn run() {
             record_operation_error,
             list_operation_errors,
             export_episode,
+            export_annotated_episodes,
             export_validation_report,
             cancel_task,
             read_frame

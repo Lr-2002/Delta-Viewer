@@ -21,3 +21,5 @@
 - 修订号和保存时间。
 
 每次保存追加一个修订，不覆盖处理历史。任务定义保存在 `appLocalData/tasks`，轨迹占号和标注分别保存在 `appLocalData/trajectory-codes` 与 `appLocalData/annotations`；这些内容不写入源卡。三个导出 adapter 会继承同一任务、轨迹码和处理人信息。
+
+“批量”页以每个 episode 的最新修订作为导出清单。标注不是数据副本：它只记录原始路径和指纹等元数据，不保存 JPEG 或 `states.jsonl`。批量导出时仍需连接原始源卷，且源路径和内容必须与保存标注时一致。

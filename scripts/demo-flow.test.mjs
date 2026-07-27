@@ -9,6 +9,7 @@ import { chromium } from "playwright-core";
 const root = process.cwd();
 const browserExecutable = findBrowserExecutable();
 const requireBrowser = process.env.DEMO_FLOW_REQUIRE_BROWSER === "1";
+const batchViewport = parseViewport(process.env.DEMO_FLOW_BATCH_VIEWPORT) ?? { width: 1440, height: 920 };
 const fixture = JSON.parse(readFileSync(resolve(root, "public/demo/fixture.json"), "utf8"));
 const expectedFixture = {
   formatVersion: 1,
@@ -115,11 +116,23 @@ if (!browserExecutable) {
     await context.close();
   });
 
-  test("custom tasks receive automatic codes and telemetry renders colored series", async () => {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+  test("custom tasks receive automatic codes, batch export succeeds, and telemetry renders colored series", async () => {
+    const context = await browser.newContext({ viewport: batchViewport });
     const page = await context.newPage();
+    const consoleErrors = [];
+    const pageErrors = [];
+    const failedRequests = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("requestfailed", (request) => failedRequests.push(request.url()));
     await registerDemoAccount(page, baseUrl, "annotation-color");
     await page.getByText("多路回放", { exact: true }).waitFor();
+    await page.waitForFunction(() => {
+      const images = [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")];
+      return images.length === 5 && images.every((image) => image.naturalWidth > 0);
+    });
 
     await page.getByRole("button", { name: "创建任务" }).click();
     await page.getByLabel("新任务名称").fill("整理餐具");
@@ -154,6 +167,26 @@ if (!browserExecutable) {
       });
     });
     assert.ok(coloredPixels.every((count) => count > 0), `missing telemetry colors: ${coloredPixels}`);
+
+    await page.getByRole("button", { name: "批量", exact: true }).click();
+    await page.getByText("整理餐具-001", { exact: true }).waitFor();
+    await page.waitForFunction(() => (
+      document.querySelector('input[aria-label="选择轨迹 整理餐具-001"]')?.checked === true
+    ));
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "选择目录并批量导出" }).click();
+    await page.locator(".batch-result").waitFor();
+    assert.match(await page.locator(".batch-result").innerText(), /成功 1 · 失败 0/);
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+      true,
+    );
+    assert.deepEqual(consoleErrors, []);
+    assert.deepEqual(pageErrors, []);
+    assert.deepEqual(failedRequests, []);
+    if (process.env.DEMO_FLOW_BATCH_SCREENSHOT) {
+      await page.screenshot({ path: resolve(root, process.env.DEMO_FLOW_BATCH_SCREENSHOT), fullPage: true });
+    }
     await context.close();
   });
 
@@ -313,4 +346,11 @@ function findBrowserExecutable() {
 
 function pnpmCommand() {
   return process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+}
+
+function parseViewport(value) {
+  if (!value) return null;
+  const match = /^(\d+)x(\d+)$/.exec(value);
+  if (!match) throw new Error(`Invalid DEMO_FLOW_BATCH_VIEWPORT: ${value}`);
+  return { width: Number(match[1]), height: Number(match[2]) };
 }

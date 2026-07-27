@@ -100,6 +100,7 @@ React component
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
 - 未登录时只允许账号状态、注册、登录和退出 commands；扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁。前端隐藏工作区不能替代后端门禁。
 - 内置任务和用户创建任务的校验、持久化与自动编号逻辑以 `src-tauri/src/annotations.rs` 为唯一真源。新任务只接收名称，由 Rust 生成稳定 task ID/轨迹前缀；前端不得提交或指定轨迹编号。
+- 批量导出清单只能由 `src-tauri/src/annotations.rs` 回读本机最新标注；批量 IPC 只接受 episode ID、目标目录和格式，必须在 Rust 中重新解析标注、核对规范化源路径与指纹、生成可信检查缓存后再调用 adapter。不得接受前端提交的源路径、标注对象或检查状态作为授权。
 - Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。其账号、用户任务和标注只保存在当前页面进程内，刷新后重置；交互抽检基线是报告 format v3、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]` 和非空 `autoReportPath`。它不能被当作账号安全、后端门禁或数据验收。
 
 ## 4. 环境与常用命令
@@ -248,6 +249,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 8. 增加真实样例 smoke test，并检查输出不是仅“文件存在”。
 9. 更新 `prd.md` 的数据契约和 README。
 10. 已标注 episode 必须以统一轨迹码作为三种格式的基础输出名，并在格式 metadata 中保存任务与处理人；未标注 episode 保持历史命名兼容。
+11. 批量导出首版只处理完整 episode，所有条目共用一个目标目录和格式并顺序执行；单条失败继续后续条目，取消中止当前未完成项并停止剩余队列，且不得删除已经成功原子发布的输出。
 
 格式专属约束：
 
@@ -276,6 +278,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 选择 SD 卡后自动扫描全部 session，并直接从源路径只读加载、检查第一条记录；不得自动创建本地数据副本，也不显示导入目标。左侧 episode 列表以源路径作为稳定身份：单击只选择，双击或聚焦后按 Enter/空格才读取并进入回放；异步载入成功或失败后焦点必须回到触发的 session。读取失败和权限错误必须写入本地操作历史。
 - 登录页是唯一的工作区入口；顶栏显示当前账号并提供退出。退出必须清空当前 episode、检查和标注状态，不能让未登录用户继续调用数据 IPC。
 - 回放首页顶部固定提供 episode 级数据标注。用户可以只输入名称创建本地任务；选择任务时自动填充默认描述并预览该任务的下一个轨迹码，描述可编辑。保存时必须由 Rust 原子分配或复用该 episode 的轨迹号，前端轨迹码始终只读；保存结果显示修订号和最近处理人。
+- 批量页从本机最新标注列出轨迹码、任务、描述、处理人、修订和源状态；源断开的条目可见但不可选。用户只选择条目、统一格式和一个目标目录，不在前端编辑源路径或检查结果。
 - 检查结果固定使用“错误/警告/通过”文本，错误优先、警告其次、通过最后；`states.jsonl` 必须从 scope 为 `states` 的 issue 推导结果。手动报告按钮使用“导出报告”，不暴露存储格式作为主标签。
 - 应用布局、控件和状态 UI 使用黑、白和中性灰；原始相机画面保留源颜色。Telemetry 的 X/Y/Z/W 数据系列使用稳定、可区分的彩色曲线，同时保留维度文字和不同线型；状态不得只靠色相表达，必须同时使用文字、图标、边框和明度层级。
 - 图标使用当前 Lucide 库，陌生图标按钮提供 `title`/`aria-label`。
@@ -288,7 +291,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 1440x920 标准窗口。
 - 960x680 最小桌面窗口。
 - 390x844 窄视口，用于发现溢出问题，不代表移动端发布目标。
-- 回放、检查、导出三个 tab。
+- 回放、检查、导出、批量四个 tab。
 - 五张图片 `naturalWidth > 0`。
 - `documentElement.scrollWidth <= innerWidth`。
 - console error、page error、失败请求均为零。
@@ -303,6 +306,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 | Import/hash | 单元测试 + 真实 import smoke test |
 | Validation | 固定百分位/全量模式 fixture + 真实交互抽检及全量 JPEG smoke test |
 | Export adapter | Clippy + 三格式真实 export/readback smoke test |
+| Batch export | Rust 标注枚举/源断开继续/取消测试 + browser 批量交互 + 相关三视口截图；adapter 未改时仍运行真实三格式样例回读 |
 | Tauri config | `pnpm tauri build --debug --no-bundle`；平台配置在目标平台验证 |
 | Windows 条件源码 | `pnpm check:windows-cross`；仍需 Windows 本机构建和运行 |
 | macOS ExFAT 路径 | `pnpm check:exfat-macos`；仍需真实 SD 卡和大容量 formal run |
@@ -316,7 +320,7 @@ pnpm check
 ```
 
 真实样例会读取私有数据，因此保持 `#[ignore]`。`--all-targets` 常规 Rust suite
-当前为 50 项（48 通过、2 个真实样例测试 ignored），其中包含本地账号、任务创建、轨迹占号、标注修订、HDF5 UTF-8 属性回读、adapter 元数据和压力 CLI 参数测试；
+当前为 55 项（53 通过、2 个真实样例测试 ignored），其中包含本地账号、任务创建、轨迹占号、标注修订、批量导出、HDF5 UTF-8 属性回读、adapter 元数据和压力 CLI 参数测试；
 debug 构建的三格式完整 smoke test 约需 69 秒。任何
 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 

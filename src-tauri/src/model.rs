@@ -63,6 +63,13 @@ pub struct EpisodeAnnotation {
     pub updated_at_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotatedEpisodeSummary {
+    pub annotation: EpisodeAnnotation,
+    pub source_available: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveAnnotationRequest {
@@ -372,6 +379,15 @@ pub struct ExportCommandRequest {
     pub range: Option<ExportRange>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchExportCommandRequest {
+    pub episode_ids: Vec<String>,
+    pub destination_parent: String,
+    pub format: ExportFormat,
+    pub acknowledge_warnings: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportResult {
@@ -383,4 +399,31 @@ pub struct ExportResult {
     pub elapsed_ms: u128,
     pub range: ExportRange,
     pub state_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchExportItemResult {
+    pub episode_id: String,
+    pub trajectory_code: String,
+    pub source_path: String,
+    pub status: String,
+    pub validation_status: Option<String>,
+    pub result: Option<ExportResult>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchExportResult {
+    pub format: String,
+    pub destination_parent: String,
+    pub requested_count: u64,
+    pub exported_count: u64,
+    pub failed_count: u64,
+    pub cancelled: bool,
+    pub total_files: u64,
+    pub total_bytes: u64,
+    pub elapsed_ms: u128,
+    pub items: Vec<BatchExportItemResult>,
 }

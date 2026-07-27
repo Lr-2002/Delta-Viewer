@@ -58,10 +58,13 @@ in the Wiki.
    select one continuous inclusive frame range for playback and export.
 8. Export the selected range as MCAP, HDF5, or LeRobot v2.1. Errors in that
    range are blocked in Rust; warnings require explicit confirmation.
-9. Automatically persist warning/error health reports in the app-local data
+9. Open **Batch** to select multiple locally annotated full episodes and export
+   them sequentially with one format and destination. Every item is rechecked;
+   one failure does not stop later items, and cancellation keeps completed outputs.
+10. Automatically persist warning/error health reports in the app-local data
    directory, or use **Export report** to choose another destination. Passing
    checks do not create a background report.
-10. Persist user-visible scan, load, validation, and export failures in
+11. Persist user-visible scan, load, validation, and export failures in
     an append-only local operation history. Permission failures retain the raw
     platform message and are classified as `PERMISSION_DENIED`.
 
@@ -75,7 +78,8 @@ that unsampled frames are free of encoding damage.
 Accounts, user-created tasks, trajectory reservations, append-only annotation
 revisions, reports, and operation error history are stored under the operating
 system's application-local data directory. Normal UI use does not copy episode
-payloads there. Passwords
+payloads there. A batch candidate therefore still requires its original source
+path to be mounted and its fingerprint to match the saved annotation. Passwords
 are stored as Argon2id PHC hashes with random salts, never as plaintext. Login
 sessions last only for the current application process. This identity layer is
 for processing attribution; it does not encrypt local files, provide roles,

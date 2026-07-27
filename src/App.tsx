@@ -10,6 +10,7 @@ import {
   HardDrive,
   History,
   Images,
+  ListChecks,
   LoaderCircle,
   LogOut,
   Pause,
@@ -25,6 +26,7 @@ import {
 } from "lucide-react";
 import { AnnotationPanel } from "./components/AnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
+import { BatchExportPanel } from "./components/BatchExportPanel";
 import { ChecksPanel } from "./components/ChecksPanel";
 import { ExportPanel } from "./components/ExportPanel";
 import { FramePanel } from "./components/FramePanel";
@@ -36,10 +38,12 @@ import {
   cancelTask,
   chooseDirectory,
   confirmAction,
+  exportAnnotatedEpisodes,
   exportEpisode,
   exportValidationReport,
   getAuthStatus,
   isTauriRuntime,
+  listAnnotatedEpisodes,
   listOperationErrors,
   listTaskDefinitions,
   loadEpisodeAnnotation,
@@ -55,7 +59,9 @@ import { formatBytes, shortPath } from "./lib/format";
 import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate";
 import { OperationScope, type OperationToken } from "./lib/operationScope";
 import type {
+  AnnotatedEpisodeSummary,
   AuthStatus,
+  BatchExportResult,
   EpisodeAnnotation,
   EpisodeData,
   EpisodeSummary,
@@ -71,7 +77,7 @@ import type {
   ValidationReport,
 } from "./types";
 
-type View = "review" | "checks" | "export";
+type View = "review" | "checks" | "export" | "batch";
 type EpisodeSourceState = "available" | "loading" | "error";
 
 const METRICS: { key: MetricKey; label: string }[] = [
@@ -95,6 +101,11 @@ function App() {
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("mcap");
   const [exportResult, setExportResult] = useState<ExportResult | null>(null);
+  const [annotatedEpisodes, setAnnotatedEpisodes] = useState<AnnotatedEpisodeSummary[]>([]);
+  const [batchSelectedIds, setBatchSelectedIds] = useState<string[]>([]);
+  const [batchExportFormat, setBatchExportFormat] = useState<ExportFormat>("mcap");
+  const [batchExportResult, setBatchExportResult] = useState<BatchExportResult | null>(null);
+  const [batchLoading, setBatchLoading] = useState(false);
   const [view, setView] = useState<View>("review");
   const [metric, setMetric] = useState<MetricKey>("position");
   const [currentFrame, setCurrentFrame] = useState(0);
@@ -117,6 +128,7 @@ function App() {
   const episodeLoadInFlight = useRef(false);
   const episodeButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const episodeFocusRestoreToken = useRef(0);
+  const batchSelectionInitialized = useRef(false);
   const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
   const playbackFps = fpsOverride ?? estimatedFps;
 
@@ -411,6 +423,12 @@ function App() {
       setHistoryOpen(false);
       setCurrentOperationError(false);
       setTasks([]);
+      setAnnotatedEpisodes([]);
+      setBatchSelectedIds([]);
+      setBatchExportResult(null);
+      setBatchLoading(false);
+      batchSelectionInitialized.current = false;
+      setView("review");
       setError("");
       setNotice("");
       didAutoLoad.current = false;
@@ -518,6 +536,118 @@ function App() {
     } finally {
       finishOperation(owner);
     }
+  }
+
+  async function refreshAnnotatedEpisodeList() {
+    if (!authStatus?.currentUser) return;
+    setBatchLoading(true);
+    try {
+      const listed = await listAnnotatedEpisodes();
+      const availableIds = listed
+        .filter((item) => item.sourceAvailable)
+        .map((item) => item.annotation.episodeId);
+      const availableSet = new Set(availableIds);
+      const initializeSelection = !batchSelectionInitialized.current;
+      if (initializeSelection) batchSelectionInitialized.current = true;
+      setAnnotatedEpisodes(listed);
+      setBatchSelectedIds((current) => initializeSelection
+        ? availableIds
+        : current.filter((episodeId) => availableSet.has(episodeId)));
+    } catch (reason) {
+      await reportFailure("list_annotated_episodes", reason, "");
+    } finally {
+      setBatchLoading(false);
+    }
+  }
+
+  function openBatchExport() {
+    setPlaying(false);
+    setView("batch");
+    void refreshAnnotatedEpisodeList();
+  }
+
+  function toggleBatchEpisode(episodeId: string) {
+    setBatchExportResult(null);
+    setBatchSelectedIds((current) => current.includes(episodeId)
+      ? current.filter((candidate) => candidate !== episodeId)
+      : [...current, episodeId]);
+  }
+
+  function toggleAllBatchEpisodes() {
+    const availableIds = annotatedEpisodes
+      .filter((item) => item.sourceAvailable)
+      .map((item) => item.annotation.episodeId);
+    const allSelected = availableIds.length > 0
+      && availableIds.every((episodeId) => batchSelectedIds.includes(episodeId));
+    setBatchExportResult(null);
+    setBatchSelectedIds(allSelected ? [] : availableIds);
+  }
+
+  async function runBatchExport() {
+    if (!batchSelectedIds.length || operationScopeRef.current.current()) return;
+    let destinationParent: string | null = null;
+    try {
+      const confirmed = await confirmAction(
+        `将重新检查并完整导出 ${batchSelectedIds.length} 条已标注数据。包含 warning 的数据会继续导出，包含 error 的数据会跳过，是否继续？`,
+        "确认批量导出",
+      );
+      if (!confirmed) return;
+      destinationParent = await chooseDirectory(
+        `选择 ${exportFormatLabel(batchExportFormat)} 批量导出目录`,
+      );
+    } catch (reason) {
+      await reportFailure("export_annotated_episodes", reason, "");
+      return;
+    }
+    if (!destinationParent) return;
+
+    const owner = beginOperation();
+    if (!owner) return;
+    resetOperationFeedback(owner);
+    setBatchExportResult(null);
+    try {
+      const result = await exportAnnotatedEpisodes(
+        batchSelectedIds,
+        destinationParent,
+        batchExportFormat,
+        true,
+        owner.id,
+      );
+      if (!isCurrentOperation(owner)) return;
+      setBatchExportResult(result);
+      await persistBatchFailures(result, owner);
+      if (!isCurrentOperation(owner)) return;
+      if (result.cancelled) {
+        setNotice(`批量导出已停止：已成功 ${result.exportedCount} 条，已完成的输出保留。`);
+      } else {
+        setNotice(`批量导出完成：成功 ${result.exportedCount} 条，失败 ${result.failedCount} 条。`);
+      }
+    } catch (reason) {
+      await reportFailure("export_annotated_episodes", reason, destinationParent, owner);
+    } finally {
+      finishOperation(owner);
+    }
+  }
+
+  async function persistBatchFailures(result: BatchExportResult, owner: OperationToken) {
+    const recorded: OperationErrorRecord[] = [];
+    for (const item of result.items) {
+      if (item.status !== "failed" || !item.error || !isCurrentOperation(owner)) continue;
+      try {
+        recorded.push(await recordOperationError({
+          operation: "export_annotated_episodes",
+          message: item.error,
+          sourcePath: item.sourcePath || null,
+        }));
+      } catch (historyError) {
+        console.error("Failed to persist batch export error history", historyError);
+      }
+    }
+    if (!recorded.length || !isCurrentOperation(owner)) return;
+    setOperationErrors((current) => [
+      ...recorded.reverse(),
+      ...current.filter((item) => !recorded.some((record) => record.id === item.id)),
+    ].slice(0, 200));
   }
 
   async function runReportExport() {
@@ -774,24 +904,52 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {data ? (
+          {data || view === "batch" ? (
             <>
               <nav className="view-tabs" aria-label="工作区视图">
-                <button type="button" className={view === "review" ? "active" : ""} onClick={() => setView("review")}>
-                  <Images size={17} />回放
-                </button>
-                <button type="button" className={view === "checks" ? "active" : ""} onClick={() => setView("checks")}>
-                  <ShieldCheck size={17} />检查
-                  {report?.status === "warning" ? <span className="tab-alert" /> : null}
-                </button>
-                <button type="button" className={view === "export" ? "active" : ""} onClick={() => setView("export")}>
-                  <PackageOpen size={17} />导出
+                {data ? (
+                  <>
+                    <button type="button" className={view === "review" ? "active" : ""} onClick={() => setView("review")}>
+                      <Images size={17} />回放
+                    </button>
+                    <button type="button" className={view === "checks" ? "active" : ""} onClick={() => setView("checks")}>
+                      <ShieldCheck size={17} />检查
+                      {report?.status === "warning" ? <span className="tab-alert" /> : null}
+                    </button>
+                    <button type="button" className={view === "export" ? "active" : ""} onClick={() => setView("export")}>
+                      <PackageOpen size={17} />导出
+                    </button>
+                  </>
+                ) : null}
+                <button type="button" className={view === "batch" ? "active" : ""} onClick={openBatchExport}>
+                  <ListChecks size={17} />批量
                 </button>
                 <span className="view-tab-spacer" />
-                <span className="loaded-label"><span className="source-dot" />{shortPath(data.summary.root, 52)}</span>
+                {data ? (
+                  <span className="loaded-label"><span className="source-dot" />{shortPath(data.summary.root, 52)}</span>
+                ) : null}
               </nav>
 
-              {view === "review" ? (
+              {view === "batch" ? (
+                <BatchExportPanel
+                  items={annotatedEpisodes}
+                  tasks={tasks}
+                  selectedIds={batchSelectedIds}
+                  selectedFormat={batchExportFormat}
+                  result={batchExportResult}
+                  loading={batchLoading}
+                  busy={busy}
+                  onRefresh={() => void refreshAnnotatedEpisodeList()}
+                  onToggle={toggleBatchEpisode}
+                  onToggleAll={toggleAllBatchEpisodes}
+                  onSelectFormat={(format) => {
+                    setBatchExportFormat(format);
+                    setBatchExportResult(null);
+                  }}
+                  onExport={() => void runBatchExport()}
+                  onReveal={(path) => void revealExport(path)}
+                />
+              ) : !data ? null : view === "review" ? (
                 <div className="review-view">
                   <AnnotationPanel
                     sourcePath={data.summary.root}
@@ -939,6 +1097,7 @@ function App() {
               selectedEpisode={selectedEpisode}
               busy={busy}
               onChoose={chooseSource}
+              onBatch={openBatchExport}
             />
           )}
         </main>
@@ -951,10 +1110,12 @@ function EmptyWorkspace({
   selectedEpisode,
   busy,
   onChoose,
+  onBatch,
 }: {
   selectedEpisode: EpisodeSummary | null;
   busy: boolean;
   onChoose: () => Promise<void>;
+  onBatch: () => void;
 }) {
   return (
       <div className="empty-workspace">
@@ -984,6 +1145,14 @@ function EmptyWorkspace({
           <small>支持包含一个或多个记录目录的卷</small>
         </button>
       )}
+      <button
+        className="button button-secondary empty-batch-action"
+        type="button"
+        onClick={onBatch}
+        disabled={busy}
+      >
+        <ListChecks size={16} />批量导出已标注数据
+      </button>
       <div className="empty-facts">
         <span><ShieldCheck size={16} />源目录只读</span>
         <span><Activity size={16} />状态与帧序列检查</span>
@@ -1118,6 +1287,8 @@ function operationLabel(operation: string): string {
     load_and_validate: "加载与检查",
     cleanup_partial_import: "清理未完成导入",
     export_episode: "导出数据",
+    export_annotated_episodes: "批量导出",
+    list_annotated_episodes: "读取本地标注",
     export_validation_report: "导出报告",
     reveal_output: "打开导出位置",
     logout: "退出登录",

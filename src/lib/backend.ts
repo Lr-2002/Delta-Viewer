@@ -11,7 +11,9 @@ import {
   type DemoFixture,
 } from "./demoFixture";
 import type {
+  AnnotatedEpisodeSummary,
   AuthStatus,
+  BatchExportResult,
   CreateTaskRequest,
   EpisodeAnnotation,
   EpisodeData,
@@ -176,6 +178,15 @@ export async function saveEpisodeAnnotation(
   };
   demoAnnotations.set(request.sourcePath, annotation);
   return annotation;
+}
+
+export async function listAnnotatedEpisodes(): Promise<AnnotatedEpisodeSummary[]> {
+  if (isTauriRuntime()) {
+    return invoke<AnnotatedEpisodeSummary[]>("list_annotated_episodes");
+  }
+  return [...demoAnnotations.values()]
+    .sort((left, right) => right.updatedAtMs - left.updatedAtMs)
+    .map((annotation) => ({ annotation: { ...annotation }, sourceAvailable: true }));
 }
 
 export function isTauriRuntime(): boolean {
@@ -473,6 +484,87 @@ export async function exportEpisode(
     elapsedMs: format === "lerobot_v2" ? 18_400 : 3_200,
     range,
     stateCount: range.endFrame - range.startFrame + 1,
+  };
+}
+
+export async function exportAnnotatedEpisodes(
+  episodeIds: string[],
+  destinationParent: string,
+  format: ExportFormat,
+  acknowledgeWarnings: boolean,
+  operationId: number,
+): Promise<BatchExportResult> {
+  if (isTauriRuntime()) {
+    return invoke<BatchExportResult>("export_annotated_episodes", {
+      request: {
+        episodeIds,
+        destinationParent,
+        format,
+        acknowledgeWarnings,
+      },
+      operationId,
+    });
+  }
+
+  const started = performance.now();
+  const items: BatchExportResult["items"] = [];
+  for (const episodeId of episodeIds) {
+    const annotation = [...demoAnnotations.values()]
+      .find((candidate) => candidate.episodeId === episodeId);
+    if (!annotation) {
+      items.push({
+        episodeId,
+        trajectoryCode: episodeId,
+        sourcePath: "",
+        status: "failed",
+        validationStatus: null,
+        result: null,
+        error: `ANNOTATION_NOT_FOUND: 找不到本地标注 ${episodeId}`,
+      });
+      continue;
+    }
+    if (!acknowledgeWarnings) {
+      items.push({
+        episodeId,
+        trajectoryCode: annotation.trajectoryCode,
+        sourcePath: annotation.episodeRoot,
+        status: "failed",
+        validationStatus: "warning",
+        result: null,
+        error: "EXPORT_WARNING_CONFIRMATION_REQUIRED: 请确认数据警告后再导出",
+      });
+      continue;
+    }
+    const result = await exportEpisode(
+      annotation.episodeRoot,
+      destinationParent,
+      format,
+      true,
+      { startFrame: 0, endFrame: 195 },
+      operationId,
+    );
+    items.push({
+      episodeId,
+      trajectoryCode: annotation.trajectoryCode,
+      sourcePath: annotation.episodeRoot,
+      status: "exported",
+      validationStatus: "warning",
+      result,
+      error: null,
+    });
+  }
+  const exported = items.filter((item) => item.result !== null);
+  return {
+    format,
+    destinationParent,
+    requestedCount: episodeIds.length,
+    exportedCount: exported.length,
+    failedCount: items.length - exported.length,
+    cancelled: false,
+    totalFiles: exported.reduce((total, item) => total + (item.result?.totalFiles ?? 0), 0),
+    totalBytes: exported.reduce((total, item) => total + (item.result?.totalBytes ?? 0), 0),
+    elapsedMs: Math.round(performance.now() - started),
+    items,
   };
 }
 

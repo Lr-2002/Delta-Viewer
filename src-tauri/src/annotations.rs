@@ -1,11 +1,13 @@
 use crate::error::{AppError, AppResult};
 use crate::identity;
 use crate::model::{
-    CreateTaskRequest, EpisodeAnnotation, SaveAnnotationRequest, TaskDefinition, UserIdentity,
+    AnnotatedEpisodeSummary, CreateTaskRequest, EpisodeAnnotation, SaveAnnotationRequest,
+    TaskDefinition, UserIdentity,
 };
 use crate::storage;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -16,6 +18,7 @@ const RESERVATION_FORMAT_VERSION: u32 = 1;
 const TASK_FORMAT_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: u64 = 256 * 1024;
 const MAX_TASKS: usize = 500;
+const MAX_BATCH_EPISODES: usize = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -173,6 +176,155 @@ pub fn load_annotation(
         return Ok(None);
     }
 
+    load_latest_annotation(
+        data_root,
+        &directory,
+        &episode_id,
+        episode_root,
+        fingerprint,
+    )
+}
+
+pub fn list_annotations(data_root: &Path) -> AppResult<Vec<AnnotatedEpisodeSummary>> {
+    let directory = annotations_dir(data_root);
+    if !directory.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut annotations = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let episode_id = entry
+            .file_name()
+            .to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                AppError::Message("ANNOTATION_RECORD_INVALID: 标注目录名称无效".into())
+            })?;
+        validate_episode_id(&episode_id)?;
+        let annotation =
+            load_latest_annotation_from_identity(data_root, &entry.path(), &episode_id)?
+                .ok_or_else(|| {
+                    AppError::Message(format!(
+                        "ANNOTATION_RECORD_INVALID: 标注 {episode_id} 没有可用修订"
+                    ))
+                })?;
+        let source_available = fs::symlink_metadata(Path::new(&annotation.episode_root))
+            .is_ok_and(|metadata| metadata.file_type().is_dir());
+        annotations.push(AnnotatedEpisodeSummary {
+            annotation,
+            source_available,
+        });
+    }
+    annotations.sort_by(|left, right| {
+        right
+            .annotation
+            .updated_at_ms
+            .cmp(&left.annotation.updated_at_ms)
+            .then_with(|| {
+                left.annotation
+                    .trajectory_code
+                    .cmp(&right.annotation.trajectory_code)
+            })
+    });
+    Ok(annotations)
+}
+
+pub fn annotations_by_ids(
+    data_root: &Path,
+    episode_ids: &[String],
+) -> AppResult<Vec<EpisodeAnnotation>> {
+    if episode_ids.is_empty() {
+        return Err(AppError::Message(
+            "BATCH_EXPORT_EMPTY: 请至少选择一条已标注数据".into(),
+        ));
+    }
+    if episode_ids.len() > MAX_BATCH_EPISODES {
+        return Err(AppError::Message(format!(
+            "BATCH_EXPORT_LIMIT_EXCEEDED: 单次最多导出 {MAX_BATCH_EPISODES} 条数据"
+        )));
+    }
+
+    let mut unique = BTreeSet::new();
+    for episode_id in episode_ids {
+        validate_episode_id(episode_id)?;
+        if !unique.insert(episode_id.as_str()) {
+            return Err(AppError::Message(format!(
+                "BATCH_EXPORT_DUPLICATE: episode {episode_id} 被重复选择"
+            )));
+        }
+    }
+
+    let mut available = list_annotations(data_root)?
+        .into_iter()
+        .map(|item| (item.annotation.episode_id.clone(), item.annotation))
+        .collect::<HashMap<_, _>>();
+    episode_ids
+        .iter()
+        .map(|episode_id| {
+            available.remove(episode_id).ok_or_else(|| {
+                AppError::Message(format!("ANNOTATION_NOT_FOUND: 找不到本地标注 {episode_id}"))
+            })
+        })
+        .collect()
+}
+
+fn load_latest_annotation_from_identity(
+    data_root: &Path,
+    directory: &Path,
+    stored_episode_id: &str,
+) -> AppResult<Option<EpisodeAnnotation>> {
+    let mut identity: Option<(PathBuf, String)> = None;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file()
+            || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+        {
+            continue;
+        }
+        let record: EpisodeAnnotation = read_json(&entry.path())?;
+        let candidate = (
+            PathBuf::from(&record.episode_root),
+            record.episode_fingerprint.clone(),
+        );
+        if identity
+            .as_ref()
+            .is_some_and(|current| current != &candidate)
+        {
+            return Err(AppError::Message(format!(
+                "ANNOTATION_IDENTITY_CONFLICT: 标注 {stored_episode_id} 的源身份冲突"
+            )));
+        }
+        identity = Some(candidate);
+    }
+    let Some((episode_root, fingerprint)) = identity else {
+        return Ok(None);
+    };
+    validate_fingerprint(&fingerprint)?;
+    if episode_id(&episode_root, &fingerprint) != stored_episode_id {
+        return Err(AppError::Message(format!(
+            "ANNOTATION_IDENTITY_MISMATCH: 标注 {stored_episode_id} 的目录身份与源路径/指纹不一致"
+        )));
+    }
+    load_latest_annotation(
+        data_root,
+        directory,
+        stored_episode_id,
+        &episode_root,
+        &fingerprint,
+    )
+}
+
+fn load_latest_annotation(
+    data_root: &Path,
+    directory: &Path,
+    episode_id: &str,
+    episode_root: &Path,
+    fingerprint: &str,
+) -> AppResult<Option<EpisodeAnnotation>> {
     let mut latest: Option<EpisodeAnnotation> = None;
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
@@ -184,7 +336,7 @@ pub fn load_annotation(
             continue;
         }
         let record: EpisodeAnnotation = read_json(&path)?;
-        validate_stored_annotation(data_root, &record, &episode_id, episode_root, fingerprint)?;
+        validate_stored_annotation(data_root, &record, episode_id, episode_root, fingerprint)?;
         if latest
             .as_ref()
             .is_some_and(|current| current.revision == record.revision && current != &record)
@@ -518,6 +670,15 @@ fn validate_fingerprint(fingerprint: &str) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_episode_id(episode_id: &str) -> AppResult<()> {
+    if episode_id.len() != 64 || !episode_id.bytes().all(|value| value.is_ascii_hexdigit()) {
+        return Err(AppError::Message(
+            "ANNOTATION_ID_INVALID: 本地标注 episode ID 无效".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn episode_id(episode_root: &Path, fingerprint: &str) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(episode_root.as_os_str().to_string_lossy().as_bytes());
@@ -611,8 +772,8 @@ fn unix_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        create_task, load_annotation, save_annotation, suggest_trajectory_code, task_definitions,
-        ANNOTATION_FORMAT_VERSION,
+        annotations_by_ids, create_task, list_annotations, load_annotation, save_annotation,
+        suggest_trajectory_code, task_definitions, ANNOTATION_FORMAT_VERSION,
     };
     use crate::model::{CreateTaskRequest, SaveAnnotationRequest, UserIdentity};
     use std::fs;
@@ -761,6 +922,90 @@ mod tests {
             },
         )
         .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lists_latest_annotations_and_preserves_requested_batch_order() {
+        let root = test_output("annotation-list");
+        let first_root = root.join("episodes").join("first");
+        let second_root = root.join("episodes").join("second");
+        fs::create_dir_all(&first_root).unwrap();
+        fs::create_dir_all(&second_root).unwrap();
+        let user = UserIdentity {
+            username: "operator".into(),
+            display_name: "Operator".into(),
+        };
+        let first = save_annotation(
+            &root,
+            &first_root,
+            FINGERPRINT_ONE,
+            &user,
+            request("close_oven", "第一条初始描述"),
+        )
+        .unwrap();
+        let first_latest = save_annotation(
+            &root,
+            &first_root,
+            FINGERPRINT_ONE,
+            &user,
+            request("close_oven", "第一条最新描述"),
+        )
+        .unwrap();
+        let second = save_annotation(
+            &root,
+            &second_root,
+            FINGERPRINT_TWO,
+            &user,
+            request("close_oven", "第二条描述"),
+        )
+        .unwrap();
+        fs::remove_dir_all(&second_root).unwrap();
+
+        let listed = list_annotations(&root).unwrap();
+        assert_eq!(listed.len(), 2);
+        let first_item = listed
+            .iter()
+            .find(|item| item.annotation.episode_id == first.episode_id)
+            .unwrap();
+        assert_eq!(first_item.annotation, first_latest);
+        assert!(first_item.source_available);
+        let second_item = listed
+            .iter()
+            .find(|item| item.annotation.episode_id == second.episode_id)
+            .unwrap();
+        assert!(!second_item.source_available);
+
+        let selected = annotations_by_ids(
+            &root,
+            &[second.episode_id.clone(), first.episode_id.clone()],
+        )
+        .unwrap();
+        assert_eq!(selected[0].episode_id, second.episode_id);
+        assert_eq!(selected[1].episode_id, first.episode_id);
+        assert!(
+            annotations_by_ids(&root, &[first.episode_id.clone(), first.episode_id.clone()])
+                .is_err()
+        );
+
+        let forged_id = if first.episode_id == "f".repeat(64) {
+            "e".repeat(64)
+        } else {
+            "f".repeat(64)
+        };
+        let forged_directory = root.join("annotations").join(&forged_id);
+        fs::create_dir(&forged_directory).unwrap();
+        let mut forged = first_latest;
+        forged.episode_id = forged_id;
+        fs::write(
+            forged_directory.join("revision-00000001.json"),
+            serde_json::to_vec_pretty(&forged).unwrap(),
+        )
+        .unwrap();
+        assert!(list_annotations(&root)
+            .unwrap_err()
+            .to_string()
+            .contains("ANNOTATION_IDENTITY_MISMATCH"));
         fs::remove_dir_all(root).unwrap();
     }
 
