@@ -247,12 +247,9 @@ impl ExportAdapter for Hdf5Adapter {
         if let Some(annotation) = context.annotation {
             builder.set_attr(
                 "trajectory_code",
-                AttrValue::AsciiString(annotation.trajectory_code.clone()),
+                AttrValue::String(annotation.trajectory_code.clone()),
             );
-            builder.set_attr(
-                "task_id",
-                AttrValue::AsciiString(annotation.task_id.clone()),
-            );
+            builder.set_attr("task_id", AttrValue::String(annotation.task_id.clone()));
             builder.set_attr(
                 "processed_by_username",
                 AttrValue::AsciiString(annotation.processed_by.username.clone()),
@@ -633,12 +630,12 @@ mod tests {
     }
 
     #[test]
-    fn verifies_ascii_attributes_after_reader_normalization() {
-        let root = test_output("ascii-attribute-roundtrip");
+    fn verifies_utf8_annotation_attributes_after_reader_normalization() {
+        let root = test_output("utf8-attribute-roundtrip");
         fs::create_dir_all(&root).unwrap();
         let output = root.join("attributes.h5");
         let mut builder = FileBuilder::new();
-        builder.set_attr("trajectory_code", AttrValue::AsciiString("oven-001".into()));
+        builder.set_attr("trajectory_code", AttrValue::String("整理餐具-001".into()));
         let mut annotation = builder.create_group("annotation");
         annotation
             .create_dataset("task_description_utf8")
@@ -650,11 +647,11 @@ mod tests {
         let attrs = file.root().attrs().unwrap();
         assert!(attr_string_matches(
             attrs.get("trajectory_code"),
-            "oven-001"
+            "整理餐具-001"
         ));
         assert!(!attr_string_matches(
             attrs.get("trajectory_code"),
-            "oven-002"
+            "整理餐具-002"
         ));
         assert_eq!(
             file.dataset("annotation/task_description_utf8")

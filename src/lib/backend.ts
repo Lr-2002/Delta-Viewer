@@ -12,6 +12,7 @@ import {
 } from "./demoFixture";
 import type {
   AuthStatus,
+  CreateTaskRequest,
   EpisodeAnnotation,
   EpisodeData,
   ExportFormat,
@@ -42,6 +43,15 @@ const SESSION_ACTIVATION_DEMO_EPISODES = [
 
 const demoAccounts = new Map<string, { displayName: string; password: string }>();
 const demoAnnotations = new Map<string, EpisodeAnnotation>();
+const demoTrajectoryReservations = new Map<string, string>();
+const demoTaskDefinitions: TaskDefinition[] = [
+  {
+    id: "close_oven",
+    label: "关闭烤箱",
+    codePrefix: "oven",
+    defaultDescription: "关闭烤箱门，并确认烤箱门完全闭合。",
+  },
+];
 let demoCurrentUser: UserIdentity | null = null;
 let sessionActivationRetryAttempts = 0;
 
@@ -88,23 +98,40 @@ export async function logoutLocalAccount(): Promise<void> {
 
 export async function listTaskDefinitions(): Promise<TaskDefinition[]> {
   if (isTauriRuntime()) return invoke<TaskDefinition[]>("list_task_definitions");
-  return [
-    {
-      id: "close_oven",
-      label: "关闭烤箱",
-      codePrefix: "oven",
-      defaultDescription: "关闭烤箱门，并确认烤箱门完全闭合。",
-    },
-  ];
+  return demoTaskDefinitions.map((task) => ({ ...task }));
+}
+
+export async function createTaskDefinition(request: CreateTaskRequest): Promise<TaskDefinition> {
+  if (isTauriRuntime()) {
+    return invoke<TaskDefinition>("create_task_definition", { request });
+  }
+  if (!demoCurrentUser) throw new Error("AUTH_REQUIRED: 请先登录本地账号");
+  const label = normalizeTaskLabel(request.label);
+  const codePrefix = taskCodePrefix(label);
+  if (demoTaskDefinitions.some((task) => (
+    task.id === codePrefix
+    || task.codePrefix === codePrefix
+    || task.label.toLowerCase() === label.toLowerCase()
+  ))) {
+    throw new Error(`TASK_EXISTS: 任务名称或自动编码 ${codePrefix} 已存在`);
+  }
+  const task: TaskDefinition = {
+    id: codePrefix,
+    label,
+    codePrefix,
+    defaultDescription: label,
+  };
+  demoTaskDefinitions.push(task);
+  return { ...task };
 }
 
 export async function suggestTrajectoryCode(taskId: string): Promise<string> {
   if (isTauriRuntime()) return invoke<string>("suggest_trajectory_code", { taskId });
   const task = (await listTaskDefinitions()).find((item) => item.id === taskId);
   if (!task) throw new Error(`UNKNOWN_TASK: 不支持的任务 ${taskId}`);
-  const used = [...demoAnnotations.values()]
-    .filter((item) => item.trajectoryCode.startsWith(`${task.codePrefix}-`))
-    .map((item) => Number(item.trajectoryCode.slice(task.codePrefix.length + 1)))
+  const used = [...demoTrajectoryReservations.values()]
+    .filter((code) => code.startsWith(`${task.codePrefix}-`))
+    .map((code) => Number(code.slice(task.codePrefix.length + 1)))
     .filter(Number.isFinite);
   const next = Math.max(0, ...used) + 1;
   return `${task.codePrefix}-${String(next).padStart(3, "0")}`;
@@ -125,13 +152,21 @@ export async function saveEpisodeAnnotation(
   }
   if (!demoCurrentUser) throw new Error("AUTH_REQUIRED: 请先登录本地账号");
   const existing = demoAnnotations.get(request.sourcePath);
+  const task = demoTaskDefinitions.find((item) => item.id === request.taskId);
+  if (!task) throw new Error(`UNKNOWN_TASK: 不支持的任务 ${request.taskId}`);
+  const reservationKey = `${request.sourcePath}\0${request.taskId}`;
+  const trajectoryCode = demoTrajectoryReservations.get(reservationKey)
+    ?? (existing?.taskId === request.taskId
+      ? existing.trajectoryCode
+      : await suggestTrajectoryCode(request.taskId));
+  demoTrajectoryReservations.set(reservationKey, trajectoryCode);
   const now = Date.now();
   const annotation: EpisodeAnnotation = {
     formatVersion: 1,
     episodeId: `demo-${request.sourcePath}`,
     episodeRoot: request.sourcePath,
     episodeFingerprint: "f5bc2dda9be850c0d89c88c1021ae8964f59592b7bad1db02159fdef24384727",
-    trajectoryCode: request.trajectoryCode,
+    trajectoryCode,
     taskId: request.taskId,
     taskDescription: request.taskDescription.trim(),
     processedBy: demoCurrentUser,
@@ -300,6 +335,35 @@ function classifyDemoError(message: string): string {
     || normalized.includes("permission denied")
     ? "PERMISSION_DENIED"
     : "OPERATION_FAILED";
+}
+
+function normalizeTaskLabel(value: string): string {
+  if (/\p{Cc}/u.test(value)) {
+    throw new Error("INVALID_TASK_NAME: 任务名称不能包含控制字符");
+  }
+  const label = value.trim().split(/\s+/u).filter(Boolean).join(" ");
+  const length = Array.from(label).length;
+  if (length < 1 || length > 64) {
+    throw new Error("INVALID_TASK_NAME: 任务名称需为 1-64 个字符");
+  }
+  return label;
+}
+
+function taskCodePrefix(label: string): string {
+  let prefix = "";
+  let separatorPending = false;
+  for (const character of label) {
+    if (/^[\p{L}\p{N}]$/u.test(character)) {
+      if (separatorPending && prefix) prefix += "-";
+      prefix += character.toLowerCase();
+      separatorPending = false;
+    } else {
+      separatorPending = true;
+    }
+  }
+  prefix = Array.from(prefix).slice(0, 48).join("").replace(/^-+|-+$/gu, "");
+  if (!prefix) throw new Error("INVALID_TASK_NAME: 任务名称必须包含文字或数字");
+  return prefix;
 }
 
 export async function loadEpisode(path: string, operationId: number): Promise<EpisodeData> {

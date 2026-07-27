@@ -41,6 +41,12 @@ pub struct TaskDefinition {
     pub default_description: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateTaskRequest {
+    pub label: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct EpisodeAnnotation {
@@ -61,7 +67,6 @@ pub struct EpisodeAnnotation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveAnnotationRequest {
     pub source_path: String,
-    pub trajectory_code: String,
     pub task_id: String,
     pub task_description: String,
 }

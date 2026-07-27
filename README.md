@@ -1,8 +1,9 @@
 # DOHC Viewer
 
-DOHC Viewer is a Tauri 2 desktop application for importing DOHC recordings from
-an SD card, verifying the local copy, reviewing synchronized sensor data, and
-exporting it through independent format adapters.
+DOHC Viewer is a Tauri 2 desktop application for reading DOHC recordings
+directly from a mounted, read-only SD card, reviewing synchronized sensor data,
+and exporting it through independent format adapters without an automatic local
+episode copy.
 
 Official packaging targets Windows 10/11 x64, macOS 12 or later on Apple
 Silicon and Intel, and Ubuntu 22.04 or later on x86_64 through a native deb.
@@ -41,45 +42,40 @@ in the Wiki.
 1. Create or sign in to a local account. The account identifies who last
    processed an episode; it is not a cloud account or a remote permission system.
 2. Select an SD card or a recording directory.
-3. Scan every direct-child episode without modifying the source card, then
-   automatically queue all discovered sessions for import without a second
-   destination dialog or import button.
-4. Create an isolated workspace under the current user's app-local data,
-   preflight its capacity and filesystem support, and copy each session there.
-   The first successful session opens automatically; the left list shows every
-   session's import status. A single click selects it; double-click it or press
-   Enter/Space while it has keyboard focus to open it.
-5. Identify any safely cleanable incomplete imports before publishing a
-   completed local copy.
-6. Verify every destination file by size and BLAKE3, then write a format-v2
-   `.dohc-manifest.json` with original and Windows-safe relative paths.
-7. Decode-check each stream at fixed 1%, 25%, 50%, 73%, and 99% positions,
+3. Scan every direct-child episode without modifying the source card. The first
+   session opens directly from the read-only source; no automatic app-local
+   copy is created. Keep the source volume mounted while viewing or exporting.
+4. The left list shows every discovered session. A single click selects it;
+   double-click it or press Enter/Space while it has keyboard focus to read and
+   check it on demand.
+5. Decode-check each stream at fixed 1%, 25%, 50%, 73%, and 99% positions,
    validate the complete stream structure, parse every state, and check state
    frame IDs and timestamps.
-8. Assign an episode task, editable task description, and a globally reserved
-   trajectory code. The initial `close_oven` task defaults to `oven-001`, then
-   increments for later trajectories.
-9. Review five synchronized image streams and state telemetry, and optionally
+6. Select an episode task or create one by entering its name, then edit the task
+   description as needed. Rust assigns the next `{task-prefix}-{NNN}` trajectory
+   code atomically when the annotation is saved; the UI cannot set the number.
+7. Review five synchronized image streams and colored state telemetry, and optionally
    select one continuous inclusive frame range for playback and export.
-10. Export the selected range as MCAP, HDF5, or LeRobot v2.1. Errors in that
+8. Export the selected range as MCAP, HDF5, or LeRobot v2.1. Errors in that
    range are blocked in Rust; warnings require explicit confirmation.
-11. Automatically persist warning/error health reports in the app-local data
+9. Automatically persist warning/error health reports in the app-local data
    directory, or use **Export report** to choose another destination. Passing
    checks do not create a background report.
-12. Persist user-visible scan, import, load, validation, and export failures in
+10. Persist user-visible scan, load, validation, and export failures in
     an append-only local operation history. Permission failures retain the raw
     platform message and are classified as `PERMISSION_DENIED`.
 
 Interactive health reports use format v3 and explicitly identify sampled image
 validation, the five percentages, and `autoReportPath`. Automatic reporting is
-strictly local and never writes to the SD card or imported episode; repeated
+strictly local and never writes to the SD card or source episode; repeated
 checks of the same episode path and fingerprint reuse one report. Formal stress
 and release smoke tests still decode every JPEG; a sampled result does not claim
 that unsampled frames are free of encoding damage.
 
-Managed imports, accounts, trajectory reservations, append-only annotation
-revisions, and operation error history are stored under the operating system's
-application-local data directory. Passwords
+Accounts, user-created tasks, trajectory reservations, append-only annotation
+revisions, reports, and operation error history are stored under the operating
+system's application-local data directory. Normal UI use does not copy episode
+payloads there. Passwords
 are stored as Argon2id PHC hashes with random salts, never as plaintext. Login
 sessions last only for the current application process. This identity layer is
 for processing attribution; it does not encrypt local files, provide roles,
@@ -125,7 +121,7 @@ Its standard `timestamp` follows the constant-rate video timeline; the original
 nanosecond clock is retained separately as `observation.capture_time_ns`.
 
 Trim ranges are inclusive: a range of frames 10-19 contains ten states and the
-matching frames from all five streams. Trimming never changes the imported
+matching frames from all five streams. Trimming never changes the source
 episode. Clipped output names include `_frames_10-19` after either the trajectory
 code or legacy recording name, and each adapter records the bounds in metadata.
 
@@ -141,10 +137,12 @@ Playback estimates the recorded FPS from the median positive state timestamp
 delta and supports explicit 15, 24, 30, or 60 FPS overrides. Health issues that
 identify a frame can jump directly back to synchronized playback.
 
-Import sanitizes every path component and stops before copying when two source
-paths would collide after Windows case folding or filename replacement. The
-manifest keeps `sourcePath` for the original relative path and `path` for the
-local Windows-safe path; the stable dataset BLAKE3 remains based on source paths.
+The importer retained for formal/development stress sanitizes every path
+component and stops before copying when two source paths would collide after
+Windows case folding or filename replacement. Its manifest keeps `sourcePath`
+for the original relative path and `path` for the local Windows-safe path; the
+stable dataset BLAKE3 remains based on source paths. The normal UI does not run
+this importer.
 
 The HDF5 adapter streams concatenated JPEG payloads through fixed 1 MiB chunks;
 it retains frame paths and index metadata but never stages a complete camera
@@ -179,7 +177,8 @@ pnpm tauri:dev
 Frontend-only development uses an in-memory demo account and the checked-in
 `public/demo/fixture.json` metadata fixture. It does not serve the private
 `data/raw` recording or widen Vite filesystem access. Create the demo account
-on the login screen; refreshing the page resets demo accounts and annotations:
+on the login screen; refreshing the page resets demo accounts, tasks, and
+annotations:
 
 ```bash
 pnpm dev

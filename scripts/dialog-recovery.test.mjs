@@ -68,7 +68,7 @@ if (!browserExecutable && requireBrowser) {
       const listeners = new Map();
       const failures = [];
       const records = [];
-      const calls = { exportEpisode: 0, exportValidationReport: 0 };
+      const calls = { exportEpisode: 0, exportValidationReport: 0, importEpisode: 0 };
       let callbackId = 1;
       let recordId = 1;
       const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JrJ4AAAAASUVORK5CYII=";
@@ -97,7 +97,7 @@ if (!browserExecutable && requireBrowser) {
       };
       const report = {
         formatVersion: 3,
-        episodeRoot: "/managed-imports/episode",
+        episodeRoot: "/source/episode",
         parsedStateCount: 1,
         imageValidationMode: "sampled",
         imageSamplePercentages: [1, 25, 50, 73, 99],
@@ -194,28 +194,9 @@ if (!browserExecutable && requireBrowser) {
                   availableBytes: 5_000,
                 },
               };
-            case "prepare_import_workspace":
-              return "/managed-imports";
-            case "list_partial_imports":
-              return [];
-            case "inspect_import_destination":
-              return {
-                canImport: true,
-                sourceBytes: 6,
-                requiredBytes: 6,
-                largestFileBytes: 1,
-                volume: { root: "/managed-imports", filesystem: "apfs", driveType: "fixed", totalBytes: 10_000, availableBytes: 5_000 },
-                issues: [],
-                partials: [],
-              };
             case "import_episode":
-              return {
-                destination: "/managed-imports/episode",
-                totalFiles: 6,
-                totalBytes: 6,
-                datasetBlake3: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                elapsedMs: 1,
-              };
+              calls.importEpisode += 1;
+              throw new Error("Direct-source UI must not invoke import_episode");
             case "load_episode":
               return {
                 summary: { ...episode, root: args.path },
@@ -304,6 +285,7 @@ if (!browserExecutable && requireBrowser) {
       assert.match(historyText, /REPORT_DIRECTORY_DIALOG_FAILURE/);
       assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.exportEpisode), 1);
       assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.exportValidationReport), 1);
+      assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.importEpisode), 0);
       assert.deepEqual(pageErrors, []);
       assert.deepEqual(consoleErrors, []);
       assert.deepEqual(failedRequests, []);
@@ -320,7 +302,7 @@ async function expectFailure(page, message, recordCount, operation) {
   await page.waitForFunction((expectedCount) => window.__dialogRecoveryMock.records.length === expectedCount, recordCount);
   const record = await page.evaluate(() => window.__dialogRecoveryMock.records.at(-1));
   assert.equal(record.operation, operation);
-  assert.equal(record.sourcePath, "/managed-imports/episode");
+  assert.equal(record.sourcePath, "/source/episode");
   assert.equal(record.message, message);
 }
 

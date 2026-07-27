@@ -17,10 +17,11 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use identity::AuthState;
 use model::{
-    AuthStatus, EpisodeAnnotation, EpisodeData, ExportCommandRequest, ExportResult, FramePayload,
-    ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
-    ProgressPayload, RecordOperationErrorRequest, RegisterAccountRequest, ReportExportResult,
-    SaveAnnotationRequest, ScanResult, TaskDefinition, UserIdentity, ValidationReport,
+    AuthStatus, CreateTaskRequest, EpisodeAnnotation, EpisodeData, ExportCommandRequest,
+    ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord,
+    PartialImport, ProgressPayload, RecordOperationErrorRequest, RegisterAccountRequest,
+    ReportExportResult, SaveAnnotationRequest, ScanResult, TaskDefinition, UserIdentity,
+    ValidationReport,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -187,9 +188,32 @@ fn logout_account(auth: State<'_, AuthState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_task_definitions(auth: State<'_, AuthState>) -> Result<Vec<TaskDefinition>, String> {
+async fn list_task_definitions(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Vec<TaskDefinition>, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    Ok(annotations::task_definitions())
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || annotations::task_definitions(&data_root))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_task_definition(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    request: CreateTaskRequest,
+) -> Result<TaskDefinition, String> {
+    let user = auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        annotations::create_task(&data_root, &user, request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -615,6 +639,7 @@ pub fn run() {
             login_account,
             logout_account,
             list_task_definitions,
+            create_task_definition,
             suggest_trajectory_code,
             load_episode_annotation,
             save_episode_annotation,

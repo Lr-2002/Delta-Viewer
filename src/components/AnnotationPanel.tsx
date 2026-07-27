@@ -1,6 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { ClipboardPen, Save, Tag, UserRound } from "lucide-react";
-import { saveEpisodeAnnotation, suggestTrajectoryCode } from "../lib/backend";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ClipboardPen, Plus, Save, Tag, UserRound, X } from "lucide-react";
+import {
+  createTaskDefinition,
+  saveEpisodeAnnotation,
+  suggestTrajectoryCode,
+} from "../lib/backend";
 import type { EpisodeAnnotation, TaskDefinition, UserIdentity } from "../types";
 
 interface AnnotationPanelProps {
@@ -9,6 +13,7 @@ interface AnnotationPanelProps {
   annotation: EpisodeAnnotation | null;
   currentUser: UserIdentity;
   busy: boolean;
+  onTaskCreated: (task: TaskDefinition) => void;
   onSaved: (annotation: EpisodeAnnotation) => void;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
@@ -20,6 +25,7 @@ export function AnnotationPanel({
   annotation,
   currentUser,
   busy,
+  onTaskCreated,
   onSaved,
   onError,
   onNotice,
@@ -29,9 +35,14 @@ export function AnnotationPanel({
   const [trajectoryCode, setTrajectoryCode] = useState("");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
+  const [taskCreatorOpen, setTaskCreatorOpen] = useState(false);
+  const [newTaskLabel, setNewTaskLabel] = useState("");
+  const [creatingTask, setCreatingTask] = useState(false);
+  const previewRequest = useRef(0);
 
   useEffect(() => {
     let active = true;
+    const requestId = ++previewRequest.current;
     if (annotation) {
       setTaskId(annotation.taskId);
       setTrajectoryCode(annotation.trajectoryCode);
@@ -48,43 +59,43 @@ export function AnnotationPanel({
     setDescription(firstTask.defaultDescription);
     setTrajectoryCode("");
     void suggestTrajectoryCode(firstTask.id)
-      .then((code) => { if (active) setTrajectoryCode(code); })
-      .catch((reason) => { if (active) onError(toMessage(reason)); });
+      .then((code) => { if (active && previewRequest.current === requestId) setTrajectoryCode(code); })
+      .catch((reason) => { if (active && previewRequest.current === requestId) onError(toMessage(reason)); });
     return () => { active = false; };
   }, [annotation, firstTask, onError, sourcePath]);
 
   const dirty = useMemo(() => {
-    if (!annotation) return Boolean(taskId && trajectoryCode && description.trim());
+    if (!annotation) return Boolean(taskId && description.trim());
     return taskId !== annotation.taskId
-      || trajectoryCode !== annotation.trajectoryCode
       || description.trim() !== annotation.taskDescription;
-  }, [annotation, description, taskId, trajectoryCode]);
+  }, [annotation, description, taskId]);
 
   async function changeTask(nextTaskId: string) {
     const task = tasks.find((item) => item.id === nextTaskId);
     if (!task) return;
     setTaskId(task.id);
     setDescription(task.defaultDescription);
+    const requestId = ++previewRequest.current;
     if (annotation?.taskId === task.id) {
       setTrajectoryCode(annotation.trajectoryCode);
       return;
     }
     setTrajectoryCode("");
     try {
-      setTrajectoryCode(await suggestTrajectoryCode(task.id));
+      const code = await suggestTrajectoryCode(task.id);
+      if (previewRequest.current === requestId) setTrajectoryCode(code);
     } catch (reason) {
-      onError(toMessage(reason));
+      if (previewRequest.current === requestId) onError(toMessage(reason));
     }
   }
 
   async function save() {
-    if (!taskId || !trajectoryCode || !description.trim()) return;
+    if (!taskId || !description.trim()) return;
     setSaving(true);
     onError("");
     try {
       const saved = await saveEpisodeAnnotation({
         sourcePath,
-        trajectoryCode,
         taskId,
         taskDescription: description,
       });
@@ -94,6 +105,33 @@ export function AnnotationPanel({
       onError(toMessage(reason));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function createTask() {
+    if (!newTaskLabel.trim()) return;
+    setCreatingTask(true);
+    onError("");
+    try {
+      const task = await createTaskDefinition({ label: newTaskLabel });
+      onTaskCreated(task);
+      setTaskId(task.id);
+      setDescription(task.defaultDescription);
+      setTrajectoryCode("");
+      const requestId = ++previewRequest.current;
+      setNewTaskLabel("");
+      setTaskCreatorOpen(false);
+      onNotice(`任务已创建：${task.label}`);
+      try {
+        const code = await suggestTrajectoryCode(task.id);
+        if (previewRequest.current === requestId) setTrajectoryCode(code);
+      } catch (reason) {
+        onError(`任务已创建，但暂时无法预览轨迹编码：${toMessage(reason)}`);
+      }
+    } catch (reason) {
+      onError(toMessage(reason));
+    } finally {
+      setCreatingTask(false);
     }
   }
 
@@ -111,18 +149,31 @@ export function AnnotationPanel({
       </header>
       <div className="annotation-layout">
         <div className="annotation-fields">
+          <div className="annotation-task-field">
+            <span className="annotation-field-label"><ClipboardPen size={14} />任务</span>
+            <div className="annotation-task-control">
+              <select value={taskId} onChange={(event) => void changeTask(event.target.value)} disabled={!tasks.length || saving || creatingTask} aria-label="任务">
+                {tasks.map((task) => <option value={task.id} key={task.id}>{task.label}</option>)}
+              </select>
+              <button
+                className="icon-button annotation-task-add"
+                type="button"
+                onClick={() => setTaskCreatorOpen((value) => !value)}
+                disabled={busy || saving || creatingTask}
+                title="创建任务"
+                aria-label="创建任务"
+                aria-expanded={taskCreatorOpen}
+              >
+                {taskCreatorOpen ? <X size={15} /> : <Plus size={15} />}
+              </button>
+            </div>
+            {tasks.find((task) => task.id === taskId)?.codePrefix ? (
+              <small>{tasks.find((task) => task.id === taskId)?.codePrefix}-NNN</small>
+            ) : null}
+          </div>
           <label>
             <span><Tag size={14} />轨迹编码</span>
-            <input type="text" value={trajectoryCode} readOnly aria-label="轨迹编码" />
-          </label>
-          <label>
-            <span><ClipboardPen size={14} />任务</span>
-            <select value={taskId} onChange={(event) => void changeTask(event.target.value)} disabled={!tasks.length || saving}>
-              {tasks.map((task) => <option value={task.id} key={task.id}>{task.id}</option>)}
-            </select>
-            {tasks.find((task) => task.id === taskId)?.label ? (
-              <small>{tasks.find((task) => task.id === taskId)?.label}</small>
-            ) : null}
+            <input type="text" value={trajectoryCode} placeholder="保存时自动分配" readOnly aria-label="轨迹编码" />
           </label>
           <div className="annotation-processor">
             <UserRound size={15} />
@@ -145,6 +196,25 @@ export function AnnotationPanel({
           <small>{description.length}/500 · 可编辑</small>
         </label>
       </div>
+      {taskCreatorOpen ? (
+        <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void createTask(); }}>
+          <label>
+            <span>新任务名称</span>
+            <input
+              type="text"
+              value={newTaskLabel}
+              onChange={(event) => setNewTaskLabel(event.target.value)}
+              maxLength={64}
+              autoFocus
+              required
+            />
+          </label>
+          <button className="button button-primary" type="submit" disabled={busy || creatingTask || !newTaskLabel.trim()}>
+            <Plus size={15} />
+            {creatingTask ? "创建中" : "创建任务"}
+          </button>
+        </form>
+      ) : null}
       <div className="annotation-actions">
         {annotation && annotation.processedBy.username !== currentUser.username ? (
           <span>保存后处理人将更新为 {currentUser.displayName}</span>
@@ -153,7 +223,7 @@ export function AnnotationPanel({
           className="button button-primary"
           type="button"
           onClick={() => void save()}
-          disabled={busy || saving || !dirty || !trajectoryCode || !description.trim()}
+          disabled={busy || saving || creatingTask || !dirty || !taskId || !description.trim()}
         >
           <Save size={16} />
           {saving ? "保存中" : "保存标注"}

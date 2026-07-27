@@ -17,6 +17,10 @@ export interface TaskDefinition {
   defaultDescription: string;
 }
 
+export interface CreateTaskRequest {
+  label: string;
+}
+
 export interface EpisodeAnnotation {
   formatVersion: number;
   episodeId: string;
@@ -33,7 +37,6 @@ export interface EpisodeAnnotation {
 
 export interface SaveAnnotationRequest {
   sourcePath: string;
-  trajectoryCode: string;
   taskId: string;
   taskDescription: string;
 }

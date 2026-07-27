@@ -115,6 +115,48 @@ if (!browserExecutable) {
     await context.close();
   });
 
+  test("custom tasks receive automatic codes and telemetry renders colored series", async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    const page = await context.newPage();
+    await registerDemoAccount(page, baseUrl, "annotation-color");
+    await page.getByText("多路回放", { exact: true }).waitFor();
+
+    await page.getByRole("button", { name: "创建任务" }).click();
+    await page.getByLabel("新任务名称").fill("整理餐具");
+    await page.locator(".task-create-form button[type=submit]").click();
+    await page.getByLabel("轨迹编码").waitFor();
+    await page.waitForFunction(() => document.querySelector('input[aria-label="轨迹编码"]')?.value === "整理餐具-001");
+    await page.locator(".annotation-description textarea").fill("整理餐具并核对数量");
+    await page.getByRole("button", { name: "保存标注" }).click();
+    await page.getByText("已保存 · r1", { exact: true }).waitFor();
+    assert.equal(await page.getByLabel("轨迹编码").inputValue(), "整理餐具-001");
+
+    const series = await page.locator(".chart-legend span[data-series-color]").evaluateAll((items) => (
+      items.map((item) => item.getAttribute("data-series-color"))
+    ));
+    assert.deepEqual(series, ["#d1495b", "#007c73", "#2f67c7"]);
+    const coloredPixels = await page.locator(".telemetry-chart canvas").evaluate((canvas) => {
+      const context2d = canvas.getContext("2d");
+      if (!context2d) return [];
+      const pixels = context2d.getImageData(0, 0, canvas.width, canvas.height).data;
+      const targets = [[209, 73, 91], [0, 124, 115], [47, 103, 199]];
+      return targets.map(([red, green, blue]) => {
+        let count = 0;
+        for (let index = 0; index < pixels.length; index += 4) {
+          if (
+            Math.abs(pixels[index] - red) <= 4
+            && Math.abs(pixels[index + 1] - green) <= 4
+            && Math.abs(pixels[index + 2] - blue) <= 4
+            && pixels[index + 3] > 0
+          ) count += 1;
+        }
+        return count;
+      });
+    });
+    assert.ok(coloredPixels.every((count) => count > 0), `missing telemetry colors: ${coloredPixels}`);
+    await context.close();
+  });
+
   test("a state-scoped issue locates its matching playback frame", async () => {
     const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
     const page = await context.newPage();
@@ -139,7 +181,7 @@ if (!browserExecutable) {
     await context.close();
   });
 
-  test("a missing fixture reports an actionable error before demo import", async () => {
+  test("a missing fixture reports an actionable error before source loading", async () => {
     const context = await browser.newContext({ viewport: { width: 960, height: 680 } });
     const page = await context.newPage();
     await page.route("**/demo/fixture.json", (route) => route.fulfill({
@@ -162,7 +204,7 @@ if (!browserExecutable) {
     await context.close();
   });
 
-  test("a malformed fixture reports an actionable error before demo import", async () => {
+  test("a malformed fixture reports an actionable error before source loading", async () => {
     const context = await browser.newContext({ viewport: { width: 960, height: 680 } });
     const page = await context.newPage();
     await page.route("**/demo/fixture.json", (route) => route.fulfill({
@@ -189,7 +231,7 @@ if (!browserExecutable) {
     await context.close();
   });
 
-  test("a fixture with a noncanonical stream reports an actionable error before demo import", async () => {
+  test("a fixture with a noncanonical stream reports an actionable error before source loading", async () => {
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.route("**/demo/fixture.json", (route) => route.fulfill({

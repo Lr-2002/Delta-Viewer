@@ -35,21 +35,16 @@ import {
   DEMO_ROOT,
   cancelTask,
   chooseDirectory,
-  cleanupPartialImport,
   confirmAction,
   exportEpisode,
   exportValidationReport,
   getAuthStatus,
-  importEpisode,
-  inspectImportDestination,
   isTauriRuntime,
   listOperationErrors,
-  listPartialImports,
   listTaskDefinitions,
   loadEpisodeAnnotation,
   loadEpisode,
   logoutLocalAccount,
-  prepareImportWorkspace,
   recordOperationError,
   onTaskProgress,
   revealOutput,
@@ -69,7 +64,6 @@ import type {
   ExportResult,
   MetricKey,
   OperationErrorRecord,
-  PartialImport,
   ScanResult,
   TaskProgress,
   TaskDefinition,
@@ -78,8 +72,7 @@ import type {
 } from "./types";
 
 type View = "review" | "checks" | "export";
-const LAST_MANAGED_IMPORT_ROOT = "dohc-viewer:last-managed-import-root";
-type EpisodeImportState = "pending" | "importing" | "ready" | "error";
+type EpisodeSourceState = "available" | "loading" | "error";
 
 const METRICS: { key: MetricKey; label: string }[] = [
   { key: "position", label: "位置" },
@@ -96,8 +89,7 @@ function App() {
   const [sourcePath, setSourcePath] = useState("");
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeSummary | null>(null);
-  const [importedEpisodeRoots, setImportedEpisodeRoots] = useState<Record<string, string>>({});
-  const [episodeImportStates, setEpisodeImportStates] = useState<Record<string, EpisodeImportState>>({});
+  const [episodeSourceStates, setEpisodeSourceStates] = useState<Record<string, EpisodeSourceState>>({});
   const [loadedEpisodeSourceRoot, setLoadedEpisodeSourceRoot] = useState<string | null>(null);
   const [data, setData] = useState<EpisodeData | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
@@ -120,7 +112,6 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const frameRef = useRef(0);
   const didAutoLoad = useRef(false);
-  const didCheckPartials = useRef(false);
   const operationScopeRef = useRef(new OperationScope());
   const sourcePickerOpenRef = useRef(false);
   const episodeLoadInFlight = useRef(false);
@@ -209,14 +200,6 @@ function App() {
   }, [authStatus?.currentUser?.username]);
 
   useEffect(() => {
-    if (didCheckPartials.current || !isTauriRuntime() || !authStatus?.currentUser) return;
-    didCheckPartials.current = true;
-    const destination = window.localStorage.getItem(LAST_MANAGED_IMPORT_ROOT);
-    if (!destination) return;
-    void runStartupPartialCleanup(destination);
-  }, [authStatus?.currentUser?.username]);
-
-  useEffect(() => {
     if (!playing || !data) return;
     const playbackEnd = Math.min(clipEndFrame, getMaxFrame(data));
     const interval = window.setInterval(() => {
@@ -236,30 +219,36 @@ function App() {
     if (!owner) return;
     resetOperationFeedback(owner);
     let operation = "scan_source";
+    let loadingEpisode: EpisodeSummary | null = null;
     try {
       const result = await scanSource(path, owner.id);
       ensureOperationActive(owner);
       setSourcePath(result.sourceRoot);
       setScan(result);
-      setImportedEpisodeRoots({});
-      setEpisodeImportStates(Object.fromEntries(
-        result.episodes.map((episode) => [episode.root, "pending" as const]),
+      setEpisodeSourceStates(Object.fromEntries(
+        result.episodes.map((episode) => [episode.root, "available" as const]),
       ));
       const first = result.episodes[0] ?? null;
       setSelectedEpisode(first);
       resetLoadedData();
       if (autoLoad && first) {
-        operation = "import_source";
-        const importedRoots = await importDiscoveredEpisodes(result, owner);
+        operation = "load_and_validate";
+        loadingEpisode = first;
+        setEpisodeSourceStates((current) => ({ ...current, [first.root]: "loading" }));
+        await loadAndValidate(first.root, first.root, owner);
         ensureOperationActive(owner);
-        const firstReady = result.episodes.find((episode) => importedRoots[episode.root]) ?? null;
-        if (firstReady) {
-          setSelectedEpisode(firstReady);
-          operation = "load_and_validate";
-          await loadAndValidate(importedRoots[firstReady.root], firstReady.root, owner);
-        }
+        setEpisodeSourceStates((current) => ({ ...current, [first.root]: "available" }));
+        setNotice(`已从源目录只读载入：${first.name}`);
       }
     } catch (reason) {
+      const cancelled = toMessage(reason).includes("任务已取消");
+      if (loadingEpisode) {
+        const failedRoot = loadingEpisode.root;
+        setEpisodeSourceStates((current) => ({
+          ...current,
+          [failedRoot]: cancelled ? "available" : "error",
+        }));
+      }
       await reportFailure(operation, reason, path, owner);
     } finally {
       finishOperation(owner);
@@ -297,20 +286,17 @@ function App() {
     episodeLoadInFlight.current = true;
     resetOperationFeedback(owner);
     try {
-      let root = importedEpisodeRoots[episode.root] ?? episode.root;
-      if (isTauriRuntime() && !importedEpisodeRoots[episode.root]) {
-        const destinationParent = await prepareImportDestination(scan?.sourceRoot ?? episode.root, owner);
-        const imported = await importOneEpisode(episode, destinationParent, owner);
-        ensureOperationActive(owner);
-        root = imported.destination;
-        setImportedEpisodeRoots((current) => ({ ...current, [episode.root]: root }));
-        setNotice(`已自动导入本地，BLAKE3 ${imported.datasetBlake3.slice(0, 16)}…`);
-      }
-      await loadAndValidate(root, episode.root, owner);
+      setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "loading" }));
+      await loadAndValidate(episode.root, episode.root, owner);
+      ensureOperationActive(owner);
+      setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "available" }));
+      setNotice(`已从源目录只读载入：${episode.name}`);
     } catch (reason) {
-      if (!toMessage(reason).includes("任务已取消")) {
-        setEpisodeImportStates((current) => ({ ...current, [episode.root]: "error" }));
-      }
+      const cancelled = toMessage(reason).includes("任务已取消");
+      setEpisodeSourceStates((current) => ({
+        ...current,
+        [episode.root]: cancelled ? "available" : "error",
+      }));
       await reportFailure("load_episode", reason, episode.root, owner);
     } finally {
       episodeLoadInFlight.current = false;
@@ -329,103 +315,6 @@ function App() {
       if (episodeFocusRestoreToken.current !== token) return;
       episodeButtonRefs.current.get(episodeRoot)?.focus();
     });
-  }
-
-  async function importDiscoveredEpisodes(
-    result: ScanResult,
-    owner: OperationToken,
-  ): Promise<Record<string, string>> {
-    ensureOperationActive(owner);
-    if (!isTauriRuntime()) {
-      const demoRoots = Object.fromEntries(result.episodes.map((episode) => [episode.root, episode.root]));
-      setImportedEpisodeRoots(demoRoots);
-      setEpisodeImportStates(Object.fromEntries(
-        result.episodes.map((episode) => [episode.root, "ready" as const]),
-      ));
-      return demoRoots;
-    }
-
-    const destinationParent = await prepareImportDestination(result.sourceRoot, owner);
-    const importedRoots: Record<string, string> = {};
-    let failed = 0;
-    let importedBytes = 0;
-    for (const [index, episode] of result.episodes.entries()) {
-      ensureOperationActive(owner);
-      setNotice(`正在自动导入 ${index + 1}/${result.episodes.length}：${episode.name}`);
-      try {
-        const imported = await importOneEpisode(episode, destinationParent, owner);
-        ensureOperationActive(owner);
-        importedRoots[episode.root] = imported.destination;
-        importedBytes += imported.totalBytes;
-        setImportedEpisodeRoots((current) => ({
-          ...current,
-          [episode.root]: imported.destination,
-        }));
-      } catch (reason) {
-        if (toMessage(reason).includes("任务已取消")) {
-          setNotice("自动导入已取消");
-          throw reason;
-        }
-        failed += 1;
-        setEpisodeImportStates((current) => ({ ...current, [episode.root]: "error" }));
-        await reportFailure("import_episode", reason, episode.root, owner);
-      }
-    }
-
-    ensureOperationActive(owner);
-    if (failed) {
-      setError(`自动导入完成，但有 ${failed}/${result.episodes.length} 个 session 失败；详细信息已保存到错误历史。`);
-    } else {
-      setNotice(`已自动导入 ${result.episodes.length} 个 session（${formatBytes(importedBytes)}）`);
-    }
-    return importedRoots;
-  }
-
-  async function prepareImportDestination(
-    sourceRoot: string,
-    owner: OperationToken,
-  ): Promise<string> {
-    ensureOperationActive(owner);
-    const destinationParent = await prepareImportWorkspace(sourceRoot);
-    ensureOperationActive(owner);
-    window.localStorage.setItem(LAST_MANAGED_IMPORT_ROOT, destinationParent);
-    const partials = await listPartialImports(destinationParent);
-    ensureOperationActive(owner);
-    if (partials.length) await maybeCleanupPartials(destinationParent, partials, owner);
-    return destinationParent;
-  }
-
-  async function importOneEpisode(
-    episode: EpisodeSummary,
-    destinationParent: string,
-    owner: OperationToken,
-  ) {
-    ensureOperationActive(owner);
-    setEpisodeImportStates((current) => ({ ...current, [episode.root]: "importing" }));
-    const preflight = await inspectImportDestination(episode.root, destinationParent, owner.id);
-    ensureOperationActive(owner);
-    if (!preflight.canImport) {
-      throw new Error(preflight.issues.map((issue) => `${issue.code}: ${issue.message}`).join("；"));
-    }
-    const imported = await importEpisode(episode.root, destinationParent, owner.id);
-    ensureOperationActive(owner);
-    setEpisodeImportStates((current) => ({ ...current, [episode.root]: "ready" }));
-    return imported;
-  }
-
-  async function runStartupPartialCleanup(destination: string) {
-    const owner = beginOperation();
-    if (!owner) return;
-    resetOperationFeedback(owner);
-    try {
-      const partials = await listPartialImports(destination);
-      ensureOperationActive(owner);
-      if (partials.length) await maybeCleanupPartials(destination, partials, owner);
-    } catch (reason) {
-      await reportFailure("cleanup_partial_import", reason, destination, owner);
-    } finally {
-      finishOperation(owner);
-    }
   }
 
   async function reportFailure(
@@ -517,8 +406,7 @@ function App() {
       setSourcePath("");
       setScan(null);
       setSelectedEpisode(null);
-      setImportedEpisodeRoots({});
-      setEpisodeImportStates({});
+      setEpisodeSourceStates({});
       setOperationErrors([]);
       setHistoryOpen(false);
       setCurrentOperationError(false);
@@ -526,7 +414,6 @@ function App() {
       setError("");
       setNotice("");
       didAutoLoad.current = false;
-      didCheckPartials.current = false;
       setAuthStatus((current) => ({
         hasAccounts: current?.hasAccounts ?? true,
         currentUser: null,
@@ -674,26 +561,6 @@ function App() {
     } catch (reason) {
       await reportFailure("reveal_output", reason, path);
     }
-  }
-
-  async function maybeCleanupPartials(
-    destinationParent: string,
-    partials: PartialImport[],
-    owner: OperationToken,
-  ): Promise<void> {
-    ensureOperationActive(owner);
-    const confirmed = await confirmAction(
-      `在该目录发现 ${partials.length} 个由 DOHC Viewer 标记的未完成导入。是否安全清理？`,
-      "清理未完成导入",
-    );
-    ensureOperationActive(owner);
-    if (!confirmed) return;
-    for (const partial of partials) {
-      ensureOperationActive(owner);
-      await cleanupPartialImport(destinationParent, partial.path, owner.id);
-      ensureOperationActive(owner);
-    }
-    setNotice(`已清理 ${partials.length} 个未完成导入`);
   }
 
   function locateIssue(issue: ValidationIssue) {
@@ -849,9 +716,9 @@ function App() {
           <div className="episode-list">
             {scan?.episodes.length ? (
               scan.episodes.map((episode) => {
-                const importState = episodeImportStates[episode.root] ?? "pending";
-                const activationHint = importState === "error"
-                  ? "单击选择；双击或按 Enter/空格重试导入"
+                const sourceState = episodeSourceStates[episode.root] ?? "available";
+                const activationHint = sourceState === "error"
+                  ? "单击选择；双击或按 Enter/空格重试读取"
                   : "单击选择；双击或按 Enter/空格进入回放";
                 return (
                   <button
@@ -877,7 +744,7 @@ function App() {
                     <span className="episode-item-top">
                       <Images size={16} />
                       <strong>{episode.name}</strong>
-                      <EpisodeImportMark state={importState} />
+                      <EpisodeSourceMark state={sourceState} />
                       <ChevronRight size={15} />
                     </span>
                     <span className="episode-item-meta">
@@ -932,6 +799,7 @@ function App() {
                     annotation={annotation}
                     currentUser={currentUser}
                     busy={busy}
+                    onTaskCreated={(task) => setTasks((current) => [...current, task])}
                     onSaved={setAnnotation}
                     onError={setError}
                     onNotice={setNotice}
@@ -1089,11 +957,11 @@ function EmptyWorkspace({
   onChoose: () => Promise<void>;
 }) {
   return (
-    <div className="empty-workspace">
-      <div className="empty-header">
-        <span className="section-kicker">IMPORT QUEUE</span>
+      <div className="empty-workspace">
+        <div className="empty-header">
+        <span className="section-kicker">READ-ONLY SOURCE</span>
         <h2>从 SD 卡载入记录</h2>
-        <p>选择 SD 卡后，全部记录会自动复制到本机工作区。</p>
+        <p>记录直接从源目录只读打开，不占用额外副本空间。</p>
       </div>
       {selectedEpisode ? (
         <div className="selected-episode-line">
@@ -1104,7 +972,7 @@ function EmptyWorkspace({
             <strong>{selectedEpisode.name}</strong>
             <span>
               {busy
-                ? "正在自动导入全部记录"
+                ? "正在扫描或检查源记录"
                 : `${selectedEpisode.stateCount} 条状态 · ${formatBytes(selectedEpisode.totalBytes)} · ${selectedEpisode.streams.length} 路流`}
             </span>
           </div>
@@ -1117,7 +985,7 @@ function EmptyWorkspace({
         </button>
       )}
       <div className="empty-facts">
-        <span><ShieldCheck size={16} />大小 + BLAKE3 校验</span>
+        <span><ShieldCheck size={16} />源目录只读</span>
         <span><Activity size={16} />状态与帧序列检查</span>
         <span><Images size={16} />多路同步回放</span>
       </div>
@@ -1125,17 +993,17 @@ function EmptyWorkspace({
   );
 }
 
-function EpisodeImportMark({ state }: { state: EpisodeImportState }) {
-  if (state === "importing") {
-    return <span className="episode-import-state"><LoaderCircle className="spin" size={13} />导入中</span>;
+function EpisodeSourceMark({ state }: { state: EpisodeSourceState }) {
+  if (state === "loading") {
+    return <span className="episode-source-state"><LoaderCircle className="spin" size={13} />读取中</span>;
   }
-  if (state === "ready") {
-    return <span className="episode-import-state"><Check size={13} />已导入</span>;
+  if (state === "available") {
+    return <span className="episode-source-state"><Check size={13} />可用</span>;
   }
   if (state === "error") {
-    return <span className="episode-import-state state-error"><CircleAlert size={13} />失败</span>;
+    return <span className="episode-source-state state-error"><CircleAlert size={13} />失败</span>;
   }
-  return <span className="episode-import-state">等待</span>;
+  return null;
 }
 
 function OperationHistoryPanel({

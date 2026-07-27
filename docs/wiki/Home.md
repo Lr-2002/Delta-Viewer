@@ -1,6 +1,6 @@
 # DOHC Viewer 用户手册
 
-DOHC Viewer 是用于 DOHC 采集数据的离线桌面应用。它从本机可见的 SD 卡或目录发现全部采集 session，自动复制到应用管理的本机工作区并校验，再进行数据检查、同步回放、任务标注和格式导出。
+DOHC Viewer 是用于 DOHC 采集数据的离线桌面应用。它从本机可见的 SD 卡或目录发现全部采集 session，直接从只读源路径进行数据检查、同步回放、任务标注和格式导出，不自动创建等量本机副本。
 
 GitHub Release 提供以下安装产物：
 
@@ -14,7 +14,7 @@ GitHub Release 提供以下安装产物：
 ## 从这里开始
 
 1. 按照[安装与升级](Installation)选择与电脑架构匹配的安装包。
-2. 阅读[快速开始](Quick-Start)，完成账号登录、SD 卡选择和自动导入。
+2. 阅读[快速开始](Quick-Start)，完成账号登录、SD 卡选择和只读加载。
 3. 在[数据检查](Data-Validation)中理解错误、警告、通过和 JPEG 抽检范围。
 4. 使用[回放与裁剪](Playback-and-Clipping)复核五路画面并选择轨迹范围。
 5. 完成[账号与数据标注](Accounts-and-Annotations)后，按需要执行[数据导出](Data-Export)。

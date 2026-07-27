@@ -185,7 +185,7 @@ function parseDemoFixture(value: unknown): DemoFixture {
 
 function fixtureError(detail: string): Error {
   return new Error(
-    `DEMO_FIXTURE_UNAVAILABLE: 浏览器演示样例不可用（${detail}）。请确认 public/demo/fixture.json 已随仓库检出；桌面应用请使用“选择 SD 卡”导入本机记录。`,
+    `DEMO_FIXTURE_UNAVAILABLE: 浏览器演示样例不可用（${detail}）。请确认 public/demo/fixture.json 已随仓库检出；桌面应用请使用“选择 SD 卡”只读打开本机记录。`,
   );
 }
 

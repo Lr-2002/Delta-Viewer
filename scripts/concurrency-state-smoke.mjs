@@ -167,12 +167,9 @@ try {
     const listeners = new Map();
     let nextCallbackId = 1;
     let activeTask = null;
-    let startupPartialPending = true;
-    let importAttempt = 0;
     const calls = {
       scanSource: 0,
       scanOperationIds: [],
-      cleanupPartialImport: 0,
       importEpisode: 0,
       loadEpisode: 0,
       validateEpisode: 0,
@@ -234,13 +231,6 @@ try {
         status: "ok",
       })),
     };
-    const partial = {
-      path: "/managed-imports/.partial-episode",
-      name: ".partial-episode",
-      sourceName: "episode-previous",
-      createdAtMs: 1,
-    };
-
     function beginTask(kind, operationId) {
       if (activeTask) throw new Error("A native task is already active.");
       return new Promise((resolve, reject) => {
@@ -261,18 +251,6 @@ try {
       return task;
     }
 
-    function importResult(sourcePath) {
-      const name = sourcePath.split("/").at(-1);
-      return {
-        destination: `/managed-imports/${name}`,
-        totalFiles: 6,
-        totalBytes: 6,
-        datasetBlake3: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        elapsedMs: 1,
-      };
-    }
-
-    window.localStorage.setItem("dohc-viewer:last-managed-import-root", "/managed-imports");
     window.__concurrencyMock = {
       calls,
       listenerCount(event) {
@@ -286,7 +264,6 @@ try {
       },
       resolveActiveTask(value) {
         const task = takeActiveTask();
-        if (task.kind === "cleanup") startupPartialPending = false;
         task.resolve(value ?? (task.kind === "scan" ? scan : undefined));
       },
       rejectActiveTask(message) {
@@ -346,30 +323,12 @@ try {
             calls.scanSource += 1;
             calls.scanOperationIds.push(args.operationId);
             return beginTask("scan", args.operationId);
-          case "prepare_import_workspace":
-            return "/managed-imports";
-          case "list_partial_imports":
-            return startupPartialPending ? [partial] : [];
-          case "cleanup_partial_import":
-            calls.cleanupPartialImport += 1;
-            return beginTask("cleanup", args.operationId);
-          case "inspect_import_destination":
-            return {
-              canImport: true,
-              sourceBytes: 6,
-              requiredBytes: 6,
-              largestFileBytes: 1,
-              volume: scan.volume,
-              issues: [],
-              partials: [],
-            };
           case "import_episode":
             calls.importEpisode += 1;
-            importAttempt += 1;
-            if (importAttempt === 2) return beginTask("import", args.operationId);
-            return importResult(args.sourcePath);
+            throw new Error("Direct-source UI must not invoke import_episode");
           case "load_episode":
             calls.loadEpisode += 1;
+            if (calls.loadEpisode === 1) return beginTask("load", args.operationId);
             return {
               summary: episodes[0],
               states: [{
@@ -411,46 +370,13 @@ try {
 
   const chooseSource = page.locator(".topbar-actions button.button-secondary");
   const rescan = page.locator(".sidebar-heading .icon-button");
-  await page.waitForFunction(() => window.__concurrencyMock.calls.cleanupPartialImport === 1);
-  const cleanup = await page.evaluate(() => window.__concurrencyMock.activeTask());
-  assert.equal(cleanup?.kind, "cleanup");
-  assert.equal(await chooseSource.isDisabled(), true);
-  assert.equal(await rescan.isDisabled(), true);
-  await page.evaluate((operationId) => window.__concurrencyMock.emitProgress({
-    operationId,
-    task: "import",
-    phase: "Startup cleanup",
-    current: 1,
-    total: 1,
-    bytesDone: 1,
-    totalBytes: 1,
-    currentPath: "/managed-imports/.partial-episode",
-    elapsedMs: 1,
-  }), cleanup.operationId);
-  await page.locator(".progress-strip").waitFor();
-  console.log("browser-smoke: startup cleanup owns the UI and blocks rescan");
-  await page.evaluate(() => window.__concurrencyMock.resolveActiveTask());
-  await page.waitForFunction(() => !document.querySelector(".progress-strip"));
-  await page.waitForFunction(() => document.querySelector(".sidebar-heading .icon-button")?.disabled === false);
-  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.scanSource), 0);
+  assert.equal(await chooseSource.isDisabled(), false);
+  assert.equal(await rescan.isDisabled(), false);
 
   await chooseSource.click();
   await page.waitForFunction(() => window.__concurrencyMock.calls.scanSource === 1);
   const firstScan = await page.evaluate(() => window.__concurrencyMock.activeTask());
   assert.equal(firstScan?.kind, "scan");
-  await page.evaluate((operationId) => window.__concurrencyMock.emitProgress({
-    operationId,
-    task: "scan",
-    phase: "Late cleanup progress",
-    current: 1,
-    total: 1,
-    bytesDone: 1,
-    totalBytes: 1,
-    currentPath: "/managed-imports",
-    elapsedMs: 1,
-  }), cleanup.operationId);
-  await page.waitForTimeout(100);
-  assert.equal(await page.locator(".progress-strip").count(), 0);
   await page.evaluate((operationId) => window.__concurrencyMock.emitProgress({
     operationId,
     task: "scan",
@@ -471,33 +397,36 @@ try {
   await page.evaluate(() => window.__concurrencyMock.resolveActiveTask());
   await page.waitForFunction(() => {
     const active = window.__concurrencyMock.activeTask();
-    return window.__concurrencyMock.calls.importEpisode === 2 && active?.kind === "import";
+    return window.__concurrencyMock.calls.loadEpisode === 1 && active?.kind === "load";
   });
-  const stagedImport = await page.evaluate(() => window.__concurrencyMock.activeTask());
-  assert.equal(stagedImport?.operationId, firstScan.operationId);
-  const delayedCancelAccepted = await page.evaluate((operationId) => window.__concurrencyMock.cancelWith(operationId), cleanup.operationId);
+  const stagedLoad = await page.evaluate(() => window.__concurrencyMock.activeTask());
+  assert.equal(stagedLoad?.operationId, firstScan.operationId);
+  const delayedCancelAccepted = await page.evaluate((operationId) => window.__concurrencyMock.cancelWith(operationId), firstScan.operationId + 1000);
   assert.equal(delayedCancelAccepted, false);
-  assert.deepEqual(await page.evaluate(() => window.__concurrencyMock.activeTask()), stagedImport);
+  assert.deepEqual(await page.evaluate(() => window.__concurrencyMock.activeTask()), stagedLoad);
   await page.evaluate((operationId) => window.__concurrencyMock.emitProgress({
     operationId,
-    task: "import",
-    phase: "Importing second episode",
-    current: 2,
-    total: 2,
+    task: "validate",
+    phase: "Reading source episode",
+    current: 1,
+    total: 1,
     bytesDone: 6,
-    totalBytes: 12,
-    currentPath: "/source/episode-2",
+    totalBytes: 6,
+    currentPath: "/source/episode-1",
     elapsedMs: 1,
-  }), stagedImport.operationId);
-  await page.waitForFunction(() => document.querySelector(".progress-strip")?.textContent?.includes("Importing second episode"));
+  }), stagedLoad.operationId);
+  await page.waitForFunction(() => document.querySelector(".progress-strip")?.textContent?.includes("Reading source episode"));
   const cancel = page.locator(".progress-strip .icon-button");
   await cancel.click();
-  await page.waitForFunction((operationId) => window.__concurrencyMock.calls.cancelOperationIds.includes(operationId), stagedImport.operationId);
+  await page.waitForFunction((operationId) => window.__concurrencyMock.calls.cancelOperationIds.includes(operationId), stagedLoad.operationId);
   await page.waitForFunction(() => !document.querySelector(".progress-strip"));
   await page.waitForFunction(() => document.querySelector(".sidebar-heading .icon-button")?.disabled === false);
-  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.loadEpisode), 0);
+  assert.equal(await page.locator(".episode-source-state").filter({ hasText: "读取中" }).count(), 0);
+  assert.ok(await page.locator(".episode-source-state").filter({ hasText: "可用" }).count() > 0);
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.loadEpisode), 1);
   assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.validateEpisode), 0);
-  console.log("browser-smoke: staged automatic import cancellation stops follow-on load and validate");
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.importEpisode), 0);
+  console.log("browser-smoke: direct-source read cancellation stops follow-on validation without importing");
 
   await rescan.click();
   await page.waitForFunction(() => window.__concurrencyMock.calls.scanSource === 2);
@@ -522,7 +451,7 @@ try {
     elapsedMs: 1,
   }), finalScan.operationId);
   await page.evaluate(() => window.__concurrencyMock.resolveActiveTask());
-  await page.waitForFunction(() => window.__concurrencyMock.calls.loadEpisode === 1);
+  await page.waitForFunction(() => window.__concurrencyMock.calls.loadEpisode === 2);
   await page.locator(".camera-grid img").first().waitFor();
   await page.waitForFunction(() => [...document.querySelectorAll(".camera-grid img")]
     .every((image) => image.naturalWidth > 0));
@@ -557,7 +486,8 @@ try {
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(failedRequests, []);
-  console.log("Concurrency browser smoke passed: startup cleanup, delayed ownership, cancellation, failure, completion, responsive layout.");
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.importEpisode), 0);
+  console.log("Concurrency browser smoke passed: direct-source ownership, cancellation, failure, completion, responsive layout.");
 } catch (error) {
   throw new Error(`${error}\nVite output:\n${viteOutput}`);
 } finally {

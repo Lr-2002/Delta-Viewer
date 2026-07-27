@@ -3,6 +3,15 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 0.17.4 - 2026-07-27
+
+- Read and validate sessions directly from the mounted read-only source in the
+  normal UI, without automatically creating app-local episode copies.
+- Added locally creatable annotation tasks with editable descriptions and
+  Rust-only atomic `{task-prefix}-{NNN}` trajectory assignment.
+- Changed telemetry dimensions to stable red, green, blue, and purple series,
+  while retaining labels and distinct line patterns for non-color distinction.
+
 ## 0.17.3 - 2026-07-27
 
 - Refreshed the reviewed Microsoft WebView2 x64 offline-installer URL and

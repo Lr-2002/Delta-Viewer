@@ -6,7 +6,8 @@ interface TelemetryChartProps {
   metric: MetricKey;
   frameId: number;
 }
-const COLORS = ["#161616", "#4d4d4d", "#858585", "#adadad"];
+const COLORS = ["#d1495b", "#007c73", "#2f67c7", "#8b4fb3"];
+const LINE_DASHES = [[], [7, 3], [2, 3], [9, 3, 2, 3]];
 
 const METRIC_LABELS: Record<MetricKey, string> = {
   position: "位置",
@@ -89,7 +90,8 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
       const dimensions = values[0]?.length ?? 0;
       for (let dimension = 0; dimension < dimensions; dimension += 1) {
         context.strokeStyle = COLORS[dimension];
-        context.lineWidth = 1.5;
+        context.lineWidth = 1.8;
+        context.setLineDash(LINE_DASHES[dimension]);
         context.beginPath();
         let started = false;
         for (const index of sampledIndexes(values, dimension, Math.max(1, Math.floor(plotWidth)))) {
@@ -108,6 +110,7 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
       }
 
       const markerX = xFor(Math.max(firstFrame, Math.min(lastFrame, frameId)));
+      context.setLineDash([]);
       context.strokeStyle = "#171717";
       context.lineWidth = 1;
       context.beginPath();
@@ -135,7 +138,7 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
       <canvas ref={canvasRef} />
       <div className="chart-legend">
         {selected ? selected.map((value, index) => (
-            <span key={index}>
+            <span key={index} data-series-color={COLORS[index]}>
               <i style={{ backgroundColor: COLORS[index] }} />
               {index < 3 ? ["X", "Y", "Z"][index] : "W"} {value.toFixed(4)}
             </span>

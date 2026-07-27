@@ -6,15 +6,15 @@
 
 1. 源 SD 卡是只读数据源。不得在源路径创建、修改、重命名或删除任何文件。
 2. 应用运行时只处理本机目录，不增加 SSH、HTTP、云存储或遥测路径。
-3. 正常工作流是“选择 SD 卡 -> 自动扫描全部 session -> 应用管理工作区导入并校验 -> 首条成功 session 健康检查 -> 回放/导出”。不要绕过本地校验直接把 SD 卡当作长期工作目录。
-4. 完整导入必须验证目标端的文件大小和 BLAKE3，不能只信任复制时的源端 hash。
+3. 正常工作流是“选择 SD 卡 -> 自动扫描全部 session -> 直接只读加载首条 session -> 健康检查 -> 回放/导出”。正常 UI 不得自动复制源数据；使用期间源卷必须保持挂载。
+4. 导入器仅用于压力验收和未来显式离线导入；一旦执行完整导入，仍必须验证目标端的文件大小和 BLAKE3，不能只信任复制时的源端 hash。
 5. `capture_time_ns` 在 Rust/磁盘中为 int64，在 TypeScript 中必须保持十进制字符串；涉及差值时使用 `BigInt`。
 6. 五个标准流名称固定为 `cam0`、`cam1`、`cam2`、`t265_left`、`t265_right`。
 7. Warning 数据可以在明确提示后导出；error 数据不能通过 UI 或 IPC 绕过阻断。
 8. LeRobot 数据不得虚构源数据中不存在的 action。规范化时间轴时必须保留原始纳秒时间。
 9. 正式输出必须先写 partial 路径，成功后再原子 rename；不得覆盖已有输出。
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
-11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录或本地导入副本，三个 adapter 必须使用同一范围。
+11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录，三个 adapter 必须使用同一范围。
 12. 账号、登录会话和 episode 标注是纯本地能力。不得把账号、密码、处理人或标注发送到网络；所有数据 command 必须在 Rust 中验证当前登录会话。
 13. GitHub Release 必须同时包含 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x86_64 原生 deb 四个可安装产物。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 
@@ -98,8 +98,8 @@ React component
 - 源目录遍历统一使用可取消的 no-follow 路径；不要重新引入会隐式跟随 symlink 的文件判断。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
 - 未登录时只允许账号状态、注册、登录和退出 commands；扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁。前端隐藏工作区不能替代后端门禁。
-- 任务目录以 `src-tauri/src/annotations.rs` 为唯一真源。新增任务必须同时定义稳定 task ID、显示名称、轨迹前缀和默认描述，并增加轨迹冲突/adapter 回读测试。
-- Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。其账号和标注只保存在当前页面进程内，刷新后重置；交互抽检基线是报告 format v3、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]` 和非空 `autoReportPath`。它不能被当作账号安全、后端门禁或数据验收。
+- 内置任务和用户创建任务的校验、持久化与自动编号逻辑以 `src-tauri/src/annotations.rs` 为唯一真源。新任务只接收名称，由 Rust 生成稳定 task ID/轨迹前缀；前端不得提交或指定轨迹编号。
+- Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。其账号、用户任务和标注只保存在当前页面进程内，刷新后重置；交互抽检基线是报告 format v3、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]` 和非空 `autoReportPath`。它不能被当作账号安全、后端门禁或数据验收。
 
 ## 4. 环境与常用命令
 
@@ -206,10 +206,10 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - Manifest 当前为 format v2：`sourcePath` 是原始相对路径，`path` 是 Windows 安全目标路径；数据集 BLAKE3 仍基于原始 `sourcePath`。
 - 取消或失败时不得出现正式输出名。
 - 如果新增自动清理，只能删除本应用可证明创建的 partial 路径，不能使用宽泛 glob 或递归删除用户目录。
-- 自动导入工作区固定在 `appLocalData/imports/{safe-source-name}-{path-hash}`；源路径仍只读，不能把用户选择或源卡路径当作写入目标。
+- 正常 UI 不创建 `appLocalData/imports` 副本。导入器或压力验收显式使用管理工作区时，路径固定为 `appLocalData/imports/{safe-source-name}-{path-hash}`；源路径始终只读。
 - warning/error 后台报告只能写入 Tauri `appLocalData` 下的应用专属 `reports` 目录；不得写入源卡或 episode。保持 partial、回读和原子 no-replace，同一 episode 路径/指纹/报告版本稳定去重；不得把“后台汇报”实现为网络上传。
 - 用户可见的扫描、导入、加载、检查和导出失败写入 `appLocalData/reports/operation-errors` 的不可覆盖 JSON；原始平台消息必须保留，权限类消息使用稳定码 `PERMISSION_DENIED`，Unix 文件权限为 `0600`。
-- 账号写入 `appLocalData/accounts`，轨迹占号写入 `appLocalData/trajectory-codes`，标注修订写入 `appLocalData/annotations/{episodeId}`。全部使用 `create_new`、回读和原子 no-replace；Unix 新文件权限为 `0600`。不得写入源 SD 卡或导入 episode。
+- 账号写入 `appLocalData/accounts`，用户任务写入 `appLocalData/tasks`，轨迹占号写入 `appLocalData/trajectory-codes`，标注修订写入 `appLocalData/annotations/{episodeId}`。全部使用 `create_new`、回读和原子 no-replace；Unix 新文件权限为 `0600`。不得写入源 SD 卡或 episode。
 
 ### 6.3 数据模型
 
@@ -272,11 +272,11 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 操作按钮在 busy/error 状态下必须正确 disabled。
 - 进度、错误、warning 和成功结果都必须有可见状态，不能只写 console。
 - 图像面板使用稳定尺寸；加载或错误不能改变 grid 布局。
-- 选择 SD 卡后自动扫描并导入全部 session，不保留额外“导入并检查”按钮，也不向用户请求本地目标目录。左侧 episode 列表仍以源路径作为 session 身份：单击只选择，双击或聚焦后按 Enter/空格才进入回放；异步载入成功或失败后焦点必须回到触发的 session。本地导入路径不得覆盖源 session 的选中身份。导入失败和权限错误必须写入本地操作历史。
+- 选择 SD 卡后自动扫描全部 session，并直接从源路径只读加载、检查第一条记录；不得自动创建本地数据副本，也不显示导入目标。左侧 episode 列表以源路径作为稳定身份：单击只选择，双击或聚焦后按 Enter/空格才读取并进入回放；异步载入成功或失败后焦点必须回到触发的 session。读取失败和权限错误必须写入本地操作历史。
 - 登录页是唯一的工作区入口；顶栏显示当前账号并提供退出。退出必须清空当前 episode、检查和标注状态，不能让未登录用户继续调用数据 IPC。
-- 回放首页顶部固定提供 episode 级数据标注。选择任务时自动填充默认描述和该任务前缀的下一个轨迹码；描述可编辑，轨迹码只读；保存结果显示修订号和最近处理人。
+- 回放首页顶部固定提供 episode 级数据标注。用户可以只输入名称创建本地任务；选择任务时自动填充默认描述并预览该任务的下一个轨迹码，描述可编辑。保存时必须由 Rust 原子分配或复用该 episode 的轨迹号，前端轨迹码始终只读；保存结果显示修订号和最近处理人。
 - 检查结果固定使用“错误/警告/通过”文本，错误优先、警告其次、通过最后；`states.jsonl` 必须从 scope 为 `states` 的 issue 推导结果。手动报告按钮使用“导出报告”，不暴露存储格式作为主标签。
-- 应用 UI 色彩系统固定为黑、白和中性灰；原始相机画面保留源颜色。状态不得只靠色相表达，必须同时使用文字、图标、边框和明度层级。
+- 应用布局、控件和状态 UI 使用黑、白和中性灰；原始相机画面保留源颜色。Telemetry 的 X/Y/Z/W 数据系列使用稳定、可区分的彩色曲线，同时保留维度文字和不同线型；状态不得只靠色相表达，必须同时使用文字、图标、边框和明度层级。
 - 图标使用当前 Lucide 库，陌生图标按钮提供 `title`/`aria-label`。
 - 桌面工具保持紧凑、可扫描，不增加 landing page、营销 hero 或装饰性卡片。
 - 卡片圆角不超过 8 px，不嵌套卡片，letter-spacing 保持 0。
@@ -305,7 +305,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 | Tauri config | `pnpm tauri build --debug --no-bundle`；平台配置在目标平台验证 |
 | Windows 条件源码 | `pnpm check:windows-cross`；仍需 Windows 本机构建和运行 |
 | macOS ExFAT 路径 | `pnpm check:exfat-macos`；仍需真实 SD 卡和大容量 formal run |
-| Windows release | Win10/Win11 x64 断网安装、导入、检查、回放、三导出、卸载 |
+| Windows release | Win10/Win11 x64 断网安装、源卡直读、检查、回放、三导出、卸载 |
 | Ubuntu release | Ubuntu 22.04 CI 构建/安装/启动 deb；仍需 Ubuntu 22.04 deb 实机及物理 SD 卡验收 |
 
 提交前默认运行：
@@ -315,7 +315,7 @@ pnpm check
 ```
 
 真实样例会读取私有数据，因此保持 `#[ignore]`。`--all-targets` 常规 Rust suite
-当前为 46 项（44 通过、2 个真实样例测试 ignored），其中包含本地账号、轨迹占号、标注修订、HDF5 属性回读、adapter 元数据和压力 CLI 参数测试；
+当前为 50 项（48 通过、2 个真实样例测试 ignored），其中包含本地账号、任务创建、轨迹占号、标注修订、HDF5 UTF-8 属性回读、adapter 元数据和压力 CLI 参数测试；
 debug 构建的三格式完整 smoke test 约需 69 秒。任何
 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 

@@ -29,7 +29,7 @@ sudo apt install ./DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb
 
 必须保留命令中的 `./`，这样 `apt` 会把参数识别为本地安装包并自动补齐 WebKitGTK、GTK、AppIndicator 和 librsvg 运行时依赖。安装后从应用菜单打开 **DOHC Viewer**，也可以在终端运行 `dohc-viewer`。升级时对新版本 deb 重复同一条 `sudo apt install ./...deb` 命令。
 
-原生 deb 可以选择当前 Linux 用户有权读取的已挂载 SD 卡目录。Ubuntu 内核原生支持 ext4，不需要 Paragon；仍应先以只读方式挂载源卡，DOHC Viewer 会把 session 复制到当前用户的 app-local-data 后再检查，不会直接修改源卡。当前只支持 x86_64 Ubuntu，ARM64 不在发布范围内。
+原生 deb 可以选择当前 Linux 用户有权读取的已挂载 SD 卡目录。Ubuntu 内核原生支持 ext4，不需要 Paragon；仍应先以只读方式挂载源卡。DOHC Viewer 直接从源路径检查、回放和导出，不自动复制 session，也不会修改源卡；使用期间需保持卷挂载。当前只支持 x86_64 Ubuntu，ARM64 不在发布范围内。
 
 项目不支持 Flatpak，也不保留 Flatpak 打包工具。Ubuntu 22.04 及以上 x86_64 deb 是唯一受支持的 Linux 发布安装包；Ubuntu 20.04 没有当前版本的二进制安装包。
 
@@ -40,19 +40,19 @@ sudo apt install ./DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\DOHC-Viewer_0.17.3_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\DOHC-Viewer_0.17.4_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
 ```
 
 macOS：
 
 ```bash
-shasum -a 256 DOHC-Viewer_0.17.3_UNSIGNED_macos-arm64.dmg
+shasum -a 256 DOHC-Viewer_0.17.4_UNSIGNED_macos-arm64.dmg
 ```
 
 Ubuntu：
 
 ```bash
-sha256sum 'DOHC-Viewer_0.17.3_UNSIGNED_ubuntu-22.04+-x64.deb'
+sha256sum 'DOHC-Viewer_0.17.4_UNSIGNED_ubuntu-22.04+-x64.deb'
 ```
 
 结果必须与 `SHA256SUMS.txt` 中对应文件完全一致。GitHub CLI 用户还可以用 `gh attestation verify <file> --repo Lr-2002/Delta-Viewer` 验证构建 provenance。

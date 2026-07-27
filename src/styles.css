@@ -149,9 +149,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .episode-item-top svg:first-child { flex: 0 0 auto; color: var(--ink); }
 .episode-item-top strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .episode-item-top svg:last-child { flex: 0 0 auto; color: var(--subtle); }
-.episode-import-state { width: 49px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 3px; flex: 0 0 49px; color: var(--muted); font-size: 9px; font-weight: 650; white-space: nowrap; }
-.episode-import-state.state-error { color: var(--ink); }
-.episode-import-state svg { flex: 0 0 auto; }
+.episode-source-state { width: 49px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 3px; flex: 0 0 49px; color: var(--muted); font-size: 9px; font-weight: 650; white-space: nowrap; }
+.episode-source-state.state-error { color: var(--ink); }
+.episode-source-state svg { flex: 0 0 auto; }
 .episode-item-meta { display: block; margin: 7px 0 8px 23px; color: var(--muted); font-size: 10px; }
 .stream-dots { display: flex; gap: 4px; margin-left: 23px; }
 .stream-dots i { width: 6px; height: 6px; display: block; border-radius: 50%; background: var(--subtle); }
@@ -182,11 +182,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .annotation-state.saved { color: var(--ink); background: var(--surface); }
 .annotation-layout { display: grid; grid-template-columns: minmax(210px, .72fr) minmax(300px, 1.45fr); gap: 22px; }
 .annotation-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
-.annotation-fields label, .annotation-description { min-width: 0; display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 650; }
-.annotation-fields label > span, .annotation-description > span { display: inline-flex; align-items: center; gap: 5px; }
+.annotation-fields label, .annotation-task-field, .annotation-description { min-width: 0; display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 650; }
+.annotation-fields label > span, .annotation-field-label, .annotation-description > span { display: inline-flex; align-items: center; gap: 5px; }
 .annotation-fields input, .annotation-fields select { width: 100%; height: 34px; min-width: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 12px; }
 .annotation-fields input[readonly] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; background: var(--surface-alt); }
-.annotation-fields label small { color: var(--subtle); font-size: 9px; font-weight: 500; }
+.annotation-fields label small, .annotation-task-field small { color: var(--subtle); font-size: 9px; font-weight: 500; }
+.annotation-task-control { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 34px; gap: 5px; }
+.annotation-task-add { width: 34px; height: 34px; }
 .annotation-processor { grid-column: 1 / 3; min-height: 42px; display: flex; align-items: center; gap: 8px; padding-top: 2px; }
 .annotation-processor > span { min-width: 0; display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 6px; }
 .annotation-processor small { color: var(--subtle); font-size: 9px; }
@@ -194,6 +196,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .annotation-processor code { color: var(--muted); font-size: 9px; }
 .annotation-description textarea { width: 100%; min-height: 98px; resize: vertical; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 12px; line-height: 1.55; }
 .annotation-description small { justify-self: end; color: var(--subtle); font-size: 9px; font-weight: 500; }
+.task-create-form { display: grid; grid-template-columns: minmax(180px, 1fr) auto; align-items: end; gap: 8px; margin-top: 11px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.task-create-form label { min-width: 0; display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 650; }
+.task-create-form input { width: 100%; height: 34px; min-width: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 12px; }
+.task-create-form .button { height: 34px; }
 .annotation-actions { min-height: 37px; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-top: 9px; }
 .annotation-actions > span { color: var(--subtle); font-size: 10px; }
 .frame-counter { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
@@ -248,7 +254,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .telemetry-chart canvas { display: block; }
 .chart-legend { position: absolute; top: 8px; right: 12px; display: flex; gap: 10px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .chart-legend span { display: inline-flex; align-items: center; gap: 4px; }
-.chart-legend i { width: 7px; height: 7px; display: inline-block; border-radius: 50%; }
+.chart-legend i { width: 13px; height: 3px; display: inline-block; border-radius: 1px; }
 .chart-legend .telemetry-unavailable { color: var(--status-error); font-weight: 600; }
 
 .checks-view { max-width: 1100px; }
@@ -379,6 +385,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .review-view, .checks-view, .export-view { padding: 17px 12px 28px; }
   .annotation-layout { grid-template-columns: 1fr; gap: 10px; }
   .annotation-description textarea { min-height: 86px; }
+  .task-create-form { grid-template-columns: 1fr; }
+  .task-create-form .button { justify-self: end; }
   .camera-grid { height: auto; min-height: 0; grid-template-columns: 1fr 1fr; grid-template-rows: auto; }
   .camera-0, .camera-1, .camera-2, .camera-3, .camera-4 { grid-area: auto; aspect-ratio: 16 / 10; }
   .camera-0 { grid-column: 1 / 3; aspect-ratio: 16 / 9; }
