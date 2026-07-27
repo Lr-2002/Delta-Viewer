@@ -5,6 +5,9 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+- Retired macOS Intel/x64 from future releases; CD now publishes Windows x64,
+  macOS arm64, and the Ubuntu 22.04+ x86_64 deb as one verified set.
+
 ## 0.17.5 - 2026-07-27
 
 - Made a unique, dated, non-empty `CHANGELOG.md` entry mandatory for every

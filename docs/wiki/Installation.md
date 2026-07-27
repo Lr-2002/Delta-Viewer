@@ -1,6 +1,6 @@
 # 安装与升级
 
-只从项目的 [GitHub Releases](https://github.com/Lr-2002/Delta-Viewer/releases) 下载安装包。当前发布通道没有可信发布者签名，Release 标题、说明和四个安装包文件名都必须显示 `UNSIGNED`。macOS app 带有用于验证包完整性的本地 ad-hoc seal，但没有 Apple Developer ID 或 notarization；Ubuntu deb 同样没有可信发行者签名。Release 页面没有完整的 Windows、两种 macOS 架构和 Ubuntu deb 时，不应使用 Actions 临时 artifact 或本地 debug bundle。
+只从项目的 [GitHub Releases](https://github.com/Lr-2002/Delta-Viewer/releases) 下载安装包。当前发布通道没有可信发布者签名，Release 标题、说明和三个安装包文件名都必须显示 `UNSIGNED`。macOS app 带有用于验证包完整性的本地 ad-hoc seal，但没有 Apple Developer ID 或 notarization；Ubuntu deb 同样没有可信发行者签名。Release 页面没有完整的 Windows x64、macOS arm64 和 Ubuntu deb 时，不应使用 Actions 临时 artifact 或本地 debug bundle。
 
 ## Windows 10/11 x64
 
@@ -8,9 +8,9 @@
 
 安装器会在 Windows 10 以下停止。Windows on ARM 当前不在支持范围内。
 
-## macOS 12 及以上
+## macOS 12 及以上 Apple Silicon
 
-Apple Silicon 机器下载 `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`；Intel 机器下载 `DOHC-Viewer_<version>_UNSIGNED_macos-x64.dmg`。先校验 SHA-256，打开 DMG 后将 `DOHC Viewer.app` 拖入 `Applications`。
+Apple Silicon 机器下载 `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`。先校验 SHA-256，打开 DMG 后将 `DOHC Viewer.app` 拖入 `Applications`。后续版本不再提供 Intel/x64 DMG；旧 Release 中已有的 x64 资产仅作为不可变历史保留，不再维护。
 
 可在“关于本机”查看芯片类型。当前 app 已通过完整的 ad-hoc 资源封印校验，但 DMG 没有 Developer ID 和 Apple notarization，因此首次启动仍会被 Gatekeeper 阻止。核对来源和 hash 后，先在“应用程序”中尝试打开一次；随后进入“系统设置 -> 隐私与安全性”，在 DOHC Viewer 提示旁选择“仍要打开”，完成系统认证后再次确认“打开”。这是每个版本的一次性授权。不要关闭 Gatekeeper，也不要运行移除 quarantine 的命令。
 
@@ -35,7 +35,7 @@ sudo apt install ./DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb
 
 ## 校验下载文件
 
-同一 Release 中的 `SHA256SUMS.txt` 记录四个安装器和 `release-manifest.json` 的 SHA-256。
+同一 Release 中的 `SHA256SUMS.txt` 记录三个安装器和 `release-manifest.json` 的 SHA-256。
 
 Windows PowerShell：
 

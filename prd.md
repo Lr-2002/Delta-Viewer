@@ -3,10 +3,10 @@
 | 属性 | 内容 |
 | --- | --- |
 | 产品名称 | DOHC Viewer |
-| 文档版本 | 0.18 |
+| 文档版本 | 0.19 |
 | 应用版本基线 | 0.17.5 |
-| 文档状态 | 安全 Alpha，四安装器 unsigned GitHub Release CD 与平台完整性门禁已定义，等待可信签名与目标机验收 |
-| 发布平台 | Windows 10/11 x64；macOS 12+ arm64/x64；Ubuntu 22.04+ x86_64 deb |
+| 文档状态 | 安全 Alpha，三安装器 unsigned GitHub Release CD 与平台完整性门禁已定义，等待可信签名与目标机验收 |
+| 发布平台 | Windows 10/11 x64；macOS 12+ arm64；Ubuntu 22.04+ x86_64 deb |
 | 文档日期 | 2026-07-27 |
 | 产品负责人 | 待指定 |
 | 技术负责人 | 待指定 |
@@ -37,7 +37,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | --- | --- |
 | D-001 | 产品运行时只支持本机可见的 SD 卡或本地目录，不支持 SSH、HTTP、NAS 或其他网络数据源。 |
 | D-002 | 正常工作流直接从已挂载源目录只读加载，进行全量结构/状态检查和固定百分位 JPEG 抽检，然后回放和导出；不自动复制源数据。正式压力/发布验收仍全量解码 JPEG。 |
-| D-003 | 正式安装包覆盖 Windows 10/11 x64、macOS 12+ arm64/x64 与 Ubuntu 22.04+ x86_64 原生 deb；首个现场验收重点仍为 Windows。技术栈为 Tauri 2、Rust、React 和 TypeScript。 |
+| D-003 | 正式安装包覆盖 Windows 10/11 x64、macOS 12+ arm64 与 Ubuntu 22.04+ x86_64 原生 deb；首个现场验收重点仍为 Windows。技术栈为 Tauri 2、Rust、React 和 TypeScript。 |
 | D-004 | 推荐未来采集卡使用 exFAT，以便 Windows/macOS 直接读取；当前 ext4 卡必须先备份再格式化。 |
 | D-005 | 导入完整性采用“文件大小 + BLAKE3”逐文件回读校验，并生成数据集级 BLAKE3。 |
 | D-006 | 导出格式通过独立 adapter 实现，首批为 MCAP、HDF5 和 LeRobot v2.1。 |
@@ -53,7 +53,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-016 | v0.13 起 warning/error 检查结果必须在后台自动生成本地审计报告；ok 不自动生成。报告只写入应用本地数据目录，不上传网络、不写源卡或 episode；同一 episode 路径和数据指纹在同一报告版本下去重。 |
 | D-017 | v0.14 起进入数据工作区前必须登录本地账号；账号不连接服务器、不提供远程权限体系，密码仅保存 Argon2id 哈希和系统随机盐。账号用于本机处理归因。 |
 | D-018 | 标注记录绑定规范化 episode 路径与数据指纹，使用本地可创建任务、可编辑任务描述和 `{prefix}-{NNN}` 轨迹编码。首个内置任务为 `close_oven`，前缀为 `oven`；新任务只输入名称，由系统生成稳定 ID/前缀；标注只写应用 local-data，并以追加修订保留处理人历史。 |
-| D-019 | 四处应用版本和完整 Changelog 条目是唯一发布信号；当前版本必须是 `CHANGELOG.md` 第一条带日期的版本记录、只能出现一次并至少包含一条具体变更，GitHub Release 正文必须直接展示该条目。`main` CI 成功后由 GitHub Actions 使用仓库 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag，并从该 clean exact tag 同时构建 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x64 deb 四个安装包。普通提交保持已发布版本号时跳过 Release；当前阶段允许公开显式 `UNSIGNED` 的完整集合，但标题、说明、文件名、报告和 manifest 必须一致披露。未来签名产物必须使用新版本/tag，不覆盖 unsigned 资产。 |
+| D-019 | 四处应用版本和完整 Changelog 条目是唯一发布信号；当前版本必须是 `CHANGELOG.md` 第一条带日期的版本记录、只能出现一次并至少包含一条具体变更，GitHub Release 正文必须直接展示该条目。`main` CI 成功后由 GitHub Actions 使用仓库 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag，并从该 clean exact tag 同时构建 Windows x64、macOS arm64 和 Ubuntu 22.04+ x64 deb 三个安装包。普通提交保持已发布版本号时跳过 Release；当前阶段允许公开显式 `UNSIGNED` 的完整集合，但标题、说明、文件名、报告和 manifest 必须一致披露。未来签名产物必须使用新版本/tag，不覆盖 unsigned 资产。 |
 | D-020 | 用户文档使用 GitHub Wiki；`docs/wiki` 是可审查的唯一源，由 workflow 同步，避免网页内容与代码版本分叉。 |
 | D-021 | unsigned macOS app 仍必须对 FFmpeg、主程序和完整 bundle 生成结构有效的 ad-hoc seal；发布门禁必须在 synthetic quarantine 下区分“无可信身份/未公证”的预期策略拒绝、由已知良性 control app 复现的 runner XProtect 服务错误，以及 invalid signature/damaged 的产品包结构错误。 |
 | D-022 | v0.16 起所有用户可见的扫描、导入、加载、检查和导出操作错误都要以不可覆盖的本地 JSON 记录保存；记录包含时间、操作、稳定错误码、原始消息、源路径和处理账号，界面提供最近 200 条历史回读。权限类消息统一归类为 `PERMISSION_DENIED`，不得只在顶部短暂显示。 |
@@ -63,6 +63,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-026 | 正常 UI 不再调用导入器或创建 `appLocalData/imports` 数据副本；选择源后扫描全部 session，首条直接只读检查/回放，其他 session 按需读取。源卷在使用期间必须保持挂载。 |
 | D-027 | 轨迹编号只能由 Rust 在保存标注时原子分配；前端只能选择/创建任务、编辑描述和显示编码预览，不能提交自定义轨迹编号。 |
 | D-028 | macOS AppleDouble `._*` 和 `.DS_Store` 是平台元数据，不属于采集数据；扫描统计、数据指纹、校验和显式导入统一忽略这些文件，但不得删除或修改源卡。其他非数字 JPEG 文件名仍按 `INVALID_FRAME_FILENAME` error 处理。 |
+| D-029 | 后续 Release 不再构建或发布 macOS Intel/x64 DMG；macOS 正式分发仅保留 Apple Silicon/arm64。已经公开的旧 tag 和其中的 x64 资产保持不可变历史，不删除、不覆盖，也不代表继续维护。 |
 
 ## 4. 产品目标
 
@@ -86,7 +87,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 - 标准测试记录能够成功导出三种格式并被各自读取器重新打开。
 - 用户从选择源到看到第一条进度反馈不超过 1 秒。
 - Windows 10/11 目标机断网时可以完成安装后的完整工作流。
-- macOS 12+ Apple Silicon/Intel 目标机可通过签名并 notarized 的 DMG 安装并完成同一离线工作流。
+- macOS 12+ Apple Silicon 目标机可通过签名并 notarized 的 DMG 安装并完成同一离线工作流。
 - Ubuntu 22.04+ x86_64 目标机可通过原生 deb 安装，并从已挂载的 ext4/exFAT SD 卡完成同一离线工作流。
 - 现场用户无需命令行脚本即可完成主要任务。
 - 相同应用数据目录中不会把一个轨迹编码分配给两个不同 episode；每次标注修订记录当前登录账号。
@@ -447,7 +448,7 @@ task, phase, current, total, bytesDone, totalBytes, currentPath, elapsedMs
 
 ### 9.3 兼容性
 
-- 正式安装包支持 Windows 10/11 x64、macOS 12+ arm64、macOS 12+ x64 和 Ubuntu 22.04+ x86_64 deb。
+- 正式安装包支持 Windows 10/11 x64、macOS 12+ arm64 和 Ubuntu 22.04+ x86_64 deb。
 - 安装器必须在 Windows 10 以下系统中停止安装。
 - Windows 安装包使用 NSIS current-user 模式，不要求管理员权限作为默认路径。
 - Windows 安装包包含离线 WebView2 安装器。
@@ -530,13 +531,13 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 ### 12.2 macOS 包要求
 
-- 最低系统版本固定为 macOS 12.0，分别生成 arm64 和 x64 DMG，不把单架构产物命名为 universal。
+- 最低系统版本固定为 macOS 12.0，只生成 arm64 DMG，不把单架构产物命名为 universal；不再生成 x64 DMG。
 - 可分发 app/DMG 必须使用只依赖 macOS 系统库的 reviewed FFmpeg；当前从固定 archive hash 和 commit 的 FFmpeg 8.1.2 官方源码构建最小 LGPL sidecar，Homebrew 动态链接版本只能标记为 local-debug。
 - DMG 必须只读挂载验证 app、`/Applications` 链接、版本、架构和 FFmpeg 资源 hash，再将 app 复制到本地目录执行启动 smoke。
 - 当前 GitHub Release 允许没有可信发布者身份的 unsigned DMG，但 app、主程序和 FFmpeg 必须使用本地 ad-hoc seal，并通过 `codesign --verify --deep --strict`；文件名、Release 和报告必须明确标记，且不得宣称 Developer ID 或 notarization 已通过。
 - 复制后的 app 必须添加 synthetic quarantine；`syspolicy_check distribution` 正常应因 ad-hoc identity 和 missing notary ticket 拒绝。若 runner 返回内部 XProtect 错误，只有现场构建的最小 ad-hoc control app 得到相同结果时才能记录为 policy service unavailable；产品独有的 XProtect 错误、invalid signature、missing resources、damaged 或其他结构问题一律阻止发布。用户首次启动仍需通过系统设置执行一次性“仍要打开”。
 - 生产签名阶段仍需让 app/FFmpeg 完成 Developer ID Application 签名和 secure timestamp，并完成 Apple notarization/stapling；证书和 Apple 凭据不进入仓库，签名产物使用新版本/tag 发布。
-- GitHub hosted runner 通过后仍需在目标 Apple Silicon/Intel Mac 验收。
+- GitHub hosted runner 通过后仍需在目标 Apple Silicon Mac 验收。
 
 ### 12.3 Ubuntu deb 包要求
 
@@ -547,12 +548,12 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 ### 12.4 正式 CD 与 GitHub Release
 
 - `.github/workflows/release.yml` 在 `main` CI 成功后核对 HEAD、clean checkout、完整 Changelog 条目和四处应用版本，并使用该次运行的 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag；当前 unsigned 通道不依赖 GitHub App 凭据或 release Environment。Changelog 缺失、重复、未置顶、日期无效、为空或仅含占位文本时，必须在 tag 创建前失败。完整 `pnpm check` 与 release workflow 回归只在 CI 对同一 commit 执行一次，CD 不重复该门禁。
-- Windows x64、macOS arm64、macOS x64、Ubuntu x86_64 使用原生 hosted runner 构建；Node、pnpm、Rust 和全部 GitHub Actions 固定版本或 commit。
-- CI 与四个平台可恢复按平台/目标架构和 Rust/Cargo 环境隔离的依赖编译缓存；只有受信任的 main/release 运行可写共享 cache。workspace crate、增量编译产物和最终 installer 不得进入 cache，每次 Release 必须重新组装并执行完整安装、启动、资源、封印和 hash 验证。
-- Windows 固定 reviewed FFmpeg binary/license/build notice 与 WebView2 exact Microsoft URL/SHA-256；macOS 从固定官方 FFmpeg source archive hash/Git revision 构建两个原生架构。
+- Windows x64、macOS arm64、Ubuntu x86_64 使用原生 hosted runner 构建；Node、pnpm、Rust 和全部 GitHub Actions 固定版本或 commit。
+- CI 与三个平台可恢复按平台/目标架构和 Rust/Cargo 环境隔离的依赖编译缓存；只有受信任的 main/release 运行可写共享 cache。workspace crate、增量编译产物和最终 installer 不得进入 cache，每次 Release 必须重新组装并执行完整安装、启动、资源、封印和 hash 验证。
+- Windows 固定 reviewed FFmpeg binary/license/build notice 与 WebView2 exact Microsoft URL/SHA-256；macOS 从固定官方 FFmpeg source archive hash/Git revision 构建 arm64 sidecar。
 - Windows 检查 DOHC 产物为 unsigned、Microsoft WebView2 签名、NSIS 内嵌 hash、silent install/startup/uninstall；macOS 检查 ad-hoc sealed nested code/resources、没有 Developer ID/notarization claim、DMG 挂载、资源 hash、synthetic-quarantine Gatekeeper 分类和复制后直接启动。
-- Release 标题、说明、四个 installer 名称、verification report 和 manifest 必须显示 `UNSIGNED`；后续引入签名时恢复 Authenticode、timestamp、Developer ID、Gatekeeper、notarization 和可信 Linux 包发布门禁。
-- final job 重新核对四份 verification report 和安装器 SHA-256，生成 `release-manifest.json`、`SHA256SUMS.txt` 和 GitHub provenance。四安装器集合完整后才解除 draft，已经公开的 tag 不允许覆盖。
+- Release 标题、说明、三个 installer 名称、verification report 和 manifest 必须显示 `UNSIGNED`；后续引入签名时恢复 Authenticode、timestamp、Developer ID、Gatekeeper、notarization 和可信 Linux 包发布门禁。
+- final job 重新核对三份 verification report 和安装器 SHA-256，生成 `release-manifest.json`、`SHA256SUMS.txt` 和 GitHub provenance。三安装器集合完整后才解除 draft，已经公开的 tag 不允许覆盖。
 - GitHub hosted runner smoke 不是 Win10/Win11 断网、目标 Mac、真实 SD 卡或 100 GB 实盘验收的替代品。
 
 ### 12.5 版本管理
@@ -570,7 +571,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 每次检查必须生成 schemaVersion=1 的本机 JSON 报告，记录应用版本、Git 状态、工具版本、各命令 exit code 和耗时；报告和本地构建产物不进入 Git。
 - FFmpeg staging 必须在复制前验证期望 SHA-256、目标架构、`mpeg4` encoder、非 `--enable-nonfree` 构建、HTTPS 来源、build ID 和许可证输入。
 - bundle 必须包含 FFmpeg 二进制、合并许可证和 provenance manifest，并在构建前回读 hash；标记为非可移植的依赖只能进入显式 local-debug 包。
-- unsigned debug bundle 只证明本机构建和资源布局；unsigned GitHub Release 还必须通过四安装器 CI 安装或挂载、直接启动、依赖和完整集合门禁，但两者都不能替代生产签名和目标机器验收。
+- unsigned debug bundle 只证明本机构建和资源布局；unsigned GitHub Release 还必须通过三安装器 CI 安装或挂载、直接启动、依赖和完整集合门禁，但两者都不能替代生产签名和目标机器验收。
 - 大容量验收必须由 `stress-check` 统一执行扫描、取消探针、verified import、完整检查、三格式生成/回读和源端 BLAKE3 复核，并原子生成 schemaVersion=1 JSON 报告。
 - formal 报告必须记录 release profile、clean exact tag、源/工作卷、100 GB/100,000 文件阈值、FFmpeg BLAKE3、阶段耗时/吞吐/峰值 RSS、取消延迟、输出大小以及源前后 hash；`formal:false` 只能作为开发证据。
 - 非 Windows 宿主的 MSVC 预检必须使用同一 rustup toolchain 的 Cargo/Rustc、显式 `x86_64-pc-windows-msvc` target 和 `llvm-rc`，编译 `--all-targets` 并生成报告；报告必须明确 `linksExecutable:false`、`buildsInstaller:false`、`runsOnWindows:false`。
@@ -607,7 +608,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 | AT-024 | 分别检查 warning、error、ok 数据并重复检查 warning 数据 | warning/error 在应用 local-data 自动生成 format-v3 报告，重复检查复用同一路径且源指纹不变；ok 不生成；检查页按错误/警告/通过排序并显示后台报告状态 |
 | AT-025 | 首次创建账号、错误密码登录、正确登录、退出后直接调用数据 IPC | 密码文件不含明文；错误密码拒绝；正确登录成功；退出后数据 IPC 返回 `AUTH_REQUIRED` |
 | AT-026 | 创建“整理餐具”任务并为两个 episode 保存，第一条再由另一账号编辑描述 | 新任务默认描述可编辑；编码只读并由 Rust 依次分配 `整理餐具-001`/`整理餐具-002`，前端不能指定编号；修订历史保留两个处理人；三种导出以轨迹码命名并回读 UTF-8 标注元数据 |
-| AT-027 | 将统一版本号和带日期 Changelog 的版本提交推送到 `main`，CI 成功 | workflow 自动创建不可改写的 annotated tag，并同时生成文件名带 `UNSIGNED` 的 Windows x64 NSIS、macOS arm64/x64 DMG 和 Ubuntu 22.04+ x86_64 deb；四者均披露无可信发布者身份并通过依赖、安装或挂载、启动和 hash 检查；macOS 还通过 strict ad-hoc seal 与 synthetic-quarantine Gatekeeper 分类，Ubuntu deb 通过 Xvfb 启动检查，完整 draft 才自动公开 |
+| AT-027 | 将统一版本号和带日期 Changelog 的版本提交推送到 `main`，CI 成功 | workflow 自动创建不可改写的 annotated tag，并同时生成文件名带 `UNSIGNED` 的 Windows x64 NSIS、macOS arm64 DMG 和 Ubuntu 22.04+ x86_64 deb；三者均披露无可信发布者身份并通过依赖、安装或挂载、启动和 hash 检查；macOS 还通过 strict ad-hoc seal 与 synthetic-quarantine Gatekeeper 分类，Ubuntu deb 通过 Xvfb 启动检查，完整 draft 才自动公开 |
 | AT-028 | 修改 `docs/wiki` 并合入 main | 页面与内部链接检查通过后同步 GitHub Wiki；网页文档与仓库源一致 |
 | AT-029 | 对 macOS Release app 添加 quarantine 并执行分发策略检查 | app/main/FFmpeg 的 nested code 与 sealed resources 严格校验通过；策略报告 ad-hoc identity/missing notary ticket，或内部 XProtect 错误被独立最小 control app 同样复现并显式记录；不出现产品独有 XProtect、invalid signature、missing resources 或 damaged |
 | AT-030 | 检查 Linux 打包配置和 Release 产物集合 | 仓库没有 Flatpak manifest、构建或验证脚本；Linux 打包契约只接受 Ubuntu 22.04+ x86_64 deb，Release 汇总发现 Flatpak 产物时拒绝发布 |
@@ -648,7 +649,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - macOS 只读虚拟 ExFAT 卷上的完整生产数据链路 smoke 和 marker 保护清理。
 - 本地账号注册/登录/退出、Argon2id 密码哈希、后端会话门禁，以及可创建任务、可编辑描述、Rust 自动编号和带处理人的 episode 级标注。
 - MCAP/HDF5/LeRobot 导出继承轨迹码、任务和处理人元数据。
-- 四安装器正式 Release CD、完整集合发布门禁、安装器 verification report、SHA-256 manifest 和 GitHub build provenance 工作流。
+- 三安装器正式 Release CD、完整集合发布门禁、安装器 verification report、SHA-256 manifest 和 GitHub build provenance 工作流。
 - `docs/wiki` 用户/发布手册、内部链接检查和 GitHub Wiki 自动同步工作流。
 
 ### 14.2 发布前阻断项
@@ -842,8 +843,8 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 - 主 CI 不再运行 Ubuntu packaging smoke；独立的 Linux package smoke workflow 已移除。
 - `main` 允许直接推送但禁止删除和 force-push；CI 成功和统一版本变更共同触发自动 annotated tag，无独立 release commit、手工 tag、GitHub App 凭据或 release Environment。
-- CI 是同一 commit 的唯一完整代码门禁；Release controller 只重复不可变 tag、main HEAD、版本和 Changelog 验证，四个平台随后直接并行构建。CI 与各原生平台使用隔离的 Cargo 依赖缓存，最终安装包和验证结果始终重新生成。
-- GitHub Release 只发布 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x86_64 deb。
+- CI 是同一 commit 的唯一完整代码门禁；Release controller 只重复不可变 tag、main HEAD、版本和 Changelog 验证，三个平台随后直接并行构建。CI 与各原生平台使用隔离的 Cargo 依赖缓存，最终安装包和验证结果始终重新生成。
+- GitHub Release 只发布 Windows x64、macOS arm64 和 Ubuntu 22.04+ x86_64 deb。
 - Flatpak manifest、构建脚本和验证脚本已从仓库移除；Release 汇总对意外出现的 Flatpak 产物保持拒绝。
 
 ### 14.27 `0.17.4` 源卡直读、动态任务与彩色状态曲线
@@ -862,12 +863,18 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 完整代码和 release workflow 门禁只在同一 CI commit 执行一次，controller 验证不可变发布身份后四个平台直接并行；CI 和原生打包任务使用隔离的 Cargo 依赖缓存，但每个 installer、封印和验证报告仍然重新生成。
 - GitHub hosted Ubuntu CI 的冷缓存运行耗时 5 分 54 秒，同一 commit 缓存命中后为 2 分 59 秒；正式四平台 CD 的缓存收益仍以 `0.17.5` 及后续实际 Release 记录为准。
 
+### 14.29 未发布：macOS x64 退出发布范围
+
+- 后续 CD 固定只构建 Windows x64、macOS arm64 和 Ubuntu 22.04+ x86_64 deb；macOS Intel/x64 不再进入支持或发布范围。
+- macOS workflow 固定使用 Apple Silicon runner 和 `aarch64-apple-darwin` target；Release 汇总器将额外出现的 x64 DMG 视为意外安装器并阻止公开。
+- `v0.17.5` 及更早公开 Release 中已有的 x64 DMG 保持不可变历史，不删除或覆盖；用户文档明确不再维护该架构。
+
 ## 15. 里程碑
 
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
 | M0 技术原型 | 真实样例只读检查、回放、三种导出，以及独立压力导入器 | 已完成 |
-| M1 多平台 Alpha | Windows x64 离线安装包、macOS arm64/x64 DMG、Ubuntu 22.04+ x86_64 deb、reviewed FFmpeg 和基本硬件测试 | 进行中；四安装器 unsigned CD 与完整性门禁已定义，目标机待验收 |
+| M1 多平台 Alpha | Windows x64 离线安装包、macOS arm64 DMG、Ubuntu 22.04+ x86_64 deb、reviewed FFmpeg 和基本硬件测试 | 进行中；三安装器 unsigned CD 与完整性门禁已定义，目标机待验收 |
 | M2 Field Beta | exFAT 卡、长时数据、异常数据、操作员反馈 | 待完成 |
 | M3 v1.0 | 关闭所有 P0/GAP，签名发布和操作手册 | 待完成 |
 
@@ -893,7 +900,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 至少一组损坏数据 fixture 覆盖每类 error/warning。
 - 100 GB 级数据压力测试达到性能目标，无不可控内存增长。
 - 签名的离线 NSIS 在干净 Win10/Win11 x64 上通过安装和卸载。
-- 签名并 notarized 的 arm64/x64 DMG 在对应目标 Mac 上通过安装、启动和完整离线工作流。
+- 签名并 notarized 的 arm64 DMG 在目标 Apple Silicon Mac 上通过安装、启动和完整离线工作流。
 - 真实 exFAT SD 卡完整流程通过，源卡内容 hash 前后不变。
 - FFmpeg/WebView2/依赖许可证和版本清单已归档。
 - `README.md`、`prd.md`、`AGENTS.md` 与最终行为一致。

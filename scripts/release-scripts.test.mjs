@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -237,10 +237,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
   assert.match(nonMainTag.stderr, /is not reachable from trusted main ref origin\/main/);
   run("git", ["tag", "-d", "v1.2.3"], testRoot);
   run("git", ["tag", "-a", "v1.2.3", mainCommit, "-m", "DOHC Viewer v1.2.3"], testRoot);
-  assert.deepEqual(metadata.packaging.macos, [
-    "untrusted-adhoc-sealed-dmg-arm64",
-    "untrusted-adhoc-sealed-dmg-x64",
-  ]);
+  assert.deepEqual(metadata.packaging.macos, ["untrusted-adhoc-sealed-dmg-arm64"]);
   assert.deepEqual(metadata.packaging.linux, ["unsigned-deb-ubuntu-22.04+-x64"]);
   assert.equal(metadata.packaging.linuxDebMinimum, "ubuntu-22.04");
   assert.equal(metadata.packaging.linuxDebBuildHost, "ubuntu-22.04");
@@ -333,8 +330,11 @@ test("CI owns the shared gate and release jobs use isolated dependency caches", 
   assert.equal(releaseWorkflow.split(rustCacheRef).length - 1, 3);
   assert.match(ciWorkflow, /key: ci-ubuntu-x64/);
   assert.match(releaseWorkflow, /key: release-windows-x64/);
-  assert.match(releaseWorkflow, /key: release-\$\{\{ matrix\.target \}\}/);
+  assert.match(releaseWorkflow, /key: release-aarch64-apple-darwin/);
   assert.match(releaseWorkflow, /key: release-linux-x64/);
+  assert.match(releaseWorkflow, /runs-on: macos-15/);
+  assert.match(releaseWorkflow, /targets: aarch64-apple-darwin/);
+  assert.doesNotMatch(releaseWorkflow, /macos-15-intel|x86_64-apple-darwin|macos-x64/);
   assert.doesNotMatch(`${ciWorkflow}\n${releaseWorkflow}`, /cache-(?:all|workspace)-crates: "true"/);
   assert.equal(`${ciWorkflow}\n${releaseWorkflow}`.split('cache-bin: "false"').length - 1, 4);
   assert.equal(`${ciWorkflow}\n${releaseWorkflow}`.split('cache-all-crates: "false"').length - 1, 4);
@@ -344,7 +344,7 @@ test("CI owns the shared gate and release jobs use isolated dependency caches", 
   );
 });
 
-test("assemble-release rejects partial sets and emits checksums for a complete set", async () => {
+test("assemble-release rejects partial sets and emits checksums for a complete three-installer set", async () => {
   const testRoot = await mkdtemp(path.join(tmpdir(), "dohc-release-assets-"));
   const input = path.join(testRoot, "input");
   const output = path.join(testRoot, "output");
@@ -364,12 +364,6 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
       architecture: "arm64",
       suffix: "macos-arm64.dmg",
       reportSuffix: "macos-arm64.verification.json",
-    },
-    {
-      platform: "macos",
-      architecture: "x64",
-      suffix: "macos-x64.dmg",
-      reportSuffix: "macos-x64.verification.json",
     },
     {
       platform: "linux",
@@ -471,41 +465,31 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
             }
           : {
             notarization: { verified: false, stapled: false },
-            gatekeeper:
-              definition.architecture === "arm64"
-                ? {
-                    quarantineApplied: true,
-                    assessment: "rejected-untrusted-adhoc-not-notarized",
-                    adHocSignatureConfirmed: true,
-                    notarizationTicketMissing: true,
-                    policyServiceAvailable: true,
-                    internalXprotectError: false,
-                    controlAssessmentMatched: false,
-                    structuralError: false,
-                    userOverrideRequired: true,
-                  }
-                : {
-                    quarantineApplied: true,
-                    assessment: "rejected-not-notarized-xprotect-unavailable",
-                    adHocSignatureConfirmed: true,
-                    notarizationTicketMissing: true,
-                    policyServiceAvailable: false,
-                    internalXprotectError: true,
-                    controlAssessmentMatched: true,
-                    structuralError: false,
-                    userOverrideRequired: true,
-                  },
+            gatekeeper: {
+              quarantineApplied: true,
+              assessment: "rejected-untrusted-adhoc-not-notarized",
+              adHocSignatureConfirmed: true,
+              notarizationTicketMissing: true,
+              policyServiceAvailable: true,
+              internalXprotectError: false,
+              controlAssessmentMatched: false,
+              structuralError: false,
+              userOverrideRequired: true,
+            },
           }),
     });
   }
 
-  const x64ReportPath = path.join(
+  const macosReportPath = path.join(
     input,
-    `DOHC-Viewer_${version}_macos-x64.verification.json`,
+    `DOHC-Viewer_${version}_macos-arm64.verification.json`,
   );
-  const x64Report = JSON.parse(await readFile(x64ReportPath, "utf8"));
-  x64Report.gatekeeper.controlAssessmentMatched = false;
-  await writeJson(x64ReportPath, x64Report);
+  const macosReport = JSON.parse(await readFile(macosReportPath, "utf8"));
+  macosReport.gatekeeper.assessment = "rejected-not-notarized-xprotect-unavailable";
+  macosReport.gatekeeper.policyServiceAvailable = false;
+  macosReport.gatekeeper.internalXprotectError = true;
+  macosReport.gatekeeper.controlAssessmentMatched = false;
+  await writeJson(macosReportPath, macosReport);
   const unmatchedControl = spawnSync(
     process.execPath,
     [
@@ -524,8 +508,8 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
   assert.notEqual(unmatchedControl.status, 0);
   assert.match(unmatchedControl.stderr, /unsupported macOS policy-service result/);
 
-  x64Report.gatekeeper.controlAssessmentMatched = true;
-  await writeJson(x64ReportPath, x64Report);
+  macosReport.gatekeeper.controlAssessmentMatched = true;
+  await writeJson(macosReportPath, macosReport);
 
   const debReportPath = path.join(
     input,
@@ -561,18 +545,13 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
     root,
   );
   const manifest = JSON.parse(await readFile(path.join(output, "release-manifest.json"), "utf8"));
-  assert.equal(manifest.assets.length, 4);
+  assert.equal(manifest.assets.length, 3);
   assert.equal(manifest.distribution.signingMode, "unsigned");
   assert.equal(manifest.distribution.trustedPublisher, false);
   assert.equal(
     manifest.assets.find((asset) => asset.key === "macos-arm64").verification
       .gatekeeperPolicyServiceAvailable,
-    true,
-  );
-  assert.equal(
-    manifest.assets.find((asset) => asset.key === "macos-x64").verification
-      .gatekeeperAssessment,
-    "rejected-not-notarized-xprotect-unavailable",
+    false,
   );
   assert.equal(
     manifest.assets.find((asset) => asset.key === "ubuntu-deb-x64").packageKind,
@@ -582,7 +561,35 @@ test("assemble-release rejects partial sets and emits checksums for a complete s
   const checksumLines = (await readFile(path.join(output, "SHA256SUMS.txt"), "utf8"))
     .trim()
     .split("\n");
-  assert.equal(checksumLines.length, 5);
+  assert.equal(checksumLines.length, 4);
+
+  const macosX64Installer = path.join(
+    input,
+    `DOHC-Viewer_${version}_UNSIGNED_macos-x64.dmg`,
+  );
+  await writeFile(macosX64Installer, Buffer.alloc(1_000_001));
+  const macosX64Output = path.join(testRoot, "macos-x64-output");
+  const unexpectedMacosX64 = spawnSync(
+    process.execPath,
+    [
+      assembleScript,
+      "--input",
+      input,
+      "--output",
+      macosX64Output,
+      "--tag",
+      tag,
+      "--commit",
+      commit,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.notEqual(unexpectedMacosX64.status, 0);
+  assert.match(
+    unexpectedMacosX64.stderr,
+    /unexpected installer artifacts: .*macos-x64\.dmg/,
+  );
+  await unlink(macosX64Installer);
 
   const flatpakInstaller = path.join(
     input,

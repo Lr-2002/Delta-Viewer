@@ -265,7 +265,7 @@ async function verify(options) {
     },
     packaging: {
       windows: "unsigned-nsis-x64-offline-webview2",
-      macos: ["untrusted-adhoc-sealed-dmg-arm64", "untrusted-adhoc-sealed-dmg-x64"],
+      macos: ["untrusted-adhoc-sealed-dmg-arm64"],
       macosMinimumSystemVersion: "12.0",
       linux: ["unsigned-deb-ubuntu-22.04+-x64"],
       linuxDebMinimum: "ubuntu-22.04",

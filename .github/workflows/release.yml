@@ -359,24 +359,14 @@ jobs:
           retention-days: 30
 
   macos:
-    name: macOS 12+ ${{ matrix.architecture }} unsigned DMG
+    name: macOS 12+ arm64 unsigned DMG
     needs: controller
     if: ${{ needs.controller.outputs.should_release == 'true' }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-15
     permissions:
       contents: read
       id-token: write
       attestations: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            architecture: arm64
-            target: aarch64-apple-darwin
-          - runner: macos-15-intel
-            architecture: x64
-            target: x86_64-apple-darwin
     env:
       FFMPEG_SOURCE_URL: https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2
       FFMPEG_SOURCE_SHA256: 9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7
@@ -404,13 +394,13 @@ jobs:
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
 
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: "./src-tauri -> target"
-          key: release-${{ matrix.target }}
+          key: release-aarch64-apple-darwin
           cache-bin: "false"
           cache-all-crates: "false"
           cache-workspace-crates: "false"
@@ -457,8 +447,8 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "12.0"
         run: |
           set -euo pipefail
-          pnpm tauri build --ci --target "${{ matrix.target }}" --bundles app --no-sign
-          bundle_root="src-tauri/target/${{ matrix.target }}/release/bundle"
+          pnpm tauri build --ci --target aarch64-apple-darwin --bundles app --no-sign
+          bundle_root="src-tauri/target/aarch64-apple-darwin/release/bundle"
           app_count="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')"
           [[ "$app_count" == "1" ]] || { echo "Expected one app bundle, found $app_count" >&2; exit 1; }
           app="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' -print)"
@@ -466,14 +456,14 @@ jobs:
           mkdir -p "$bundle_root/dmg"
           bash scripts/make-dmg.sh \
             --app "$app" \
-            --output "$bundle_root/dmg/DOHC-Viewer_${{ needs.controller.outputs.version }}_${{ matrix.architecture }}.dmg"
+            --output "$bundle_root/dmg/DOHC-Viewer_${{ needs.controller.outputs.version }}_arm64.dmg"
 
       - name: Verify ad-hoc seal, Gatekeeper state, DMG, resources, and startup
         shell: bash
         run: |
           bash scripts/verify-release-macos.sh \
-            --target "${{ matrix.target }}" \
-            --arch "${{ matrix.architecture }}" \
+            --target aarch64-apple-darwin \
+            --arch arm64 \
             --version "${{ needs.controller.outputs.version }}" \
             --tag "${{ needs.controller.outputs.tag }}" \
             --commit "${{ needs.controller.outputs.commit }}" \
@@ -482,12 +472,12 @@ jobs:
       - name: Attest macOS installer provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-${{ matrix.architecture }}.dmg
+          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.dmg
 
       - name: Upload verified macOS release artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-macos-${{ matrix.architecture }}
+          name: release-macos-arm64
           path: ${{ runner.temp }}/release-assets/*
           if-no-files-found: error
           retention-days: 30
@@ -686,7 +676,7 @@ jobs:
           cat > "$notes_file" <<EOF
           WARNING: This release has no trusted publisher signature. Windows will show an unknown-publisher or SmartScreen warning. The macOS app has a valid local ad-hoc resource seal but no Developer ID or notarization, so first launch requires the standard System Settings > Privacy & Security > Open Anyway override. The Ubuntu deb package is unsigned; verify SHA256SUMS.txt before use.
 
-          Four compiled installers are attached: Windows x64, macOS Apple Silicon, macOS Intel, and Ubuntu 22.04+ x86_64 deb. All four passed dependency, bundled-resource, install or mount, startup, and checksum gates before publication. The macOS jobs also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, Apple notarization, and trusted Linux package signing are intentionally not claimed.
+          Three compiled installers are attached: Windows x64, macOS Apple Silicon, and Ubuntu 22.04+ x86_64 deb. All three passed dependency, bundled-resource, install or mount, startup, and checksum gates before publication. The macOS job also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, Apple notarization, and trusted Linux package signing are intentionally not claimed.
 
           User guide: https://github.com/${{ github.repository }}/wiki
 

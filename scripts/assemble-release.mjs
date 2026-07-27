@@ -52,13 +52,6 @@ function expectedArtifacts(version) {
       report: `DOHC-Viewer_${version}_macos-arm64.verification.json`,
     },
     {
-      key: "macos-x64",
-      platform: "macos",
-      architecture: "x64",
-      installer: `DOHC-Viewer_${version}_UNSIGNED_macos-x64.dmg`,
-      report: `DOHC-Viewer_${version}_macos-x64.verification.json`,
-    },
-    {
       key: "ubuntu-deb-x64",
       platform: "linux",
       architecture: "x64",

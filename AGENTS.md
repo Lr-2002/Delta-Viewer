@@ -16,7 +16,7 @@
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
 11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录，三个 adapter 必须使用同一范围。
 12. 账号、登录会话和 episode 标注是纯本地能力。不得把账号、密码、处理人或标注发送到网络；所有数据 command 必须在 Rust 中验证当前登录会话。
-13. GitHub Release 必须同时包含 Windows x64、macOS arm64、macOS x64 和 Ubuntu 22.04+ x86_64 原生 deb 四个可安装产物。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
+13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 Ubuntu 22.04+ x86_64 原生 deb 三个可安装产物；不再构建或发布 macOS x64。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 
 ## 2. 仓库结构
 
@@ -27,7 +27,7 @@ DOHC_Viewer/
   README.md                      用户/构建入口
   AGENTS.md                      本开发指南
   .github/workflows/
-    release.yml                 四个安装包 CD 与完整集合发布门禁
+    release.yml                 三个安装包 CD 与完整集合发布门禁
     wiki.yml                    docs/wiki 到 GitHub Wiki 的同步流程
   docs/wiki/                    GitHub Wiki 的可审查唯一源文件
   src/                           React/TypeScript UI
@@ -455,11 +455,11 @@ Changelog 条目是唯一发布信号；当对应的 `vX.Y.Z` 不存在时，con
 Release，不要求独立 release commit、手工 tag、GitHub App 凭据或 release
 Environment。完整 `pnpm check` 和 release workflow 回归只在 CI 对同一 commit 运行
 一次；controller 再验证 main HEAD、clean checkout、annotated tag、Changelog 和四处
-应用版本后，四个平台直接并行构建，不得在 CD 中重复完整 CI。Windows x64、macOS
-arm64、macOS x64 和 Ubuntu x64 在原生 runner 上构建；所有 job 使用锁定 commit SHA
+应用版本后，三个平台直接并行构建，不得在 CD 中重复完整 CI。Windows x64、macOS
+arm64 和 Ubuntu x64 在原生 runner 上构建；所有 job 使用锁定 commit SHA
 的 Actions，并固定 Node 22、pnpm 10.12.1 和 Rust 1.97.1。
 
-CI 和四个平台使用固定 commit 的 `Swatinem/rust-cache` v2.9.1 缓存 Cargo 依赖编译
+CI 和三个平台使用固定 commit 的 `Swatinem/rust-cache` v2.9.1 缓存 Cargo 依赖编译
 结果。cache key 必须按 CI/平台/目标架构隔离，并包含 action 自动计算的 Rust 工具链、
 Cargo manifests/lockfile 和编译环境指纹；PR 不得写入 main 的 CI cache。保持默认
 `cache-all-crates:false`/`cache-workspace-crates:false` 和 `CARGO_INCREMENTAL=0`，不得
@@ -467,7 +467,7 @@ Cargo manifests/lockfile 和编译环境指纹；PR 不得写入 main 的 CI cac
 缓存命中只能加速重新编译，每次 Release 仍必须重新组装并执行全部平台验证。
 
 当前 release channel 是显式 unsigned，即没有可信发布者身份。Windows FFmpeg、许可证、构建说明和
-WebView2 exact URL/SHA-256 固定在 workflow；macOS arm64/x64 从固定 archive hash 和
+WebView2 exact URL/SHA-256 固定在 workflow；macOS arm64 从固定 archive hash 和
 Git commit 的 FFmpeg 8.1.2 官方源码构建只含 JPEG -> MPEG-4 所需能力的最小 LGPL
 sidecar。Linux x64 使用相同固定源码构建最小 LGPL sidecar，在 Ubuntu 22.04 生成
 原生 `.deb` 并完成 `apt` 安装/启动检查。不得替换为
@@ -489,8 +489,8 @@ unsigned 披露不允许省略 ad-hoc 完整性封印。
 3. Ubuntu deb 必须声明 WebKitGTK 4.1、GTK 3、AppIndicator 和 librsvg 运行时依赖，
    在干净 Ubuntu 22.04 runner 用 `apt` 安装，检查 ELF 动态库、desktop/AppStream、
    FFmpeg 资源，并在 Xvfb 中保持启动 10 秒。
-4. final job 重新读取四份 verification JSON 和安装器 hash，生成
-   `release-manifest.json`、`SHA256SUMS.txt` 和 provenance；四个 installer 集合完整
+4. final job 重新读取三份 verification JSON 和安装器 hash，生成
+   `release-manifest.json`、`SHA256SUMS.txt` 和 provenance；三个 installer 集合完整
    后才解除 draft。公开过的 tag 不允许 clobber。
 
 所有安装器文件名、Release 标题/说明和 manifest 必须显示 `UNSIGNED`。加入可信签名时必须

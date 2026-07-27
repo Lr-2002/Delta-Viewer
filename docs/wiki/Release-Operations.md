@@ -16,12 +16,11 @@ Release 正文，并在公开前回读确认版本标题存在。
 
 - `DOHC-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`。
 - `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`。
-- `DOHC-Viewer_<version>_UNSIGNED_macos-x64.dmg`。
 - `DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`。
 - `SHA256SUMS.txt` 和 `release-manifest.json`。
 - GitHub build provenance attestations。
 
-Release 标题、说明、安装器文件名、verification report 和 manifest 都必须显示 `UNSIGNED`，不得宣称 Authenticode、Developer ID、Apple notarization 或可信 Linux 包签名已完成。macOS app/main/FFmpeg 必须有本地 ad-hoc seal，但报告必须同时记录 `trustedPublisher:false`。四个构建产物全部成功后，publish job 才创建或更新 draft；远端资产名称与本地集合一致后才解除 draft。已经公开的相同 tag 不允许覆盖。
+Release 标题、说明、安装器文件名、verification report 和 manifest 都必须显示 `UNSIGNED`，不得宣称 Authenticode、Developer ID、Apple notarization 或可信 Linux 包签名已完成。macOS app/main/FFmpeg 必须有本地 ad-hoc seal，但报告必须同时记录 `trustedPublisher:false`。三个构建产物全部成功后，publish job 才创建或更新 draft；远端资产名称与本地集合一致后才解除 draft。已经公开的相同 tag 不允许覆盖。
 
 `main` 允许直接推送，但禁止删除和 force-push。Release controller 和 publish job
 只为当前运行申请 `contents: write`，其他 job 保持只读；当前 unsigned 通道不使用
@@ -29,7 +28,7 @@ GitHub App ID、private key 或 release Environment。
 
 完整代码门禁和 release workflow 回归只在 CI 对同一 commit 执行一次。CI 成功后，
 controller 仍会重新核对 main HEAD、clean checkout、版本、Changelog 和 annotated tag，
-但不会再次运行完整 `pnpm check`；四个平台从 controller 直接并行开始。CI 与每个平台
+但不会再次运行完整 `pnpm check`；三个平台从 controller 直接并行开始。CI 与每个平台
 使用按操作系统、架构、Rust 工具链和 Cargo lockfile 隔离的依赖编译缓存。缓存不包含
 应用 workspace crate、增量编译产物、安装包、封印结果或验证报告，每次 Release 仍会
 重新组装并执行全部安装、启动、资源、封印和 hash 门禁。
@@ -41,7 +40,7 @@ Windows job 固定以下内容：
 - FFmpeg static b6.1.1 中的 Gyan 6.1.1 essentials x64 binary、GPLv3 文本和 build README，各自使用 SHA-256 校验。
 - Microsoft WebView2 x64 offline installer 的 exact filestreamingservice URL 和 SHA-256，并再次验证 Microsoft Authenticode。
 
-macOS arm64/x64 job 从 FFmpeg 官方 `n8.1.2` tag 的固定 source archive SHA-256 和 Git commit 构建最小 LGPL sidecar，只启用 JPEG 输入、MPEG-4 编码和 MP4 输出。构建与 staging 会拒绝 `--enable-nonfree`、错误架构和非系统动态库，并执行真实 JPEG 到 MP4 smoke。FFmpeg 构建后先 ad-hoc 签名；app 组装完成后重新封印 FFmpeg、主程序和整个 bundle，并把封印后的 FFmpeg hash 写回 provenance manifest。
+macOS arm64 job 从 FFmpeg 官方 `n8.1.2` tag 的固定 source archive SHA-256 和 Git commit 构建最小 LGPL sidecar，只启用 JPEG 输入、MPEG-4 编码和 MP4 输出。构建与 staging 会拒绝 `--enable-nonfree`、错误架构和非系统动态库，并执行真实 JPEG 到 MP4 smoke。FFmpeg 构建后先 ad-hoc 签名；app 组装完成后重新封印 FFmpeg、主程序和整个 bundle，并把封印后的 FFmpeg hash 写回 provenance manifest。
 
 Ubuntu deb job 固定运行在 Ubuntu 22.04 x86_64，从同一 FFmpeg `n8.1.2` 固定源码构建最小 LGPL sidecar。Tauri 生成原生 deb，完成 `apt` 安装和启动验证后上传 deb/report artifact。
 
@@ -59,7 +58,7 @@ GitHub macOS 15 runner 的 XProtect 服务可能返回 `Internal Xprotect Error`
 
 Ubuntu 22.04 deb job 先检查 package/version/amd64/依赖和 unsigned 状态，用 `apt` 安装实际产物，检查应用 ELF 动态库、binary、desktop、AppStream metadata、icon、FFmpeg、许可证和 provenance manifest，并在 Xvfb + D-Bus 中保持启动 10 秒。卸载测试 deb 后上传安装器和报告。任何缺失资源、动态库错误或提前退出都会阻止发布。
 
-final job 重新读取四份报告和安装器，生成 manifest/checksums/provenance；完整集合匹配后才公开 Release。hosted runner 检查不能关闭真实 Win10/Win11 断网、目标 Mac、Ubuntu 22.04 deb 实机、物理 SD 卡和 100 GB/100,000 文件验收缺口。
+final job 重新读取三份报告和安装器，生成 manifest/checksums/provenance；完整集合匹配后才公开 Release。hosted runner 检查不能关闭真实 Win10/Win11 断网、目标 Apple Silicon Mac、Ubuntu 22.04 deb 实机、物理 SD 卡和 100 GB/100,000 文件验收缺口。
 
 ## 后续签名
 
@@ -78,7 +77,7 @@ final job 重新读取四份报告和安装器，生成 manifest/checksums/prove
 2. 在本地私有标准样例上运行 `pnpm check:full`；平台变更运行对应 bundle/目标测试。
 3. 确认 staged FFmpeg、私有数据、报告和构建产物没有进入 Git。
 4. 将完整版本内容作为普通提交直接推送或合并到 `main`，不创建独立 release commit。
-5. CI 成功后由 workflow 自动创建 annotated tag、构建四个安装包并先写入 draft；四份验证全部通过后自动公开。
+5. CI 成功后由 workflow 自动创建 annotated tag、构建三个安装包并先写入 draft；三份验证全部通过后自动公开。
 6. 不手工创建、移动或覆盖版本 tag；已创建 tag 对应的代码需要修复时进入下一版本。
 
 ## Wiki 发布

@@ -6,7 +6,8 @@ and exporting it through independent format adapters without an automatic local
 episode copy.
 
 Official packaging targets Windows 10/11 x64, macOS 12 or later on Apple
-Silicon and Intel, and Ubuntu 22.04 or later on x86_64 through a native deb.
+Silicon, and Ubuntu 22.04 or later on x86_64 through a native deb. New Intel
+Mac packages are not published.
 The first field-acceptance target remains Windows. The frontend is React/TypeScript
 and the data path is implemented in Rust so
 directory scans, hashing, image checks, and exports do not block the UI.
@@ -24,7 +25,6 @@ Installers are published on [GitHub Releases](https://github.com/Lr-2002/Delta-V
 
 - `DOHC-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`
 - `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`
-- `DOHC-Viewer_<version>_UNSIGNED_macos-x64.dmg`
 - `DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`
 
 The current release channel has no trusted publisher signature. Windows can
@@ -32,7 +32,7 @@ show an unknown-publisher or SmartScreen warning. The macOS app is ad-hoc sealed
 so its nested code and resources can be verified, but it has no Developer ID or
 notarization and therefore requires Apple's one-time Gatekeeper override.
 Ubuntu 22.04+ users should use the unsigned native deb. A release is made
-public only after all four installers pass dependency, resource, install or
+public only after all three installers pass dependency, resource, install or
 mount, startup, and checksum gates. Verify
 `SHA256SUMS.txt` before use; detailed installation and usage instructions live
 in the Wiki.
@@ -328,15 +328,15 @@ explicitly unsigned; Authenticode remains a later production-hardening gate.
 version change in `package.json`, Cargo, Tauri, and Changelog is the release
 signal; the workflow creates the missing annotated `vX.Y.Z` tag with the
 repository `GITHUB_TOKEN`. Ordinary commits that keep an already released
-version do not create another release. It builds Windows x64, macOS arm64,
-macOS x64, and Ubuntu x64 on native GitHub-hosted runners. Windows uses
-reviewed, hash-pinned FFmpeg and offline WebView2 inputs. Each macOS runner
-builds a minimal LGPL FFmpeg from a pinned official source archive and commit.
+version do not create another release. It builds Windows x64, macOS arm64, and
+Ubuntu x64 on native GitHub-hosted runners. Windows uses reviewed, hash-pinned
+FFmpeg and offline WebView2 inputs. The macOS runner builds a minimal LGPL
+FFmpeg from a pinned official source archive and commit.
 The Ubuntu 22.04 runner installs and starts the generated deb.
 
 The exact commit runs the full code and release-workflow gate once in CI. After
 that succeeds, the release controller rechecks the immutable tag, main HEAD,
-versions, and Changelog without repeating the full gate, so all four native
+versions, and Changelog without repeating the full gate, so all three native
 package jobs can start immediately. CI and package jobs use isolated Cargo
 dependency caches keyed by platform, target, Rust toolchain, and Cargo inputs.
 Workspace crates, incremental outputs, installers, seals, and verification
