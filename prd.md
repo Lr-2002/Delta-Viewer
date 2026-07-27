@@ -62,6 +62,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-025 | Ubuntu 22.04+ x86_64 通过原生 `.deb` 正式分发，由 Ubuntu 22.04 runner 构建并通过 `apt` 真实安装、依赖/资源回读和 Xvfb 启动检查。该 deb 是当前唯一进入 GitHub Release 的 Ubuntu 安装包。 |
 | D-026 | 正常 UI 不再调用导入器或创建 `appLocalData/imports` 数据副本；选择源后扫描全部 session，首条直接只读检查/回放，其他 session 按需读取。源卷在使用期间必须保持挂载。 |
 | D-027 | 轨迹编号只能由 Rust 在保存标注时原子分配；前端只能选择/创建任务、编辑描述和显示编码预览，不能提交自定义轨迹编号。 |
+| D-028 | macOS AppleDouble `._*` 和 `.DS_Store` 是平台元数据，不属于采集数据；扫描统计、数据指纹、校验和显式导入统一忽略这些文件，但不得删除或修改源卡。其他非数字 JPEG 文件名仍按 `INVALID_FRAME_FILENAME` error 处理。 |
 
 ## 4. 产品目标
 
@@ -247,6 +248,7 @@ episode/
 | FR-SRC-006 | P1 | 明确显示卷类型、可移动介质状态和可用容量。 | UI 可以区分 SD 卡与普通本地目录。 | Windows/macOS 已实现，虚拟 ExFAT 识别通过；待实机验收 |
 | FR-SRC-007 | P0 | 左侧 episode 列表只负责 session 选择和进入回放。 | 单击只更新选中项，不切换主工作区；双击或聚焦后按 Enter/空格从源路径读取并检查后进入回放；选中身份始终绑定源 session。 | 已实现并通过三视口交互检查 |
 | FR-SRC-008 | P0 | 选择 SD 卡目录后自动发现全部 session。 | 扫描成功后首条记录直接只读检查并回放；其他记录显示可用状态并按需读取；正常 UI 不调用 `import_episode` 或创建数据副本。 | 已实现并通过 browser 回归 |
+| FR-SRC-009 | P0 | 忽略不属于采集数据的 macOS 文件系统元数据。 | `._*` 和 `.DS_Store` 不进入文件数、总大小、数据指纹、帧索引、校验或显式导入；源文件保持不变，其他非法 JPEG 名仍报错。 | 已实现并测试 |
 
 ### 8.2 显式导入与完整性（非正常 UI）
 
@@ -263,7 +265,7 @@ episode/
 | FR-IMP-009 | P0 | 导入前检查目标剩余空间和文件系统能力。 | 空间不足或不支持大文件时，在复制前阻止任务。 | 已实现 |
 | FR-IMP-010 | P1 | 取消/失败的 partial 目录可被识别和清理。 | 下次启动可提示清理，不会把 partial 当作 episode。 | 已实现 |
 
-Manifest `formatVersion=2`。每个文件的 `sourcePath` 保存 UTF-8 原始相对路径，`path` 保存逐组件清理后的 Windows 安全目标相对路径；若清理或大小写折叠后发生碰撞，必须在复制前阻止导入。数据集 BLAKE3 的输入序列定义为：对按原始 `sourcePath` 排序的每个文件依次写入 UTF-8 原始相对路径、单个 `0x00`、小端 `u64` 文件大小、该文件 BLAKE3 的 ASCII 十六进制文本。
+Manifest `formatVersion=2`。采集数据文件集合明确排除 macOS AppleDouble `._*` 和 `.DS_Store`；其余每个文件的 `sourcePath` 保存 UTF-8 原始相对路径，`path` 保存逐组件清理后的 Windows 安全目标相对路径。若清理或大小写折叠后发生碰撞，必须在复制前阻止导入。数据集 BLAKE3 的输入序列定义为：对按原始 `sourcePath` 排序的每个文件依次写入 UTF-8 原始相对路径、单个 `0x00`、小端 `u64` 文件大小、该文件 BLAKE3 的 ASCII 十六进制文本。
 
 上述导入契约继续作为压力验收能力保留，但正常用户工作流直接从源路径只读检查、回放和导出。历史 `appLocalData/imports` 副本不会自动删除。
 
@@ -300,7 +302,7 @@ Issue code 和严重级别：
 | `TIMESTAMP_NOT_MONOTONIC` | error | 状态时间戳没有递增 |
 | `TIMESTAMP_GAP` | warning | 时间间隔超过中位数 3 倍 |
 | `EMPTY_STREAM` | error | 图像流为空或缺失 |
-| `INVALID_FRAME_FILENAME` | error | JPEG 文件名不能映射为非负十进制帧号 |
+| `INVALID_FRAME_FILENAME` | error | 排除 `._*` 平台元数据后，JPEG 文件名仍不能映射为非负十进制帧号 |
 | `DUPLICATE_FRAME_ID` | error | 多个 JPEG 文件名映射到同一帧号 |
 | `MISSING_FRAMES` | warning | 图像 frame ID 范围内缺帧 |
 | `FRAME_ID_MISMATCH` | error | 数量相同时图像和状态 frame ID 集合不一致 |

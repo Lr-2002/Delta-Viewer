@@ -967,6 +967,27 @@ mod tests {
     }
 
     #[test]
+    fn ignores_macos_metadata_without_hiding_invalid_frame_names() {
+        let root = valid_episode("macos-metadata", &[0]);
+        fs::write(root.join(".DS_Store"), b"finder metadata").unwrap();
+        for stream in STREAM_NAMES {
+            fs::write(root.join(stream).join("._0.jpg"), b"appledouble metadata").unwrap();
+        }
+
+        let metadata_report = report(&root);
+        assert_eq!(metadata_report.status, "ok");
+        assert!(!has_code(&metadata_report, "INVALID_FRAME_FILENAME"));
+        assert!(metadata_report
+            .streams
+            .iter()
+            .all(|stream| stream.status == "ok"));
+
+        write_jpeg(&root.join("cam0/not-a-frame.jpg"), 1, 1);
+        assert_codes(&root, &["INVALID_FRAME_FILENAME"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn sampled_validation_uses_fixed_percentiles_and_full_mode_remains_available() {
         assert_eq!(sampled_frame_indexes(196), vec![2, 49, 98, 142, 193]);
         assert_eq!(sampled_frame_indexes(10), vec![0, 2, 5, 7, 9]);
@@ -1018,6 +1039,10 @@ mod tests {
     #[test]
     fn scan_load_and_validation_leave_the_source_unchanged() {
         let root = valid_episode("source-read-only", &[0, 1]);
+        fs::write(root.join(".DS_Store"), b"finder metadata").unwrap();
+        for stream in STREAM_NAMES {
+            fs::write(root.join(stream).join("._0.jpg"), b"appledouble metadata").unwrap();
+        }
         let cancelled = AtomicBool::new(false);
         let before = tree_digest(&root);
 
@@ -1101,8 +1126,14 @@ mod tests {
     }
 
     fn tree_digest(root: &std::path::Path) -> String {
-        let cancelled = AtomicBool::new(false);
-        let files = crate::source::collect_files(root, &cancelled).unwrap();
+        let mut files = walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| entry.into_path())
+            .collect::<Vec<_>>();
+        files.sort();
         let mut hasher = blake3::Hasher::new();
         for path in files {
             let relative = path.strip_prefix(root).unwrap().to_string_lossy();

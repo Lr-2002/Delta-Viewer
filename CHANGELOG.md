@@ -7,6 +7,9 @@ after `main` CI succeeds for a coordinated version change.
 
 - Made a unique, dated, non-empty `CHANGELOG.md` entry mandatory for every
   release and publish that curated entry directly in the GitHub Release notes.
+- Ignore macOS AppleDouble `._*` and `.DS_Store` metadata consistently during
+  source statistics, fingerprinting, frame validation, and explicit imports,
+  while retaining errors for actual malformed JPEG frame names.
 
 ## 0.17.4 - 2026-07-27
 

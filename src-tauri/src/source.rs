@@ -8,6 +8,7 @@ use blake3::Hasher;
 use image::ImageReader;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -198,7 +199,7 @@ pub fn collect_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathB
     for entry in WalkDir::new(root).follow_links(false) {
         check_cancelled(cancelled)?;
         let entry = entry.map_err(|error| AppError::Message(error.to_string()))?;
-        if entry.file_type().is_file() {
+        if entry.file_type().is_file() && !is_platform_metadata_file_name(entry.file_name()) {
             files.push(entry.path().to_path_buf());
         }
     }
@@ -420,6 +421,9 @@ pub fn collect_stream_files(
         if !entry.file_type()?.is_file() {
             continue;
         }
+        if is_platform_metadata_file_name(&entry.file_name()) {
+            continue;
+        }
         let path = entry.path();
         if !path
             .extension()
@@ -453,6 +457,10 @@ pub fn collect_stream_files(
         invalid_names,
         duplicate_ids,
     })
+}
+
+fn is_platform_metadata_file_name(name: &OsStr) -> bool {
+    name == OsStr::new(".DS_Store") || name.to_str().is_some_and(|name| name.starts_with("._"))
 }
 
 pub fn is_regular_file(path: &Path) -> bool {
@@ -500,7 +508,7 @@ pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use super::{collect_files, scan_episode};
+    use super::{collect_files, collect_stream_files, scan_episode};
     use super::{episode_fingerprint, read_states};
     use std::fs;
     use std::path::PathBuf;
@@ -543,6 +551,37 @@ mod tests {
         fs::write(path, b"different length").unwrap();
         let after = episode_fingerprint(&root, &cancelled).unwrap();
         assert_ne!(before, after);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ignores_macos_metadata_in_stats_streams_and_fingerprint() {
+        let root = test_output("macos-metadata");
+        let stream = root.join("cam0");
+        fs::create_dir_all(&stream).unwrap();
+        fs::write(root.join("states.jsonl"), b"state\n").unwrap();
+        fs::write(stream.join("0.jpg"), b"frame").unwrap();
+        let cancelled = AtomicBool::new(false);
+
+        let fingerprint_before = episode_fingerprint(&root, &cancelled).unwrap();
+        fs::write(root.join(".DS_Store"), b"finder metadata").unwrap();
+        fs::write(root.join("._states.jsonl"), b"appledouble state metadata").unwrap();
+        fs::write(stream.join("._0.jpg"), b"appledouble image metadata").unwrap();
+
+        let files = collect_files(&root, &cancelled).unwrap();
+        assert_eq!(files, vec![stream.join("0.jpg"), root.join("states.jsonl")]);
+        let stream_files = collect_stream_files(&root, "cam0", &cancelled).unwrap();
+        assert_eq!(stream_files.frames.len(), 1);
+        assert!(stream_files.invalid_names.is_empty());
+        let summary = scan_episode(&root, None, &cancelled).unwrap();
+        assert_eq!(summary.total_files, 2);
+        assert_eq!(summary.total_bytes, 11);
+        assert_eq!(summary.streams[0].frame_count, 1);
+        assert_eq!(
+            episode_fingerprint(&root, &cancelled).unwrap(),
+            fingerprint_before
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 

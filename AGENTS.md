@@ -96,6 +96,7 @@ React component
 - 导出 IPC 只能使用 `ValidationCache` 中与当前源目录指纹匹配的 Rust 报告；不得接受前端回传的报告或 status 作为授权。
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
 - 源目录遍历统一使用可取消的 no-follow 路径；不要重新引入会隐式跟随 symlink 的文件判断。
+- macOS AppleDouble `._*` 和 `.DS_Store` 是平台元数据，不属于采集数据；扫描、统计、指纹、校验和显式导入必须统一忽略且不得删除源文件。其他无法映射为非负十进制帧号的 JPEG 仍是 `INVALID_FRAME_FILENAME` error。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
 - 未登录时只允许账号状态、注册、登录和退出 commands；扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁。前端隐藏工作区不能替代后端门禁。
 - 内置任务和用户创建任务的校验、持久化与自动编号逻辑以 `src-tauri/src/annotations.rs` 为唯一真源。新任务只接收名称，由 Rust 生成稳定 task ID/轨迹前缀；前端不得提交或指定轨迹编号。

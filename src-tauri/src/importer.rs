@@ -507,6 +507,46 @@ mod tests {
     }
 
     #[test]
+    fn import_excludes_macos_metadata_from_manifest_and_copy() {
+        let source = test_output("macos-metadata-source");
+        let output = test_output("macos-metadata-output");
+        fs::create_dir_all(source.join("cam0")).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        fs::write(source.join("states.jsonl"), b"state\n").unwrap();
+        fs::write(source.join("cam0/0.jpg"), b"frame").unwrap();
+        fs::write(source.join(".DS_Store"), b"finder metadata").unwrap();
+        fs::write(source.join("._states.jsonl"), b"appledouble state metadata").unwrap();
+        fs::write(source.join("cam0/._0.jpg"), b"appledouble image metadata").unwrap();
+
+        let cancelled = AtomicBool::new(false);
+        let result = import_episode(&source, &output, None, &cancelled).unwrap();
+        assert_eq!(result.total_files, 2);
+        assert_eq!(result.total_bytes, 11);
+        let imported = PathBuf::from(result.destination);
+        assert!(!imported.join(".DS_Store").exists());
+        assert!(!imported.join("._states.jsonl").exists());
+        assert!(!imported.join("cam0/._0.jpg").exists());
+        let manifest: ImportManifest =
+            serde_json::from_reader(fs::File::open(imported.join(".dohc-manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            manifest
+                .files
+                .iter()
+                .map(|entry| entry.source_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cam0/0.jpg", "states.jsonl"]
+        );
+        assert_eq!(
+            verify_source_against_manifest(&source, &manifest, &cancelled).unwrap(),
+            manifest.dataset_blake3
+        );
+
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
     fn preflight_cancellation_creates_no_output() {
         let source = test_output("cancel-source");
         let output = test_output("cancel-output");
