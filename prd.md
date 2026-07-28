@@ -3,11 +3,11 @@
 | 属性 | 内容 |
 | --- | --- |
 | 产品名称 | DOHC Viewer |
-| 文档版本 | 0.20 |
-| 应用版本基线 | 0.17.6 |
+| 文档版本 | 0.21 |
+| 应用版本基线 | 0.17.7 |
 | 文档状态 | 安全 Alpha，三安装器 unsigned GitHub Release CD 与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64；Ubuntu 22.04+ x86_64 deb |
-| 文档日期 | 2026-07-27 |
+| 文档日期 | 2026-07-28 |
 | 产品负责人 | 待指定 |
 | 技术负责人 | 待指定 |
 
@@ -15,7 +15,7 @@
 
 本文定义 DOHC Viewer 的产品边界、数据契约、用户流程、功能需求、非功能需求和发布验收标准。产品、设计、开发和测试均以本文为共同基线。
 
-本文同时记录当前 `0.17.6` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
+本文同时记录当前 `0.17.7` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
 
 ## 2. 背景与问题
 
@@ -53,7 +53,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-016 | v0.13 起 warning/error 检查结果必须在后台自动生成本地审计报告；ok 不自动生成。报告只写入应用本地数据目录，不上传网络、不写源卡或 episode；同一 episode 路径和数据指纹在同一报告版本下去重。 |
 | D-017 | v0.14 起进入数据工作区前必须登录本地账号；账号不连接服务器、不提供远程权限体系，密码仅保存 Argon2id 哈希和系统随机盐。账号用于本机处理归因。 |
 | D-018 | 标注记录绑定规范化 episode 路径与数据指纹，使用本地可创建任务、可编辑任务描述和 `{prefix}-{NNN}` 轨迹编码。首个内置任务为 `close_oven`，前缀为 `oven`；新任务只输入名称，由系统生成稳定 ID/前缀；标注只写应用 local-data，并以追加修订保留处理人历史。 |
-| D-019 | 四处应用版本和完整 Changelog 条目是唯一发布信号；当前版本必须是 `CHANGELOG.md` 第一条带日期的版本记录、只能出现一次并至少包含一条具体变更，GitHub Release 正文必须直接展示该条目。`main` CI 成功后由 GitHub Actions 使用仓库 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag，并从该 clean exact tag 同时构建 Windows x64、macOS arm64 和 Ubuntu 22.04+ x64 deb 三个安装包。普通提交保持已发布版本号时跳过 Release；当前阶段允许公开显式 `UNSIGNED` 的完整集合，但标题、说明、文件名、报告和 manifest 必须一致披露。未来签名产物必须使用新版本/tag，不覆盖 unsigned 资产。 |
+| D-019 | 每个进入 `main` 的 commit 都必须是完整 release-ready 内容，使用唯一新 semver、带日期 Changelog，并在 CI 成功后由 GitHub Actions 使用仓库 `GITHUB_TOKEN` 创建精确指向该 commit 的 annotated `vX.Y.Z` tag；禁止先推普通变更再另推 release commit。当前版本必须是 `CHANGELOG.md` 第一条带日期的版本记录、只能出现一次并至少包含一条具体变更，GitHub Release 正文必须直接展示该条目，并从该 clean exact tag 同时构建 Windows x64、macOS arm64 和 Ubuntu 22.04+ x64 deb 三个安装包。Codex 默认只递增 patch `+0.0.1`，minor/major 只能按开发负责人明确指令更新；当前阶段允许公开显式 `UNSIGNED` 的完整集合，但标题、说明、文件名、报告和 manifest 必须一致披露。未来签名产物必须使用新版本/tag，不覆盖 unsigned 资产。 |
 | D-020 | 用户文档使用 GitHub Wiki；`docs/wiki` 是可审查的唯一源，由 workflow 同步，避免网页内容与代码版本分叉。 |
 | D-021 | unsigned macOS app 仍必须对 FFmpeg、主程序和完整 bundle 生成结构有效的 ad-hoc seal；发布门禁必须在 synthetic quarantine 下区分“无可信身份/未公证”的预期策略拒绝、由已知良性 control app 复现的 runner XProtect 服务错误，以及 invalid signature/damaged 的产品包结构错误。 |
 | D-022 | v0.16 起所有用户可见的扫描、导入、加载、检查和导出操作错误都要以不可覆盖的本地 JSON 记录保存；记录包含时间、操作、稳定错误码、原始消息、源路径和处理账号，界面提供最近 200 条历史回读。权限类消息统一归类为 `PERMISSION_DENIED`，不得只在顶部短暂显示。 |
@@ -351,7 +351,7 @@ Issue code 和严重级别：
 | FR-EXP-009 | P0 | 裁剪范围内独立执行导出门禁。 | 范围外逐帧 issue 不阻断；范围内或全局 error 仍阻断，warning 仍需确认。 | 已实现并测试 |
 | FR-EXP-010 | P1 | 已标注 episode 的三个 adapter 使用统一轨迹码和标注元数据。 | 输出基础名称使用轨迹码；MCAP、HDF5、LeRobot 保存任务/处理人，未标注数据兼容原名称。 | 已实现并测试 |
 | FR-EXP-011 | P1 | 登录用户可以查看本机最新标注并选择源仍可用的条目。 | 清单只由 Rust 从 `appLocalData/annotations` 回读，显示轨迹码、任务、描述、处理人、修订和源状态；前端不能提交任意源路径冒充标注。 | 已实现并测试 |
-| FR-EXP-012 | P1 | 用户可以把多条已标注完整 episode 顺序导出为同一种格式。 | 每条在导出前重新核对规范化路径和数据指纹、执行交互健康检查并写入可信缓存；warning 经一次批量确认后允许，error 或单条故障记录失败并继续；取消停止剩余条目，已完成输出保留。 | 已实现并测试 |
+| FR-EXP-012 | P1 | 用户可以把多条已标注完整 episode 顺序导出为同一种格式。 | 每条在导出前重新核对规范化路径和数据指纹、执行交互健康检查并写入可信缓存；warning 经一次批量确认后允许，error 或单条故障记录失败并继续；每条失败结果写入本机不可覆盖日志并返回路径，成功结果可直接定位输出；取消停止剩余条目，已完成输出保留。 | 已实现并测试 |
 
 #### 8.5.1 MCAP 契约
 
@@ -516,7 +516,7 @@ task, phase, current, total, bytesDone, totalBytes, currentPath, elapsedMs
 
 - 从本机标注目录显示每个 episode 的最新修订；源断开的条目保持可见但不可选择。
 - 提供全选可用项、统一 MCAP/HDF5/LeRobot 格式和单个目标目录，不允许前端修改标注绑定的源路径。
-- 每条完整 episode 在后端顺序重新检查和导出；结果逐条显示成功路径或失败原因，可直接在文件管理器中定位成功输出。
+- 每条完整 episode 在后端顺序重新检查和导出；成功结果提供“打开文件所在位置”，失败结果显示错误内容并提供独立失败日志及其本机位置。
 - 批量取消后显示未处理数量，并明确保留取消前已经完成且通过回读的输出。
 
 ## 11. 文件系统与 exFAT 约束
@@ -574,7 +574,8 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 - `package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 版本必须一致。
 - 每次 Release 必须有唯一、带合法日期且非空的当前版本 Changelog；Release 正文从该条目生成并直接展示具体变更，不能用自动 commit 列表或 compare 链接代替。
-- 版本变更是唯一 Release 信号；完整版本内容作为普通开发提交进入 `main`，不创建独立 release commit，也不手工创建或推送版本 tag。
+- 每个进入 `main` 的 commit 都必须同时包含完整版本内容，不能创建独立 release commit；CI 成功后由 workflow 自动创建精确指向该 commit 的 annotated tag，不手工创建或推送版本 tag。
+- Codex 默认将 patch 位连续增加 1（`X.Y.Z -> X.Y.(Z+1)`）；minor、major 或跳号必须由开发负责人明确指定。
 - Manifest `format_version`、HDF5 `format_version` 和产品 semver 独立管理。
 - LeRobot `codebase_version` 明确固定为 v2.1，升级需要新 adapter 行为和兼容性测试。
 
@@ -627,7 +628,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 | AT-029 | 对 macOS Release app 添加 quarantine 并执行分发策略检查 | app/main/FFmpeg 的 nested code 与 sealed resources 严格校验通过；策略报告 ad-hoc identity/missing notary ticket，或内部 XProtect 错误被独立最小 control app 同样复现并显式记录；不出现产品独有 XProtect、invalid signature、missing resources 或 damaged |
 | AT-030 | 检查 Linux 打包配置和 Release 产物集合 | 仓库没有 Flatpak manifest、构建或验证脚本；Linux 打包契约只接受 Ubuntu 22.04+ x86_64 deb，Release 汇总发现 Flatpak 产物时拒绝发布 |
 | AT-031 | 在干净 Ubuntu 22.04 CI 用 `apt` 安装原生 deb | package/version/amd64/依赖正确，无 deb 签名声明；应用 binary、desktop、metainfo、icon、FFmpeg/许可证/manifest 完整且动态库无缺失，并在 Xvfb + D-Bus 中保持运行 10 秒 |
-| AT-032 | 本机有源断开、健康状态 error、warning 和通过的已标注数据，再执行批量 MCAP 导出 | 清单标记断开的源；后端请求仍逐条校验，断开/error 项返回失败，warning 经一次确认后与通过项完成导出和回读；取消中止当前未完成项、不启动后续条目，且已完成输出保留 |
+| AT-032 | 本机有源断开、健康状态 error、warning 和通过的已标注数据，再执行批量 MCAP 导出 | 清单标记断开的源；后端请求仍逐条校验，断开/error 项返回失败且各自生成可定位的本机失败日志，warning 经一次确认后与通过项完成导出和回读并可定位输出；取消中止当前未完成项、不启动后续条目，且已完成输出保留 |
 
 ## 14. 当前实现状态
 
@@ -891,6 +892,12 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 批量命令只接受 episode ID，在后端重新解析可信标注、规范化源路径、核对数据指纹并运行健康检查；不从前端接受源路径或健康报告作为授权。
 - 所有条目共用目标目录和 MCAP/HDF5/LeRobot 格式，按顺序导出完整轨迹；单条失败继续，取消中止当前未完成项、停止后续队列并保留已发布结果。
 - 标注仅保存任务、轨迹码、处理人、源路径和指纹，不复制源 JPEG 或状态数据；源卷断开或内容变化时该条目必须失败。
+
+### 14.31 `0.17.7` 批量导出失败日志与输出定位
+
+- 每条批量失败在 Rust 后端写入应用本地 `reports/operation-errors` 独立 JSON 日志，并在结果 IPC 中返回日志路径。
+- 批量结果页可展开失败日志、定位日志文件；成功结果提供“打开文件所在位置”操作。
+- 增加 Tauri mock 与 Rust 回归测试，覆盖一条批量任务中成功/失败条目的逐条结果和定位动作。
 
 ## 15. 里程碑
 

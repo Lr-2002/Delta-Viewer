@@ -520,6 +520,7 @@ export async function exportAnnotatedEpisodes(
         validationStatus: null,
         result: null,
         error: `ANNOTATION_NOT_FOUND: 找不到本地标注 ${episodeId}`,
+        errorLogPath: null,
       });
       continue;
     }
@@ -532,6 +533,7 @@ export async function exportAnnotatedEpisodes(
         validationStatus: "warning",
         result: null,
         error: "EXPORT_WARNING_CONFIRMATION_REQUIRED: 请确认数据警告后再导出",
+        errorLogPath: null,
       });
       continue;
     }
@@ -551,6 +553,7 @@ export async function exportAnnotatedEpisodes(
       validationStatus: "warning",
       result,
       error: null,
+      errorLogPath: null,
     });
   }
   const exported = items.filter((item) => item.result !== null);

@@ -5,7 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const OPERATION_ERROR_FORMAT_VERSION: u32 = 1;
@@ -49,8 +49,11 @@ pub fn record_error(
 
     let history_dir = history_dir(data_root);
     fs::create_dir_all(&history_dir)?;
-    let file_name = format!("{occurred_at_ms}-{operation}-{}.json", &id[..16]);
-    let output = history_dir.join(&file_name);
+    let output = record_path(data_root, &record);
+    let file_name = output
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AppError::Message("操作错误日志路径无效".into()))?;
     let partial = history_dir.join(format!(".{file_name}.partial-{nonce}"));
     let result = (|| -> AppResult<()> {
         let mut options = OpenOptions::new();
@@ -75,6 +78,14 @@ pub fn record_error(
         return Err(error);
     }
     Ok(record)
+}
+
+pub fn record_path(data_root: &Path, record: &OperationErrorRecord) -> PathBuf {
+    let id_prefix = record.id.get(..16).unwrap_or(&record.id);
+    history_dir(data_root).join(format!(
+        "{}-{}-{id_prefix}.json",
+        record.occurred_at_ms, record.operation
+    ))
 }
 
 pub fn list_errors(data_root: &Path) -> AppResult<Vec<OperationErrorRecord>> {

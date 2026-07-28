@@ -177,6 +177,7 @@ if (!browserExecutable) {
     await page.getByRole("button", { name: "选择目录并批量导出" }).click();
     await page.locator(".batch-result").waitFor();
     assert.match(await page.locator(".batch-result").innerText(), /成功 1 · 失败 0/);
+    await page.getByRole("button", { name: "打开文件所在位置" }).waitFor();
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
       true,

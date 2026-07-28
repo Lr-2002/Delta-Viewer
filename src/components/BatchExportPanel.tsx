@@ -1,13 +1,16 @@
+import { useState } from "react";
 import {
   Bot,
   Check,
   CircleAlert,
   Database,
   FileArchive,
+  FileText,
   FolderOpen,
   FolderOutput,
   LoaderCircle,
   RefreshCw,
+  X,
 } from "lucide-react";
 import { formatBytes, shortPath } from "../lib/format";
 import type {
@@ -61,6 +64,10 @@ export function BatchExportPanel({
   const allAvailableSelected = availableItems.length > 0
     && availableItems.every((item) => selected.has(item.annotation.episodeId));
   const taskLabels = new Map(tasks.map((task) => [task.id, task.label]));
+  const [selectedFailureId, setSelectedFailureId] = useState<string | null>(null);
+  const selectedFailure = result?.items.find((item) => (
+    item.status === "failed" && item.episodeId === selectedFailureId
+  )) ?? null;
 
   return (
     <div className="batch-export-view">
@@ -197,27 +204,83 @@ export function BatchExportPanel({
           <div className="batch-result-list">
             {result.items.map((item) => (
               <div className={`batch-result-row result-${item.status}`} key={item.episodeId}>
-                {item.status === "exported" ? <Check size={15} /> : <CircleAlert size={15} />}
-                <strong>{item.trajectoryCode}</strong>
-                <span title={item.result?.outputPath ?? item.error ?? undefined}>
-                  {item.result
-                    ? shortPath(item.result.outputPath, 72)
-                    : item.error ?? "导出失败"}
+                <span className="batch-result-status-icon">
+                  {item.status === "exported" ? <Check size={15} /> : <CircleAlert size={15} />}
                 </span>
-                {item.result ? (
-                  <button
-                    className="icon-button"
-                    type="button"
-                    onClick={() => onReveal(item.result?.outputPath ?? "")}
-                    title="在文件管理器中显示"
-                    aria-label={`显示 ${item.trajectoryCode} 导出结果`}
-                  >
-                    <FolderOpen size={15} />
-                  </button>
-                ) : <span />}
+                <strong>{item.trajectoryCode}</strong>
+                <div className="batch-result-copy">
+                  <span title={item.result?.outputPath ?? item.error ?? undefined}>
+                    {item.result
+                      ? shortPath(item.result.outputPath, 72)
+                      : item.error ?? "导出失败"}
+                  </span>
+                  {item.errorLogPath ? (
+                    <small title={item.errorLogPath}>日志：{shortPath(item.errorLogPath, 72)}</small>
+                  ) : null}
+                </div>
+                <div className="batch-result-actions">
+                  {item.result ? (
+                    <button
+                      className="button button-secondary batch-result-action"
+                      type="button"
+                      onClick={() => onReveal(item.result?.outputPath ?? "")}
+                      title="打开导出文件所在位置"
+                    >
+                      <FolderOpen size={14} />
+                      <span>打开文件所在位置</span>
+                    </button>
+                  ) : (
+                    <button
+                      className="button button-secondary batch-result-action"
+                      type="button"
+                      onClick={() => setSelectedFailureId(item.episodeId)}
+                      aria-label={`查看 ${item.trajectoryCode} 失败日志`}
+                    >
+                      <FileText size={14} />
+                      <span>查看失败日志</span>
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
+          {selectedFailure ? (
+            <section className="batch-failure-log" aria-label={`${selectedFailure.trajectoryCode} 失败日志`}>
+              <header>
+                <div>
+                  <strong>{selectedFailure.trajectoryCode} · 失败日志</strong>
+                  <span title={selectedFailure.sourcePath}>{shortPath(selectedFailure.sourcePath, 80)}</span>
+                </div>
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => setSelectedFailureId(null)}
+                  title="关闭失败日志"
+                  aria-label="关闭失败日志"
+                >
+                  <X size={14} />
+                </button>
+              </header>
+              <code>{selectedFailure.error ?? "导出失败"}</code>
+              <footer>
+                <span title={selectedFailure.errorLogPath ?? undefined}>
+                  {selectedFailure.errorLogPath
+                    ? shortPath(selectedFailure.errorLogPath, 88)
+                    : "失败日志文件未生成"}
+                </span>
+                {selectedFailure.errorLogPath ? (
+                  <button
+                    className="button button-secondary batch-log-reveal"
+                    type="button"
+                    onClick={() => onReveal(selectedFailure.errorLogPath ?? "")}
+                  >
+                    <FolderOpen size={14} />
+                    <span>打开日志所在位置</span>
+                  </button>
+                ) : null}
+              </footer>
+            </section>
+          ) : null}
         </section>
       ) : null}
     </div>

@@ -17,6 +17,8 @@
 11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录，三个 adapter 必须使用同一范围。
 12. 账号、登录会话和 episode 标注是纯本地能力。不得把账号、密码、处理人或标注发送到网络；所有数据 command 必须在 Rust 中验证当前登录会话。
 13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 Ubuntu 22.04+ x86_64 原生 deb 三个可安装产物；不再构建或发布 macOS x64。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
+14. 自 `v0.17.6` 之后，仓库实际默认分支 `main`（口头所称 `master`）不得保留没有对应版本 tag 的独立提交。每个进入 `main` 的 commit 都必须是完整的发布提交：同一 commit 包含全部代码/文档变更、四处一致且唯一的新 semver，以及带日期的 Changelog；CI 成功后必须由发布 workflow 创建精确指向该 commit 的 annotated `vX.Y.Z` tag。禁止先推功能、修复、文档、CI 或配置 commit，再另推 version/release commit；除自动 tag 尚在运行的短暂 pending 状态外，`main` 必须保持一 commit 对应一 tag。
+15. Codex 和其他自动化 agent 在没有收到开发负责人明确版本指令时，只能把当前 semver 的 patch 位连续增加 1（即 `+0.0.1`），不得跳号，也不得根据改动规模自行提升 minor 或 major。minor（例如 `0.17.x -> 0.18.0`）及 major 版本只能按开发负责人明确指定的版本更新；提升 minor 或 major 时 patch 归零。
 
 ## 2. 仓库结构
 
@@ -455,13 +457,15 @@ pnpm tauri:build
 
 `.github/workflows/release.yml` 在 `main` 的 CI 成功后运行。四处应用版本和带日期的
 Changelog 条目是唯一发布信号；当对应的 `vX.Y.Z` 不存在时，controller 使用当前
-仓库的 `GITHUB_TOKEN` 自动创建 annotated tag。普通提交保持已发布版本号时跳过
-Release，不要求独立 release commit、手工 tag、GitHub App 凭据或 release
-Environment。完整 `pnpm check` 和 release workflow 回归只在 CI 对同一 commit 运行
-一次；controller 再验证 main HEAD、clean checkout、annotated tag、Changelog 和四处
-应用版本后，三个平台直接并行构建，不得在 CD 中重复完整 CI。Windows x64、macOS
-arm64 和 Ubuntu x64 在原生 runner 上构建；所有 job 使用锁定 commit SHA
-的 Actions，并固定 Node 22、pnpm 10.12.1 和 Rust 1.97.1。
+仓库的 `GITHUB_TOKEN` 自动创建 annotated tag。自 `v0.17.6` 之后，不再允许保持已发布
+版本号的普通 commit 进入 `main`；代码、修复、文档、CI 和配置变更必须先在非 `main`
+分支或本地整理，并与新版本号及 Changelog 合并为一个 release-ready commit。不存在
+“功能 commit + release commit”的两步发布轨迹，也不要求手工 tag、GitHub App 凭据或
+release Environment。完整 `pnpm check` 和 release workflow 回归只在 CI 对同一
+commit 运行一次；controller 再验证 main HEAD、clean checkout、annotated tag、
+Changelog 和四处应用版本后，三个平台直接并行构建，不得在 CD 中重复完整 CI。
+Windows x64、macOS arm64 和 Ubuntu x64 在原生 runner 上构建；所有 job 使用锁定
+commit SHA 的 Actions，并固定 Node 22、pnpm 10.12.1 和 Rust 1.97.1。
 
 CI 和三个平台使用固定 commit 的 `Swatinem/rust-cache` v2.9.1 缓存 Cargo 依赖编译
 结果。cache key 必须按 CI/平台/目标架构隔离，并包含 action 自动计算的 Rust 工具链、
@@ -529,14 +533,23 @@ GitHub Wiki，不直接在网页维护分叉版本。
   GitHub Actions 按发布契约自动创建 tag 和 Release。
 - 修改行为时同步更新相关文档；不要把“已实现”状态提前写入 PRD。
 
-`main` 允许直接推送，但禁止删除和 force-push；CI 仍是自动发布的前置条件。创建版本时必须：
+`main` 允许直接推送，但只允许推送 release-ready commit，并禁止删除和 force-push。
+任何进入 `main` 的改动都必须分配新版本；版本号不是孤立字段，而是 commit、Changelog、
+annotated tag 和 Release 的同一身份。自动 tag 尚未创建时，该 HEAD 仅处于 pending 状态，
+此时不得再向 `main` 推送或合并下一条 commit。CI 仍是自动发布的前置条件。创建版本时必须：
+
+默认版本选择为 patch 连续加一：`X.Y.Z -> X.Y.(Z+1)`，例如 `0.17.6 -> 0.17.7`。
+Codex 不得自行跳过 patch，也不得因功能大小、兼容性或发布内容推断 minor/major 升级。
+只有开发负责人明确要求 `0.Y.Z -> 0.(Y+1).0`、major 升级或指定确切版本时，才按该
+指令更新；minor 或 major 变化后 patch 从 `0` 开始。
 
 1. 保持 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 的 semver 一致。
 2. 每次 Release 必须在 `CHANGELOG.md` 新增唯一、带合法日期且至少包含一条具体变更的当前版本条目；当前版本必须是第一条带日期的版本记录，`Unreleased` 或 `TBD` 不能替代。GitHub Release 正文必须直接展示该条目，不能只放 commit compare 链接。同步更新 PRD 实现状态。
 3. 至少运行 `pnpm check:full`；平台包变更还要运行相应 bundle 检查，并确认私有数据、staged FFmpeg、报告和构建产物未暂存。
-4. 将完整版本内容作为普通开发提交直接推送或合并到 `main`，不创建独立 release commit。
+4. 在非 `main` 分支或本地工作区整理全部改动；将代码、修复、文档、CI、配置、版本号和 Changelog 合并为一个 release-ready commit 后，才可一次性推送或合并到 `main`。不得创建独立的功能 commit 或独立的 release commit。
 5. CI 成功后由 `release.yml` 自动创建 annotated `vX.Y.Z` tag；不要手工创建、移动或覆盖版本 tag。
-6. 测试失败、报告 failed、版本不一致或工作区混入无关文件时不得发布。
+6. 确认 annotated tag 精确指向该 `main` commit 后，才可开始下一个版本；一个 tag 不得覆盖多个 commit，一个 commit 也不得复用旧版本 tag。
+7. 测试失败、报告 failed、版本不一致或工作区混入无关文件时不得发布。自动 tag pending 或失败时必须冻结 `main` 并先处理该版本，不得追加无版本提交绕过。
 
 自动 tag 创建后，GitHub Release 只能由 `release.yml` 生成。不要手工上传或只发布单一平台；
 当前 unsigned channel 必须保留全部警告和文件名标记。CD 因依赖或 smoke 失败时可重跑

@@ -411,6 +411,7 @@ pub struct BatchExportItemResult {
     pub validation_status: Option<String>,
     pub result: Option<ExportResult>,
     pub error: Option<String>,
+    pub error_log_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

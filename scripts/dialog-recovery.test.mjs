@@ -6,6 +6,7 @@ import { createServer } from "vite";
 import { chromium } from "playwright-core";
 
 const requireBrowser = process.env.DIALOG_RECOVERY_REQUIRE_BROWSER === "1";
+const dialogViewport = parseViewport(process.env.DIALOG_RECOVERY_VIEWPORT) ?? { width: 1440, height: 920 };
 const configuredBrowser = process.env.PLAYWRIGHT_BROWSER_EXECUTABLE
   ?? process.env.CHROME_BIN
   ?? process.env.CHROME_PATH;
@@ -53,7 +54,7 @@ if (!browserExecutable && requireBrowser) {
   });
 
   test("native export dialogs recover rejected calls and preserve successful export behavior", { timeout: 30_000 }, async () => {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+    const page = await browser.newPage({ viewport: dialogViewport });
     const consoleErrors = [];
     const pageErrors = [];
     const failedRequests = [];
@@ -68,7 +69,13 @@ if (!browserExecutable && requireBrowser) {
       const listeners = new Map();
       const failures = [];
       const records = [];
-      const calls = { exportEpisode: 0, exportValidationReport: 0, importEpisode: 0 };
+      const calls = {
+        exportEpisode: 0,
+        exportValidationReport: 0,
+        exportAnnotatedEpisodes: 0,
+        importEpisode: 0,
+        revealedPaths: [],
+      };
       let callbackId = 1;
       let recordId = 1;
       const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JrJ4AAAAASUVORK5CYII=";
@@ -119,6 +126,22 @@ if (!browserExecutable && requireBrowser) {
           status: "ok",
         })),
       };
+      const annotatedEpisode = (episodeId, trajectoryCode, episodeRoot) => ({
+        annotation: {
+          formatVersion: 1,
+          episodeId,
+          episodeRoot,
+          episodeFingerprint: `fingerprint-${episodeId}`,
+          trajectoryCode,
+          taskId: "task",
+          taskDescription: "测试批量导出",
+          processedBy: { username: "tester", displayName: "Tester" },
+          revision: 1,
+          createdAtMs: 1,
+          updatedAtMs: 1,
+        },
+        sourceAvailable: true,
+      });
 
       window.__dialogRecoveryMock = {
         calls,
@@ -159,12 +182,21 @@ if (!browserExecutable && requireBrowser) {
           if (command === "plugin:dialog|message") {
             return args.buttons?.OkCancelCustom?.[0] ?? args.buttons?.OkCustom ?? "Ok";
           }
+          if (command === "plugin:opener|reveal_item_in_dir") {
+            calls.revealedPaths.push(...args.paths);
+            return null;
+          }
           switch (command) {
             case "get_auth_status":
               return { hasAccounts: true, currentUser: { username: "tester", displayName: "Tester" } };
             case "list_task_definitions":
             case "list_operation_errors":
               return [];
+            case "list_annotated_episodes":
+              return [
+                annotatedEpisode("episode-success", "task-001", "/source/episode-success"),
+                annotatedEpisode("episode-failed", "task-002", "/source/episode-failed"),
+              ];
             case "record_operation_error": {
               const record = {
                 formatVersion: 1,
@@ -233,6 +265,50 @@ if (!browserExecutable && requireBrowser) {
                 totalBytes: 42,
                 elapsedMs: 1,
               };
+            case "export_annotated_episodes":
+              calls.exportAnnotatedEpisodes += 1;
+              return {
+                format: args.request.format,
+                destinationParent: args.request.destinationParent,
+                requestedCount: 2,
+                exportedCount: 1,
+                failedCount: 1,
+                cancelled: false,
+                totalFiles: 1,
+                totalBytes: 42,
+                elapsedMs: 2,
+                items: [
+                  {
+                    episodeId: "episode-success",
+                    trajectoryCode: "task-001",
+                    sourcePath: "/source/episode-success",
+                    status: "exported",
+                    validationStatus: "ok",
+                    result: {
+                      format: args.request.format,
+                      outputPath: "/destination/task-001.mcap",
+                      trajectoryCode: "task-001",
+                      totalFiles: 1,
+                      totalBytes: 42,
+                      elapsedMs: 1,
+                      range: { startFrame: 0, endFrame: 0 },
+                      stateCount: 1,
+                    },
+                    error: null,
+                    errorLogPath: null,
+                  },
+                  {
+                    episodeId: "episode-failed",
+                    trajectoryCode: "task-002",
+                    sourcePath: "/source/episode-failed",
+                    status: "failed",
+                    validationStatus: "error",
+                    result: null,
+                    error: "FRAME_ID_MISMATCH: 图像帧集合不一致",
+                    errorLogPath: "/app-data/reports/operation-errors/task-002.json",
+                  },
+                ],
+              };
             default:
               return null;
           }
@@ -286,6 +362,29 @@ if (!browserExecutable && requireBrowser) {
       assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.exportEpisode), 1);
       assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.exportValidationReport), 1);
       assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.importEpisode), 0);
+
+      await page.getByRole("button", { name: "批量", exact: true }).click();
+      await page.getByText("task-001", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "选择目录并批量导出" }).click();
+      await page.locator(".batch-result").waitFor();
+      assert.match(await page.locator(".batch-result").innerText(), /成功 1 · 失败 1/);
+      await page.getByRole("button", { name: "查看 task-002 失败日志" }).click();
+      const failureLog = page.getByRole("region", { name: "task-002 失败日志" });
+      await failureLog.waitFor();
+      assert.match(await failureLog.innerText(), /FRAME_ID_MISMATCH/);
+      assert.match(await failureLog.innerText(), /task-002\.json/);
+      await failureLog.getByRole("button", { name: "打开日志所在位置" }).click();
+      await page.getByRole("button", { name: "打开文件所在位置" }).click();
+      await page.waitForFunction(() => window.__dialogRecoveryMock.calls.revealedPaths.length === 2);
+      assert.deepEqual(await page.evaluate(() => window.__dialogRecoveryMock.calls.revealedPaths), [
+        "/app-data/reports/operation-errors/task-002.json",
+        "/destination/task-001.mcap",
+      ]);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+      assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.calls.exportAnnotatedEpisodes), 1);
+      if (process.env.DIALOG_RECOVERY_SCREENSHOT) {
+        await page.screenshot({ path: process.env.DIALOG_RECOVERY_SCREENSHOT, fullPage: true });
+      }
       assert.deepEqual(pageErrors, []);
       assert.deepEqual(consoleErrors, []);
       assert.deepEqual(failedRequests, []);
@@ -319,4 +418,11 @@ function findAvailablePort() {
       probe.close((error) => (error ? reject(error) : resolve(address.port)));
     });
   });
+}
+
+function parseViewport(value) {
+  if (!value) return null;
+  const match = /^(\d+)x(\d+)$/.exec(value);
+  if (!match) throw new Error(`Invalid DIALOG_RECOVERY_VIEWPORT: ${value}`);
+  return { width: Number(match[1]), height: Number(match[2]) };
 }

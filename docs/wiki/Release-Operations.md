@@ -3,7 +3,8 @@
 Release CD 定义在 `.github/workflows/release.yml`。`main` 的 CI 成功后，workflow
 检查 `package.json`、`Cargo.toml`、`Cargo.lock`、Tauri config 和完整 Changelog
 版本是否一致；当对应的 `vX.Y.Z` 不存在时，使用仓库 `GITHUB_TOKEN` 自动创建
-annotated tag。普通提交保持已发布版本号时不重复发布。
+精确指向当前 `main` commit 的 annotated tag。每个进入 `main` 的 commit 都必须是
+完整 release-ready 版本内容，不允许先推普通变更再另推 release commit。
 
 每个 Release 都必须在 `CHANGELOG.md` 中有唯一、带合法日期、至少包含一条具体
 变更的当前版本条目。当前版本必须是第一条带日期的版本记录；`Unreleased`、空条目、
@@ -73,10 +74,10 @@ final job 重新读取三份报告和安装器，生成 manifest/checksums/prove
 
 ## 版本发布门槛
 
-1. 更新四处应用版本，并在 `CHANGELOG.md` 顶部新增唯一、带日期且非空的版本条目；同步更新 PRD 和用户文档。
+1. 默认将 patch 位增加 `+0.0.1`；minor/major 或跳号必须由开发负责人明确指定。更新四处应用版本，并在 `CHANGELOG.md` 顶部新增唯一、带日期且非空的版本条目；同步更新 PRD 和用户文档。
 2. 在本地私有标准样例上运行 `pnpm check:full`；平台变更运行对应 bundle/目标测试。
 3. 确认 staged FFmpeg、私有数据、报告和构建产物没有进入 Git。
-4. 将完整版本内容作为普通提交直接推送或合并到 `main`，不创建独立 release commit。
+4. 将完整版本内容作为一个 release-ready commit 直接推送或合并到 `main`，不创建独立功能 commit 或 release commit；tag pending 期间冻结 `main`。
 5. CI 成功后由 workflow 自动创建 annotated tag、构建三个安装包并先写入 draft；三份验证全部通过后自动公开。
 6. 不手工创建、移动或覆盖版本 tag；已创建 tag 对应的代码需要修复时进入下一版本。
 

@@ -225,6 +225,7 @@ export interface BatchExportItemResult {
   validationStatus: "ok" | "warning" | "error" | null;
   result: ExportResult | null;
   error: string | null;
+  errorLogPath: string | null;
 }
 
 export interface BatchExportResult {

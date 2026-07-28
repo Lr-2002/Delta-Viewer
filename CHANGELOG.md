@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.7 - 2026-07-28
+
+- Added per-item failure logs for batch export, with an in-app error view and a
+  direct action to reveal each log in the local file manager.
+- Added an explicit “打开文件所在位置” action for every successful batch
+  export, and documented the one-commit/one-tag release workflow.
+
 ## 0.17.6 - 2026-07-27
 
 - Retired macOS Intel/x64 from future releases; CD now publishes Windows x64,

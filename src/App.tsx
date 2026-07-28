@@ -615,7 +615,16 @@ function App() {
       );
       if (!isCurrentOperation(owner)) return;
       setBatchExportResult(result);
-      await persistBatchFailures(result, owner);
+      if (isTauriRuntime()) {
+        try {
+          const history = await listOperationErrors();
+          if (isCurrentOperation(owner)) setOperationErrors(history);
+        } catch (historyError) {
+          console.error("Failed to refresh batch export error history", historyError);
+        }
+      } else {
+        await persistBatchFailures(result, owner);
+      }
       if (!isCurrentOperation(owner)) return;
       if (result.cancelled) {
         setNotice(`批量导出已停止：已成功 ${result.exportedCount} 条，已完成的输出保留。`);
@@ -632,7 +641,12 @@ function App() {
   async function persistBatchFailures(result: BatchExportResult, owner: OperationToken) {
     const recorded: OperationErrorRecord[] = [];
     for (const item of result.items) {
-      if (item.status !== "failed" || !item.error || !isCurrentOperation(owner)) continue;
+      if (
+        item.status !== "failed"
+        || !item.error
+        || item.errorLogPath
+        || !isCurrentOperation(owner)
+      ) continue;
       try {
         recorded.push(await recordOperationError({
           operation: "export_annotated_episodes",

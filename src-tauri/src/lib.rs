@@ -583,7 +583,7 @@ async fn export_annotated_episodes(
     request: BatchExportCommandRequest,
     operation_id: u64,
 ) -> Result<BatchExportResult, String> {
-    auth.require_user().map_err(|error| error.to_string())?;
+    let user = auth.require_user().map_err(|error| error.to_string())?;
     let destination_parent = request.destination_parent.clone();
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
@@ -605,6 +605,7 @@ async fn export_annotated_episodes(
             data_root: &data_root,
             reports_dir: &reports_dir,
             cache: &cache,
+            processed_by: user,
             app: Some(&app),
             cancelled: &cancelled,
         })

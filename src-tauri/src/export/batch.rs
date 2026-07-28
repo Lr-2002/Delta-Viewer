@@ -3,8 +3,9 @@ use crate::annotations;
 use crate::error::{AppError, AppResult};
 use crate::model::{
     BatchExportCommandRequest, BatchExportItemResult, BatchExportResult, EpisodeAnnotation,
-    ExportResult, ProgressPayload,
+    ExportResult, ProgressPayload, RecordOperationErrorRequest, UserIdentity,
 };
+use crate::operation_history;
 use crate::source;
 use crate::validation;
 use crate::validation_cache::ValidationCache;
@@ -20,6 +21,7 @@ pub(crate) struct BatchExportJob<'a> {
     pub data_root: &'a Path,
     pub reports_dir: &'a Path,
     pub cache: &'a ValidationCache,
+    pub processed_by: UserIdentity,
     pub app: Option<&'a AppHandle>,
     pub cancelled: &'a Arc<AtomicBool>,
 }
@@ -28,6 +30,7 @@ struct BatchExportRuntime<'a> {
     data_root: &'a Path,
     reports_dir: &'a Path,
     cache: &'a ValidationCache,
+    processed_by: UserIdentity,
     app: Option<&'a AppHandle>,
     cancelled: &'a Arc<AtomicBool>,
     destination_parent: &'a Path,
@@ -41,6 +44,7 @@ pub(crate) fn export_annotated_episodes(job: BatchExportJob<'_>) -> AppResult<Ba
         data_root,
         reports_dir,
         cache,
+        processed_by,
         app,
         cancelled,
     } = job;
@@ -64,6 +68,7 @@ pub(crate) fn export_annotated_episodes(job: BatchExportJob<'_>) -> AppResult<Ba
         data_root,
         reports_dir,
         cache,
+        processed_by,
         app,
         cancelled,
         destination_parent: destination_parent_path,
@@ -98,20 +103,33 @@ pub(crate) fn export_annotated_episodes(job: BatchExportJob<'_>) -> AppResult<Ba
                 validation_status,
                 result: Some(result),
                 error: None,
+                error_log_path: None,
             },
             Err(AppError::Cancelled) => {
                 cancelled_batch = true;
                 break;
             }
-            Err(error) => BatchExportItemResult {
-                episode_id: annotation.episode_id.clone(),
-                trajectory_code: annotation.trajectory_code.clone(),
-                source_path: annotation.episode_root.clone(),
-                status: "failed".into(),
-                validation_status,
-                result: None,
-                error: Some(error.to_string()),
-            },
+            Err(error) => {
+                let error_message = error.to_string();
+                let (display_error, error_log_path) =
+                    match persist_batch_failure_log(&runtime, &annotation, &error_message) {
+                        Ok(path) => (error_message, Some(path)),
+                        Err(log_error) => (
+                            format!("{error_message}；失败日志写入失败: {log_error}"),
+                            None,
+                        ),
+                    };
+                BatchExportItemResult {
+                    episode_id: annotation.episode_id.clone(),
+                    trajectory_code: annotation.trajectory_code.clone(),
+                    source_path: annotation.episode_root.clone(),
+                    status: "failed".into(),
+                    validation_status,
+                    result: None,
+                    error: Some(display_error),
+                    error_log_path,
+                }
+            }
         };
 
         emit_batch_progress(
@@ -224,6 +242,25 @@ fn export_one_annotation(
     })
 }
 
+fn persist_batch_failure_log(
+    runtime: &BatchExportRuntime<'_>,
+    annotation: &EpisodeAnnotation,
+    message: &str,
+) -> AppResult<String> {
+    let record = operation_history::record_error(
+        runtime.data_root,
+        runtime.processed_by.clone(),
+        RecordOperationErrorRequest {
+            operation: "export_annotated_episodes".into(),
+            message: message.into(),
+            source_path: Some(annotation.episode_root.clone()),
+        },
+    )?;
+    Ok(operation_history::record_path(runtime.data_root, &record)
+        .display()
+        .to_string())
+}
+
 fn emit_batch_progress(
     app: Option<&AppHandle>,
     annotation: &EpisodeAnnotation,
@@ -328,6 +365,7 @@ mod tests {
             data_root: &data_root,
             reports_dir: &reports,
             cache: &cache,
+            processed_by: user.clone(),
             app: None,
             cancelled: &cancelled,
         })
@@ -342,8 +380,16 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|message| message.contains("ANNOTATED_SOURCE_UNAVAILABLE")));
+        assert!(result.items[0]
+            .error_log_path
+            .as_deref()
+            .is_some_and(|path| Path::new(path).is_file()));
         assert_eq!(result.items[1].status, "failed");
         assert_eq!(result.items[1].validation_status.as_deref(), Some("error"));
+        assert!(result.items[1]
+            .error_log_path
+            .as_deref()
+            .is_some_and(|path| Path::new(path).is_file()));
         assert_eq!(result.items[2].status, "exported");
         let output = result.items[2]
             .result
@@ -366,6 +412,7 @@ mod tests {
             data_root: &data_root,
             reports_dir: &reports,
             cache: &cache,
+            processed_by: user,
             app: None,
             cancelled: &stopped,
         })
