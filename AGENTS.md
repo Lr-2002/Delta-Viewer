@@ -475,7 +475,9 @@ Cargo manifests/lockfile 和编译环境指纹；PR 不得写入 main 的 CI cac
 缓存命中只能加速重新编译，每次 Release 仍必须重新组装并执行全部平台验证。
 
 当前 release channel 是显式 unsigned，即没有可信发布者身份。Windows FFmpeg、许可证、构建说明和
-WebView2 exact URL/SHA-256 固定在 workflow；macOS arm64 从固定 archive hash 和
+WebView2 exact URL/SHA-256 固定在 workflow；Tauri 的 evergreen WebView2 跳转只允许
+用于解析当前缓存键，实际写入缓存和 NSIS 的内容必须是上述固定 hash 的已审核文件，
+构建后仍需回读内嵌 hash。macOS arm64 从固定 archive hash 和
 Git commit 的 FFmpeg 8.1.2 官方源码构建只含 JPEG -> MPEG-4 所需能力的最小 LGPL
 sidecar。Linux x64 使用相同固定源码构建最小 LGPL sidecar，在 Ubuntu 22.04 生成
 原生 `.deb` 并完成 `apt` 安装/启动检查。不得替换为

@@ -5,6 +5,16 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.8 - 2026-07-28
+
+- Fixed Windows release packaging so Tauri's moving WebView2 cache key is
+  populated with the exact reviewed offline installer instead of silently
+  downloading a different upstream payload.
+- Kept the embedded WebView2 SHA-256 and Microsoft Authenticode gates, and made
+  hash mismatch failures report both expected and actual values.
+- Superseded the unpublished `v0.17.7` release attempt, whose Windows payload
+  gate correctly prevented a partial GitHub Release.
+
 ## 0.17.7 - 2026-07-28
 
 - Added per-item failure logs for batch export, with an in-app error view and a

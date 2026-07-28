@@ -63,8 +63,9 @@ try {
     throw "Embedded WebView2 installer does not have a valid Microsoft signature"
   }
   $WebViewSha = Get-LowerSha256 -Path $WebViewPayloads[0].FullName
-  if ($WebViewSha -ne $WebView2Sha256.ToLowerInvariant()) {
-    throw "Embedded WebView2 installer differs from the reviewed SHA-256"
+  $ExpectedWebViewSha = $WebView2Sha256.ToLowerInvariant()
+  if ($WebViewSha -ne $ExpectedWebViewSha) {
+    throw "Embedded WebView2 installer differs from the reviewed SHA-256: expected $ExpectedWebViewSha, got $WebViewSha"
   }
 
   $ExtractedFfmpeg = @(Get-ChildItem -LiteralPath $ExtractRoot -Recurse -File -Filter "ffmpeg.exe")

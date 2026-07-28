@@ -344,6 +344,33 @@ test("CI owns the shared gate and release jobs use isolated dependency caches", 
   );
 });
 
+test("Windows release binds reviewed WebView2 bytes to Tauri's current cache key", async () => {
+  const workflow = await readFile(path.join(root, ".github/workflows/release.yml"), "utf8");
+
+  assert.match(
+    workflow,
+    /WEBVIEW2_TAURI_RESOLVER_URL: https:\/\/go\.microsoft\.com\/fwlink\/\?linkid=2124701/,
+  );
+  assert.match(
+    workflow,
+    /Invoke-WebRequest -Uri \$resolverUri -Method Head -MaximumRedirection 10/,
+  );
+  assert.match(
+    workflow,
+    /Copy-Item -LiteralPath \$reviewedInstaller -Destination \$installer -Force/,
+  );
+  assert.match(
+    workflow,
+    /if \(\$cachedHash -ne \$env:WEBVIEW2_SHA256\.ToLowerInvariant\(\)\)/,
+  );
+  assert.doesNotMatch(workflow, /Invoke-WebRequest -Uri \$resolverUri -OutFile/);
+  assert.ok(
+    workflow.indexOf("Copy-Item -LiteralPath $reviewedInstaller -Destination $installer -Force") <
+      workflow.indexOf("pnpm tauri build --ci --bundles nsis"),
+    "the reviewed payload must be placed in Tauri's cache before NSIS packaging",
+  );
+});
+
 test("assemble-release rejects partial sets and emits checksums for a complete three-installer set", async () => {
   const testRoot = await mkdtemp(path.join(tmpdir(), "dohc-release-assets-"));
   const input = path.join(testRoot, "input");

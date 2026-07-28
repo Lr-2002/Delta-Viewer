@@ -191,6 +191,7 @@ jobs:
       FFMPEG_BUILD_ID: ffmpeg-static-b6.1.1-gyan-6.1.1-essentials
       WEBVIEW2_URL: https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/d06c217f-cef1-471d-a639-fad978ef4a40/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
       WEBVIEW2_SHA256: 477c6a0cf79d29fdbfca3ea337fabe952a439b5da38d025cd2c59cc65a87947d
+      WEBVIEW2_TAURI_RESOLVER_URL: https://go.microsoft.com/fwlink/?linkid=2124701
     steps:
       - name: Check out bound release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -242,8 +243,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           if ([string]::IsNullOrWhiteSpace($env:WEBVIEW2_URL) -or
-              [string]::IsNullOrWhiteSpace($env:WEBVIEW2_SHA256)) {
-            throw "Missing WEBVIEW2_WINDOWS_X64_URL or WEBVIEW2_WINDOWS_X64_SHA256 variable"
+              [string]::IsNullOrWhiteSpace($env:WEBVIEW2_SHA256) -or
+              [string]::IsNullOrWhiteSpace($env:WEBVIEW2_TAURI_RESOLVER_URL)) {
+            throw "Missing reviewed WebView2 source, hash, or Tauri resolver URL"
           }
           $reviewedUri = [Uri]$env:WEBVIEW2_URL
           $expectedPrefix = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/"
@@ -252,25 +254,55 @@ jobs:
           }
           $segments = $reviewedUri.AbsolutePath.Trim("/").Split("/")
           if ($segments.Count -lt 2) { throw "Pinned WebView2 URL has no GUID/file path" }
-          $guid = $segments[$segments.Count - 2]
-          $fileName = [Uri]::UnescapeDataString($segments[$segments.Count - 1])
+          $reviewedGuid = $segments[$segments.Count - 2]
+          $reviewedFileName = [Uri]::UnescapeDataString($segments[$segments.Count - 1])
           $parsedGuid = [Guid]::Empty
-          if (-not [Guid]::TryParse($guid, [ref]$parsedGuid) -or [string]::IsNullOrWhiteSpace($fileName)) {
+          if (-not [Guid]::TryParse($reviewedGuid, [ref]$parsedGuid) -or
+              [string]::IsNullOrWhiteSpace($reviewedFileName)) {
             throw "Pinned WebView2 URL has an invalid GUID or file name"
           }
-          $cache = Join-Path $env:GITHUB_WORKSPACE "src-tauri\target\.tauri\x64\$guid"
-          New-Item -ItemType Directory -Force -Path $cache | Out-Null
-          $installer = Join-Path $cache $fileName
-          Invoke-WebRequest -Uri $reviewedUri -OutFile $installer
-          $actualHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $reviewedRoot = Join-Path $env:RUNNER_TEMP "webview2-reviewed"
+          New-Item -ItemType Directory -Force -Path $reviewedRoot | Out-Null
+          $reviewedInstaller = Join-Path $reviewedRoot $reviewedFileName
+          Invoke-WebRequest -Uri $reviewedUri -OutFile $reviewedInstaller
+          $actualHash = (Get-FileHash -LiteralPath $reviewedInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualHash -ne $env:WEBVIEW2_SHA256.ToLowerInvariant()) {
             throw "Reviewed WebView2 SHA-256 mismatch"
           }
-          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          $signature = Get-AuthenticodeSignature -LiteralPath $reviewedInstaller
           if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
               -not $signature.SignerCertificate.Subject.Contains("Microsoft")) {
             throw "Reviewed WebView2 installer does not have a valid Microsoft signature"
           }
+
+          # Tauri resolves the evergreen URL only to choose a cache key. Bind that key to reviewed bytes.
+          $resolverUri = [Uri]$env:WEBVIEW2_TAURI_RESOLVER_URL
+          if ($resolverUri.Scheme -ne "https") {
+            throw "Tauri WebView2 resolver URL must use HTTPS"
+          }
+          $resolverResponse = Invoke-WebRequest -Uri $resolverUri -Method Head -MaximumRedirection 10
+          [Uri]$resolvedUri = $resolverResponse.BaseResponse.RequestMessage.RequestUri
+          if (-not $resolvedUri.AbsoluteUri.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Tauri WebView2 resolver returned an unexpected URL: $resolvedUri"
+          }
+          $resolvedSegments = $resolvedUri.AbsolutePath.Trim("/").Split("/")
+          if ($resolvedSegments.Count -lt 2) { throw "Resolved Tauri WebView2 URL has no GUID/file path" }
+          $resolvedGuid = $resolvedSegments[$resolvedSegments.Count - 2]
+          $resolvedFileName = [Uri]::UnescapeDataString($resolvedSegments[$resolvedSegments.Count - 1])
+          $parsedResolvedGuid = [Guid]::Empty
+          if (-not [Guid]::TryParse($resolvedGuid, [ref]$parsedResolvedGuid) -or
+              [string]::IsNullOrWhiteSpace($resolvedFileName)) {
+            throw "Resolved Tauri WebView2 URL has an invalid GUID or file name"
+          }
+          $cache = Join-Path $env:GITHUB_WORKSPACE "src-tauri\target\.tauri\x64\$resolvedGuid"
+          New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          $installer = Join-Path $cache $resolvedFileName
+          Copy-Item -LiteralPath $reviewedInstaller -Destination $installer -Force
+          $cachedHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($cachedHash -ne $env:WEBVIEW2_SHA256.ToLowerInvariant()) {
+            throw "Tauri WebView2 cache does not contain the reviewed SHA-256"
+          }
+          Write-Host "Bound reviewed WebView2 payload to Tauri cache key $resolvedGuid/$resolvedFileName"
 
       - name: Download and stage reviewed Windows FFmpeg
         shell: pwsh

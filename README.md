@@ -329,13 +329,15 @@ explicitly unsigned; Authenticode remains a later production-hardening gate.
 ## GitHub release CD
 
 `.github/workflows/release.yml` runs after CI succeeds on `main`. A coordinated
-version change in `package.json`, Cargo, Tauri, and Changelog is the release
-signal; the workflow creates the missing annotated `vX.Y.Z` tag with the
-repository `GITHUB_TOKEN`. Ordinary commits that keep an already released
-version do not create another release. It builds Windows x64, macOS arm64, and
-Ubuntu x64 on native GitHub-hosted runners. Windows uses reviewed, hash-pinned
-FFmpeg and offline WebView2 inputs. The macOS runner builds a minimal LGPL
-FFmpeg from a pinned official source archive and commit.
+release-ready commit updates `package.json`, Cargo, Tauri, and Changelog; the
+workflow creates the missing annotated `vX.Y.Z` tag with the repository
+`GITHUB_TOKEN`. Every commit entering `main` must carry one new version, and no
+separate feature or release commit is used. It builds Windows x64, macOS arm64,
+and Ubuntu x64 on native GitHub-hosted runners. Windows uses reviewed,
+hash-pinned FFmpeg and offline WebView2 inputs. The WebView2 evergreen redirect
+only selects Tauri's cache key; the bytes placed there and embedded in NSIS are
+the exact reviewed payload. The macOS runner builds a minimal LGPL FFmpeg from
+a pinned official source archive and commit.
 The Ubuntu 22.04 runner installs and starts the generated deb.
 
 The exact commit runs the full code and release-workflow gate once in CI. After

@@ -3,8 +3,8 @@
 | 属性 | 内容 |
 | --- | --- |
 | 产品名称 | DOHC Viewer |
-| 文档版本 | 0.21 |
-| 应用版本基线 | 0.17.7 |
+| 文档版本 | 0.22 |
+| 应用版本基线 | 0.17.8 |
 | 文档状态 | 安全 Alpha，三安装器 unsigned GitHub Release CD 与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64；Ubuntu 22.04+ x86_64 deb |
 | 文档日期 | 2026-07-28 |
@@ -15,7 +15,7 @@
 
 本文定义 DOHC Viewer 的产品边界、数据契约、用户流程、功能需求、非功能需求和发布验收标准。产品、设计、开发和测试均以本文为共同基线。
 
-本文同时记录当前 `0.17.7` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
+本文同时记录当前 `0.17.8` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
 
 ## 2. 背景与问题
 
@@ -564,7 +564,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - `.github/workflows/release.yml` 在 `main` CI 成功后核对 HEAD、clean checkout、完整 Changelog 条目和四处应用版本，并使用该次运行的 `GITHUB_TOKEN` 自动创建缺失的 annotated `vX.Y.Z` tag；当前 unsigned 通道不依赖 GitHub App 凭据或 release Environment。Changelog 缺失、重复、未置顶、日期无效、为空或仅含占位文本时，必须在 tag 创建前失败。完整 `pnpm check` 与 release workflow 回归只在 CI 对同一 commit 执行一次，CD 不重复该门禁。
 - Windows x64、macOS arm64、Ubuntu x86_64 使用原生 hosted runner 构建；Node、pnpm、Rust 和全部 GitHub Actions 固定版本或 commit。
 - CI 与三个平台可恢复按平台/目标架构和 Rust/Cargo 环境隔离的依赖编译缓存；只有受信任的 main/release 运行可写共享 cache。workspace crate、增量编译产物和最终 installer 不得进入 cache，每次 Release 必须重新组装并执行完整安装、启动、资源、封印和 hash 验证。
-- Windows 固定 reviewed FFmpeg binary/license/build notice 与 WebView2 exact Microsoft URL/SHA-256；macOS 从固定官方 FFmpeg source archive hash/Git revision 构建 arm64 sidecar。
+- Windows 固定 reviewed FFmpeg binary/license/build notice 与 WebView2 exact Microsoft URL/SHA-256；Tauri evergreen 跳转只解析缓存键，缓存和 NSIS 必须使用固定 hash 的已审核 WebView2 字节；macOS 从固定官方 FFmpeg source archive hash/Git revision 构建 arm64 sidecar。
 - Windows 检查 DOHC 产物为 unsigned、Microsoft WebView2 签名、NSIS 内嵌 hash、silent install/startup/uninstall；macOS 检查 ad-hoc sealed nested code/resources、没有 Developer ID/notarization claim、DMG 挂载、资源 hash、synthetic-quarantine Gatekeeper 分类和复制后直接启动。
 - Release 标题、说明、三个 installer 名称、verification report 和 manifest 必须显示 `UNSIGNED`；后续引入签名时恢复 Authenticode、timestamp、Developer ID、Gatekeeper、notarization 和可信 Linux 包发布门禁。
 - final job 重新核对三份 verification report 和安装器 SHA-256，生成 `release-manifest.json`、`SHA256SUMS.txt` 和 GitHub provenance。三安装器集合完整后才解除 draft，已经公开的 tag 不允许覆盖。
@@ -898,6 +898,12 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 每条批量失败在 Rust 后端写入应用本地 `reports/operation-errors` 独立 JSON 日志，并在结果 IPC 中返回日志路径。
 - 批量结果页可展开失败日志、定位日志文件；成功结果提供“打开文件所在位置”操作。
 - 增加 Tauri mock 与 Rust 回归测试，覆盖一条批量任务中成功/失败条目的逐条结果和定位动作。
+
+### 14.32 `0.17.8` Windows WebView2 确定性暂存
+
+- Windows CD 继续固定 WebView2 exact filestreamingservice URL、SHA-256 和 Microsoft Authenticode；Tauri 的 evergreen 跳转只用于解析当前缓存键，不再决定实际打包字节。
+- workflow 将已审核文件复制到 Tauri 当前缓存键，构建后仍从 NSIS 回读并验证内嵌 hash；微软跳转变化不能静默替换发布依赖。
+- `v0.17.7` 的 Windows 内嵌 hash 门禁正确阻止了不完整 Release；修复进入新版本，不移动或覆盖旧 tag。
 
 ## 15. 里程碑
 

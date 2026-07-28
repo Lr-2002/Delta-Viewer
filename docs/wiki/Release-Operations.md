@@ -39,7 +39,7 @@ controller 仍会重新核对 main HEAD、clean checkout、版本、Changelog �
 Windows job 固定以下内容：
 
 - FFmpeg static b6.1.1 中的 Gyan 6.1.1 essentials x64 binary、GPLv3 文本和 build README，各自使用 SHA-256 校验。
-- Microsoft WebView2 x64 offline installer 的 exact filestreamingservice URL 和 SHA-256，并再次验证 Microsoft Authenticode。
+- Microsoft WebView2 x64 offline installer 的 exact filestreamingservice URL 和 SHA-256，并再次验证 Microsoft Authenticode。Tauri evergreen 跳转只用于解析当前缓存键，workflow 将固定 hash 的已审核文件写入该键；跳转目标变化不能替换实际打包内容。
 
 macOS arm64 job 从 FFmpeg 官方 `n8.1.2` tag 的固定 source archive SHA-256 和 Git commit 构建最小 LGPL sidecar，只启用 JPEG 输入、MPEG-4 编码和 MP4 输出。构建与 staging 会拒绝 `--enable-nonfree`、错误架构和非系统动态库，并执行真实 JPEG 到 MP4 smoke。FFmpeg 构建后先 ad-hoc 签名；app 组装完成后重新封印 FFmpeg、主程序和整个 bundle，并把封印后的 FFmpeg hash 写回 provenance manifest。
 
