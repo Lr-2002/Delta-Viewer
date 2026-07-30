@@ -5,6 +5,12 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.11 - 2026-07-30
+
+- Fixed Linux release startup by explicitly permitting the fixed local HTTP
+  mirror in Tauri while retaining the fixed origin, bounded payload, and
+  Minisign verification gates before installation.
+
 ## 0.17.10 - 2026-07-30
 
 - Added an authenticated startup check that automatically downloads, verifies,

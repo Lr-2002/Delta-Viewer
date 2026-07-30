@@ -180,9 +180,10 @@ async function verify(options) {
     || !Array.isArray(updaterConfig.endpoints)
     || updaterConfig.endpoints.length !== 1
     || updaterConfig.endpoints[0] !== expectedUpdaterEndpoint
+    || updaterConfig.dangerousInsecureTransportProtocol !== true
     || updaterConfig.windows?.installMode !== "passive"
   ) {
-    throw new Error("Tauri updater must use the configured local mirror and passive NSIS mode");
+    throw new Error("Tauri updater must explicitly limit insecure transport to the configured local mirror and passive NSIS mode");
   }
   if (
     updateServiceConfig.schemaVersion !== 1

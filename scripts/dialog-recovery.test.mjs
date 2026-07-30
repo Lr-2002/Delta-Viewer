@@ -191,8 +191,8 @@ if (!browserExecutable && requireBrowser) {
               return { hasAccounts: true, currentUser: { username: "tester", displayName: "Tester" } };
             case "check_for_app_update":
               return {
-                currentVersion: "0.17.10",
-                latestVersion: "0.17.10",
+                currentVersion: "0.17.11",
+                latestVersion: "0.17.11",
                 available: false,
                 notes: null,
                 publishedAt: null,

@@ -150,6 +150,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
     },
     plugins: {
       updater: {
+        dangerousInsecureTransportProtocol: true,
         pubkey: updaterTestSigner.wrappedPublicKey,
         endpoints: ["http://10.1.11.36:17879/latest.json"],
         windows: { installMode: "passive" },

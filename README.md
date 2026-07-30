@@ -39,14 +39,14 @@ mount, startup, and checksum gates. Verify
 `SHA256SUMS.txt` before use; detailed installation and usage instructions live
 in the Wiki.
 
-Starting with `0.17.10`, the app checks the fixed update mirror at
+Starting with `0.17.11`, the app checks the fixed update mirror at
 `http://10.1.11.36:17879` after local login. The mirror host reads GitHub once,
 verifies and atomically caches the complete release, and serves clients over the
 reachable fixed IP. When a newer version exists the app waits for the current
 data task, downloads the matching updater, verifies its dedicated
 Ed25519/Minisign signature, installs it, and restarts. Mirror failures are
 visible and retryable but never block the offline data workflow. Installations
-on `0.17.8` or earlier need one manual `0.17.10` install from the mirror page;
+on `0.17.8` or earlier need one manual `0.17.11` install from the mirror page;
 later releases update automatically. Linux may show a system authorization
 prompt while installing the replacement deb.
 

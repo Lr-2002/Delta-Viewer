@@ -40,26 +40,26 @@ sudo apt install ./DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\DOHC-Viewer_0.17.10_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\DOHC-Viewer_0.17.11_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
 ```
 
 macOS：
 
 ```bash
-shasum -a 256 DOHC-Viewer_0.17.10_UNSIGNED_macos-arm64.dmg
+shasum -a 256 DOHC-Viewer_0.17.11_UNSIGNED_macos-arm64.dmg
 ```
 
 Ubuntu：
 
 ```bash
-sha256sum 'DOHC-Viewer_0.17.10_UNSIGNED_ubuntu-22.04+-x64.deb'
+sha256sum 'DOHC-Viewer_0.17.11_UNSIGNED_ubuntu-22.04+-x64.deb'
 ```
 
 结果必须与镜像页面和 `SHA256SUMS.txt` 中对应文件完全一致。发布维护人员仍可在能够访问 GitHub 的机器上用 `gh attestation verify <file> --repo Lr-2002/Delta-Viewer` 验证构建 provenance。
 
 ## 升级
 
-`0.17.10` 是自动更新引导版。`0.17.8` 及更早版本没有自动更新能力，需要先从固定镜像根页面手动下载并安装 `0.17.10` 一次。之后应用会在本地登录成功后检查镜像；发现更高版本时，先等待正在执行的扫描、检查或导出结束，再自动下载当前平台更新包、验证项目 Ed25519/Minisign 签名、安装并重启。Ubuntu 安装 deb 时可能出现系统提权确认。
+`0.17.11` 是自动更新引导版。`0.17.8` 及更早版本没有自动更新能力，需要先从固定镜像根页面手动下载并安装 `0.17.11` 一次。之后应用会在本地登录成功后检查镜像；发现更高版本时，先等待正在执行的扫描、检查或导出结束，再自动下载当前平台更新包、验证项目 Ed25519/Minisign 签名、安装并重启。Ubuntu 安装 deb 时可能出现系统提权确认。
 
 镜像不可达、断网、检查失败、下载失败或签名不匹配都会保留当前版本，并在界面显示可重试提示；检查、回放、标注和导出仍可离线使用。客户端只读取 `http://10.1.11.36:17879`，不访问 GitHub，也不发送账号、源路径、标注、报告、hash 或遥测。
 

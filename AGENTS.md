@@ -19,7 +19,7 @@
 13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 Ubuntu 22.04+ x86_64 原生 deb 三个可安装产物；不再构建或发布 macOS x64。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 14. 自 `v0.17.6` 之后，仓库实际默认分支 `main`（口头所称 `master`）不得保留没有对应版本 tag 的独立提交。每个进入 `main` 的 commit 都必须是完整的发布提交：同一 commit 包含全部代码/文档变更、四处一致且唯一的新 semver，以及带日期的 Changelog；CI 成功后必须由发布 workflow 创建精确指向该 commit 的 annotated `vX.Y.Z` tag。禁止先推功能、修复、文档、CI 或配置 commit，再另推 version/release commit；除自动 tag 尚在运行的短暂 pending 状态外，`main` 必须保持一 commit 对应一 tag。
 15. Codex 和其他自动化 agent 在没有收到开发负责人明确版本指令时，只能把当前 semver 的 patch 位连续增加 1（即 `+0.0.1`），不得跳号，也不得根据改动规模自行提升 minor 或 major。minor（例如 `0.17.x -> 0.18.0`）及 major 版本只能按开发负责人明确指定的版本更新；提升 minor 或 major 时 patch 归零。
-16. 自动更新只接受固定镜像同 origin、精确版本目录下当前平台的 1-64 MiB asset，必须在 Rust 中有界读取并用应用内嵌 Ed25519/Minisign 公钥验签后安装。镜像以只读 GET/HEAD 提供资产，从 GitHub 同步时必须先验证完整三平台集合、大小、SHA-256 和签名，再原子激活；失败继续提供上一完整版本。更新使用与其他长任务相同的 `TaskControl`，不能打断扫描/检查/导出。更新私钥只允许存在于受控离线备份和 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets；它不是 GitHub App private key，不得提交、打印或进入 artifact。
+16. 自动更新只接受固定镜像同 origin、精确版本目录下当前平台的 1-64 MiB asset，必须在 Rust 中有界读取并用应用内嵌 Ed25519/Minisign 公钥验签后安装。Tauri 的 `dangerousInsecureTransportProtocol` 只可为固定内网 HTTP 镜像显式开启，且只能连接，不得替代 origin、大小或签名 hard gate。镜像以只读 GET/HEAD 提供资产，从 GitHub 同步时必须先验证完整三平台集合、大小、SHA-256 和签名，再原子激活；失败继续提供上一完整版本。更新使用与其他长任务相同的 `TaskControl`，不能打断扫描/检查/导出。更新私钥只允许存在于受控离线备份和 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets；它不是 GitHub App private key，不得提交、打印或进入 artifact。
 
 ## 2. 仓库结构
 
