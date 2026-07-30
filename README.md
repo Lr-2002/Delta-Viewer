@@ -22,7 +22,7 @@ Project documentation:
 ## Installation
 
 User-facing installers are mirrored at
-[http://10.1.11.36:17879/](http://10.1.11.36:17879/); users do not need GitHub
+[http://39.155.172.162:17879/](http://39.155.172.162:17879/); users do not need GitHub
 access. GitHub Releases remains the build and signed upstream source:
 
 - `DOHC-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`
@@ -39,14 +39,15 @@ mount, startup, and checksum gates. Verify
 `SHA256SUMS.txt` before use; detailed installation and usage instructions live
 in the Wiki.
 
-Starting with `0.17.11`, the app checks the fixed update mirror at
-`http://10.1.11.36:17879` after local login. The mirror host reads GitHub once,
+Starting with `0.17.12`, the app checks the fixed public update mirror at
+`http://39.155.172.162:17879` after local login, then falls back only to
+`http://10.1.11.36:17879` for clients on the mirror LAN. The mirror host reads GitHub once,
 verifies and atomically caches the complete release, and serves clients over the
 reachable fixed IP. When a newer version exists the app waits for the current
 data task, downloads the matching updater, verifies its dedicated
 Ed25519/Minisign signature, installs it, and restarts. Mirror failures are
 visible and retryable but never block the offline data workflow. Installations
-on `0.17.8` or earlier need one manual `0.17.11` install from the mirror page;
+on `0.17.8` or earlier need one manual `0.17.12` install from the mirror page;
 later releases update automatically. Linux may show a system authorization
 prompt while installing the replacement deb.
 
@@ -99,10 +100,11 @@ for processing attribution; it does not encrypt local files, provide roles,
 recover forgotten passwords, or synchronize between computers.
 
 The runtime has no SSH or network data path. Its only HTTP use is the automatic
-update check against the fixed `10.1.11.36:17879` mirror; clients never contact
-GitHub and send no account, source path, annotation, report, hash, or telemetry
-data. The updater accepts only the configured origin and exact version path,
-then verifies the signed bytes independently. Offline mode leaves scanning,
+update check against the fixed `39.155.172.162:17879` mirror, with
+`10.1.11.36:17879` as its only LAN fallback; clients never contact GitHub and
+send no account, source path, annotation, report, hash, or telemetry data. The
+updater accepts only those configured origins and exact version paths, then
+verifies the signed bytes independently. Offline mode leaves scanning,
 playback, annotation, and export fully available. SSH was used only once to retrieve the development sample from the current ext4 card. Ubuntu can mount
 ext4 with the Linux kernel. The native deb can select any mounted path allowed
 by the current user. The complete

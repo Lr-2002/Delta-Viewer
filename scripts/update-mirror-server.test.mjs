@@ -6,7 +6,7 @@ import {
   sign as signEd25519,
 } from "node:crypto";
 import { readFile, rm, mkdtemp, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as requestHttp } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -131,6 +131,32 @@ async function close(server) {
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
+async function fetchJsonWithHost(port, host) {
+  return new Promise((resolve, reject) => {
+    const request = requestHttp({
+      host: "127.0.0.1",
+      port,
+      path: "/latest.json",
+      headers: { host },
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        try {
+          resolve({
+            status: response.statusCode,
+            body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
 test("mirrors signed installers locally and retains the last good release after tampering", async () => {
   const cacheRoot = await mkdtemp(path.join(tmpdir(), "dohc-update-mirror-test-"));
   const signer = createSigner();
@@ -180,6 +206,7 @@ test("mirrors signed installers locally and retains the last good release after 
       listenHost: "127.0.0.1",
       listenPort: 0,
       publicBaseUrl: "http://127.0.0.1:0",
+      fallbackBaseUrls: ["http://localhost:0"],
       upstreamManifestUrl: `${upstreamBase}/latest.json`,
       upstreamAssetOrigin: upstreamBase,
       upstreamAssetPathPrefix: "/repo/releases/download/",
@@ -191,7 +218,7 @@ test("mirrors signed installers locally and retains the last good release after 
     }, {
       logger: { error: (message) => loggedErrors.push(message) },
     });
-    const { publicBaseUrl } = await mirror.start();
+    const { address, publicBaseUrl, fallbackBaseUrls } = await mirror.start();
     await mirror.sync();
 
     const health = await fetch(`${publicBaseUrl}/healthz`).then((response) => response.json());
@@ -206,6 +233,16 @@ test("mirrors signed installers locally and retains the last good release after 
       assert.match(entry.url, new RegExp(`^${publicBaseUrl}/releases/v1\\.2\\.3/`));
       const bytes = Buffer.from(await fetch(entry.url).then((response) => response.arrayBuffer()));
       assert.equal(sha256(bytes), entry.sha256);
+    }
+
+    const fallback = await fetchJsonWithHost(address.port, `localhost:${address.port}`);
+    assert.equal(fallback.status, 200);
+    for (const entry of Object.values(fallback.body.platforms)) {
+      assert.equal(new URL(entry.url).origin, fallbackBaseUrls[0]);
+    }
+    const untrustedHost = await fetchJsonWithHost(address.port, `untrusted.example:${address.port}`);
+    for (const entry of Object.values(untrustedHost.body.platforms)) {
+      assert.equal(new URL(entry.url).origin, publicBaseUrl);
     }
 
     const indexResponse = await fetch(`${publicBaseUrl}/`);

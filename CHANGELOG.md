@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.12 - 2026-07-30
+
+- Moved automatic updates to the fixed public mirror and added a fixed LAN
+  fallback with host-bound manifest rewriting, so internal clients do not
+  depend on NAT loopback while all updater bytes remain size- and
+  Minisign-verified.
+
 ## 0.17.11 - 2026-07-30
 
 - Fixed Linux release startup by explicitly permitting the fixed local HTTP

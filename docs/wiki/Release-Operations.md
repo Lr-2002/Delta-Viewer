@@ -35,10 +35,11 @@ GitHub App ID、private key 或 release Environment。
 日志、artifact、verification report 或 release manifest。公钥嵌入
 `src-tauri/tauri.conf.json`，可以公开并由 final job 回读验证。
 
-客户端不访问 GitHub。GitHub Release 只是固定镜像机的签名上游；应用内唯一 endpoint
-是 `http://10.1.11.36:17879/latest.json`。`update-service.config.json`、Tauri endpoint
-和发布校验必须保持同一 IP/端口。修改 IP 或端口会使已安装客户端无法发现更新，必须先
-保持旧地址可用并通过新版本迁移，不能只改服务器。
+客户端不访问 GitHub。GitHub Release 只是固定镜像机的签名上游；应用优先使用
+`http://39.155.172.162:17879/latest.json`，仅在内网回环不可用时回退
+`http://10.1.11.36:17879/latest.json`。`update-service.config.json`、Tauri endpoint
+和发布校验必须保持这两个固定地址一致。服务对受信任的局域网 Host 返回局域网 asset URL，
+避免 NAT loopback；任意其他 Host 始终返回公网 URL。
 
 完整代码门禁和 release workflow 回归只在 CI 对同一 commit 执行一次。CI 成功后，
 controller 仍会重新核对 main HEAD、clean checkout、版本、Changelog 和 annotated tag，
@@ -78,12 +79,14 @@ final job 重新读取三份报告和安装器，使用应用内嵌公钥逐个�
 
 ## 固定 IP 更新镜像
 
-镜像运行在当前 macOS 主机，监听 `0.0.0.0:17879`，客户端地址固定为
-[http://10.1.11.36:17879/](http://10.1.11.36:17879/)。安装或重新加载开机常驻服务：
+镜像运行在当前 macOS 主机，监听 `0.0.0.0:17879`，公网客户端地址固定为
+[http://39.155.172.162:17879/](http://39.155.172.162:17879/)，局域网 fallback 为
+`http://10.1.11.36:17879/`。安装或重新加载开机常驻服务：
 
 ```bash
 pnpm update-mirror:install
 curl --fail http://127.0.0.1:17879/healthz
+curl --fail http://39.155.172.162:17879/latest.json
 curl --fail http://10.1.11.36:17879/latest.json
 launchctl print "gui/$(id -u)/com.dohc.viewer.update-mirror"
 ```

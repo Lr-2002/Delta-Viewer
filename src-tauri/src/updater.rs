@@ -147,40 +147,54 @@ pub async fn download_and_install(
 }
 
 fn require_mirror_release(app: &AppHandle, update: &Update) -> AppResult<()> {
-    let endpoint = configured_update_endpoint(app)?;
-    if !is_allowed_mirror_url(&endpoint, &update.download_url, &update.version) {
+    let endpoints = configured_update_endpoints(app)?;
+    if !endpoints
+        .iter()
+        .any(|endpoint| is_allowed_mirror_url(endpoint, &update.download_url, &update.version))
+    {
         return Err(AppError::Message(
-            "UPDATE_SOURCE_REJECTED: 更新包不是已配置本机镜像的当前版本资产".into(),
+            "UPDATE_SOURCE_REJECTED: 更新包不是已配置镜像的当前版本资产".into(),
         ));
     }
     expected_download_bytes(update).map(|_| ())
 }
 
-fn configured_update_endpoint(app: &AppHandle) -> AppResult<reqwest::Url> {
-    let endpoint = app
+fn configured_update_endpoints(app: &AppHandle) -> AppResult<Vec<reqwest::Url>> {
+    let values = app
         .config()
         .plugins
         .0
         .get("updater")
         .and_then(|config| config.get("endpoints"))
         .and_then(serde_json::Value::as_array)
-        .and_then(|endpoints| endpoints.first())
-        .and_then(serde_json::Value::as_str)
         .ok_or_else(|| update_manifest_error("应用未配置更新镜像地址"))?;
-    let endpoint = reqwest::Url::parse(endpoint)
-        .map_err(|error| update_manifest_error(&format!("更新镜像地址无效: {error}")))?;
-    if !matches!(endpoint.scheme(), "http" | "https")
-        || endpoint.path() != "/latest.json"
-        || endpoint.query().is_some()
-        || endpoint.fragment().is_some()
-        || !endpoint.username().is_empty()
-        || endpoint.password().is_some()
-    {
-        return Err(update_manifest_error(
-            "更新镜像地址必须是固定 HTTP(S) origin 的 /latest.json",
-        ));
+    if values.is_empty() {
+        return Err(update_manifest_error("应用未配置更新镜像地址"));
     }
-    Ok(endpoint)
+    let mut endpoints = Vec::with_capacity(values.len());
+    for value in values {
+        let endpoint = value
+            .as_str()
+            .ok_or_else(|| update_manifest_error("更新镜像地址必须是字符串"))?;
+        let endpoint = reqwest::Url::parse(endpoint)
+            .map_err(|error| update_manifest_error(&format!("更新镜像地址无效: {error}")))?;
+        if !matches!(endpoint.scheme(), "http" | "https")
+            || endpoint.path() != "/latest.json"
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoints
+                .iter()
+                .any(|existing: &reqwest::Url| existing == &endpoint)
+        {
+            return Err(update_manifest_error(
+                "更新镜像地址必须是唯一的固定 HTTP(S) origin /latest.json",
+            ));
+        }
+        endpoints.push(endpoint);
+    }
+    Ok(endpoints)
 }
 
 fn is_allowed_mirror_url(endpoint: &reqwest::Url, download: &reqwest::Url, version: &str) -> bool {
@@ -304,18 +318,28 @@ mod tests {
 
     #[test]
     fn accepts_only_the_configured_mirror_origin_and_exact_version_directory() {
-        let endpoint = reqwest::Url::parse("http://10.1.11.36:17879/latest.json").unwrap();
-        let allowed =
+        let endpoint = reqwest::Url::parse("http://39.155.172.162:17879/latest.json").unwrap();
+        let fallback = reqwest::Url::parse("http://10.1.11.36:17879/latest.json").unwrap();
+        let allowed = reqwest::Url::parse(
+            "http://39.155.172.162:17879/releases/v0.17.9/DOHC-Viewer_0.17.9.deb",
+        )
+        .unwrap();
+        assert!(is_allowed_mirror_url(&endpoint, &allowed, "0.17.9"));
+        let fallback_allowed =
             reqwest::Url::parse("http://10.1.11.36:17879/releases/v0.17.9/DOHC-Viewer_0.17.9.deb")
                 .unwrap();
-        assert!(is_allowed_mirror_url(&endpoint, &allowed, "0.17.9"));
+        assert!(is_allowed_mirror_url(
+            &fallback,
+            &fallback_allowed,
+            "0.17.9"
+        ));
 
         for rejected in [
-            "https://10.1.11.36:17879/releases/v0.17.9/update.deb",
-            "http://10.1.11.37:17879/releases/v0.17.9/update.deb",
-            "http://10.1.11.36:17880/releases/v0.17.9/update.deb",
-            "http://10.1.11.36:17879/releases/v0.17.8/update.deb",
-            "http://10.1.11.36:17879/releases/v0.17.9/nested/update.deb",
+            "https://39.155.172.162:17879/releases/v0.17.9/update.deb",
+            "http://39.155.172.163:17879/releases/v0.17.9/update.deb",
+            "http://39.155.172.162:17880/releases/v0.17.9/update.deb",
+            "http://39.155.172.162:17879/releases/v0.17.8/update.deb",
+            "http://39.155.172.162:17879/releases/v0.17.9/nested/update.deb",
         ] {
             let url = reqwest::Url::parse(rejected).unwrap();
             assert!(!is_allowed_mirror_url(&endpoint, &url, "0.17.9"));

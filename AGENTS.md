@@ -5,7 +5,7 @@
 ## 1. 不可破坏的产品约束
 
 1. 源 SD 卡是只读数据源。不得在源路径创建、修改、重命名或删除任何文件。
-2. 数据运行时只处理本机目录，不增加 SSH、HTTP、云存储或遥测数据路径。唯一联网例外是登录后的应用更新：客户端只能读取固定镜像 `http://10.1.11.36:17879`，由该镜像机访问项目官方 GitHub Release；不得发送账号、路径、标注、报告、hash 或遥测，失败不得阻断本地工作流。
+2. 数据运行时只处理本机目录，不增加 SSH、HTTP、云存储或遥测数据路径。唯一联网例外是登录后的应用更新：客户端只按顺序读取固定公网镜像 `http://39.155.172.162:17879` 与固定局域网 fallback `http://10.1.11.36:17879`，由该镜像机访问项目官方 GitHub Release；不得发送账号、路径、标注、报告、hash 或遥测，失败不得阻断本地工作流。
 3. 正常工作流是“选择 SD 卡 -> 自动扫描全部 session -> 直接只读加载首条 session -> 健康检查 -> 回放/导出”。正常 UI 不得自动复制源数据；使用期间源卷必须保持挂载。
 4. 导入器仅用于压力验收和未来显式离线导入；一旦执行完整导入，仍必须验证目标端的文件大小和 BLAKE3，不能只信任复制时的源端 hash。
 5. `capture_time_ns` 在 Rust/磁盘中为 int64，在 TypeScript 中必须保持十进制字符串；涉及差值时使用 `BigInt`。
@@ -522,8 +522,9 @@ Windows updater 使用不内嵌离线 WebView2 的 NSIS executable，macOS updat
 进入普通 env、日志、artifact 或报告。这个更新签名不提供可信发布者身份；installer
 仍必须显示 `UNSIGNED`。自动 tag 继续只用 `GITHUB_TOKEN`，不引入 GitHub App 凭据。
 
-客户端不得直接使用上述 GitHub URL。`update-service.config.json` 固定镜像为
-`http://10.1.11.36:17879`，本机 `launchd` 服务每 5 分钟同步 GitHub 完整 Release，先验证
+客户端不得直接使用上述 GitHub URL。`update-service.config.json` 固定公网镜像为
+`http://39.155.172.162:17879`，固定局域网 fallback 为 `http://10.1.11.36:17879`；本机 `launchd`
+服务每 5 分钟同步 GitHub 完整 Release，先验证
 三个 target、固定文件名、大小、SHA-256 和 Ed25519/Minisign 签名，再用服务自有 partial
 和版本目录原子激活。失败必须继续提供上一完整版本；缓存只保留当前版和上一版，清理只能
 删除包含匹配 `mirror-release.json` marker 的服务自有目录。镜像对客户端只开放 GET/HEAD，

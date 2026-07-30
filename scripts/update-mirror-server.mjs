@@ -136,10 +136,10 @@ function requireCanonicalBase64(value, label) {
 function normalizeBaseUrl(value) {
   const url = new URL(value);
   if (!["http:", "https:"].includes(url.protocol)) {
-    throw new Error("publicBaseUrl must use HTTP or HTTPS");
+    throw new Error("mirror base URL must use HTTP or HTTPS");
   }
   if (url.username || url.password || url.search || url.hash || !["", "/"].includes(url.pathname)) {
-    throw new Error("publicBaseUrl must contain only an origin");
+    throw new Error("mirror base URL must contain only an origin");
   }
   return url.origin;
 }
@@ -173,9 +173,20 @@ function normalizeConfiguration(raw) {
   if (typeof config.updaterPublicKey !== "string" || !config.updaterPublicKey) {
     throw new Error("updaterPublicKey is required");
   }
+  const publicBaseUrl = normalizeBaseUrl(config.publicBaseUrl);
+  const fallbackBaseUrls = config.fallbackBaseUrls ?? [];
+  if (!Array.isArray(fallbackBaseUrls)) {
+    throw new Error("fallbackBaseUrls must be an array");
+  }
+  const normalizedFallbackBaseUrls = fallbackBaseUrls.map(normalizeBaseUrl);
+  const mirrorBaseUrls = [publicBaseUrl, ...normalizedFallbackBaseUrls];
+  if (new Set(mirrorBaseUrls).size !== mirrorBaseUrls.length) {
+    throw new Error("mirror base URLs must be unique");
+  }
   return {
     ...config,
-    publicBaseUrl: normalizeBaseUrl(config.publicBaseUrl),
+    publicBaseUrl,
+    fallbackBaseUrls: normalizedFallbackBaseUrls,
     upstreamManifestUrl: upstreamManifestUrl.href,
     upstreamAssetOrigin: config.upstreamAssetOrigin ?? OFFICIAL_ASSET_ORIGIN,
     upstreamAssetPathPrefix: config.upstreamAssetPathPrefix ?? OFFICIAL_ASSET_PATH_PREFIX,
@@ -389,8 +400,28 @@ async function writeAtomicJson(filePath, value) {
   }
 }
 
-function localAssetUrl(configuration, version, fileName) {
-  return `${configuration.publicBaseUrl}/releases/v${version}/${encodeURIComponent(fileName)}`;
+function localAssetUrl(baseUrl, version, fileName) {
+  return `${baseUrl}/releases/v${version}/${encodeURIComponent(fileName)}`;
+}
+
+function requestBaseUrl(configuration, request) {
+  const host = typeof request.headers.host === "string" ? request.headers.host.toLowerCase() : "";
+  return [configuration.publicBaseUrl, ...configuration.fallbackBaseUrls]
+    .find((baseUrl) => new URL(baseUrl).host === host) ?? configuration.publicBaseUrl;
+}
+
+function latestForBase(configuration, current, baseUrl) {
+  if (baseUrl === configuration.publicBaseUrl) return current.latest;
+  return {
+    ...current.latest,
+    platforms: Object.fromEntries(TARGETS.map((definition) => {
+      const platform = current.latest.platforms[definition.target];
+      return [definition.target, {
+        ...platform,
+        url: localAssetUrl(baseUrl, current.version, definition.updaterName(current.version)),
+      }];
+    })),
+  };
 }
 
 async function createReleaseCache(configuration, latest, installers, directory, fetchImpl) {
@@ -435,7 +466,7 @@ async function createReleaseCache(configuration, latest, installers, directory, 
     platforms: Object.fromEntries(TARGETS.map((definition) => {
       const updater = latest.platforms[definition.target];
       return [definition.target, {
-        url: localAssetUrl(configuration, latest.version, updater.fileName),
+        url: localAssetUrl(configuration.publicBaseUrl, latest.version, updater.fileName),
         signature: updater.signature,
         size: updater.size,
         sha256: updater.sha256,
@@ -451,7 +482,7 @@ async function createReleaseCache(configuration, latest, installers, directory, 
       fileName: installer.fileName,
       size: installer.size,
       sha256: installer.sha256,
-      url: localAssetUrl(configuration, latest.version, installer.fileName),
+      url: localAssetUrl(configuration.publicBaseUrl, latest.version, installer.fileName),
     })),
   };
   await writeJson(path.join(directory, "latest.json"), localLatest);
@@ -492,7 +523,7 @@ async function verifyCachedRelease(configuration, version, expectedLatest = null
   for (const definition of TARGETS) {
     const entry = requirePlainObject(latest.platforms?.[definition.target], definition.target);
     const expectedName = definition.updaterName(version);
-    if (entry.url !== localAssetUrl(configuration, version, expectedName)) {
+    if (entry.url !== localAssetUrl(configuration.publicBaseUrl, version, expectedName)) {
       throw new Error(`cached ${definition.target} URL does not use the configured mirror`);
     }
     requireBoundedSize(entry.size, MAX_UPDATER_BYTES, `${definition.target} size`);
@@ -522,7 +553,7 @@ async function verifyCachedRelease(configuration, version, expectedLatest = null
     if (
       !installer
       || installer.fileName !== expectedName
-      || installer.url !== localAssetUrl(configuration, version, expectedName)
+      || installer.url !== localAssetUrl(configuration.publicBaseUrl, version, expectedName)
     ) throw new Error(`cached ${definition.key} installer metadata is invalid`);
     requireBoundedSize(installer.size, MAX_INSTALLER_BYTES, `${expectedName} size`);
     requireSha256(installer.sha256, `${expectedName} sha256`);
@@ -605,12 +636,12 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function renderIndex(current) {
+function renderIndex(current, baseUrl) {
   if (!current) {
     return "<!doctype html><meta charset=\"utf-8\"><title>DOHC Viewer 更新服务</title><h1>更新尚未就绪</h1><p>服务正在同步已签名版本，请稍后刷新。</p>";
   }
   const links = current.release.installers.map((installer) => (
-    `<li><a href="${escapeHtml(installer.url)}">${escapeHtml(installer.label)}</a>`
+    `<li><a href="${escapeHtml(localAssetUrl(baseUrl, current.version, installer.fileName))}">${escapeHtml(installer.label)}</a>`
     + `<br><code>${escapeHtml(installer.fileName)}</code>`
     + `<br><small>SHA-256: <code>${escapeHtml(installer.sha256)}</code></small></li>`
   )).join("\n");
@@ -790,11 +821,16 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
           sendJson(response, 503, { error: "signed release is not cached yet" });
           return;
         }
-        sendJson(response, 200, state.current.latest, "no-cache");
+        sendJson(
+          response,
+          200,
+          latestForBase(configuration, state.current, requestBaseUrl(configuration, request)),
+          "no-cache",
+        );
         return;
       }
       if (url.pathname === "/") {
-        const body = Buffer.from(renderIndex(state.current));
+        const body = Buffer.from(renderIndex(state.current, requestBaseUrl(configuration, request)));
         response.writeHead(state.current ? 200 : 503, {
           "cache-control": "no-cache",
           "content-length": body.length,
@@ -823,11 +859,21 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
     });
     const address = server.address();
     if (configuration.listenPort === 0 && typeof address === "object" && address) {
-      configuration.publicBaseUrl = `http://127.0.0.1:${address.port}`;
+      const assignPort = (baseUrl) => {
+        const url = new URL(baseUrl);
+        if (url.port === "0") url.port = `${address.port}`;
+        return url.origin;
+      };
+      configuration.publicBaseUrl = assignPort(configuration.publicBaseUrl);
+      configuration.fallbackBaseUrls = configuration.fallbackBaseUrls.map(assignPort);
     }
     void sync().catch(() => {});
     interval = setInterval(() => void sync().catch(() => {}), configuration.refreshIntervalMs);
-    return { address, publicBaseUrl: configuration.publicBaseUrl };
+    return {
+      address,
+      publicBaseUrl: configuration.publicBaseUrl,
+      fallbackBaseUrls: configuration.fallbackBaseUrls,
+    };
   }
 
   async function stop() {

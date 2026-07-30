@@ -168,7 +168,7 @@ async fn install_app_update(
         operation_id,
         "update",
         "检查应用更新",
-        "http://10.1.11.36:17879/latest.json",
+        "http://39.155.172.162:17879/latest.json",
     );
     let _progress = source::enter_operation_progress(operation_id);
     let installed = updater::download_and_install(&app, operation_id, &cancelled)

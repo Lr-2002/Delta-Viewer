@@ -174,12 +174,15 @@ async function verify(options) {
     throw new Error("base Tauri config must leave updater artifacts to the controlled release jobs");
   }
   const updaterConfig = tauriConfig.plugins?.updater;
-  const expectedUpdaterEndpoint = `${updateServiceConfig.publicBaseUrl}/latest.json`;
+  const expectedFallbackBaseUrls = ["http://10.1.11.36:17879"];
+  const expectedUpdaterEndpoints = [
+    `${updateServiceConfig.publicBaseUrl}/latest.json`,
+    ...expectedFallbackBaseUrls.map((baseUrl) => `${baseUrl}/latest.json`),
+  ];
   if (
     !updaterConfig
     || !Array.isArray(updaterConfig.endpoints)
-    || updaterConfig.endpoints.length !== 1
-    || updaterConfig.endpoints[0] !== expectedUpdaterEndpoint
+    || JSON.stringify(updaterConfig.endpoints) !== JSON.stringify(expectedUpdaterEndpoints)
     || updaterConfig.dangerousInsecureTransportProtocol !== true
     || updaterConfig.windows?.installMode !== "passive"
   ) {
@@ -189,7 +192,8 @@ async function verify(options) {
     updateServiceConfig.schemaVersion !== 1
     || updateServiceConfig.listenHost !== "0.0.0.0"
     || updateServiceConfig.listenPort !== 17879
-    || updateServiceConfig.publicBaseUrl !== "http://10.1.11.36:17879"
+    || updateServiceConfig.publicBaseUrl !== "http://39.155.172.162:17879"
+    || JSON.stringify(updateServiceConfig.fallbackBaseUrls) !== JSON.stringify(expectedFallbackBaseUrls)
     || updateServiceConfig.upstreamManifestUrl
       !== "https://github.com/Lr-2002/Delta-Viewer/releases/latest/download/latest.json"
     || !Number.isInteger(updateServiceConfig.refreshIntervalSeconds)

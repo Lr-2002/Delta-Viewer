@@ -822,7 +822,7 @@ jobs:
 
           Three compiled installers are attached: Windows x64, macOS Apple Silicon, and Ubuntu 22.04+ x86_64 deb. All three passed dependency, bundled-resource, install or mount, startup, checksum, and automatic-update signature gates before publication. The macOS job also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, Apple notarization, and trusted Linux package signing are intentionally not claimed; the separate Minisign signature authenticates only in-app update payloads.
 
-          Installed clients do not need GitHub access. The fixed update mirror at http://10.1.11.36:17879 synchronizes this immutable release, verifies the complete set, and serves the signed updater payloads locally.
+          Installed clients do not need GitHub access. The fixed update mirror at http://39.155.172.162:17879 synchronizes this immutable release, verifies the complete set, and serves the signed updater payloads locally.
 
           User guide: https://github.com/${{ github.repository }}/wiki
 

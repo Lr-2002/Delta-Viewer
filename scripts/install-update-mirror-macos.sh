@@ -80,7 +80,7 @@ launchctl kickstart -k "$service_target" >/dev/null 2>&1 || true
 
 for _ in {1..30}; do
   if curl --fail --silent --max-time 1 http://127.0.0.1:17879/healthz >/dev/null; then
-    echo "DOHC Viewer update mirror is running at http://10.1.11.36:17879/"
+    echo "DOHC Viewer update mirror is running at http://39.155.172.162:17879/"
     exit 0
   fi
   sleep 1
