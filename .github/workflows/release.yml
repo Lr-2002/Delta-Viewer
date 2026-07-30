@@ -351,20 +351,33 @@ jobs:
             -BuildId $env:FFMPEG_BUILD_ID `
             -ReviewedPortable
 
-      - name: Create unsigned Windows bundle configuration
+      - name: Create separate Windows installer and updater configurations
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $config = [ordered]@{
+          $installerConfig = [ordered]@{
             bundle = [ordered]@{
               useLocalToolsDir = $true
             }
           }
-          $configPath = Join-Path $env:RUNNER_TEMP "tauri-release-unsigned.json"
-          [IO.File]::WriteAllText($configPath, (($config | ConvertTo-Json -Depth 5) + "`n"))
+          $updaterConfig = [ordered]@{
+            bundle = [ordered]@{
+              useLocalToolsDir = $true
+              windows = [ordered]@{
+                webviewInstallMode = [ordered]@{
+                  type = "downloadBootstrapper"
+                  silent = $true
+                }
+              }
+            }
+          }
+          $installerConfigPath = Join-Path $env:RUNNER_TEMP "tauri-release-installer.json"
+          $updaterConfigPath = Join-Path $env:RUNNER_TEMP "tauri-release-updater.json"
+          [IO.File]::WriteAllText($installerConfigPath, (($installerConfig | ConvertTo-Json -Depth 8) + "`n"))
+          [IO.File]::WriteAllText($updaterConfigPath, (($updaterConfig | ConvertTo-Json -Depth 8) + "`n"))
 
       - name: Build unsigned offline NSIS installer
-        run: pnpm tauri build --ci --bundles nsis --no-sign --config "$env:RUNNER_TEMP\tauri-release-unsigned.json"
+        run: pnpm tauri build --ci --bundles nsis --no-sign --config "$env:RUNNER_TEMP\tauri-release-installer.json"
 
       - name: Verify unsigned state, install, launch, resources, and uninstall
         shell: pwsh
@@ -376,6 +389,63 @@ jobs:
             -WebView2Url "$env:WEBVIEW2_URL" `
             -WebView2Sha256 "$env:WEBVIEW2_SHA256" `
             -OutputDirectory "$env:RUNNER_TEMP\release-assets"
+
+      - name: Build bounded NSIS updater without duplicate WebView2 payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $nsisDirectory = "src-tauri\target\release\bundle\nsis"
+          if (Test-Path -LiteralPath $nsisDirectory) {
+            Remove-Item -LiteralPath $nsisDirectory -Recurse -Force
+          }
+          pnpm tauri build --ci --bundles nsis --no-sign --config "$env:RUNNER_TEMP\tauri-release-updater.json"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to build the NSIS updater installer" }
+
+      - name: Sign and stage bounded Windows updater
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $updaters = @(Get-ChildItem -LiteralPath "src-tauri\target\release\bundle\nsis" -File -Filter "*.exe")
+          if ($updaters.Count -ne 1) {
+            throw "Expected exactly one NSIS updater installer, found $($updaters.Count)"
+          }
+          if ($updaters[0].Length -lt 1MB -or $updaters[0].Length -gt 64MB) {
+            throw "NSIS updater installer is outside the 1-64 MiB bounded-memory contract"
+          }
+          $scratch = Join-Path $env:RUNNER_TEMP "nsis-updater-contents"
+          New-Item -ItemType Directory -Path $scratch | Out-Null
+          $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          & $sevenZip x -y "-o$scratch" $updaters[0].FullName | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7-Zip could not extract the NSIS updater" }
+          $webViewPayloads = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -Filter "MicrosoftEdgeWebView2RuntimeInstaller*.exe")
+          if ($webViewPayloads.Count -ne 0) {
+            throw "NSIS updater must not duplicate the offline WebView2 payload"
+          }
+          $apps = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -Filter "dohc-viewer.exe")
+          $ffmpegs = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -Filter "ffmpeg.exe")
+          $manifests = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -Filter "ffmpeg-manifest.json")
+          $licenses = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -Filter "FFmpeg.txt")
+          if ($apps.Count -ne 1 -or $ffmpegs.Count -ne 1 -or $manifests.Count -ne 1 -or $licenses.Count -ne 1) {
+            throw "NSIS updater is missing the application or reviewed FFmpeg resources"
+          }
+          $updaterAuthenticode = Get-AuthenticodeSignature -LiteralPath $updaters[0].FullName
+          $appAuthenticode = Get-AuthenticodeSignature -LiteralPath $apps[0].FullName
+          if ($updaterAuthenticode.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned -or
+              $appAuthenticode.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned) {
+            throw "NSIS updater or application unexpectedly contains Authenticode"
+          }
+          pnpm tauri signer sign $updaters[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "Failed to sign the NSIS updater archive" }
+          $signature = "$($updaters[0].FullName).sig"
+          if (-not (Test-Path -LiteralPath $signature -PathType Leaf)) {
+            throw "NSIS updater signature is missing"
+          }
+          $name = "DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_windows-x64-updater.exe"
+          Copy-Item -LiteralPath $updaters[0].FullName -Destination (Join-Path $env:RUNNER_TEMP "release-assets\$name")
+          Copy-Item -LiteralPath $signature -Destination (Join-Path $env:RUNNER_TEMP "release-assets\$name.sig")
 
       - name: Attest Windows installer provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
@@ -485,6 +555,13 @@ jobs:
           [[ "$app_count" == "1" ]] || { echo "Expected one app bundle, found $app_count" >&2; exit 1; }
           app="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' -print)"
           bash scripts/seal-macos-app-adhoc.sh --app "$app"
+          updater="$bundle_root/macos/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.app.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "$updater" -C "$(dirname "$app")" "$(basename "$app")"
+          updater_size="$(stat -f '%z' "$updater")"
+          (( updater_size >= 1048576 && updater_size <= 67108864 )) || {
+            echo "macOS updater archive is outside the 1-64 MiB bounded-memory contract" >&2
+            exit 1
+          }
           mkdir -p "$bundle_root/dmg"
           bash scripts/make-dmg.sh \
             --app "$app" \
@@ -500,6 +577,25 @@ jobs:
             --tag "${{ needs.controller.outputs.tag }}" \
             --commit "${{ needs.controller.outputs.commit }}" \
             --output "$RUNNER_TEMP/release-assets"
+
+      - name: Verify, sign, and stage macOS updater
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          updater="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.app.tar.gz"
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          tar -xzf "$updater" -C "$scratch"
+          extracted_count="$(find "$scratch" -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')"
+          [[ "$extracted_count" == "1" ]] || { echo "Updater archive must contain one app" >&2; exit 1; }
+          extracted_app="$(find "$scratch" -maxdepth 1 -type d -name '*.app' -print)"
+          codesign --verify --deep --strict "$extracted_app"
+          pnpm tauri signer sign "$updater"
+          test -f "$updater.sig"
+          cp "$updater" "$updater.sig" "$RUNNER_TEMP/release-assets/"
 
       - name: Attest macOS installer provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
@@ -624,6 +720,22 @@ jobs:
             --commit "${{ needs.controller.outputs.commit }}" \
             --output-directory "$RUNNER_TEMP/release-assets"
 
+      - name: Sign verified Ubuntu deb for automatic updates
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          deb="$RUNNER_TEMP/release-assets/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_ubuntu-22.04+-x64.deb"
+          size="$(stat -c '%s' "$deb")"
+          (( size >= 1048576 && size <= 67108864 )) || {
+            echo "Ubuntu updater deb is outside the 1-64 MiB bounded-memory contract" >&2
+            exit 1
+          }
+          pnpm tauri signer sign "$deb"
+          test -f "$deb.sig"
+
       - name: Attest Ubuntu deb provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
@@ -708,7 +820,9 @@ jobs:
           cat > "$notes_file" <<EOF
           WARNING: This release has no trusted publisher signature. Windows will show an unknown-publisher or SmartScreen warning. The macOS app has a valid local ad-hoc resource seal but no Developer ID or notarization, so first launch requires the standard System Settings > Privacy & Security > Open Anyway override. The Ubuntu deb package is unsigned; verify SHA256SUMS.txt before use.
 
-          Three compiled installers are attached: Windows x64, macOS Apple Silicon, and Ubuntu 22.04+ x86_64 deb. All three passed dependency, bundled-resource, install or mount, startup, and checksum gates before publication. The macOS job also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, Apple notarization, and trusted Linux package signing are intentionally not claimed.
+          Three compiled installers are attached: Windows x64, macOS Apple Silicon, and Ubuntu 22.04+ x86_64 deb. All three passed dependency, bundled-resource, install or mount, startup, checksum, and automatic-update signature gates before publication. The macOS job also passed strict nested-code/resource verification and a synthetic-quarantine policy check. A runner-only Internal Xprotect Error is accepted only when an independently built minimal control app produces the same result; this state is recorded in the verification report. Product-only XProtect errors and all structural signature errors block publication. Authenticode, Developer ID, Apple notarization, and trusted Linux package signing are intentionally not claimed; the separate Minisign signature authenticates only in-app update payloads.
+
+          Installed clients do not need GitHub access. The fixed update mirror at http://10.1.11.36:17879 synchronizes this immutable release, verifies the complete set, and serves the signed updater payloads locally.
 
           User guide: https://github.com/${{ github.repository }}/wiki
 

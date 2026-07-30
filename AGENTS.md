@@ -5,7 +5,7 @@
 ## 1. 不可破坏的产品约束
 
 1. 源 SD 卡是只读数据源。不得在源路径创建、修改、重命名或删除任何文件。
-2. 应用运行时只处理本机目录，不增加 SSH、HTTP、云存储或遥测路径。
+2. 数据运行时只处理本机目录，不增加 SSH、HTTP、云存储或遥测数据路径。唯一联网例外是登录后的应用更新：客户端只能读取固定镜像 `http://10.1.11.36:17879`，由该镜像机访问项目官方 GitHub Release；不得发送账号、路径、标注、报告、hash 或遥测，失败不得阻断本地工作流。
 3. 正常工作流是“选择 SD 卡 -> 自动扫描全部 session -> 直接只读加载首条 session -> 健康检查 -> 回放/导出”。正常 UI 不得自动复制源数据；使用期间源卷必须保持挂载。
 4. 导入器仅用于压力验收和未来显式离线导入；一旦执行完整导入，仍必须验证目标端的文件大小和 BLAKE3，不能只信任复制时的源端 hash。
 5. `capture_time_ns` 在 Rust/磁盘中为 int64，在 TypeScript 中必须保持十进制字符串；涉及差值时使用 `BigInt`。
@@ -19,6 +19,7 @@
 13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 Ubuntu 22.04+ x86_64 原生 deb 三个可安装产物；不再构建或发布 macOS x64。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 14. 自 `v0.17.6` 之后，仓库实际默认分支 `main`（口头所称 `master`）不得保留没有对应版本 tag 的独立提交。每个进入 `main` 的 commit 都必须是完整的发布提交：同一 commit 包含全部代码/文档变更、四处一致且唯一的新 semver，以及带日期的 Changelog；CI 成功后必须由发布 workflow 创建精确指向该 commit 的 annotated `vX.Y.Z` tag。禁止先推功能、修复、文档、CI 或配置 commit，再另推 version/release commit；除自动 tag 尚在运行的短暂 pending 状态外，`main` 必须保持一 commit 对应一 tag。
 15. Codex 和其他自动化 agent 在没有收到开发负责人明确版本指令时，只能把当前 semver 的 patch 位连续增加 1（即 `+0.0.1`），不得跳号，也不得根据改动规模自行提升 minor 或 major。minor（例如 `0.17.x -> 0.18.0`）及 major 版本只能按开发负责人明确指定的版本更新；提升 minor 或 major 时 patch 归零。
+16. 自动更新只接受固定镜像同 origin、精确版本目录下当前平台的 1-64 MiB asset，必须在 Rust 中有界读取并用应用内嵌 Ed25519/Minisign 公钥验签后安装。镜像以只读 GET/HEAD 提供资产，从 GitHub 同步时必须先验证完整三平台集合、大小、SHA-256 和签名，再原子激活；失败继续提供上一完整版本。更新使用与其他长任务相同的 `TaskControl`，不能打断扫描/检查/导出。更新私钥只允许存在于受控离线备份和 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets；它不是 GitHub App private key，不得提交、打印或进入 artifact。
 
 ## 2. 仓库结构
 
@@ -28,6 +29,7 @@ DOHC_Viewer/
   CHANGELOG.md                   按 tag 记录的版本历史
   README.md                      用户/构建入口
   AGENTS.md                      本开发指南
+  update-service.config.json    固定 IP 更新镜像与官方上游配置
   .github/workflows/
     release.yml                 三个安装包 CD 与完整集合发布门禁
     wiki.yml                    docs/wiki 到 GitHub Wiki 的同步流程
@@ -43,6 +45,7 @@ DOHC_Viewer/
     src/lib.rs                   Tauri commands 和长任务调度
     src/model.rs                 Rust/IPC 数据模型
     src/identity.rs              本地账号、Argon2id 密码哈希和进程内会话
+    src/updater.rs               固定镜像检查、有界下载、验签和平台安装
     src/annotations.rs           任务目录、轨迹占号和追加式标注修订
     src/source.rs                episode 发现、扫描、状态/帧读取
     src/storage.rs               卷信息、容量预检和 partial 安全清理
@@ -65,7 +68,10 @@ DOHC_Viewer/
   scripts/release-check.mjs      跨平台 quick/full/bundle 发布检查
   scripts/verify-release.mjs     annotated tag、版本与打包契约门禁
   packaging/linux/               Ubuntu deb 的 AppStream metadata
-  scripts/assemble-release.mjs   四个产物/报告汇总与 SHA-256 manifest
+  scripts/assemble-release.mjs   三安装器/更新资产/报告汇总与发布清单
+  scripts/updater-signature.mjs  发布侧流式 Ed25519/Minisign 更新包验签
+  scripts/update-mirror-server.mjs  GitHub 上游验签、原子缓存与只读分发服务
+  scripts/install-update-mirror-macos.sh 本机 launchd 常驻服务安装
   scripts/build-ffmpeg-linux.sh  Linux x64 最小 LGPL FFmpeg 源码构建
   scripts/build-ffmpeg-macos.sh 固定源码构建最小 LGPL FFmpeg
   scripts/seal-macos-app-adhoc.sh macOS app 嵌套代码与资源 ad-hoc 封印
@@ -95,6 +101,8 @@ React component
 - React 组件不得直接调用 `invoke()`；统一经 `src/lib/backend.ts`。
 - `lib.rs` 只负责 command 参数、任务状态和 blocking worker 调度，不放格式逻辑。
 - 同一时间只允许一个长任务；所有新增长任务必须通过 `TaskControl` 获取 guard。
+- `src-tauri/src/updater.rs` 是客户端唯一允许运行时 HTTP 的模块。检查/安装 command 必须验证当前登录会话；只接受 `tauri.conf.json` 固定镜像同 scheme/host/port、精确 `releases/vX.Y.Z/` 目录的 URL，按清单 size 有界下载并独立验签。前端不得提供任意 endpoint、URL、版本或签名。
+- `scripts/update-mirror-server.mjs` 是镜像机唯一的 GitHub 出站路径。它只能从固定仓库 HTTPS Release 同步，必须拒绝部分 target、错误文件名、超限、hash 或签名不符，使用服务自有 partial/版本目录原子激活，并在新同步失败时保留上一版。对客户端只开放 GET/HEAD，不增加上传 API、客户端身份或访问遥测。
 - 导出 IPC 只能使用 `ValidationCache` 中与当前源目录指纹匹配的 Rust 报告；不得接受前端回传的报告或 status 作为授权。
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
 - 源目录遍历统一使用可取消的 no-follow 路径；不要重新引入会隐式跟随 symlink 的文件判断。
@@ -119,8 +127,10 @@ pnpm check:wiki
 pnpm check:linux
 pnpm check:windows-cross
 pnpm check:exfat-macos
+pnpm test:update-mirror
 pnpm check:full
 pnpm check:bundle
+pnpm update-mirror:install
 ```
 
 `pnpm check` 是快速门禁，包含前端 production build、operation ownership 与
@@ -312,6 +322,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 | Tauri config | `pnpm tauri build --debug --no-bundle`；平台配置在目标平台验证 |
 | Windows 条件源码 | `pnpm check:windows-cross`；仍需 Windows 本机构建和运行 |
 | macOS ExFAT 路径 | `pnpm check:exfat-macos`；仍需真实 SD 卡和大容量 formal run |
+| 更新镜像 | `pnpm test:update-mirror`；本机安装后检查 localhost/固定 IP `healthz`、安装页和 `latest.json` |
 | Windows release | Win10/Win11 x64 断网安装、源卡直读、检查、回放、三导出、卸载 |
 | Ubuntu release | Ubuntu 22.04 CI 构建/安装/启动 deb；仍需 Ubuntu 22.04 deb 实机及物理 SD 卡验收 |
 
@@ -500,8 +511,24 @@ unsigned 披露不允许省略 ad-hoc 完整性封印。
    在干净 Ubuntu 22.04 runner 用 `apt` 安装，检查 ELF 动态库、desktop/AppStream、
    FFmpeg 资源，并在 Xvfb 中保持启动 10 秒。
 4. final job 重新读取三份 verification JSON 和安装器 hash，生成
-   `release-manifest.json`、`SHA256SUMS.txt` 和 provenance；三个 installer 集合完整
-   后才解除 draft。公开过的 tag 不允许 clobber。
+   `latest.json`、`release-manifest.json`、`SHA256SUMS.txt` 和 provenance；三个 installer
+   及其 updater/signature 集合完整后才解除 draft。final job 必须使用配置中的公钥重新
+   验证每个更新签名，并拒绝错误 target、超限大小或篡改内容。公开过的 tag 不允许 clobber。
+
+Windows updater 使用不内嵌离线 WebView2 的 NSIS executable，macOS updater 是完成 ad-hoc seal
+后的 arm64 app tarball，Ubuntu updater 复用已经过 `apt` 安装/启动验证的正式 deb；三者
+都必须保持 1-64 MiB。workflow 的三个原生平台 job 分别使用
+`TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 生成签名，secret 不得
+进入普通 env、日志、artifact 或报告。这个更新签名不提供可信发布者身份；installer
+仍必须显示 `UNSIGNED`。自动 tag 继续只用 `GITHUB_TOKEN`，不引入 GitHub App 凭据。
+
+客户端不得直接使用上述 GitHub URL。`update-service.config.json` 固定镜像为
+`http://10.1.11.36:17879`，本机 `launchd` 服务每 5 分钟同步 GitHub 完整 Release，先验证
+三个 target、固定文件名、大小、SHA-256 和 Ed25519/Minisign 签名，再用服务自有 partial
+和版本目录原子激活。失败必须继续提供上一完整版本；缓存只保留当前版和上一版，清理只能
+删除包含匹配 `mirror-release.json` marker 的服务自有目录。镜像对客户端只开放 GET/HEAD，
+不得增加上传、任意代理、访问日志或业务数据。每次 Release 公开后必须确认镜像
+`healthz.version`、安装页和客户端 `latest.json` 已切换到同一版本。
 
 所有安装器文件名、Release 标题/说明和 manifest 必须显示 `UNSIGNED`。加入可信签名时必须
 作为单独版本恢复 Authenticode、Developer ID、timestamp、Gatekeeper 和 notarization
@@ -523,6 +550,7 @@ GitHub Wiki，不直接在网页维护分叉版本。
 - Dialog capability 只开放目录选择和消息框；新增 capability 必须对应明确的用户操作。
 - `argon2 0.5.3`（MIT/Apache-2.0）及其纯 Rust `password-hash`/`blake2` 依赖用于本地 Argon2id PHC 密码哈希，`rand_core` 的操作系统 CSPRNG 生成独立盐；该路径支持 Windows/macOS/Linux，不得降级为明文或快速通用哈希。`v0.14.0` macOS ARM debug 主程序相对已安装的 `v0.13.0` 增加 2,431,504 bytes（约 3.1%，包含本版本全部账号/标注代码和依赖）；Windows release 体积仍需目标构建机记录。
 - `tauri-plugin-opener 2.5.4` 为 MIT/Apache-2.0 双许可的官方跨平台实现。`v0.3.0` 全部变更使 macOS ARM debug 二进制增加 1,239,152 bytes（约 2.2%）；Windows release 体积必须在目标构建机另行记录。
+- `tauri-plugin-updater 2.10.1`（MIT/Apache-2.0）负责跨平台安装；`reqwest 0.13.4`（MIT/Apache-2.0）用于 64 MiB 上限的 HTTP(S) 流式读取，`minisign-verify 0.2.5`（MIT）使用应用内嵌公钥验证更新包。不得退回 updater 插件无大小中止能力的默认 `Vec` 下载路径，也不得关闭签名校验。固定镜像当前使用内网 HTTP，签名是安装完整性的硬门禁。
 - `foxglove 0.26.0`（MIT）、`prost 0.14.4`（Apache-2.0）和 `bytes 1.12.1`（MIT）用于生成官方 Foxglove protobuf schema/消息；Foxglove 默认 features 保持关闭。`v0.9.0` macOS ARM debug 主程序相对 `v0.8.0` 增加 383,472 bytes（约 0.5%），Windows x64 MSVC all-target 条件编译已通过，目标机 release 体积仍需另行记录。
 
 ## 12. Git 与工作区纪律

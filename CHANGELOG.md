@@ -5,6 +5,24 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.10 - 2026-07-30
+
+- Added an authenticated startup check that automatically downloads, verifies,
+  installs, and restarts into a newer release through the fixed local mirror at
+  `10.1.11.36:17879` on Windows x64, macOS arm64, and Ubuntu x86_64; clients no
+  longer need GitHub access and mirror failures do not block local data work.
+- Added a strict 64 MiB download bound, fixed-mirror URL validation, and a
+  dedicated Ed25519/Minisign signature check before any update is installed.
+- Extended Release CD to produce signed platform updater payloads and
+  `latest.json`, plus a read-only mirror service that verifies and atomically
+  caches the complete release while retaining the previous version on sync
+  failure. Existing `0.17.8` installations require one manual `0.17.10` install
+  from the mirror page before later versions can update automatically.
+- Fixed the browser test Tauri contracts so their mocks include the
+  automatic-update commands invoked after local login.
+- Fixed the browser regression locator so the new update control cannot be
+  mistaken for the data-health-check command.
+
 ## 0.17.8 - 2026-07-28
 
 - Fixed Windows release packaging so Tauri's moving WebView2 cache key is

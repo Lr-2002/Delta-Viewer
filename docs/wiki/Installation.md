@@ -1,6 +1,6 @@
 # 安装与升级
 
-只从项目的 [GitHub Releases](https://github.com/Lr-2002/Delta-Viewer/releases) 下载安装包。当前发布通道没有可信发布者签名，Release 标题、说明和三个安装包文件名都必须显示 `UNSIGNED`。macOS app 带有用于验证包完整性的本地 ad-hoc seal，但没有 Apple Developer ID 或 notarization；Ubuntu deb 同样没有可信发行者签名。Release 页面没有完整的 Windows x64、macOS arm64 和 Ubuntu deb 时，不应使用 Actions 临时 artifact 或本地 debug bundle。
+只从固定更新镜像 [http://10.1.11.36:17879/](http://10.1.11.36:17879/) 下载安装包，用户不需要访问 GitHub。当前发布通道没有可信发布者签名，页面中的三个安装包文件名都必须显示 `UNSIGNED`。macOS app 带有用于验证包完整性的本地 ad-hoc seal，但没有 Apple Developer ID 或 notarization；Ubuntu deb 同样没有可信发行者签名。镜像没有同时列出 Windows x64、macOS arm64 和 Ubuntu deb 时不要使用临时 artifact 或本地 debug bundle。
 
 ## Windows 10/11 x64
 
@@ -35,28 +35,32 @@ sudo apt install ./DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb
 
 ## 校验下载文件
 
-同一 Release 中的 `SHA256SUMS.txt` 记录三个安装器和 `release-manifest.json` 的 SHA-256。
+镜像页面列出每个正式安装器的 SHA-256，并提供该版本的 `SHA256SUMS.txt`。下载后必须在本机重新计算并逐字符核对。
 
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\DOHC-Viewer_0.17.4_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\DOHC-Viewer_0.17.10_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
 ```
 
 macOS：
 
 ```bash
-shasum -a 256 DOHC-Viewer_0.17.4_UNSIGNED_macos-arm64.dmg
+shasum -a 256 DOHC-Viewer_0.17.10_UNSIGNED_macos-arm64.dmg
 ```
 
 Ubuntu：
 
 ```bash
-sha256sum 'DOHC-Viewer_0.17.4_UNSIGNED_ubuntu-22.04+-x64.deb'
+sha256sum 'DOHC-Viewer_0.17.10_UNSIGNED_ubuntu-22.04+-x64.deb'
 ```
 
-结果必须与 `SHA256SUMS.txt` 中对应文件完全一致。GitHub CLI 用户还可以用 `gh attestation verify <file> --repo Lr-2002/Delta-Viewer` 验证构建 provenance。
+结果必须与镜像页面和 `SHA256SUMS.txt` 中对应文件完全一致。发布维护人员仍可在能够访问 GitHub 的机器上用 `gh attestation verify <file> --repo Lr-2002/Delta-Viewer` 验证构建 provenance。
 
 ## 升级
 
-退出正在运行的 DOHC Viewer 后安装新版本。当前用户的本地账号、后台检查报告和 episode 标注保存在系统应用数据目录，正常覆盖升级不会删除这些数据。降级默认被安装器阻止，避免新格式数据被旧版本误读。
+`0.17.10` 是自动更新引导版。`0.17.8` 及更早版本没有自动更新能力，需要先从固定镜像根页面手动下载并安装 `0.17.10` 一次。之后应用会在本地登录成功后检查镜像；发现更高版本时，先等待正在执行的扫描、检查或导出结束，再自动下载当前平台更新包、验证项目 Ed25519/Minisign 签名、安装并重启。Ubuntu 安装 deb 时可能出现系统提权确认。
+
+镜像不可达、断网、检查失败、下载失败或签名不匹配都会保留当前版本，并在界面显示可重试提示；检查、回放、标注和导出仍可离线使用。客户端只读取 `http://10.1.11.36:17879`，不访问 GitHub，也不发送账号、源路径、标注、报告、hash 或遥测。
+
+自动更新用的签名只验证更新包来自项目发布流程，不等同于 Windows Authenticode、Apple Developer ID 或可信 Linux 包签名；当前安装器仍明确标记为 `UNSIGNED`。镜像使用内网 HTTP，因此网络设备可能阻断检查，但任何被修改的更新包都会在安装前被签名校验拒绝。当前用户的本地账号、后台检查报告和 episode 标注保存在系统应用数据目录，正常覆盖升级不会删除这些数据。降级默认被安装器阻止，避免新格式数据被旧版本误读。

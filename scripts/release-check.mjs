@@ -699,6 +699,12 @@ async function main() {
       commands.pnpm,
       pnpmArguments(["test:issue-locate"]),
     );
+    await runCommand(
+      report,
+      "signed update mirror regression tests",
+      commands.pnpm,
+      pnpmArguments(["test:update-mirror"]),
+    );
     await runCommand(report, "Rust format check", commands.cargo, [
       "fmt",
       "--manifest-path",

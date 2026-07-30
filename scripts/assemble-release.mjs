@@ -4,12 +4,19 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { parseReleaseChangelog } from "./release-changelog.mjs";
+import { verifyUpdaterSignature } from "./updater-signature.mjs";
+
+const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const MAX_UPDATER_BYTES = 64 * 1024 * 1024;
 
 function parseArguments(argv) {
-  const options = { input: null, output: null, tag: null, commit: null };
+  const options = { input: null, output: null, tag: null, commit: null, root: defaultRoot };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (!["--input", "--output", "--tag", "--commit"].includes(argument)) {
+    if (!["--input", "--output", "--tag", "--commit", "--root"].includes(argument)) {
       throw new Error(`unknown argument: ${argument}`);
     }
     const value = argv[index + 1];
@@ -17,11 +24,13 @@ function parseArguments(argv) {
     index += 1;
     options[argument.slice(2)] = value;
   }
-  for (const [key, value] of Object.entries(options)) {
+  for (const key of ["input", "output", "tag", "commit"]) {
+    const value = options[key];
     if (!value) throw new Error(`--${key} is required`);
   }
   options.input = path.resolve(options.input);
   options.output = path.resolve(options.output);
+  options.root = path.resolve(options.root);
   return options;
 }
 
@@ -43,6 +52,10 @@ function expectedArtifacts(version) {
       architecture: "x64",
       installer: `DOHC-Viewer_${version}_UNSIGNED_windows-x64-setup.exe`,
       report: `DOHC-Viewer_${version}_windows-x64.verification.json`,
+      updater: {
+        target: "windows-x86_64-nsis",
+        fileName: `DOHC-Viewer_${version}_UNSIGNED_windows-x64-updater.exe`,
+      },
     },
     {
       key: "macos-arm64",
@@ -50,6 +63,10 @@ function expectedArtifacts(version) {
       architecture: "arm64",
       installer: `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.dmg`,
       report: `DOHC-Viewer_${version}_macos-arm64.verification.json`,
+      updater: {
+        target: "darwin-aarch64-app",
+        fileName: `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.app.tar.gz`,
+      },
     },
     {
       key: "ubuntu-deb-x64",
@@ -58,11 +75,15 @@ function expectedArtifacts(version) {
       packageKind: "deb",
       installer: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
       report: `DOHC-Viewer_${version}_linux-deb-x64.verification.json`,
+      updater: {
+        target: "linux-x86_64-deb",
+        fileName: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
+      },
     },
   ];
 }
 
-async function validateArtifact(options, expected, version) {
+async function validateArtifact(options, expected, version, updaterPublicKey) {
   const installerPath = path.join(options.input, expected.installer);
   const reportPath = path.join(options.input, expected.report);
   const [installerInfo, report] = await Promise.all([stat(installerPath), readJson(reportPath)]);
@@ -202,11 +223,33 @@ async function validateArtifact(options, expected, version) {
       throw new Error(`${expected.report} has incomplete Debian install/runtime evidence`);
     }
   }
+  const updaterPath = path.join(options.input, expected.updater.fileName);
+  const updaterSignaturePath = `${updaterPath}.sig`;
+  const updaterInfo = await stat(updaterPath);
+  if (!updaterInfo.isFile() || updaterInfo.size < 1_000_000 || updaterInfo.size > MAX_UPDATER_BYTES) {
+    throw new Error(`${expected.updater.fileName} is missing or outside the updater size limit`);
+  }
+  const updaterSignature = await verifyUpdaterSignature(
+    updaterPath,
+    updaterSignaturePath,
+    updaterPublicKey,
+  );
+
   return {
     ...expected,
     sourcePath: installerPath,
     sizeBytes: installerInfo.size,
     sha256: actualHash,
+    updater: {
+      ...expected.updater,
+      signatureFile: `${expected.updater.fileName}.sig`,
+      sizeBytes: updaterInfo.size,
+      sha256: await sha256(updaterPath),
+      signature: updaterSignature.signature,
+      keyId: updaterSignature.keyId,
+    },
+    updaterSourcePath: updaterPath,
+    updaterSignatureSourcePath: updaterSignaturePath,
     verification: {
       ffmpegSha256: report.ffmpeg.sha256,
       ffmpegSourceBinarySha256: report.ffmpeg.sourceBinarySha256,
@@ -237,6 +280,15 @@ async function main() {
   if (!tagMatch) throw new Error(`invalid release tag: ${options.tag}`);
   if (!/^[0-9a-f]{40}$/.test(options.commit)) throw new Error("--commit must be a full Git SHA");
   const version = tagMatch[1];
+  const tauriConfig = await readJson(path.join(options.root, "src-tauri/tauri.conf.json"));
+  const updaterPublicKey = tauriConfig.plugins?.updater?.pubkey;
+  if (typeof updaterPublicKey !== "string" || !updaterPublicKey.trim()) {
+    throw new Error("Tauri updater public key is missing");
+  }
+  const changelog = parseReleaseChangelog(
+    await readFile(path.join(options.root, "CHANGELOG.md"), "utf8"),
+    version,
+  );
 
   await mkdir(options.output, { recursive: true });
   const existing = await readdir(options.output);
@@ -244,20 +296,66 @@ async function main() {
 
   const expected = expectedArtifacts(version);
   const inputEntries = await readdir(options.input);
+  const expectedInputFiles = new Set(expected.flatMap((item) => [
+    item.installer,
+    item.report,
+    item.updater.fileName,
+    `${item.updater.fileName}.sig`,
+  ]));
   const unexpectedInstallers = inputEntries.filter(
     (name) =>
-      /\.(?:deb|dmg|exe|flatpak)$/i.test(name) &&
-      !expected.some((item) => item.installer === name),
+      /(?:\.(?:deb|dmg|exe|flatpak|sig)|\.nsis\.zip|\.app\.tar\.gz)$/i.test(name) &&
+      !expectedInputFiles.has(name),
   );
   if (unexpectedInstallers.length > 0) {
     throw new Error(`unexpected installer artifacts: ${unexpectedInstallers.join(", ")}`);
   }
 
   const verified = [];
-  for (const item of expected) verified.push(await validateArtifact(options, item, version));
+  for (const item of expected) {
+    verified.push(await validateArtifact(options, item, version, updaterPublicKey));
+  }
+  const copied = new Set();
   for (const item of verified) {
     await copyFile(item.sourcePath, path.join(options.output, item.installer), 0);
+    copied.add(item.installer);
+    if (!copied.has(item.updater.fileName)) {
+      await copyFile(
+        item.updaterSourcePath,
+        path.join(options.output, item.updater.fileName),
+        0,
+      );
+      copied.add(item.updater.fileName);
+    }
+    await copyFile(
+      item.updaterSignatureSourcePath,
+      path.join(options.output, item.updater.signatureFile),
+      0,
+    );
   }
+
+  const releaseAssetUrl = (fileName) => (
+    `https://github.com/Lr-2002/Delta-Viewer/releases/download/${options.tag}/${encodeURIComponent(fileName)}`
+  );
+  const latest = {
+    version,
+    notes: changelog.body,
+    pub_date: `${changelog.date}T00:00:00Z`,
+    platforms: Object.fromEntries(verified.map((item) => [
+      item.updater.target,
+      {
+        url: releaseAssetUrl(item.updater.fileName),
+        signature: item.updater.signature,
+        size: item.updater.sizeBytes,
+        sha256: item.updater.sha256,
+      },
+    ])),
+  };
+  await writeFile(
+    path.join(options.output, "latest.json"),
+    `${JSON.stringify(latest, null, 2)}\n`,
+    { flag: "wx" },
+  );
 
   const manifest = {
     schemaVersion: 1,
@@ -271,14 +369,22 @@ async function main() {
       trustedPublisher: false,
       warning:
         "These installers are not signed by a trusted publisher or notarized. The macOS app has a valid local ad-hoc seal but still requires the standard Gatekeeper user override; the Ubuntu deb package is unsigned. Verify SHA256SUMS.txt before use.",
+      updaterSignature: "minisign-ed25519",
+      updaterPublicKeyId: verified[0].updater.keyId,
     },
-    assets: verified.map(({ sourcePath: _sourcePath, report: _report, ...item }) => item),
+    assets: verified.map(({
+      sourcePath: _sourcePath,
+      report: _report,
+      updaterSourcePath: _updaterSourcePath,
+      updaterSignatureSourcePath: _updaterSignatureSourcePath,
+      ...item
+    }) => item),
   };
   const manifestName = "release-manifest.json";
   const manifestPath = path.join(options.output, manifestName);
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
 
-  const checksumTargets = [...verified.map((item) => item.installer), manifestName].sort();
+  const checksumTargets = (await readdir(options.output)).sort();
   const checksumLines = [];
   for (const name of checksumTargets) {
     checksumLines.push(`${await sha256(path.join(options.output, name))}  ${name}`);

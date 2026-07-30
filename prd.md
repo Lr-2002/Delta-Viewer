@@ -3,11 +3,11 @@
 | 属性 | 内容 |
 | --- | --- |
 | 产品名称 | DOHC Viewer |
-| 文档版本 | 0.22 |
-| 应用版本基线 | 0.17.8 |
-| 文档状态 | 安全 Alpha，三安装器 unsigned GitHub Release CD 与平台完整性门禁已定义，等待可信签名与目标机验收 |
+| 文档版本 | 0.24 |
+| 应用版本基线 | 0.17.10 |
+| 文档状态 | 安全 Alpha，三安装器 unsigned CD、固定 IP 更新镜像与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64；Ubuntu 22.04+ x86_64 deb |
-| 文档日期 | 2026-07-28 |
+| 文档日期 | 2026-07-30 |
 | 产品负责人 | 待指定 |
 | 技术负责人 | 待指定 |
 
@@ -15,7 +15,7 @@
 
 本文定义 DOHC Viewer 的产品边界、数据契约、用户流程、功能需求、非功能需求和发布验收标准。产品、设计、开发和测试均以本文为共同基线。
 
-本文同时记录当前 `0.17.8` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
+本文同时记录当前 `0.17.10` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
 
 ## 2. 背景与问题
 
@@ -35,14 +35,14 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 
 | 编号 | 决策 |
 | --- | --- |
-| D-001 | 产品运行时只支持本机可见的 SD 卡或本地目录，不支持 SSH、HTTP、NAS 或其他网络数据源。 |
+| D-001 | 产品数据运行时只支持本机可见的 SD 卡或本地目录，不支持 SSH、HTTP、NAS 或其他网络数据源。客户端自动更新只能访问 D-031 指定的固定 IP 镜像，不构成网络数据源。 |
 | D-002 | 正常工作流直接从已挂载源目录只读加载，进行全量结构/状态检查和固定百分位 JPEG 抽检，然后回放和导出；不自动复制源数据。正式压力/发布验收仍全量解码 JPEG。 |
 | D-003 | 正式安装包覆盖 Windows 10/11 x64、macOS 12+ arm64 与 Ubuntu 22.04+ x86_64 原生 deb；首个现场验收重点仍为 Windows。技术栈为 Tauri 2、Rust、React 和 TypeScript。 |
 | D-004 | 推荐未来采集卡使用 exFAT，以便 Windows/macOS 直接读取；当前 ext4 卡必须先备份再格式化。 |
 | D-005 | 导入完整性采用“文件大小 + BLAKE3”逐文件回读校验，并生成数据集级 BLAKE3。 |
 | D-006 | 导出格式通过独立 adapter 实现，首批为 MCAP、HDF5 和 LeRobot v2.1。 |
 | D-007 | 数据存在 warning 时允许导出；存在 error 时必须阻止正常导出。 |
-| D-008 | 应用不依赖运行时网络，Windows 安装包必须包含离线 WebView2 安装能力和 FFmpeg。 |
+| D-008 | 核心检查、回放、标注和导出不依赖运行时网络；Windows 安装包必须包含离线 WebView2 安装能力和 FFmpeg。自动更新检查失败或断网不得阻断这些本地功能。 |
 | D-009 | 源数据没有 `action` 字段，LeRobot 导出不得虚构 action。 |
 | D-010 | 文件和目录名必须兼容 Windows；旧数据中的非法字符由导入器确定性替换。 |
 | D-011 | 100 GB 正式验收必须使用 exFAT 实卡、不同本地工作卷、release exact tag 和显式 reviewed FFmpeg；开发 fixture 结果不得替代。 |
@@ -65,6 +65,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-028 | macOS AppleDouble `._*` 和 `.DS_Store` 是平台元数据，不属于采集数据；扫描统计、数据指纹、校验和显式导入统一忽略这些文件，但不得删除或修改源卡。其他非数字 JPEG 文件名仍按 `INVALID_FRAME_FILENAME` error 处理。 |
 | D-029 | 后续 Release 不再构建或发布 macOS Intel/x64 DMG；macOS 正式分发仅保留 Apple Silicon/arm64。已经公开的旧 tag 和其中的 x64 资产保持不可变历史，不删除、不覆盖，也不代表继续维护。 |
 | D-030 | 本机已保存的 episode 标注可作为批量导出清单，但标注不复制或缓存源数据。批量导出只处理仍可从原规范化路径读取且指纹与标注时一致的完整 episode；所有条目共用一个目标目录和一种格式，按顺序重新检查并导出。单条失败不阻断后续条目；取消会中止当前未完成条目并停止后续队列，同时保留已经原子发布的输出。 |
+| D-031 | 用户登录后只检查固定镜像 `http://10.1.11.36:17879`；发现更高 semver 时，在当前长任务完成后自动下载当前平台更新包、验证嵌入应用的 Ed25519/Minisign 公钥、安装并重启。客户端不得直连 GitHub，只接受镜像同 scheme/host/port 和精确 `releases/vX.Y.Z/` 目录；更新包必须为 1-64 MiB 且流式读取不得越界。镜像机每 5 分钟从 `Lr-2002/Delta-Viewer` 官方 HTTPS Release 同步，完整验证三个 target、文件名、大小、SHA-256 和签名后原子激活；同步失败继续提供上一完整版本，并以只读 GET/HEAD 同时提供三个正式安装包和 SHA-256 页面。不得随请求发送账号、源路径、标注、报告、hash 或遥测。Windows 使用 NSIS updater，macOS 使用 ad-hoc sealed app archive，Ubuntu 使用 x86_64 deb；Linux 安装可触发系统提权确认。检查、下载、验签或安装失败必须可见、可重试并保持当前版本可用。内网 HTTP 的可用性可被网络攻击者干扰，但任何未通过内嵌公钥验签的字节都不得安装。`0.17.10` 是自动更新引导版，旧版本需从镜像页手动安装一次。 |
 
 ## 4. 产品目标
 
@@ -79,12 +80,13 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 7. 在无网络环境中完成核心工作流。
 8. 用本地账号、任务标注和唯一轨迹编码记录数据处理归属，并让三种导出继承同一语义。
 9. 让用户从本机标注目录一次选择多条完整轨迹，按统一格式批量导出并逐条查看结果。
+10. 在客户端无法访问 GitHub 时，通过固定 IP 签名镜像让引导版自动升级到完整通过发布门禁的新版本。
 
 ### 4.2 成功指标
 
 - 正常 UI 选择源后不会调用导入 IPC，也不会新增 `appLocalData/imports` 数据副本。
 - 固定抽检位置上的已知损坏 JPEG，以及任意位置的空流、无效状态 JSON 和非单调时间戳均能被交互检查检出；正式全量检查能检出任意位置的已知损坏 JPEG。
-- 每个 warning/error 检查结果都有可回读的本地后台报告；ok 不产生无意义报告，整个过程不发起网络请求。
+- 每个 warning/error 检查结果都有可回读的本地后台报告；ok 不产生无意义报告，健康检查和报告过程本身不发起网络请求。
 - 每个用户可见的操作失败都有可回读的本地历史记录；关闭提示或重启应用后，最近 200 条仍可在界面查看。
 - 标准测试记录能够成功导出三种格式并被各自读取器重新打开。
 - 用户从选择源到看到第一条进度反馈不超过 1 秒。
@@ -94,6 +96,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 - 现场用户无需命令行脚本即可完成主要任务。
 - 相同应用数据目录中不会把一个轨迹编码分配给两个不同 episode；每次标注修订记录当前登录账号。
 - 批量导出只从后端可信的最新标注生成候选项；源断开、路径身份变化或指纹变化的条目不会被导出，其他有效条目仍可继续。
+- 引导版只访问固定 IP 镜像，发现更高版本后只安装通过嵌入公钥验签且大小受限的当前平台更新包；镜像断开、断网或更新失败不影响本地数据工作流。
 
 ### 4.3 非目标
 
@@ -464,7 +467,10 @@ task, phase, current, total, bytesDone, totalBytes, currentPath, elapsedMs
 
 ### 9.4 离线、安全与隐私
 
-- 核心功能不得发起网络请求。
+- 检查、回放、标注、报告和导出等核心数据功能不得发起网络请求；断网时全部保持可用。
+- 唯一运行时联网能力是登录后的自动更新：客户端只向 `http://10.1.11.36:17879/latest.json` 和同 origin 版本资产发出 GET，不直连 GitHub，不附加账号、源路径、标注、报告、hash 或遥测。失败不得阻断核心功能。
+- 更新包必须先匹配清单中的精确字节数和 1-64 MiB 上限，再使用内嵌 Ed25519/Minisign 公钥验签；任一不匹配不得进入安装。固定镜像的 HTTP 传输不替代签名，攻击者即使能修改局域网流量也只能造成更新不可用，不能提供可安装的篡改字节。公钥可提交，更新私钥只能保存在发布者受控位置和 GitHub Actions secrets。
+- 镜像机是唯一访问 GitHub 更新元数据/资产的运行时组件；它不记录客户端地址或业务数据，只开放 GET/HEAD。新版本必须下载到服务自有 partial，验证完整三平台集合后原子切换，失败保留上一已验证版本。
 - 不收集遥测，不上传路径、图像、状态或 hash。
 - 本地账号密码使用 Argon2id 和操作系统 CSPRNG 盐；密码、盐和标注均不通过网络传输。
 - 账号、标注与操作错误历史使用当前用户可写的应用 local-data；Unix 新文件权限为 `0600`，Windows 继承当前用户目录 ACL。
@@ -485,7 +491,7 @@ task, phase, current, total, bytesDone, totalBytes, currentPath, elapsedMs
 ### 10.1 全局区域
 
 - 视觉系统：界面背景、控件、选中态和状态使用黑、白与中性灰；相机画面保持原始颜色，不应用灰度滤镜。telemetry 的 X/Y/Z/W 数据系列使用稳定的红、绿、蓝、紫，并同时使用文字和不同线型区分。
-- 顶栏：产品名、当前源路径、健康状态、选择 SD 卡、操作错误历史、当前登录账号和退出按钮；选择后自动扫描全部 session，首条直接从源路径只读检查并进入回放，不提供导入按钮。
+- 顶栏：产品名/当前版本、更新状态、当前源路径、健康状态、选择 SD 卡、操作错误历史、当前登录账号和退出按钮；选择后自动扫描全部 session，首条直接从源路径只读检查并进入回放，不提供导入按钮。更新检查失败显示非阻断提示和重试入口。
 - 任务条：当前阶段、路径、进度、吞吐/耗时、取消按钮。
 - 左侧栏：episode 列表、选中状态、文件数、容量和五路存在状态；单击选择，双击或聚焦后按 Enter/空格进入回放。
 - 主工作区：回放、检查、导出、批量四个 tab；没有当前已加载 episode 时仍可进入批量页。
@@ -557,7 +563,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 - 原生 deb 正式支持 x86_64 Ubuntu 22.04 及以上，文件名固定为 `DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`。
 - deb job 固定在 Ubuntu 22.04 runner 构建。deb 必须声明 `libwebkit2gtk-4.1-0`、`libgtk-3-0`、`libayatana-appindicator3-1` 和 `librsvg2-2`，并用 `apt` 安装后检查 `amd64` 元数据、动态库、应用资源和启动；不得把只解包或只构建当作安装通过。
-- 应用自身不联网、不写源 SD 卡，源卡必须由系统以只读方式挂载。
+- Ubuntu 数据工作流不联网且不写源 SD 卡，源卡必须由系统以只读方式挂载；自动更新仍只使用 D-031 的固定 IP 镜像。
 
 ### 12.4 正式 CD 与 GitHub Release
 
@@ -567,7 +573,10 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - Windows 固定 reviewed FFmpeg binary/license/build notice 与 WebView2 exact Microsoft URL/SHA-256；Tauri evergreen 跳转只解析缓存键，缓存和 NSIS 必须使用固定 hash 的已审核 WebView2 字节；macOS 从固定官方 FFmpeg source archive hash/Git revision 构建 arm64 sidecar。
 - Windows 检查 DOHC 产物为 unsigned、Microsoft WebView2 签名、NSIS 内嵌 hash、silent install/startup/uninstall；macOS 检查 ad-hoc sealed nested code/resources、没有 Developer ID/notarization claim、DMG 挂载、资源 hash、synthetic-quarantine Gatekeeper 分类和复制后直接启动。
 - Release 标题、说明、三个 installer 名称、verification report 和 manifest 必须显示 `UNSIGNED`；后续引入签名时恢复 Authenticode、timestamp、Developer ID、Gatekeeper、notarization 和可信 Linux 包发布门禁。
-- final job 重新核对三份 verification report 和安装器 SHA-256，生成 `release-manifest.json`、`SHA256SUMS.txt` 和 GitHub provenance。三安装器集合完整后才解除 draft，已经公开的 tag 不允许覆盖。
+- 三个平台同时生成自动更新资产：Windows x64 NSIS updater executable、macOS arm64 ad-hoc sealed app tarball、Ubuntu x86_64 deb。每个更新资产必须使用独立 Ed25519/Minisign 私钥签名；final job 用 `tauri.conf.json` 内嵌公钥重新验签，并生成包含三个精确 target、URL、signature、size 和 SHA-256 的 `latest.json`。更新签名只证明更新字节来自本项目发布流程，不得把外层 installer 描述为 Authenticode、Developer ID 或可信 Linux 包签名。
+- final job 重新核对三份 verification report、安装器 SHA-256、更新包大小与签名，生成 `latest.json`、`release-manifest.json`、`SHA256SUMS.txt` 和 GitHub provenance。三安装器及其更新资产集合完整后才解除 draft，已经公开的 tag 不允许覆盖。
+- 本机镜像服务由 `launchd` 常驻在 `0.0.0.0:17879`，上游固定为 GitHub `latest.json`；每 5 分钟同步一次。客户端清单由镜像重写为 `http://10.1.11.36:17879/releases/vX.Y.Z/...`，签名保持原值。根页面提供同版本三个正式安装包和 SHA-256，供旧版完成一次引导安装。
+- 当前 CD 仍不需要 GitHub App ID/private key 或 release Environment；自动 tag 使用仓库 `GITHUB_TOKEN`。自动更新另需 `TAURI_SIGNING_PRIVATE_KEY` 和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 两个 GitHub Actions secret，它们只用于更新包完整性签名，不能提交到仓库或写入 artifact/log。
 - GitHub hosted runner smoke 不是 Win10/Win11 断网、目标 Mac、真实 SD 卡或 100 GB 实盘验收的替代品。
 
 ### 12.5 版本管理
@@ -629,6 +638,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 | AT-030 | 检查 Linux 打包配置和 Release 产物集合 | 仓库没有 Flatpak manifest、构建或验证脚本；Linux 打包契约只接受 Ubuntu 22.04+ x86_64 deb，Release 汇总发现 Flatpak 产物时拒绝发布 |
 | AT-031 | 在干净 Ubuntu 22.04 CI 用 `apt` 安装原生 deb | package/version/amd64/依赖正确，无 deb 签名声明；应用 binary、desktop、metainfo、icon、FFmpeg/许可证/manifest 完整且动态库无缺失，并在 Xvfb + D-Bus 中保持运行 10 秒 |
 | AT-032 | 本机有源断开、健康状态 error、warning 和通过的已标注数据，再执行批量 MCAP 导出 | 清单标记断开的源；后端请求仍逐条校验，断开/error 项返回失败且各自生成可定位的本机失败日志，warning 经一次确认后与通过项完成导出和回读并可定位输出；取消中止当前未完成项、不启动后续条目，且已完成输出保留 |
+| AT-033 | 固定 IP 镜像分别面对“完整新版本、部分 target、断网、清单超限、资产被篡改”，已登录引导版再检查镜像 | 镜像只原子激活完整且 hash/签名正确的三平台集合，失败继续提供上一版；客户端不访问 GitHub，只接受同 origin 精确版本路径，更高版本在当前长任务空闲后自动下载、验签、安装并重启；请求不包含本地业务数据；镜像不可达显示可重试提示且核心功能可用；大小不符、超过 64 MiB 或签名错误均拒绝安装并保留当前版本。Release 汇总缺少任一平台更新资产或签名时不得公开 |
 
 ## 14. 当前实现状态
 
@@ -642,6 +652,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 五路同步回放、彩色且带线型区分的状态曲线、单轨迹时间裁剪和检查页。
 - 支持闭区间帧裁剪的 MCAP、HDF5、LeRobot v2.1 adapters 与导出 UI。
 - 支持从本机最新标注选择多条完整 episode，以统一格式顺序重新检查和批量导出，并显示逐条结果。
+- 登录后从官方 GitHub Release 自动检查更新；受限下载、Ed25519/Minisign 验签、平台安装与重启共用单长任务门禁，离线失败不阻断本地工作流。
 - 标准样例的完整 import smoke test。
 - 标准样例三格式生成与回读 smoke test。
 - macOS ARM 上的 Tauri debug 二进制构建。
@@ -904,6 +915,14 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - Windows CD 继续固定 WebView2 exact filestreamingservice URL、SHA-256 和 Microsoft Authenticode；Tauri 的 evergreen 跳转只用于解析当前缓存键，不再决定实际打包字节。
 - workflow 将已审核文件复制到 Tauri 当前缓存键，构建后仍从 NSIS 回读并验证内嵌 hash；微软跳转变化不能静默替换发布依赖。
 - `v0.17.7` 的 Windows 内嵌 hash 门禁正确阻止了不完整 Release；修复进入新版本，不移动或覆盖旧 tag。
+
+### 14.33 `0.17.10` 固定 IP 镜像自动更新
+
+- 用户登录后自动读取 `http://10.1.11.36:17879/latest.json`；没有新版本时保持当前运行，发现更高 semver 时等待当前长任务结束，再自动下载、安装并重启。检查或下载失败显示可重试提示，但不影响离线检查、回放、标注和导出。
+- Rust 只接受固定镜像同 origin、精确版本目录的 asset URL，按清单精确大小以 64 MiB 上限流式读取，并使用应用内嵌 Ed25519/Minisign 公钥验签；不向网络发送账号、源路径、标注、报告、hash 或遥测。
+- 本机镜像服务从官方 GitHub Release 同步三平台更新资产和正式安装包，先验证 target、大小、SHA-256 与签名，再用 partial/版本目录原子激活；对外只提供 GET/HEAD、安装页和健康状态，新同步失败继续提供上一完整版本。
+- CD 为 Windows x64、macOS arm64 和 Ubuntu x86_64 分别生成更新资产及签名，由 final job 独立验签并生成 `latest.json`；任一安装器、更新包、签名或 target 缺失都阻止 Release。外层安装器仍明确为无可信发布者身份的 `UNSIGNED`。
+- `0.17.10` 是自动更新引导版；`0.17.8` 及更早版本没有 updater，必须从固定镜像根页面手动安装本版本一次，后续版本才能自动升级。
 
 ## 15. 里程碑
 

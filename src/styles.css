@@ -74,6 +74,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-display > span:not(.source-dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-dot { width: 7px; height: 7px; flex: 0 0 7px; display: inline-block; border-radius: 50%; background: var(--accent); }
 .topbar-actions { display: flex; align-items: center; gap: 9px; }
+.update-trigger { flex: 0 0 32px; }
+.update-trigger.update-failed { color: var(--ink); border-color: #8f8f8f; background: #e2e2e2; }
 .history-trigger { position: relative; flex: 0 0 32px; }
 .history-trigger > span {
   position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; display: grid; place-items: center;
@@ -117,6 +119,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .alert-banner > span:not(.alert-actions) { min-width: 0; overflow: hidden; overflow-wrap: anywhere; line-height: 1.35; }
 .alert-error { color: #171717; background: #e4e4e4; border-color: #969696; }
 .alert-notice { color: #333333; background: #f1f1f1; border-color: #c4c4c4; }
+.update-alert > svg { flex: 0 0 auto; }
 .text-button { flex: 0 0 auto; margin-left: auto; padding: 3px 0; color: inherit; background: none; border: 0; cursor: pointer; font-size: 11px; text-decoration: underline; white-space: nowrap; }
 .alert-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; }
 .alert-actions .text-button { margin-left: 0; }

@@ -1,4 +1,4 @@
-export type TaskName = "scan" | "import" | "validate" | "export";
+export type TaskName = "scan" | "import" | "validate" | "export" | "update";
 
 export interface UserIdentity {
   username: string;
@@ -172,6 +172,14 @@ export interface TaskProgress {
   totalBytes: number;
   currentPath: string;
   elapsedMs: number;
+}
+
+export interface AppUpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  available: boolean;
+  notes: string | null;
+  publishedAt: string | null;
 }
 
 export interface ImportResult {

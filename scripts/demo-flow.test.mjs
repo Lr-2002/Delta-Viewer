@@ -204,7 +204,7 @@ if (!browserExecutable) {
     page.on("requestfailed", (request) => failedRequests.push(request.url()));
 
     await registerDemoAccount(page, baseUrl, "issue-locate");
-    await page.getByRole("button", { name: "检查" }).click();
+    await page.getByRole("button", { name: "检查", exact: true }).click();
     await page.getByRole("button", { name: "定位到帧 180" }).click();
     await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 180 / 195"));
     await page.locator('img[alt="Camera 0 frame 180"]').waitFor();

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  sign as signEd25519,
+} from "node:crypto";
 import { mkdtemp, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,6 +17,48 @@ import { formatReleaseChangelog, parseReleaseChangelog } from "./release-changel
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const verifyScript = path.join(root, "scripts/verify-release.mjs");
 const assembleScript = path.join(root, "scripts/assemble-release.mjs");
+
+function createUpdaterTestSigner() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const keyId = randomBytes(8);
+  const publicDer = publicKey.export({ format: "der", type: "spki" });
+  const publicRecord = Buffer.concat([
+    Buffer.from([0x45, 0x64]),
+    keyId,
+    publicDer.subarray(-32),
+  ]);
+  const publicEnvelope =
+    `untrusted comment: minisign public key: RELEASE TEST\n${publicRecord.toString("base64")}\n`;
+
+  return {
+    wrappedPublicKey: Buffer.from(publicEnvelope, "utf8").toString("base64"),
+    sign(contents, fileName) {
+      const digest = createHash("blake2b512").update(contents).digest();
+      const primarySignature = signEd25519(null, digest, privateKey);
+      const trustedComment = `timestamp:1784592000\tfile:${fileName}\tprehashed`;
+      const globalSignature = signEd25519(
+        null,
+        Buffer.concat([primarySignature, Buffer.from(trustedComment, "utf8")]),
+        privateKey,
+      );
+      const signatureRecord = Buffer.concat([
+        Buffer.from([0x45, 0x44]),
+        keyId,
+        primarySignature,
+      ]);
+      const signatureEnvelope = [
+        "untrusted comment: signature from minisign secret key",
+        signatureRecord.toString("base64"),
+        `trusted comment: ${trustedComment}`,
+        globalSignature.toString("base64"),
+        "",
+      ].join("\n");
+      return Buffer.from(signatureEnvelope, "utf8").toString("base64");
+    },
+  };
+}
+
+const updaterTestSigner = createUpdaterTestSigner();
 
 test("release changelog requires a unique, first, dated, non-empty version entry", () => {
   const valid = `# Changelog
@@ -98,7 +145,15 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
     bundle: {
       active: true,
       category: "Utility",
+      createUpdaterArtifacts: false,
       icon: ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"],
+    },
+    plugins: {
+      updater: {
+        pubkey: updaterTestSigner.wrappedPublicKey,
+        endpoints: ["http://10.1.11.36:17879/latest.json"],
+        windows: { installMode: "passive" },
+      },
     },
   });
   await writeJson(path.join(testRoot, "src-tauri/tauri.macos.conf.json"), {
@@ -128,6 +183,16 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
       targets: ["nsis"],
       windows: { webviewInstallMode: { type: "offlineInstaller" } },
     },
+  });
+  await writeJson(path.join(testRoot, "update-service.config.json"), {
+    schemaVersion: 1,
+    listenHost: "0.0.0.0",
+    listenPort: 17879,
+    publicBaseUrl: "http://10.1.11.36:17879",
+    upstreamManifestUrl:
+      "https://github.com/Lr-2002/Delta-Viewer/releases/latest/download/latest.json",
+    refreshIntervalSeconds: 300,
+    retainedVersions: 2,
   });
   await writeFile(
     path.join(testRoot, "packaging/linux/com.dohc.viewer.metainfo.xml"),
@@ -335,6 +400,19 @@ test("CI owns the shared gate and release jobs use isolated dependency caches", 
   assert.match(releaseWorkflow, /runs-on: macos-15/);
   assert.match(releaseWorkflow, /targets: aarch64-apple-darwin/);
   assert.doesNotMatch(releaseWorkflow, /macos-15-intel|x86_64-apple-darwin|macos-x64/);
+  assert.equal(releaseWorkflow.split("pnpm tauri signer sign").length - 1, 3);
+  assert.equal(
+    releaseWorkflow.split("TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}")
+      .length - 1,
+    3,
+  );
+  assert.equal(
+    releaseWorkflow.split(
+      "TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
+    ).length - 1,
+    3,
+  );
+  assert.match(releaseWorkflow, /node scripts\/assemble-release\.mjs/);
   assert.doesNotMatch(`${ciWorkflow}\n${releaseWorkflow}`, /cache-(?:all|workspace)-crates: "true"/);
   assert.equal(`${ciWorkflow}\n${releaseWorkflow}`.split('cache-bin: "false"').length - 1, 4);
   assert.equal(`${ciWorkflow}\n${releaseWorkflow}`.split('cache-all-crates: "false"').length - 1, 4);
@@ -364,6 +442,12 @@ test("Windows release binds reviewed WebView2 bytes to Tauri's current cache key
     /if \(\$cachedHash -ne \$env:WEBVIEW2_SHA256\.ToLowerInvariant\(\)\)/,
   );
   assert.doesNotMatch(workflow, /Invoke-WebRequest -Uri \$resolverUri -OutFile/);
+  assert.equal(workflow.split("pnpm tauri build --ci --bundles nsis").length - 1, 2);
+  assert.match(workflow, /tauri-release-installer\.json/);
+  assert.match(workflow, /tauri-release-updater\.json/);
+  assert.match(workflow, /webviewInstallMode[\s\S]*?type = "downloadBootstrapper"/);
+  assert.match(workflow, /7-Zip could not extract the NSIS updater/);
+  assert.match(workflow, /must not duplicate the offline WebView2 payload/);
   assert.ok(
     workflow.indexOf("Copy-Item -LiteralPath $reviewedInstaller -Destination $installer -Force") <
       workflow.indexOf("pnpm tauri build --ci --bundles nsis"),
@@ -379,18 +463,29 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
   const version = "1.2.3";
   const tag = `v${version}`;
   const commit = "a".repeat(40);
+  await writeJson(path.join(testRoot, "src-tauri/tauri.conf.json"), {
+    plugins: { updater: { pubkey: updaterTestSigner.wrappedPublicKey } },
+  });
+  await writeFile(
+    path.join(testRoot, "CHANGELOG.md"),
+    "# Changelog\n\n## 1.2.3 - 2026-07-21\n\n- Added automatic application updates.\n",
+  );
   const definitions = [
     {
       platform: "windows",
       architecture: "x64",
       suffix: "windows-x64-setup.exe",
       reportSuffix: "windows-x64.verification.json",
+      updater: `DOHC-Viewer_${version}_UNSIGNED_windows-x64-updater.exe`,
+      updaterTarget: "windows-x86_64-nsis",
     },
     {
       platform: "macos",
       architecture: "arm64",
       suffix: "macos-arm64.dmg",
       reportSuffix: "macos-arm64.verification.json",
+      updater: `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.app.tar.gz`,
+      updaterTarget: "darwin-aarch64-app",
     },
     {
       platform: "linux",
@@ -398,14 +493,27 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
       packageKind: "deb",
       suffix: "ubuntu-22.04+-x64.deb",
       reportSuffix: "linux-deb-x64.verification.json",
+      updater: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
+      updaterTarget: "linux-x86_64-deb",
     },
   ];
+  const updaterPayloads = new Map();
 
   for (const [index, definition] of definitions.entries()) {
     const installer = `DOHC-Viewer_${version}_UNSIGNED_${definition.suffix}`;
     const installerPath = path.join(input, installer);
     const contents = Buffer.alloc(1_000_001, index + 1);
     await writeFile(installerPath, contents);
+    const updaterContents = definition.updater === installer
+      ? contents
+      : Buffer.alloc(1_048_577, index + 11);
+    const updaterPath = path.join(input, definition.updater);
+    if (updaterPath !== installerPath) await writeFile(updaterPath, updaterContents);
+    await writeFile(
+      `${updaterPath}.sig`,
+      `${updaterTestSigner.sign(updaterContents, definition.updater)}\n`,
+    );
+    updaterPayloads.set(definition.updater, updaterContents);
     const digest = createHash("sha256").update(contents).digest("hex");
     const reportName = `DOHC-Viewer_${version}_${definition.reportSuffix}`;
     await writeJson(path.join(input, reportName), {
@@ -529,6 +637,8 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
       tag,
       "--commit",
       commit,
+      "--root",
+      testRoot,
     ],
     { cwd: root, encoding: "utf8" },
   );
@@ -557,6 +667,8 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
       tag,
       "--commit",
       commit,
+      "--root",
+      testRoot,
     ],
     { cwd: root, encoding: "utf8" },
   );
@@ -568,13 +680,26 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
 
   run(
     process.execPath,
-    [assembleScript, "--input", input, "--output", output, "--tag", tag, "--commit", commit],
+    [
+      assembleScript,
+      "--input",
+      input,
+      "--output",
+      output,
+      "--tag",
+      tag,
+      "--commit",
+      commit,
+      "--root",
+      testRoot,
+    ],
     root,
   );
   const manifest = JSON.parse(await readFile(path.join(output, "release-manifest.json"), "utf8"));
   assert.equal(manifest.assets.length, 3);
   assert.equal(manifest.distribution.signingMode, "unsigned");
   assert.equal(manifest.distribution.trustedPublisher, false);
+  assert.equal(manifest.distribution.updaterSignature, "minisign-ed25519");
   assert.equal(
     manifest.assets.find((asset) => asset.key === "macos-arm64").verification
       .gatekeeperPolicyServiceAvailable,
@@ -585,10 +710,21 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
     "deb",
   );
   assert.equal(manifest.assets.some((asset) => asset.key === "ubuntu-flatpak-x64"), false);
+  const latest = JSON.parse(await readFile(path.join(output, "latest.json"), "utf8"));
+  assert.equal(latest.version, version);
+  assert.equal(latest.notes, "- Added automatic application updates.");
+  assert.deepEqual(Object.keys(latest.platforms).sort(), definitions.map(({ updaterTarget }) => updaterTarget).sort());
+  for (const definition of definitions) {
+    assert.equal(
+      latest.platforms[definition.updaterTarget].size,
+      updaterPayloads.get(definition.updater).length,
+    );
+    assert.match(latest.platforms[definition.updaterTarget].signature, /^[A-Za-z0-9+/]+=*$/);
+  }
   const checksumLines = (await readFile(path.join(output, "SHA256SUMS.txt"), "utf8"))
     .trim()
     .split("\n");
-  assert.equal(checksumLines.length, 4);
+  assert.equal(checksumLines.length, 10);
 
   const macosX64Installer = path.join(
     input,
@@ -608,6 +744,8 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
       tag,
       "--commit",
       commit,
+      "--root",
+      testRoot,
     ],
     { cwd: root, encoding: "utf8" },
   );
@@ -626,9 +764,48 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
   const flatpakOutput = path.join(testRoot, "flatpak-output");
   const unexpectedFlatpak = spawnSync(
     process.execPath,
-    [assembleScript, "--input", input, "--output", flatpakOutput, "--tag", tag, "--commit", commit],
+    [
+      assembleScript,
+      "--input",
+      input,
+      "--output",
+      flatpakOutput,
+      "--tag",
+      tag,
+      "--commit",
+      commit,
+      "--root",
+      testRoot,
+    ],
     { cwd: root, encoding: "utf8" },
   );
   assert.notEqual(unexpectedFlatpak.status, 0);
   assert.match(unexpectedFlatpak.stderr, /unexpected installer artifacts/);
+  await unlink(flatpakInstaller);
+
+  const windowsUpdater = definitions[0].updater;
+  const originalUpdater = updaterPayloads.get(windowsUpdater);
+  const tamperedUpdater = Buffer.from(originalUpdater);
+  tamperedUpdater[0] ^= 0xff;
+  await writeFile(path.join(input, windowsUpdater), tamperedUpdater);
+  const tamperedOutput = path.join(testRoot, "tampered-output");
+  const tampered = spawnSync(
+    process.execPath,
+    [
+      assembleScript,
+      "--input",
+      input,
+      "--output",
+      tamperedOutput,
+      "--tag",
+      tag,
+      "--commit",
+      commit,
+      "--root",
+      testRoot,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.notEqual(tampered.status, 0);
+  assert.match(tampered.stderr, /updater signature does not verify/);
 });

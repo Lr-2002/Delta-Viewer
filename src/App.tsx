@@ -4,6 +4,7 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  Download,
   FileSearch,
   FolderOpen,
   Gauge,
@@ -16,6 +17,7 @@ import {
   Pause,
   Play,
   PackageOpen,
+  RefreshCw,
   RotateCcw,
   ShieldCheck,
   SkipBack,
@@ -34,14 +36,17 @@ import { ProgressStrip } from "./components/ProgressStrip";
 import { TelemetryChart } from "./components/TelemetryChart";
 import { TrimControls } from "./components/TrimControls";
 import {
+  APP_VERSION,
   DEMO_ROOT,
   cancelTask,
+  checkForAppUpdate,
   chooseDirectory,
   confirmAction,
   exportAnnotatedEpisodes,
   exportEpisode,
   exportValidationReport,
   getAuthStatus,
+  installAppUpdate,
   isTauriRuntime,
   listAnnotatedEpisodes,
   listOperationErrors,
@@ -60,6 +65,7 @@ import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate
 import { OperationScope, type OperationToken } from "./lib/operationScope";
 import type {
   AnnotatedEpisodeSummary,
+  AppUpdateInfo,
   AuthStatus,
   BatchExportResult,
   EpisodeAnnotation,
@@ -79,6 +85,7 @@ import type {
 
 type View = "review" | "checks" | "export" | "batch";
 type EpisodeSourceState = "available" | "loading" | "error";
+type UpdatePhase = "idle" | "checking" | "available" | "current" | "downloading" | "failed";
 
 const METRICS: { key: MetricKey; label: string }[] = [
   { key: "position", label: "位置" },
@@ -121,6 +128,10 @@ function App() {
   const [currentOperationError, setCurrentOperationError] = useState(false);
   const [operationErrors, setOperationErrors] = useState<OperationErrorRecord[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("idle");
+  const [updateError, setUpdateError] = useState("");
+  const [updateErrorVisible, setUpdateErrorVisible] = useState(false);
   const frameRef = useRef(0);
   const didAutoLoad = useRef(false);
   const operationScopeRef = useRef(new OperationScope());
@@ -129,6 +140,7 @@ function App() {
   const episodeButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const episodeFocusRestoreToken = useRef(0);
   const batchSelectionInitialized = useRef(false);
+  const didAutoUpdate = useRef(false);
   const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
   const playbackFps = fpsOverride ?? estimatedFps;
 
@@ -166,6 +178,56 @@ function App() {
     setProgress(null);
   }
 
+  async function runAutomaticUpdate() {
+    if (operationScopeRef.current.current()) return;
+    setUpdatePhase("checking");
+    setUpdateError("");
+    setUpdateErrorVisible(false);
+    let nextUpdate: AppUpdateInfo;
+    try {
+      nextUpdate = await checkForAppUpdate();
+      setUpdateInfo(nextUpdate);
+    } catch (reason) {
+      setUpdatePhase("failed");
+      setUpdateError(`无法自动检查更新：${presentUpdateError(toMessage(reason))}`);
+      setUpdateErrorVisible(true);
+      return;
+    }
+    if (!nextUpdate.available) {
+      setUpdatePhase("current");
+      return;
+    }
+    setUpdatePhase("available");
+    await installAvailableUpdate();
+  }
+
+  async function installAvailableUpdate() {
+    const owner = beginOperation();
+    if (!owner) return;
+    setUpdatePhase("downloading");
+    try {
+      const installed = await installAppUpdate(owner.id);
+      ensureOperationActive(owner);
+      if (!installed) {
+        setUpdateInfo((current) => current ? {
+          ...current,
+          latestVersion: current.currentVersion,
+          available: false,
+        } : current);
+        setUpdatePhase("current");
+      }
+    } catch (reason) {
+      const message = toMessage(reason);
+      setUpdatePhase("failed");
+      setUpdateError(message.includes("任务已取消")
+        ? "自动更新已取消，当前版本可继续使用"
+        : `自动更新失败：${presentUpdateError(message)}`);
+      setUpdateErrorVisible(true);
+    } finally {
+      finishOperation(owner);
+    }
+  }
+
   useEffect(() => {
     void refreshAuthStatus();
   }, []);
@@ -179,6 +241,27 @@ function App() {
       .then(setTasks)
       .catch((reason) => setError(`无法加载任务目录：${toMessage(reason)}`));
   }, [authStatus?.currentUser?.username]);
+
+  useEffect(() => {
+    if (
+      !authStatus?.currentUser
+      || didAutoUpdate.current
+      || busy
+      || operationScopeRef.current.current()
+    ) return;
+    didAutoUpdate.current = true;
+    void runAutomaticUpdate();
+  }, [authStatus?.currentUser?.username, busy]);
+
+  useEffect(() => {
+    if (
+      !authStatus?.currentUser
+      || busy
+      || updatePhase !== "available"
+      || !updateInfo?.available
+    ) return;
+    void installAvailableUpdate();
+  }, [authStatus?.currentUser?.username, busy, updatePhase, updateInfo?.available]);
 
   useEffect(() => {
     if (!authStatus?.currentUser) {
@@ -776,6 +859,15 @@ function App() {
   }
 
   const currentUser = authStatus.currentUser;
+  const updateButtonTitle = updatePhase === "checking"
+    ? "正在检查最新版本"
+    : updatePhase === "downloading"
+      ? `正在自动更新到 v${updateInfo?.latestVersion ?? ""}`
+      : updatePhase === "failed"
+        ? `${updateError}；点击重试`
+        : updateInfo?.available
+          ? `发现 v${updateInfo.latestVersion}；点击立即更新`
+        : `当前版本 v${updateInfo?.currentVersion ?? APP_VERSION}；点击检查更新`;
 
   return (
     <div className="app-shell">
@@ -784,7 +876,7 @@ function App() {
           <span className="brand-mark">D</span>
           <div>
             <strong>DOHC Viewer</strong>
-            <span>recording workspace</span>
+            <span>v{updateInfo?.currentVersion ?? APP_VERSION}</span>
           </div>
         </div>
         <div className="source-display">
@@ -794,6 +886,24 @@ function App() {
         </div>
         <div className="topbar-actions">
           <StatusBadge status={status} />
+          <button
+            className={`icon-button update-trigger${updatePhase === "failed" ? " update-failed" : ""}`}
+            type="button"
+            onClick={() => void (updateInfo?.available ? installAvailableUpdate() : runAutomaticUpdate())}
+            disabled={busy || updatePhase === "checking" || updatePhase === "downloading"}
+            title={updateButtonTitle}
+            aria-label={updateButtonTitle}
+          >
+            {updatePhase === "checking" || updatePhase === "downloading" ? (
+              <LoaderCircle className="spin" size={16} />
+            ) : updatePhase === "failed" ? (
+              <CircleAlert size={16} />
+            ) : updateInfo?.available ? (
+              <Download size={16} />
+            ) : (
+              <RefreshCw size={16} />
+            )}
+          </button>
           <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy}>
             <FolderOpen size={16} />
             选择 SD 卡
@@ -827,6 +937,16 @@ function App() {
       ) : null}
 
       {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
+      {updatePhase === "failed" && updateErrorVisible ? (
+        <div className="alert-banner alert-notice update-alert" role="status">
+          <CircleAlert size={17} />
+          <span>{updateError}。当前本地功能仍可使用。</span>
+          <span className="alert-actions">
+            <button type="button" className="text-button" onClick={() => void runAutomaticUpdate()} disabled={busy}>重试</button>
+            <button type="button" className="text-button" onClick={() => setUpdateErrorVisible(false)}>关闭</button>
+          </span>
+        </div>
+      ) : null}
       {error ? (
         <div className="alert-banner alert-error" role="alert">
           <CircleAlert size={17} />
@@ -1267,6 +1387,10 @@ function presentOperationError(message: string): string {
     return `系统拒绝访问所选卷或目录。请确认当前账号和 DOHC Viewer 可以读取该卷，并允许写入本机应用数据目录。原始错误：${message}`;
   }
   return message;
+}
+
+function presentUpdateError(message: string): string {
+  return message.replace(/^UPDATE_[A-Z_]+:\s*/, "");
 }
 
 function formatHistoryTime(value: number): string {

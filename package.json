@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "0.17.8",
+  "version": "0.17.10",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -19,12 +19,15 @@
     "test:session-activation": "node --test scripts/session-activation.test.mjs",
     "test:playback": "node --test --experimental-strip-types scripts/frame-cache.test.mjs scripts/playback-rendering.test.mjs",
     "test:issue-locate": "node --test --experimental-strip-types scripts/issue-locate.test.mjs",
+    "test:update-mirror": "node --test scripts/update-mirror-server.test.mjs",
     "check:wiki": "node scripts/check-wiki.mjs",
     "check:windows-cross": "node scripts/windows-cross-check.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "update-mirror": "node scripts/update-mirror-server.mjs --config update-service.config.json",
+    "update-mirror:install": "bash scripts/install-update-mirror-macos.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

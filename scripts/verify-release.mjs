@@ -131,6 +131,7 @@ async function verify(options) {
     linuxConfig,
     macConfig,
     windowsConfig,
+    updateServiceConfig,
     changelogContents,
     metainfo,
   ] =
@@ -142,6 +143,7 @@ async function verify(options) {
       readJson(options.root, "src-tauri/tauri.linux.conf.json"),
       readJson(options.root, "src-tauri/tauri.macos.conf.json"),
       readJson(options.root, "src-tauri/tauri.windows.conf.json"),
+      readJson(options.root, "update-service.config.json"),
       readFile(path.join(options.root, "CHANGELOG.md"), "utf8"),
       readFile(path.join(options.root, "packaging/linux/com.dohc.viewer.metainfo.xml"), "utf8"),
     ]);
@@ -167,6 +169,50 @@ async function verify(options) {
     if (!tauriConfig.bundle?.icon?.includes(icon)) {
       throw new Error(`Tauri bundle icon is missing: ${icon}`);
     }
+  }
+  if (tauriConfig.bundle?.createUpdaterArtifacts !== false) {
+    throw new Error("base Tauri config must leave updater artifacts to the controlled release jobs");
+  }
+  const updaterConfig = tauriConfig.plugins?.updater;
+  const expectedUpdaterEndpoint = `${updateServiceConfig.publicBaseUrl}/latest.json`;
+  if (
+    !updaterConfig
+    || !Array.isArray(updaterConfig.endpoints)
+    || updaterConfig.endpoints.length !== 1
+    || updaterConfig.endpoints[0] !== expectedUpdaterEndpoint
+    || updaterConfig.windows?.installMode !== "passive"
+  ) {
+    throw new Error("Tauri updater must use the configured local mirror and passive NSIS mode");
+  }
+  if (
+    updateServiceConfig.schemaVersion !== 1
+    || updateServiceConfig.listenHost !== "0.0.0.0"
+    || updateServiceConfig.listenPort !== 17879
+    || updateServiceConfig.publicBaseUrl !== "http://10.1.11.36:17879"
+    || updateServiceConfig.upstreamManifestUrl
+      !== "https://github.com/Lr-2002/Delta-Viewer/releases/latest/download/latest.json"
+    || !Number.isInteger(updateServiceConfig.refreshIntervalSeconds)
+    || updateServiceConfig.refreshIntervalSeconds < 60
+    || updateServiceConfig.refreshIntervalSeconds > 3600
+    || updateServiceConfig.retainedVersions !== 2
+  ) {
+    throw new Error("the local update mirror configuration is not release-safe");
+  }
+  const updaterPublicKey = updaterConfig.pubkey;
+  let decodedUpdaterPublicKey = "";
+  try {
+    decodedUpdaterPublicKey = Buffer.from(updaterPublicKey, "base64").toString("utf8");
+  } catch {
+    throw new Error("Tauri updater public key is not valid base64");
+  }
+  if (
+    typeof updaterPublicKey !== "string"
+    || Buffer.from(decodedUpdaterPublicKey, "utf8").toString("base64") !== updaterPublicKey
+    || !/^untrusted comment: minisign public key:[^\n]+\nRW[A-Za-z0-9+/]+={0,2}\n?$/.test(
+      decodedUpdaterPublicKey,
+    )
+  ) {
+    throw new Error("Tauri updater public key is not a canonical Minisign public key");
   }
   if (!macConfig.bundle?.targets?.includes("dmg")) throw new Error("macOS DMG target is missing");
   if (macConfig.bundle?.macOS?.minimumSystemVersion !== "12.0") {
@@ -262,6 +308,7 @@ async function verify(options) {
     distribution: {
       signingMode: "unsigned",
       trustedPublisher: false,
+      updaterSignature: "minisign-ed25519",
     },
     packaging: {
       windows: "unsigned-nsis-x64-offline-webview2",

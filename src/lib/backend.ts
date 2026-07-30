@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import packageInfo from "../../package.json";
 import {
   createDemoStates,
   demoEpisodeSummary,
@@ -12,6 +13,7 @@ import {
 } from "./demoFixture";
 import type {
   AnnotatedEpisodeSummary,
+  AppUpdateInfo,
   AuthStatus,
   BatchExportResult,
   CreateTaskRequest,
@@ -35,6 +37,7 @@ import type {
 } from "../types";
 
 export const DEMO_ROOT = DEMO_EPISODE_ROOT;
+export const APP_VERSION = packageInfo.version;
 
 const SESSION_ACTIVATION_DEMO_SOURCE_ROOT = "demo://session-activation";
 const SESSION_ACTIVATION_DEMO_EPISODES = [
@@ -56,6 +59,22 @@ const demoTaskDefinitions: TaskDefinition[] = [
 ];
 let demoCurrentUser: UserIdentity | null = null;
 let sessionActivationRetryAttempts = 0;
+
+export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
+  if (isTauriRuntime()) return invoke<AppUpdateInfo>("check_for_app_update");
+  return {
+    currentVersion: APP_VERSION,
+    latestVersion: APP_VERSION,
+    available: false,
+    notes: null,
+    publishedAt: null,
+  };
+}
+
+export async function installAppUpdate(operationId: number): Promise<boolean> {
+  if (isTauriRuntime()) return invoke<boolean>("install_app_update", { operationId });
+  return false;
+}
 
 export async function getAuthStatus(): Promise<AuthStatus> {
   if (isTauriRuntime()) return invoke<AuthStatus>("get_auth_status");

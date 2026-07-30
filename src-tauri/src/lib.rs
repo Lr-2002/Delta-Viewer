@@ -10,6 +10,7 @@ mod operation_history;
 mod source;
 mod storage;
 pub mod stress;
+mod updater;
 mod validation;
 mod validation_cache;
 
@@ -17,11 +18,12 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use identity::AuthState;
 use model::{
-    AnnotatedEpisodeSummary, AuthStatus, BatchExportCommandRequest, BatchExportResult,
-    CreateTaskRequest, EpisodeAnnotation, EpisodeData, ExportCommandRequest, ExportResult,
-    FramePayload, ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
-    ProgressPayload, RecordOperationErrorRequest, RegisterAccountRequest, ReportExportResult,
-    SaveAnnotationRequest, ScanResult, TaskDefinition, UserIdentity, ValidationReport,
+    AnnotatedEpisodeSummary, AppUpdateInfo, AuthStatus, BatchExportCommandRequest,
+    BatchExportResult, CreateTaskRequest, EpisodeAnnotation, EpisodeData, ExportCommandRequest,
+    ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord,
+    PartialImport, ProgressPayload, RecordOperationErrorRequest, RegisterAccountRequest,
+    ReportExportResult, SaveAnnotationRequest, ScanResult, TaskDefinition, UserIdentity,
+    ValidationReport,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -138,6 +140,45 @@ fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
         .map_err(|error| format!("无法定位应用本地数据目录: {error}"))
+}
+
+#[tauri::command]
+async fn check_for_app_update(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<AppUpdateInfo, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    updater::check(&app)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn install_app_update(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    operation_id: u64,
+) -> Result<bool, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    emit_task_start(
+        &app,
+        operation_id,
+        "update",
+        "检查应用更新",
+        "GitHub Releases",
+    );
+    let _progress = source::enter_operation_progress(operation_id);
+    let installed = updater::download_and_install(&app, operation_id, &cancelled)
+        .await
+        .map_err(|error| error.to_string())?;
+    drop(task);
+    if installed {
+        app.restart();
+    }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -684,11 +725,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AuthState::default())
         .manage(TaskControl::default())
         .manage(ValidationCache::default())
         .invoke_handler(tauri::generate_handler![
             get_auth_status,
+            check_for_app_update,
+            install_app_update,
             register_account,
             login_account,
             logout_account,

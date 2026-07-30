@@ -21,7 +21,9 @@ Project documentation:
 
 ## Installation
 
-Installers are published on [GitHub Releases](https://github.com/Lr-2002/Delta-Viewer/releases):
+User-facing installers are mirrored at
+[http://10.1.11.36:17879/](http://10.1.11.36:17879/); users do not need GitHub
+access. GitHub Releases remains the build and signed upstream source:
 
 - `DOHC-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`
 - `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`
@@ -36,6 +38,17 @@ public only after all three installers pass dependency, resource, install or
 mount, startup, and checksum gates. Verify
 `SHA256SUMS.txt` before use; detailed installation and usage instructions live
 in the Wiki.
+
+Starting with `0.17.10`, the app checks the fixed update mirror at
+`http://10.1.11.36:17879` after local login. The mirror host reads GitHub once,
+verifies and atomically caches the complete release, and serves clients over the
+reachable fixed IP. When a newer version exists the app waits for the current
+data task, downloads the matching updater, verifies its dedicated
+Ed25519/Minisign signature, installs it, and restarts. Mirror failures are
+visible and retryable but never block the offline data workflow. Installations
+on `0.17.8` or earlier need one manual `0.17.10` install from the mirror page;
+later releases update automatically. Linux may show a system authorization
+prompt while installing the replacement deb.
 
 ## Workflow
 
@@ -85,8 +98,12 @@ sessions last only for the current application process. This identity layer is
 for processing attribution; it does not encrypt local files, provide roles,
 recover forgotten passwords, or synchronize between computers.
 
-The runtime has no SSH or other network data path. SSH was used only once to
-retrieve the development sample from the current ext4 card. Ubuntu can mount
+The runtime has no SSH or network data path. Its only HTTP use is the automatic
+update check against the fixed `10.1.11.36:17879` mirror; clients never contact
+GitHub and send no account, source path, annotation, report, hash, or telemetry
+data. The updater accepts only the configured origin and exact version path,
+then verifies the signed bytes independently. Offline mode leaves scanning,
+playback, annotation, and export fully available. SSH was used only once to retrieve the development sample from the current ext4 card. Ubuntu can mount
 ext4 with the Linux kernel. The native deb can select any mounted path allowed
 by the current user. The complete
 command sequence is in the [Wiki installation guide](https://github.com/Lr-2002/Delta-Viewer/wiki/Installation).
@@ -363,9 +380,26 @@ a product-only XProtect error still fails. Both paths also check bundled FFmpeg,
 offline WebView2 on Windows, installer or DMG contents, and an installed-copy
 startup smoke. The final job recomputes all SHA-256 values, emits a release
 manifest and GitHub provenance attestations, and publishes the draft only when
-the complete four-installer set matches. Release titles, asset names, notes,
+the complete three-installer set and all updater signatures match. Release
+titles, asset names, notes,
 reports, and the manifest all carry the `UNSIGNED` state because no trusted
 publisher identity is present.
+
+Each platform job also signs a bounded updater payload with a dedicated
+Ed25519/Minisign key. The final job verifies those signatures with the public
+key embedded in the application and emits `latest.json` only when all three
+targets, payloads, signatures, sizes, and hashes agree. This updater signature
+protects update integrity; it is distinct from Authenticode, Developer ID, or a
+trusted Linux package signature, so the outer installers remain `UNSIGNED`.
+Automatic tagging still uses only `GITHUB_TOKEN`; the updater signing secrets
+are not GitHub App credentials.
+
+The macOS host runs `scripts/update-mirror-server.mjs` as a `launchd` service on
+`0.0.0.0:17879`. Every five minutes it synchronizes the immutable GitHub
+release, verifies updater signatures and all installer hashes, then atomically
+activates the version. Clients receive mirror URLs in `latest.json`; a partial
+or tampered sync leaves the previous verified version available. The mirror
+exposes only GET/HEAD and does not retain client identity or application data.
 
 The hosted-runner smoke does not replace clean Win10/Win11 offline testing,
 target-Mac testing, physical exFAT SD-card validation, or the formal

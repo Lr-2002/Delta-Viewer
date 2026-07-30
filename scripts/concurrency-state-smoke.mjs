@@ -305,6 +305,16 @@ try {
         switch (command) {
           case "get_auth_status":
             return { hasAccounts: true, currentUser: { username: "tester", displayName: "Tester" } };
+          case "check_for_app_update":
+            return {
+              currentVersion: "0.17.10",
+              latestVersion: "0.17.10",
+              available: false,
+              notes: null,
+              publishedAt: null,
+            };
+          case "install_app_update":
+            return false;
           case "list_task_definitions":
           case "list_operation_errors":
             return [];
