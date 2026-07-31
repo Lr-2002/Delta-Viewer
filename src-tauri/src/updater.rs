@@ -3,9 +3,10 @@ use crate::model::{AppUpdateInfo, ProgressPayload};
 use crate::source;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use futures_util::StreamExt;
+use futures_util::{future::join_all, StreamExt};
 use minisign_verify::{PublicKey, Signature};
-use reqwest::header::ACCEPT;
+use reqwest::header::{ACCEPT, CONTENT_RANGE, RANGE};
+use reqwest::{StatusCode, Url};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
@@ -13,9 +14,18 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+const MIRROR_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const MIRROR_PROBE_BYTES: u64 = 32 * 1024;
 const MIN_UPDATE_BYTES: u64 = 1024 * 1024;
 const MAX_UPDATE_BYTES: u64 = 64 * 1024 * 1024;
 const RELEASE_PATH_PREFIX: &str = "/releases/";
+
+#[derive(Debug)]
+struct MirrorProbe {
+    position: usize,
+    url: Url,
+    elapsed: Duration,
+}
 
 pub async fn check(app: &AppHandle) -> AppResult<AppUpdateInfo> {
     let current_version = app.package_info().version.to_string();
@@ -57,22 +67,54 @@ pub async fn download_and_install(
         .timeout(DOWNLOAD_TIMEOUT)
         .build()
         .map_err(update_check_error)?;
-    let Some(update) = updater.check().await.map_err(update_check_error)? else {
+    let Some(mut update) = updater.check().await.map_err(update_check_error)? else {
         return Ok(false);
     };
     require_mirror_release(app, &update)?;
     let expected_bytes = expected_download_bytes(&update)?;
     let latest_version = update.version.clone();
-    let download_url = update.download_url.to_string();
     let started = Instant::now();
     let progress_app = app.clone();
-    let mut bytes_done = 0_u64;
-
     let client = reqwest::Client::builder()
         .timeout(DOWNLOAD_TIMEOUT)
         .user_agent(concat!("DOHC-Viewer/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(update_download_error)?;
+    source::emit_progress_for_operation(
+        Some(&progress_app),
+        operation_id,
+        ProgressPayload {
+            task: "update".into(),
+            phase: "正在测试公网与内网更新速度".into(),
+            current: 0,
+            total: 1,
+            bytes_done: 0,
+            total_bytes: 0,
+            current_path: update.download_url.to_string(),
+            elapsed_ms: started.elapsed().as_millis(),
+        },
+    );
+    let fastest_download_url =
+        select_fastest_download_url(app, &client, &update, expected_bytes).await?;
+    check_cancelled(cancelled)?;
+    update.download_url = fastest_download_url;
+    let download_url = update.download_url.to_string();
+    let mut bytes_done = 0_u64;
+
+    source::emit_progress_for_operation(
+        Some(&progress_app),
+        operation_id,
+        ProgressPayload {
+            task: "update".into(),
+            phase: format!("已选择最快镜像，下载 v{latest_version}"),
+            current: 0,
+            total: expected_bytes,
+            bytes_done: 0,
+            total_bytes: expected_bytes,
+            current_path: download_url.clone(),
+            elapsed_ms: started.elapsed().as_millis(),
+        },
+    );
     let response = client
         .get(update.download_url.clone())
         .header(ACCEPT, "application/octet-stream")
@@ -146,6 +188,94 @@ pub async fn download_and_install(
     Ok(true)
 }
 
+async fn select_fastest_download_url(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    update: &Update,
+    expected_bytes: u64,
+) -> AppResult<Url> {
+    let endpoints = configured_update_endpoints(app)?;
+    let candidates = mirror_asset_urls(&endpoints, &update.download_url, &update.version)?;
+    let probes = join_all(candidates.into_iter().enumerate().map(|(position, url)| {
+        probe_mirror_download(client.clone(), position, url, expected_bytes)
+    }))
+    .await;
+
+    Ok(fastest_probed_url(probes, update.download_url.clone()))
+}
+
+fn fastest_probed_url(probes: Vec<Result<MirrorProbe, String>>, fallback: Url) -> Url {
+    probes
+        .into_iter()
+        .filter_map(Result::ok)
+        .min_by(|left, right| {
+            left.elapsed
+                .cmp(&right.elapsed)
+                .then(left.position.cmp(&right.position))
+        })
+        .map(|probe| probe.url)
+        // Older mirror services do not yet implement Range. Preserve the signed
+        // manifest's selected path rather than turning that rollout state into an
+        // update outage.
+        .unwrap_or(fallback)
+}
+
+async fn probe_mirror_download(
+    client: reqwest::Client,
+    position: usize,
+    url: Url,
+    expected_bytes: u64,
+) -> Result<MirrorProbe, String> {
+    let probe_bytes = expected_bytes.min(MIRROR_PROBE_BYTES);
+    let range_end = probe_bytes
+        .checked_sub(1)
+        .ok_or_else(|| "probe size is zero".to_string())?;
+    let started = Instant::now();
+    let response = client
+        .get(url.clone())
+        .header(ACCEPT, "application/octet-stream")
+        .header(RANGE, format!("bytes=0-{range_end}"))
+        .timeout(MIRROR_PROBE_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if response.status() != StatusCode::PARTIAL_CONTENT {
+        return Err(format!("expected HTTP 206, got {}", response.status()));
+    }
+    if response.content_length() != Some(probe_bytes) {
+        return Err("range response has an unexpected content length".into());
+    }
+    let expected_range = format!("bytes 0-{range_end}/{expected_bytes}");
+    let actual_range = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok());
+    if actual_range != Some(expected_range.as_str()) {
+        return Err("range response has an unexpected content range".into());
+    }
+
+    let mut received = 0_u64;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        received = received
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| "probe size overflow".to_string())?;
+        if received > probe_bytes {
+            return Err("range response exceeds the requested sample".into());
+        }
+    }
+    if received != probe_bytes {
+        return Err("range response ended before the requested sample".into());
+    }
+
+    Ok(MirrorProbe {
+        position,
+        url,
+        elapsed: started.elapsed(),
+    })
+}
+
 fn require_mirror_release(app: &AppHandle, update: &Update) -> AppResult<()> {
     let endpoints = configured_update_endpoints(app)?;
     if !endpoints
@@ -157,6 +287,30 @@ fn require_mirror_release(app: &AppHandle, update: &Update) -> AppResult<()> {
         ));
     }
     expected_download_bytes(update).map(|_| ())
+}
+
+fn mirror_asset_urls(endpoints: &[Url], download: &Url, version: &str) -> AppResult<Vec<Url>> {
+    let expected_prefix = format!("{RELEASE_PATH_PREFIX}v{version}/");
+    let remainder = download
+        .path()
+        .strip_prefix(&expected_prefix)
+        .filter(|name| !name.is_empty() && !name.contains('/'))
+        .ok_or_else(|| update_manifest_error("更新包路径不是当前版本的单一资产"))?;
+    let mut candidates = Vec::with_capacity(endpoints.len());
+    for endpoint in endpoints {
+        let candidate = Url::parse(&format!(
+            "{}{}{}",
+            endpoint.origin().ascii_serialization(),
+            expected_prefix,
+            remainder
+        ))
+        .map_err(|error| update_manifest_error(&format!("更新镜像资产地址无效: {error}")))?;
+        if !is_allowed_mirror_url(endpoint, &candidate, version) {
+            return Err(update_manifest_error("更新镜像资产地址不符合固定版本路径"));
+        }
+        candidates.push(candidate);
+    }
+    Ok(candidates)
 }
 
 fn configured_update_endpoints(app: &AppHandle) -> AppResult<Vec<reqwest::Url>> {
@@ -303,7 +457,8 @@ fn update_signature_error(message: String) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_allowed_mirror_url, verify_minisign, MAX_UPDATE_BYTES, MIN_UPDATE_BYTES,
+        fastest_probed_url, is_allowed_mirror_url, mirror_asset_urls, verify_minisign, MirrorProbe,
+        MAX_UPDATE_BYTES, MIN_UPDATE_BYTES, MIRROR_PROBE_BYTES, MIRROR_PROBE_TIMEOUT,
         RELEASE_PATH_PREFIX,
     };
     use base64::engine::general_purpose::STANDARD as BASE64;
@@ -313,7 +468,58 @@ mod tests {
     fn updater_limits_keep_release_assets_bounded() {
         assert_eq!(MIN_UPDATE_BYTES, 1024 * 1024);
         assert_eq!(MAX_UPDATE_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MIRROR_PROBE_BYTES, 32 * 1024);
+        assert_eq!(MIRROR_PROBE_TIMEOUT.as_secs(), 1);
         assert_eq!(RELEASE_PATH_PREFIX, "/releases/");
+    }
+
+    #[test]
+    fn creates_same_version_asset_candidates_for_every_configured_origin() {
+        let public = reqwest::Url::parse("http://39.155.172.162:17879/latest.json").unwrap();
+        let lan = reqwest::Url::parse("http://10.1.11.36:17879/latest.json").unwrap();
+        let download = reqwest::Url::parse(
+            "http://39.155.172.162:17879/releases/v0.17.14/DOHC-Viewer_0.17.14_UNSIGNED_ubuntu-22.04%2B-x64.deb",
+        )
+        .unwrap();
+
+        let candidates = mirror_asset_urls(&[public, lan], &download, "0.17.14").unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            candidates[0].as_str(),
+            "http://39.155.172.162:17879/releases/v0.17.14/DOHC-Viewer_0.17.14_UNSIGNED_ubuntu-22.04%2B-x64.deb"
+        );
+        assert_eq!(
+            candidates[1].as_str(),
+            "http://10.1.11.36:17879/releases/v0.17.14/DOHC-Viewer_0.17.14_UNSIGNED_ubuntu-22.04%2B-x64.deb"
+        );
+    }
+
+    #[test]
+    fn prefers_the_fastest_successful_probe_and_falls_back_to_the_manifest_url() {
+        let public =
+            reqwest::Url::parse("http://39.155.172.162:17879/releases/v0.17.14/update.deb")
+                .unwrap();
+        let lan =
+            reqwest::Url::parse("http://10.1.11.36:17879/releases/v0.17.14/update.deb").unwrap();
+        let fastest = fastest_probed_url(
+            vec![
+                Ok(MirrorProbe {
+                    position: 0,
+                    url: public.clone(),
+                    elapsed: std::time::Duration::from_millis(100),
+                }),
+                Ok(MirrorProbe {
+                    position: 1,
+                    url: lan.clone(),
+                    elapsed: std::time::Duration::from_millis(10),
+                }),
+            ],
+            public.clone(),
+        );
+        assert_eq!(fastest, lan);
+
+        let fallback = fastest_probed_url(vec![Err("range unsupported".into())], public.clone());
+        assert_eq!(fallback, public);
     }
 
     #[test]

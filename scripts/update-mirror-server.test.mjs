@@ -234,6 +234,19 @@ test("mirrors signed installers locally and retains the last good release after 
       const bytes = Buffer.from(await fetch(entry.url).then((response) => response.arrayBuffer()));
       assert.equal(sha256(bytes), entry.sha256);
     }
+    const rangedEntry = latest.platforms[TARGETS[0].target];
+    const rangedResponse = await fetch(rangedEntry.url, {
+      headers: { range: "bytes=0-31" },
+    });
+    assert.equal(rangedResponse.status, 206);
+    assert.equal(rangedResponse.headers.get("accept-ranges"), "bytes");
+    assert.equal(rangedResponse.headers.get("content-range"), "bytes 0-31/1048576");
+    assert.equal((await rangedResponse.arrayBuffer()).byteLength, 32);
+    const invalidRange = await fetch(rangedEntry.url, {
+      headers: { range: "bytes=1048576-1048600" },
+    });
+    assert.equal(invalidRange.status, 416);
+    assert.equal(invalidRange.headers.get("content-range"), "bytes */1048576");
 
     const fallback = await fetchJsonWithHost(address.port, `localhost:${address.port}`);
     assert.equal(fallback.status, 200);

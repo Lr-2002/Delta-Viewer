@@ -5,6 +5,12 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.14 - 2026-07-31
+
+- Measured the fixed public and LAN update mirrors concurrently with a bounded
+  32 KiB range request, then downloaded through the faster path while retaining
+  the existing size and Minisign verification gates.
+
 ## 0.17.13 - 2026-07-31
 
 - Aligned the time-trim selection rail with both range sliders on desktop and

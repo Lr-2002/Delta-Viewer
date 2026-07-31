@@ -617,6 +617,31 @@ function contentType(fileName) {
   return "application/octet-stream";
 }
 
+function parseSingleByteRange(value, size) {
+  if (value == null) return null;
+  if (typeof value !== "string" || size <= 0) return undefined;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
+  if (!match || (!match[1] && !match[2])) return undefined;
+  const parseBoundary = (boundary) => {
+    if (!boundary) return null;
+    const parsed = Number(boundary);
+    return Number.isSafeInteger(parsed) ? parsed : undefined;
+  };
+  const requestedStart = parseBoundary(match[1]);
+  const requestedEnd = parseBoundary(match[2]);
+  if (requestedStart === undefined || requestedEnd === undefined) return undefined;
+
+  if (requestedStart == null) {
+    if (requestedEnd === 0) return undefined;
+    const length = Math.min(requestedEnd, size);
+    return { start: size - length, end: size - 1 };
+  }
+  if (requestedStart >= size) return undefined;
+  const end = requestedEnd == null ? size - 1 : Math.min(requestedEnd, size - 1);
+  if (requestedStart > end) return undefined;
+  return { start: requestedStart, end };
+}
+
 function sendJson(response, status, value, cacheControl = "no-store") {
   const body = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
   response.writeHead(status, {
@@ -783,14 +808,30 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
       sendJson(response, 404, { error: "not found" });
       return true;
     }
-    response.writeHead(200, {
+    const range = parseSingleByteRange(request.headers.range, info.size);
+    if (range === undefined) {
+      response.writeHead(416, {
+        "accept-ranges": "bytes",
+        "content-length": 0,
+        "content-range": `bytes */${info.size}`,
+        "x-content-type-options": "nosniff",
+      });
+      response.end();
+      return true;
+    }
+    const contentLength = range ? range.end - range.start + 1 : info.size;
+    response.writeHead(range ? 206 : 200, {
+      "accept-ranges": "bytes",
       "cache-control": "public, max-age=31536000, immutable",
-      "content-length": info.size,
+      "content-length": contentLength,
       "content-type": contentType(fileName),
+      ...(range ? { "content-range": `bytes ${range.start}-${range.end}/${info.size}` } : {}),
       "x-content-type-options": "nosniff",
     });
     if (request.method === "HEAD") response.end();
-    else createReadStream(filePath).on("error", () => response.destroy()).pipe(response);
+    else createReadStream(filePath, range ?? undefined)
+      .on("error", () => response.destroy())
+      .pipe(response);
     return true;
   }
 

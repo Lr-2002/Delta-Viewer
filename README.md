@@ -402,6 +402,10 @@ release, verifies updater signatures and all installer hashes, then atomically
 activates the version. Clients receive mirror URLs in `latest.json`; a partial
 or tampered sync leaves the previous verified version available. The mirror
 exposes only GET/HEAD and does not retain client identity or application data.
+When an update is available, the application concurrently fetches a bounded
+32 KiB range sample from the public and LAN mirror addresses, then downloads
+from the faster successful path. The complete payload still passes the existing
+exact-size and Minisign checks before installation.
 
 The hosted-runner smoke does not replace clean Win10/Win11 offline testing,
 target-Mac testing, physical exFAT SD-card validation, or the formal

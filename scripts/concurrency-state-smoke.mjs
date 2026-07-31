@@ -307,8 +307,8 @@ try {
             return { hasAccounts: true, currentUser: { username: "tester", displayName: "Tester" } };
           case "check_for_app_update":
             return {
-              currentVersion: "0.17.13",
-              latestVersion: "0.17.13",
+              currentVersion: "0.17.14",
+              latestVersion: "0.17.14",
               available: false,
               notes: null,
               publishedAt: null,

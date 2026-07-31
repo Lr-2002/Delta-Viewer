@@ -35,10 +35,11 @@ GitHub App ID、private key 或 release Environment。
 日志、artifact、verification report 或 release manifest。公钥嵌入
 `src-tauri/tauri.conf.json`，可以公开并由 final job 回读验证。
 
-客户端不访问 GitHub。GitHub Release 只是固定镜像机的签名上游；应用优先使用
-`http://39.155.172.162:17879/latest.json`，仅在内网回环不可用时回退
-`http://10.1.11.36:17879/latest.json`。`update-service.config.json`、Tauri endpoint
-和发布校验必须保持这两个固定地址一致。服务对受信任的局域网 Host 返回局域网 asset URL，
+客户端不访问 GitHub。GitHub Release 只是固定镜像机的签名上游；应用使用
+`http://39.155.172.162:17879/latest.json` 与
+`http://10.1.11.36:17879/latest.json`。发现更新后，客户端会对两个同版本资产并行发出受限
+32 KiB Range 请求，选择实测最快的成功路径；全部测速失败时保留清单路径。`update-service.config.json`、
+Tauri endpoint 和发布校验必须保持这两个固定地址一致。服务对受信任的局域网 Host 返回局域网 asset URL，
 避免 NAT loopback；任意其他 Host 始终返回公网 URL。
 
 完整代码门禁和 release workflow 回归只在 CI 对同一 commit 执行一次。CI 成功后，
@@ -88,6 +89,7 @@ pnpm update-mirror:install
 curl --fail http://127.0.0.1:17879/healthz
 curl --fail http://39.155.172.162:17879/latest.json
 curl --fail http://10.1.11.36:17879/latest.json
+curl --fail --range 0-32767 http://127.0.0.1:17879/releases/v<version>/<updater-file> -o /dev/null
 launchctl print "gui/$(id -u)/com.dohc.viewer.update-mirror"
 ```
 
@@ -95,7 +97,8 @@ launchctl print "gui/$(id -u)/com.dohc.viewer.update-mirror"
 updater、三个正式安装包和元数据写入服务自有 partial，检查 target、固定文件名、1-64 MiB
 updater 上限、安装包上限、SHA-256 和 Ed25519/Minisign 签名，完整通过后才原子激活。
 新版本同步失败时 `healthz` 为 `degraded`，但上一完整版本继续可用；没有任何完整缓存时为
-`unavailable`。对外只开放 GET/HEAD，不提供上传接口，不记录客户端地址或业务数据。
+`unavailable`。对外只开放 GET/HEAD，不提供上传接口；版本资产支持单一合法 Range 的 206
+响应，以便客户端用 32 KiB 样本选择更快路径；服务不记录客户端地址或业务数据。
 
 缓存位于 `~/Library/Application Support/DOHC Viewer Update Service/`，只保留当前版和上一版。
 清理只处理带 `mirror-release.json` marker 的服务自有版本目录，不触碰应用 local-data、源数据
