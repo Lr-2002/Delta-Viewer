@@ -221,7 +221,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .frame-loading, .frame-error { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; align-content: center; gap: 6px; color: #b5b5b5; font-size: 11px; }
 .frame-error { color: #eeeeee; }
 
-.trim-editor { margin-top: 12px; padding: 10px 12px 11px; border: 1px solid var(--line); border-radius: 6px; background: #f7f7f7; }
+.trim-editor {
+  --trim-label-width: 34px;
+  --trim-gap: 8px;
+  --trim-frame-input-width: 74px;
+  --trim-mark-width: 94px;
+  margin-top: 12px;
+  padding: 10px 12px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f7f7;
+}
 .trim-heading { min-height: 32px; display: flex; align-items: center; gap: 12px; }
 .trim-title { display: inline-flex; align-items: center; gap: 7px; color: var(--ink); font-size: 12px; }
 .trim-title svg { color: var(--ink); }
@@ -229,15 +239,21 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .trim-summary i { width: 3px; height: 3px; display: inline-block; flex: 0 0 3px; border-radius: 50%; background: var(--subtle); }
 .trim-reset { width: 28px; height: 28px; flex: 0 0 28px; }
 .trim-reset:disabled { cursor: not-allowed; opacity: .4; }
-.trim-selection-rail { position: relative; height: 6px; margin: 7px 0 9px 42px; border-radius: 3px; background: #d3d3d3; }
+.trim-selection-rail {
+  position: relative;
+  height: 6px;
+  margin: 7px calc(var(--trim-frame-input-width) + var(--trim-mark-width) + var(--trim-gap) + var(--trim-gap)) 9px calc(var(--trim-label-width) + var(--trim-gap));
+  border-radius: 3px;
+  background: #d3d3d3;
+}
 .trim-selection-rail span { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--accent-mid); }
 .trim-selection-rail i { position: absolute; top: -4px; width: 2px; height: 14px; margin-left: -1px; background: var(--ink); }
-.trim-range-row { min-height: 34px; display: grid; grid-template-columns: 34px minmax(100px, 1fr) 74px 94px; align-items: center; gap: 8px; }
+.trim-range-row { min-height: 34px; display: grid; grid-template-columns: var(--trim-label-width) minmax(100px, 1fr) var(--trim-frame-input-width) var(--trim-mark-width); align-items: center; gap: var(--trim-gap); }
 .trim-range-row label { color: var(--muted); font-size: 11px; font-weight: 650; }
-.trim-range-row input[type="range"] { width: 100%; min-width: 80px; accent-color: var(--accent-mid); cursor: pointer; }
+.trim-range-row input[type="range"] { width: 100%; min-width: 80px; margin: 0; accent-color: var(--accent-mid); cursor: pointer; }
 .trim-range-row input:disabled { cursor: not-allowed; }
-.trim-frame-input { width: 74px; height: 28px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 11px; font-variant-numeric: tabular-nums; }
-.trim-mark { width: 94px; min-height: 28px; padding: 0 8px; font-size: 11px; }
+.trim-frame-input { width: var(--trim-frame-input-width); height: 28px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 11px; font-variant-numeric: tabular-nums; }
+.trim-mark { width: var(--trim-mark-width); min-height: 28px; padding: 0 8px; font-size: 11px; }
 
 .timeline-controls { min-height: 46px; display: flex; align-items: center; gap: 12px; padding-top: 12px; }
 .transport-buttons { display: flex; align-items: center; gap: 5px; }
@@ -464,10 +480,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .timeline-controls { flex-wrap: wrap; gap: 8px; }
   .trim-heading { flex-wrap: wrap; gap: 7px; }
   .trim-summary { order: 3; flex-basis: 100%; padding-left: 23px; }
-  .trim-selection-rail { margin-left: 34px; }
-  .trim-range-row { grid-template-columns: 26px minmax(70px, 1fr) 68px 34px; gap: 6px; }
-  .trim-frame-input { width: 68px; }
-  .trim-mark { width: 34px; padding: 0; }
+  .trim-editor { --trim-label-width: 26px; --trim-gap: 6px; --trim-frame-input-width: 68px; --trim-mark-width: 34px; }
+  .trim-range-row { grid-template-columns: var(--trim-label-width) minmax(70px, 1fr) var(--trim-frame-input-width) var(--trim-mark-width); }
+  .trim-mark { padding: 0; }
   .trim-mark span { display: none; }
   .timeline-slider { order: 4; flex-basis: 100%; }
   .time-readout { margin-left: auto; }

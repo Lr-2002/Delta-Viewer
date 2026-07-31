@@ -9,6 +9,7 @@ import { chromium } from "playwright-core";
 const root = process.cwd();
 const browserExecutable = findBrowserExecutable();
 const requireBrowser = process.env.DEMO_FLOW_REQUIRE_BROWSER === "1";
+const cleanViewport = parseViewport(process.env.DEMO_FLOW_CLEAN_VIEWPORT) ?? { width: 1440, height: 920 };
 const batchViewport = parseViewport(process.env.DEMO_FLOW_BATCH_VIEWPORT) ?? { width: 1440, height: 920 };
 const fixture = JSON.parse(readFileSync(resolve(root, "public/demo/fixture.json"), "utf8"));
 const expectedFixture = {
@@ -95,7 +96,7 @@ if (!browserExecutable) {
   });
 
   test("registration loads the packaged browser demo without /@fs requests", async () => {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    const context = await browser.newContext({ viewport: cleanViewport });
     const page = await context.newPage();
     const fileSystemResponses = [];
     const fixtureStatuses = [];
@@ -114,6 +115,36 @@ if (!browserExecutable) {
       await page.screenshot({ path: resolve(root, process.env.DEMO_FLOW_CLEAN_SCREENSHOT), fullPage: true });
     }
     await context.close();
+  });
+
+  test("trim selection rail aligns with both range controls", async () => {
+    for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
+      const context = await browser.newContext({ viewport });
+      const page = await context.newPage();
+      await registerDemoAccount(page, baseUrl, `trim-${viewport.width}`);
+      await page.locator(".trim-editor").waitFor();
+
+      const alignment = await page.locator(".trim-editor").evaluate((editor) => {
+        const rail = editor.querySelector(".trim-selection-rail")?.getBoundingClientRect();
+        const controls = [...editor.querySelectorAll('.trim-range-row input[type="range"]')]
+          .map((control) => control.getBoundingClientRect());
+        return {
+          rail: rail && { left: rail.left, right: rail.right },
+          controls: controls.map(({ left, right }) => ({ left, right })),
+          scrollWidth: document.documentElement.scrollWidth,
+          viewportWidth: window.innerWidth,
+        };
+      });
+
+      assert.ok(alignment.rail, `missing trim rail at ${viewport.width}px`);
+      assert.equal(alignment.controls.length, 2);
+      for (const control of alignment.controls) {
+        assert.ok(Math.abs(alignment.rail.left - control.left) < 0.5, JSON.stringify(alignment));
+        assert.ok(Math.abs(alignment.rail.right - control.right) < 0.5, JSON.stringify(alignment));
+      }
+      assert.ok(alignment.scrollWidth <= alignment.viewportWidth);
+      await context.close();
+    }
   });
 
   test("custom tasks receive automatic codes, batch export succeeds, and telemetry renders colored series", async () => {

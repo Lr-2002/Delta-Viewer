@@ -5,6 +5,11 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.13 - 2026-07-31
+
+- Aligned the time-trim selection rail with both range sliders on desktop and
+  narrow layouts, including a regression check for the shared pixel bounds.
+
 ## 0.17.12 - 2026-07-30
 
 - Moved automatic updates to the fixed public mirror and added a fixed LAN
