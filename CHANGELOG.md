@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.16 - 2026-07-31
+
+- Fixed the update mirror when GitHub's `releases/latest/download/latest.json`
+  shortcut returns 404. The mirror now resolves only the fixed official latest
+  Release API, derives the immutable semver tag, and retains the existing
+  three-platform, size, SHA-256, and Minisign verification gates.
+
 ## 0.17.15 - 2026-07-31
 
 - Added a LAN-only HTTPS user center on the current host at `10.1.11.36:17880`.

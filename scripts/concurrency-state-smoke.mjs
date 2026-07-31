@@ -307,8 +307,8 @@ try {
             return { userCenter: { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" }, currentUser: { username: "tester", displayName: "Tester" } };
           case "check_for_app_update":
             return {
-              currentVersion: "0.17.15",
-              latestVersion: "0.17.15",
+              currentVersion: "0.17.16",
+              latestVersion: "0.17.16",
               available: false,
               notes: null,
               publishedAt: null,

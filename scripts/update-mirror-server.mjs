@@ -28,6 +28,8 @@ const DEFAULT_CACHE_ROOT = path.join(
 );
 const OFFICIAL_UPSTREAM_MANIFEST =
   "https://github.com/Lr-2002/Delta-Viewer/releases/latest/download/latest.json";
+const OFFICIAL_UPSTREAM_RELEASE_API =
+  "https://api.github.com/repos/Lr-2002/Delta-Viewer/releases/latest";
 const OFFICIAL_ASSET_ORIGIN = "https://github.com";
 const OFFICIAL_ASSET_PATH_PREFIX = "/Lr-2002/Delta-Viewer/releases/download/";
 const MIN_ASSET_BYTES = 1024 * 1024;
@@ -170,6 +172,15 @@ function normalizeConfiguration(raw) {
   ) {
     throw new Error("production mirror must use the official GitHub latest.json");
   }
+  const upstreamReleaseApiUrl = new URL(
+    config.upstreamReleaseApiUrl ?? OFFICIAL_UPSTREAM_RELEASE_API,
+  );
+  if (
+    upstreamReleaseApiUrl.href !== OFFICIAL_UPSTREAM_RELEASE_API
+    && config.allowTestUpstream !== true
+  ) {
+    throw new Error("production mirror must use the official GitHub latest release API");
+  }
   if (typeof config.updaterPublicKey !== "string" || !config.updaterPublicKey) {
     throw new Error("updaterPublicKey is required");
   }
@@ -188,6 +199,7 @@ function normalizeConfiguration(raw) {
     publicBaseUrl,
     fallbackBaseUrls: normalizedFallbackBaseUrls,
     upstreamManifestUrl: upstreamManifestUrl.href,
+    upstreamReleaseApiUrl: upstreamReleaseApiUrl.href,
     upstreamAssetOrigin: config.upstreamAssetOrigin ?? OFFICIAL_ASSET_ORIGIN,
     upstreamAssetPathPrefix: config.upstreamAssetPathPrefix ?? OFFICIAL_ASSET_PATH_PREFIX,
     refreshIntervalMs: config.refreshIntervalSeconds * 1000,
@@ -226,7 +238,11 @@ async function fetchBytes(fetchImpl, url, maximumBytes, timeoutMs) {
       redirect: "follow",
       signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
+    if (!response.ok) {
+      const error = new Error(`${url} returned HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
     const declared = Number(response.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > maximumBytes) {
       throw new Error(`${url} exceeds the ${maximumBytes}-byte response limit`);
@@ -253,6 +269,27 @@ async function fetchJson(fetchImpl, url) {
   } catch (error) {
     throw new Error(`${url} returned invalid JSON: ${error.message}`);
   }
+}
+
+async function fetchLatestManifest(fetchImpl, configuration) {
+  try {
+    return await fetchJson(fetchImpl, configuration.upstreamManifestUrl);
+  } catch (error) {
+    if (error?.status !== 404) throw error;
+  }
+  const release = requirePlainObject(
+    await fetchJson(fetchImpl, configuration.upstreamReleaseApiUrl),
+    "GitHub latest release",
+  );
+  if (typeof release.tag_name !== "string" || !release.tag_name.startsWith("v")) {
+    throw new Error("GitHub latest release has no valid version tag");
+  }
+  const version = requireSemver(release.tag_name.slice(1), "GitHub latest release tag");
+  const manifestUrl = new URL(
+    `${configuration.upstreamAssetPathPrefix}v${version}/latest.json`,
+    configuration.upstreamAssetOrigin,
+  );
+  return fetchJson(fetchImpl, manifestUrl.href);
 }
 
 function validateAssetUrl(value, version, expectedName, configuration) {
@@ -729,7 +766,7 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
     state.status = state.current ? "ready" : "syncing";
     state.lastAttemptAt = new Date().toISOString();
     const latest = validateLatestManifest(
-      await fetchJson(fetchImpl, configuration.upstreamManifestUrl),
+      await fetchLatestManifest(fetchImpl, configuration),
       configuration,
     );
     const releaseManifestUrl =

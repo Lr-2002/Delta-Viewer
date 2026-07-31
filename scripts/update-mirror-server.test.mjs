@@ -162,11 +162,20 @@ test("mirrors signed installers locally and retains the last good release after 
   const signer = createSigner();
   let currentRelease;
   let tamperedFile = null;
+  let latestRouteMissing = false;
+  let fallbackRequests = 0;
   let upstreamBase;
   const upstream = createServer((request, response) => {
     const url = new URL(request.url, upstreamBase);
     let body;
-    if (url.pathname === "/latest.json") {
+    if (url.pathname === "/api/releases/latest") {
+      fallbackRequests += 1;
+      body = Buffer.from(JSON.stringify({ tag_name: `v${currentRelease.latest.version}` }));
+      response.setHeader("content-type", "application/json");
+    } else if (url.pathname === "/latest.json" && latestRouteMissing) {
+      response.writeHead(404).end();
+      return;
+    } else if (url.pathname === "/latest.json" || url.pathname.endsWith("/latest.json")) {
       body = Buffer.from(JSON.stringify(currentRelease.latest));
       response.setHeader("content-type", "application/json");
     } else if (url.pathname.endsWith("/release-manifest.json")) {
@@ -208,6 +217,7 @@ test("mirrors signed installers locally and retains the last good release after 
       publicBaseUrl: "http://127.0.0.1:0",
       fallbackBaseUrls: ["http://localhost:0"],
       upstreamManifestUrl: `${upstreamBase}/latest.json`,
+      upstreamReleaseApiUrl: `${upstreamBase}/api/releases/latest`,
       upstreamAssetOrigin: upstreamBase,
       upstreamAssetPathPrefix: "/repo/releases/download/",
       refreshIntervalSeconds: 3600,
@@ -267,40 +277,47 @@ test("mirrors signed installers locally and retains the last good release after 
     assert.equal((await fetch(`${publicBaseUrl}/releases/v1.2.3/%2e%2e`)).status, 404);
     assert.equal((await fetch(`${publicBaseUrl}/latest.json`, { method: "POST" })).status, 405);
 
+    latestRouteMissing = true;
     currentRelease = createRelease("1.2.4", signer, upstreamBase, 10);
-    tamperedFile = TARGETS[0].updaterName("1.2.4");
+    await mirror.sync();
+    assert.equal(mirror.state.current.version, "1.2.4");
+    assert.equal(fallbackRequests, 1);
+
+    latestRouteMissing = false;
+    currentRelease = createRelease("1.2.5", signer, upstreamBase, 20);
+    tamperedFile = TARGETS[0].updaterName("1.2.5");
     await assert.rejects(mirror.sync(), /SHA-256 mismatch/);
     assert.equal(mirror.state.status, "degraded");
-    assert.equal(mirror.state.current.version, "1.2.3");
+    assert.equal(mirror.state.current.version, "1.2.4");
     const retained = await fetch(`${publicBaseUrl}/latest.json`).then((response) => response.json());
-    assert.equal(retained.version, "1.2.3");
+    assert.equal(retained.version, "1.2.4");
     assert.ok(loggedErrors.some((message) => message.includes("SHA-256 mismatch")));
 
     tamperedFile = null;
     await mirror.sync();
     const previousUpdater = mirror.state.current.latest.platforms[TARGETS[0].target].url;
-    assert.equal(mirror.state.current.version, "1.2.4");
-    currentRelease = createRelease("1.2.5", signer, upstreamBase, 20);
-    await mirror.sync();
     assert.equal(mirror.state.current.version, "1.2.5");
+    currentRelease = createRelease("1.2.6", signer, upstreamBase, 30);
+    await mirror.sync();
+    assert.equal(mirror.state.current.version, "1.2.6");
     assert.equal((await fetch(previousUpdater)).status, 200);
     assert.equal(
-      (await fetch(`${publicBaseUrl}/releases/v1.2.3/${TARGETS[0].updaterName("1.2.3")}`)).status,
+      (await fetch(`${publicBaseUrl}/releases/v1.2.4/${TARGETS[0].updaterName("1.2.4")}`)).status,
       404,
     );
 
     const cachedUpdater = path.join(
       cacheRoot,
       "versions",
-      "v1.2.5",
-      TARGETS[0].updaterName("1.2.5"),
+      "v1.2.6",
+      TARGETS[0].updaterName("1.2.6"),
     );
     const originalBytes = await readFile(cachedUpdater);
     const damagedBytes = Buffer.from(originalBytes);
     damagedBytes[0] ^= 0xff;
     await writeFile(cachedUpdater, damagedBytes);
     await mirror.sync();
-    assert.equal(mirror.state.current.version, "1.2.5");
+    assert.equal(mirror.state.current.version, "1.2.6");
     assert.equal(
       sha256(Buffer.from(await fetch(mirror.state.current.latest.platforms[TARGETS[0].target].url)
         .then((response) => response.arrayBuffer()))),
