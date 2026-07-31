@@ -38,6 +38,7 @@ export function AnnotationPanel({
   const [taskCreatorOpen, setTaskCreatorOpen] = useState(false);
   const [newTaskLabel, setNewTaskLabel] = useState("");
   const [creatingTask, setCreatingTask] = useState(false);
+  const [editStartedAtMs, setEditStartedAtMs] = useState(() => Date.now());
   const previewRequest = useRef(0);
 
   useEffect(() => {
@@ -47,6 +48,7 @@ export function AnnotationPanel({
       setTaskId(annotation.taskId);
       setTrajectoryCode(annotation.trajectoryCode);
       setDescription(annotation.taskDescription);
+      setEditStartedAtMs(Date.now());
       return () => { active = false; };
     }
     if (!firstTask) {
@@ -58,6 +60,7 @@ export function AnnotationPanel({
     setTaskId(firstTask.id);
     setDescription(firstTask.defaultDescription);
     setTrajectoryCode("");
+    setEditStartedAtMs(Date.now());
     void suggestTrajectoryCode(firstTask.id)
       .then((code) => { if (active && previewRequest.current === requestId) setTrajectoryCode(code); })
       .catch((reason) => { if (active && previewRequest.current === requestId) onError(toMessage(reason)); });
@@ -98,7 +101,9 @@ export function AnnotationPanel({
         sourcePath,
         taskId,
         taskDescription: description,
+        editStartedAtMs,
       });
+      setEditStartedAtMs(Date.now());
       onSaved(saved);
       onNotice(`标注已保存：${saved.trajectoryCode} · ${saved.processedBy.displayName}`);
     } catch (reason) {

@@ -244,6 +244,85 @@ impl ExportAdapter for Hdf5Adapter {
             "clip_end_frame",
             AttrValue::I64(context.range.end_frame as i64),
         );
+        builder.set_attr("dohc_provenance_version", AttrValue::I64(1));
+        builder.set_attr(
+            "capture_started_at_ns",
+            AttrValue::I64(
+                context
+                    .provenance
+                    .capture_started_at_ns
+                    .parse()
+                    .map_err(map_error)?,
+            ),
+        );
+        builder.set_attr(
+            "capture_ended_at_ns",
+            AttrValue::I64(
+                context
+                    .provenance
+                    .capture_ended_at_ns
+                    .parse()
+                    .map_err(map_error)?,
+            ),
+        );
+        builder.set_attr(
+            "exported_at_ms",
+            AttrValue::I64(context.provenance.exported_at_ms as i64),
+        );
+        builder.set_attr(
+            "exported_by_username",
+            AttrValue::AsciiString(context.provenance.exported_by.username.clone()),
+        );
+        let mut provenance_group = builder.create_group("provenance");
+        provenance_group
+            .create_dataset("exported_by_display_name_utf8")
+            .with_u8_data(context.provenance.exported_by.display_name.as_bytes());
+        if let Some(modified_by) = &context.provenance.modified_by {
+            builder.set_attr(
+                "modified_by_username",
+                AttrValue::AsciiString(modified_by.username.clone()),
+            );
+            builder.set_attr(
+                "annotation_created_at_ms",
+                AttrValue::I64(
+                    context
+                        .provenance
+                        .annotation_created_at_ms
+                        .unwrap_or_default() as i64,
+                ),
+            );
+            builder.set_attr(
+                "annotation_updated_at_ms",
+                AttrValue::I64(
+                    context
+                        .provenance
+                        .annotation_updated_at_ms
+                        .unwrap_or_default() as i64,
+                ),
+            );
+            builder.set_attr(
+                "annotation_edit_started_at_ms",
+                AttrValue::I64(
+                    context
+                        .provenance
+                        .annotation_edit_started_at_ms
+                        .unwrap_or_default() as i64,
+                ),
+            );
+            builder.set_attr(
+                "annotation_edit_duration_ms",
+                AttrValue::I64(
+                    context
+                        .provenance
+                        .annotation_edit_duration_ms
+                        .unwrap_or_default() as i64,
+                ),
+            );
+            provenance_group
+                .create_dataset("modified_by_display_name_utf8")
+                .with_u8_data(modified_by.display_name.as_bytes());
+        }
+        builder.add_group(provenance_group.finish());
         if let Some(annotation) = context.annotation {
             builder.set_attr(
                 "trajectory_code",
@@ -469,6 +548,35 @@ fn verify_hdf5(path: &Path, context: &ExportContext<'_>) -> AppResult<()> {
     let attrs = file.root().attrs().map_err(map_error)?;
     if attrs.get("clip_start_frame") != Some(&AttrValue::I64(context.range.start_frame as i64))
         || attrs.get("clip_end_frame") != Some(&AttrValue::I64(context.range.end_frame as i64))
+        || attrs.get("dohc_provenance_version") != Some(&AttrValue::I64(1))
+        || attrs.get("capture_started_at_ns")
+            != Some(&AttrValue::I64(
+                context
+                    .provenance
+                    .capture_started_at_ns
+                    .parse()
+                    .map_err(map_error)?,
+            ))
+        || attrs.get("capture_ended_at_ns")
+            != Some(&AttrValue::I64(
+                context
+                    .provenance
+                    .capture_ended_at_ns
+                    .parse()
+                    .map_err(map_error)?,
+            ))
+        || attrs.get("exported_at_ms")
+            != Some(&AttrValue::I64(context.provenance.exported_at_ms as i64))
+        || !attr_string_matches(
+            attrs.get("exported_by_username"),
+            &context.provenance.exported_by.username,
+        )
+        || file
+            .dataset("provenance/exported_by_display_name_utf8")
+            .map_err(map_error)?
+            .read_u8()
+            .map_err(map_error)?
+            != context.provenance.exported_by.display_name.as_bytes()
     {
         return Err(AppError::Message(
             "HDF5 回读验证失败: 裁剪范围属性不匹配".into(),
@@ -481,6 +589,14 @@ fn verify_hdf5(path: &Path, context: &ExportContext<'_>) -> AppResult<()> {
                 attrs.get("processed_by_username"),
                 &annotation.processed_by.username,
             )
+            || !attr_string_matches(
+                attrs.get("modified_by_username"),
+                &annotation.processed_by.username,
+            )
+            || attrs.get("annotation_updated_at_ms")
+                != Some(&AttrValue::I64(annotation.updated_at_ms as i64))
+            || attrs.get("annotation_edit_duration_ms")
+                != Some(&AttrValue::I64(annotation.edit_duration_ms as i64))
             || file
                 .dataset("annotation/task_description_utf8")
                 .map_err(map_error)?

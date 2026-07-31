@@ -53,8 +53,9 @@ prompt while installing the replacement deb.
 
 ## Workflow
 
-1. Create or sign in to a local account. The account identifies who last
-   processed an episode; it is not a cloud account or a remote permission system.
+1. Import the administrator-provided LAN user-center configuration and sign in
+   with an administrator-created account. The account identifies who last
+   processed an episode; the user center does not receive recording data.
 2. Select an SD card or a recording directory.
 3. Scan every direct-child episode without modifying the source card. The first
    session opens directly from the read-only source; no automatic app-local
@@ -89,18 +90,19 @@ checks of the same episode path and fingerprint reuse one report. Formal stress
 and release smoke tests still decode every JPEG; a sampled result does not claim
 that unsampled frames are free of encoding damage.
 
-Accounts, user-created tasks, trajectory reservations, append-only annotation
-revisions, reports, and operation error history are stored under the operating
-system's application-local data directory. Normal UI use does not copy episode
-payloads there. A batch candidate therefore still requires its original source
-path to be mounted and its fingerprint to match the saved annotation. Passwords
-are stored as Argon2id PHC hashes with random salts, never as plaintext. Login
-sessions last only for the current application process. This identity layer is
-for processing attribution; it does not encrypt local files, provide roles,
-recover forgotten passwords, or synchronize between computers.
+User-created tasks, trajectory reservations, append-only annotation revisions,
+reports, and operation error history are stored under the operating system's
+application-local data directory. Normal UI use does not copy episode payloads
+there. A batch candidate therefore still requires its original source path to
+be mounted and its fingerprint to match the saved annotation. Password hashes
+are stored only by the LAN user center; the client never stores passwords and
+keeps login sessions only in the current process. The user center is for
+processing attribution; it does not encrypt local files, provide organization
+IAM, recover forgotten passwords, or synchronize annotation data.
 
-The runtime has no SSH or network data path. Its only HTTP use is the automatic
-update check against the fixed `39.155.172.162:17879` mirror, with
+The runtime has no SSH or network recording-data path. It connects only to the
+configured LAN user center for login and to the automatic update mirror at
+fixed `39.155.172.162:17879`, with
 `10.1.11.36:17879` as its only LAN fallback; clients never contact GitHub and
 send no account, source path, annotation, report, hash, or telemetry data. The
 updater accepts only those configured origins and exact version paths, then

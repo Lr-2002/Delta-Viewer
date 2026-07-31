@@ -7,6 +7,7 @@
 - [数据检查](Data-Validation)
 - [回放与裁剪](Playback-and-Clipping)
 - [账号与数据标注](Accounts-and-Annotations)
+- [用户中心部署](User-Center-Deployment)
 - [数据导出](Data-Export)
 - [数据安全与隐私](Data-Safety-and-Privacy)
 - [故障排查](Troubleshooting)

@@ -1,5 +1,9 @@
 # 安装与升级
 
+## 局域网用户中心
+
+账号由当前主机的用户中心管理员创建。服务主机执行 `pnpm user-center:install` 完成一键安装和 LaunchAgent 部署；详细步骤见[用户中心部署](User-Center-Deployment)。客户端首次启动时导入管理员提供的 `DOHC-User-Center-Client.json`，不能在客户端自助注册账号。
+
 只从固定更新镜像 [http://39.155.172.162:17879/](http://39.155.172.162:17879/) 下载安装包，用户不需要访问 GitHub。当前发布通道没有可信发布者签名，页面中的三个安装包文件名都必须显示 `UNSIGNED`。macOS app 带有用于验证包完整性的本地 ad-hoc seal，但没有 Apple Developer ID 或 notarization；Ubuntu deb 同样没有可信发行者签名。镜像没有同时列出 Windows x64、macOS arm64 和 Ubuntu deb 时不要使用临时 artifact 或本地 debug bundle。
 
 ## Windows 10/11 x64
@@ -63,4 +67,4 @@ sha256sum 'DOHC-Viewer_0.17.12_UNSIGNED_ubuntu-22.04+-x64.deb'
 
 镜像不可达、断网、检查失败、下载失败或签名不匹配都会保留当前版本，并在界面显示可重试提示；检查、回放、标注和导出仍可离线使用。客户端只使用 `http://39.155.172.162:17879` 和 `http://10.1.11.36:17879`，发现更新后会同时取得两个固定 32 KiB Range 样本，并按实测更快的可用路径下载；不访问 GitHub，也不发送账号、源路径、标注、报告、hash 或遥测。
 
-自动更新用的签名只验证更新包来自项目发布流程，不等同于 Windows Authenticode、Apple Developer ID 或可信 Linux 包签名；当前安装器仍明确标记为 `UNSIGNED`。镜像使用内网 HTTP，因此网络设备可能阻断检查，但任何被修改的更新包都会在安装前被签名校验拒绝。当前用户的本地账号、后台检查报告和 episode 标注保存在系统应用数据目录，正常覆盖升级不会删除这些数据。降级默认被安装器阻止，避免新格式数据被旧版本误读。
+自动更新用的签名只验证更新包来自项目发布流程，不等同于 Windows Authenticode、Apple Developer ID 或可信 Linux 包签名；当前安装器仍明确标记为 `UNSIGNED`。镜像使用内网 HTTP，因此网络设备可能阻断检查，但任何被修改的更新包都会在安装前被签名校验拒绝。客户端的用户中心配置、任务、后台检查报告和 episode 标注保存在系统应用数据目录，正常覆盖升级不会删除这些数据；账号密码只保留在用户中心主机。降级默认被安装器阻止，避免新格式数据被旧版本误读。

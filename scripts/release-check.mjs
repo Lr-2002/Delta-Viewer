@@ -705,6 +705,12 @@ async function main() {
       commands.pnpm,
       pnpmArguments(["test:update-mirror"]),
     );
+    await runCommand(
+      report,
+      "LAN user-center regression tests",
+      commands.pnpm,
+      pnpmArguments(["test:user-center"]),
+    );
     await runCommand(report, "Rust format check", commands.cargo, [
       "fmt",
       "--manifest-path",

@@ -34,6 +34,7 @@ import type {
   TaskDefinition,
   UserIdentity,
   ValidationReport,
+  UserCenterStatus,
 } from "../types";
 
 export const DEMO_ROOT = DEMO_EPISODE_ROOT;
@@ -78,7 +79,24 @@ export async function installAppUpdate(operationId: number): Promise<boolean> {
 
 export async function getAuthStatus(): Promise<AuthStatus> {
   if (isTauriRuntime()) return invoke<AuthStatus>("get_auth_status");
-  return { hasAccounts: demoAccounts.size > 0, currentUser: demoCurrentUser };
+  return {
+    userCenter: { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" },
+    currentUser: demoCurrentUser,
+  };
+}
+
+export async function configureUserCenter(): Promise<UserCenterStatus> {
+  if (isTauriRuntime()) {
+    const selection = await open({
+      directory: false,
+      multiple: false,
+      title: "导入管理员提供的用户中心配置",
+      filters: [{ name: "DOHC User Center", extensions: ["json"] }],
+    });
+    if (typeof selection !== "string") throw new Error("未选择用户中心配置文件");
+    return invoke<UserCenterStatus>("configure_user_center", { configPath: selection });
+  }
+  return { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" };
 }
 
 export async function registerLocalAccount(
@@ -87,9 +105,7 @@ export async function registerLocalAccount(
   password: string,
 ): Promise<UserIdentity> {
   if (isTauriRuntime()) {
-    return invoke<UserIdentity>("register_account", {
-      request: { username, displayName, password },
-    });
+    throw new Error("ACCOUNT_ADMIN_MANAGED: 账号只能由用户中心管理员创建");
   }
   const normalized = username.trim().toLowerCase();
   if (demoAccounts.has(normalized)) throw new Error("ACCOUNT_EXISTS: 本地账号已存在");
@@ -194,6 +210,8 @@ export async function saveEpisodeAnnotation(
     revision: (existing?.revision ?? 0) + 1,
     createdAtMs: existing?.createdAtMs ?? now,
     updatedAtMs: now,
+    editStartedAtMs: request.editStartedAtMs,
+    editDurationMs: Math.max(0, now - request.editStartedAtMs),
   };
   demoAnnotations.set(request.sourcePath, annotation);
   return annotation;

@@ -6,8 +6,14 @@ export interface UserIdentity {
 }
 
 export interface AuthStatus {
-  hasAccounts: boolean;
+  userCenter: UserCenterStatus;
   currentUser: UserIdentity | null;
+}
+
+export interface UserCenterStatus {
+  configured: boolean;
+  endpoint: string | null;
+  serviceId: string | null;
 }
 
 export interface TaskDefinition {
@@ -33,6 +39,8 @@ export interface EpisodeAnnotation {
   revision: number;
   createdAtMs: number;
   updatedAtMs: number;
+  editStartedAtMs: number;
+  editDurationMs: number;
 }
 
 export interface AnnotatedEpisodeSummary {
@@ -44,6 +52,7 @@ export interface SaveAnnotationRequest {
   sourcePath: string;
   taskId: string;
   taskDescription: string;
+  editStartedAtMs: number;
 }
 
 export interface StreamSummary {

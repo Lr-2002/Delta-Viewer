@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppResult};
-use crate::model::{ExportFormat, ImportManifest, Severity, VolumeInfo};
+use crate::model::{ExportFormat, ImportManifest, Severity, UserIdentity, VolumeInfo};
 use crate::{export, importer, source, storage, validation};
 use serde::Serialize;
 use std::fs::{self, File, OpenOptions};
@@ -352,6 +352,10 @@ fn run_inner(
                 destination_parent: &exports,
                 validation_report: &validation_report,
                 annotation: None,
+                exported_by: &UserIdentity {
+                    username: "stress-check".into(),
+                    display_name: "Stress Check".into(),
+                },
                 acknowledge_warnings: true,
                 requested_range: None,
                 app: None,

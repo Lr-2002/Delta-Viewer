@@ -67,7 +67,7 @@ diskutil info "/Volumes/CARD_NAME" | grep -E "Device Node|File System Personalit
 ## 4. 在 DOHC Viewer 中只读打开
 
 1. 先在 Finder 中打开只读卷，确认能看到 session 目录和预期的 `cam0`、`cam1`、`cam2`、`t265_left`、`t265_right`、`states.jsonl` 数据。
-2. 启动 DOHC Viewer 并登录本地账号。
+2. 启动 DOHC Viewer，导入管理员提供的用户中心配置并登录账号。
 3. 点击“选择 SD 卡”，通过系统目录选择框选择 `/Volumes/CARD_NAME` 对应的卡根目录。
 4. 选择完成后 DOHC Viewer 会扫描全部 session，并直接从只读源路径加载第一条记录；不会要求选择导入目标，也不会自动复制完整 session。不要把源卡改成可写。
 5. 等待结构/状态检查和固定百分位 JPEG 抽检完成。任务结束前保持读卡器连接稳定。

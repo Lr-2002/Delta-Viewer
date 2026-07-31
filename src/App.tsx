@@ -516,7 +516,7 @@ function App() {
       setNotice("");
       didAutoLoad.current = false;
       setAuthStatus((current) => ({
-        hasAccounts: current?.hasAccounts ?? true,
+        userCenter: current?.userCenter ?? { configured: false, endpoint: null, serviceId: null },
         currentUser: null,
       }));
     } catch (reason) {
@@ -838,7 +838,7 @@ function App() {
     return (
       <main className="auth-shell auth-loading">
         <LoaderCircle className={authStartupError ? undefined : "spin"} size={24} />
-        <strong>{authStartupError ? "无法载入本地账号" : "正在载入本地账号"}</strong>
+        <strong>{authStartupError ? "无法载入用户中心状态" : "正在载入用户中心状态"}</strong>
         {authStartupError ? <span>{authStartupError}</span> : null}
         {authStartupError ? (
           <button className="button button-secondary" type="button" onClick={() => void refreshAuthStatus()}>
@@ -852,8 +852,16 @@ function App() {
   if (!authStatus.currentUser) {
     return (
       <AuthScreen
-        hasAccounts={authStatus.hasAccounts}
-        onAuthenticated={(user) => setAuthStatus({ hasAccounts: true, currentUser: user })}
+        userCenter={authStatus.userCenter}
+        allowDemoRegistration={!isTauriRuntime()}
+        onUserCenterConfigured={(status) => setAuthStatus((current) => ({
+          userCenter: status,
+          currentUser: current?.currentUser ?? null,
+        }))}
+        onAuthenticated={(user) => setAuthStatus((current) => ({
+          userCenter: current?.userCenter ?? { configured: false, endpoint: null, serviceId: null },
+          currentUser: user,
+        }))}
       />
     );
   }

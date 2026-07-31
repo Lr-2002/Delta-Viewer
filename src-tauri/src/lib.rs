@@ -11,6 +11,7 @@ mod source;
 mod storage;
 pub mod stress;
 mod updater;
+mod user_center;
 mod validation;
 mod validation_cache;
 
@@ -21,8 +22,8 @@ use model::{
     AnnotatedEpisodeSummary, AppUpdateInfo, AuthStatus, BatchExportCommandRequest,
     BatchExportResult, CreateTaskRequest, EpisodeAnnotation, EpisodeData, ExportCommandRequest,
     ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord,
-    PartialImport, ProgressPayload, RecordOperationErrorRequest, RegisterAccountRequest,
-    ReportExportResult, SaveAnnotationRequest, ScanResult, TaskDefinition, UserIdentity,
+    PartialImport, ProgressPayload, RecordOperationErrorRequest, ReportExportResult,
+    SaveAnnotationRequest, ScanResult, TaskDefinition, UserCenterStatus, UserIdentity,
     ValidationReport,
 };
 use std::path::{Path, PathBuf};
@@ -184,27 +185,18 @@ async fn install_app_update(
 #[tauri::command]
 async fn get_auth_status(app: AppHandle, auth: State<'_, AuthState>) -> Result<AuthStatus, String> {
     let data_root = app_data_root(&app)?;
-    let auth = auth.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || identity::auth_status(&data_root, &auth))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+    user_center::auth_status(&data_root, auth.inner()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn register_account(
+async fn configure_user_center(
     app: AppHandle,
-    auth: State<'_, AuthState>,
-    request: RegisterAccountRequest,
-) -> Result<UserIdentity, String> {
+    config_path: String,
+) -> Result<UserCenterStatus, String> {
     let data_root = app_data_root(&app)?;
-    let auth = auth.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        identity::register_account(&data_root, &auth, request)
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())
+    user_center::configure(&data_root, Path::new(&config_path))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -215,12 +207,9 @@ async fn login_account(
 ) -> Result<UserIdentity, String> {
     let data_root = app_data_root(&app)?;
     let auth = auth.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        identity::login_account(&data_root, &auth, request)
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())
+    user_center::login(&data_root, &auth, request)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -577,7 +566,7 @@ async fn export_episode(
     request: ExportCommandRequest,
     operation_id: u64,
 ) -> Result<ExportResult, String> {
-    auth.require_user().map_err(|error| error.to_string())?;
+    let exported_by = auth.require_user().map_err(|error| error.to_string())?;
     let ExportCommandRequest {
         source_path,
         destination_parent,
@@ -604,6 +593,7 @@ async fn export_episode(
             destination_parent: Path::new(&destination_parent),
             validation_report: &report,
             annotation: annotation.as_ref(),
+            exported_by: &exported_by,
             acknowledge_warnings,
             requested_range: range,
             app: Some(&app),
@@ -733,7 +723,7 @@ pub fn run() {
             get_auth_status,
             check_for_app_update,
             install_app_update,
-            register_account,
+            configure_user_center,
             login_account,
             logout_account,
             list_task_definitions,

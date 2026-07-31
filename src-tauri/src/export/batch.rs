@@ -235,6 +235,7 @@ fn export_one_annotation(
         destination_parent: runtime.destination_parent,
         validation_report: &trusted_report,
         annotation: Some(&annotation),
+        exported_by: &runtime.processed_by,
         acknowledge_warnings: runtime.acknowledge_warnings,
         requested_range: None,
         app: runtime.app,
@@ -428,6 +429,10 @@ mod tests {
             source_path: String::new(),
             task_id: "close_oven".into(),
             task_description: description.into(),
+            edit_started_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
         }
     }
 

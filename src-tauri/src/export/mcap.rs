@@ -78,6 +78,27 @@ impl ExportAdapter for McapAdapter {
         let mut dataset_metadata = BTreeMap::from([
             ("source_name".into(), context.data.summary.name.clone()),
             ("state_count".into(), context.data.states.len().to_string()),
+            ("dohc_provenance_version".into(), "1".into()),
+            (
+                "capture_started_at_ns".into(),
+                context.provenance.capture_started_at_ns.clone(),
+            ),
+            (
+                "capture_ended_at_ns".into(),
+                context.provenance.capture_ended_at_ns.clone(),
+            ),
+            (
+                "exported_at_ms".into(),
+                context.provenance.exported_at_ms.to_string(),
+            ),
+            (
+                "exported_by_username".into(),
+                context.provenance.exported_by.username.clone(),
+            ),
+            (
+                "exported_by_display_name".into(),
+                context.provenance.exported_by.display_name.clone(),
+            ),
             (
                 "clip_start_frame".into(),
                 context.range.start_frame.to_string(),
@@ -98,6 +119,38 @@ impl ExportAdapter for McapAdapter {
             dataset_metadata.insert(
                 "processed_by_display_name".into(),
                 annotation.processed_by.display_name.clone(),
+            );
+            dataset_metadata.insert(
+                "annotation_created_at_ms".into(),
+                context
+                    .provenance
+                    .annotation_created_at_ms
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            dataset_metadata.insert(
+                "annotation_updated_at_ms".into(),
+                context
+                    .provenance
+                    .annotation_updated_at_ms
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            dataset_metadata.insert(
+                "annotation_edit_started_at_ms".into(),
+                context
+                    .provenance
+                    .annotation_edit_started_at_ms
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            dataset_metadata.insert(
+                "annotation_edit_duration_ms".into(),
+                context
+                    .provenance
+                    .annotation_edit_duration_ms
+                    .unwrap_or_default()
+                    .to_string(),
             );
         }
         writer

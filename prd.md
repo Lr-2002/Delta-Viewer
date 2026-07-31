@@ -3,8 +3,8 @@
 | 属性 | 内容 |
 | --- | --- |
 | 产品名称 | DOHC Viewer |
-| 文档版本 | 0.25 |
-| 应用版本基线 | 0.17.14 |
+| 文档版本 | 0.26 |
+| 应用版本基线 | 0.17.15 |
 | 文档状态 | 安全 Alpha，三安装器 unsigned CD、固定 IP 更新镜像与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64；Ubuntu 22.04+ x86_64 deb |
 | 文档日期 | 2026-07-31 |
@@ -15,7 +15,7 @@
 
 本文定义 DOHC Viewer 的产品边界、数据契约、用户流程、功能需求、非功能需求和发布验收标准。产品、设计、开发和测试均以本文为共同基线。
 
-本文同时记录当前 `0.17.14` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
+本文同时记录当前 `0.17.15` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
 
 ## 2. 背景与问题
 
@@ -35,14 +35,14 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 
 | 编号 | 决策 |
 | --- | --- |
-| D-001 | 产品数据运行时只支持本机可见的 SD 卡或本地目录，不支持 SSH、HTTP、NAS 或其他网络数据源。客户端自动更新只能访问 D-031 指定的固定 IP 镜像，不构成网络数据源。 |
+| D-001 | 产品数据运行时只处理本机可见的 SD 卡或本地目录，不支持 SSH、NAS 或其他网络数据源；固定局域网用户中心只承载账号登录和管理员账号管理，不承载采集数据。客户端自动更新只能访问 D-031 指定的固定 IP 镜像。 |
 | D-002 | 正常工作流直接从已挂载源目录只读加载，进行全量结构/状态检查和固定百分位 JPEG 抽检，然后回放和导出；不自动复制源数据。正式压力/发布验收仍全量解码 JPEG。 |
 | D-003 | 正式安装包覆盖 Windows 10/11 x64、macOS 12+ arm64 与 Ubuntu 22.04+ x86_64 原生 deb；首个现场验收重点仍为 Windows。技术栈为 Tauri 2、Rust、React 和 TypeScript。 |
 | D-004 | 推荐未来采集卡使用 exFAT，以便 Windows/macOS 直接读取；当前 ext4 卡必须先备份再格式化。 |
 | D-005 | 导入完整性采用“文件大小 + BLAKE3”逐文件回读校验，并生成数据集级 BLAKE3。 |
 | D-006 | 导出格式通过独立 adapter 实现，首批为 MCAP、HDF5 和 LeRobot v2.1。 |
 | D-007 | 数据存在 warning 时允许导出；存在 error 时必须阻止正常导出。 |
-| D-008 | 核心检查、回放、标注和导出不依赖运行时网络；Windows 安装包必须包含离线 WebView2 安装能力和 FFmpeg。自动更新检查失败或断网不得阻断这些本地功能。 |
+| D-008 | 核心检查、回放、标注和导出不依赖运行时网络；进入工作区前只需连接当前主机的固定局域网用户中心完成登录。Windows 安装包必须包含离线 WebView2 安装能力和 FFmpeg；用户中心短暂不可用不得中断已登录会话。自动更新检查失败或断网不得阻断这些本地功能。 |
 | D-009 | 源数据没有 `action` 字段，LeRobot 导出不得虚构 action。 |
 | D-010 | 文件和目录名必须兼容 Windows；旧数据中的非法字符由导入器确定性替换。 |
 | D-011 | 100 GB 正式验收必须使用 exFAT 实卡、不同本地工作卷、release exact tag 和显式 reviewed FFmpeg；开发 fixture 结果不得替代。 |
@@ -51,8 +51,8 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-014 | 应用布局、控件和状态使用黑、白和中性灰；原始相机画面保留源颜色，telemetry 数据系列使用稳定彩色曲线并辅以维度文字和不同线型。状态仍通过文字、图标、边框和明度共同表达，不仅依赖色相。 |
 | D-015 | 历史：v0.12 开始自动处理第一条 session，v0.16 曾扩展为全部 session 自动导入；当前行为由 D-026 取代。 |
 | D-016 | v0.13 起 warning/error 检查结果必须在后台自动生成本地审计报告；ok 不自动生成。报告只写入应用本地数据目录，不上传网络、不写源卡或 episode；同一 episode 路径和数据指纹在同一报告版本下去重。 |
-| D-017 | v0.14 起进入数据工作区前必须登录本地账号；账号不连接服务器、不提供远程权限体系，密码仅保存 Argon2id 哈希和系统随机盐。账号用于本机处理归因。 |
-| D-018 | 标注记录绑定规范化 episode 路径与数据指纹，使用本地可创建任务、可编辑任务描述和 `{prefix}-{NNN}` 轨迹编码。首个内置任务为 `close_oven`，前缀为 `oven`；新任务只输入名称，由系统生成稳定 ID/前缀；标注只写应用 local-data，并以追加修订保留处理人历史。 |
+| D-017 | v0.17.15 起进入数据工作区前必须登录当前主机局域网用户中心账号；账号只能由管理员创建。服务只保存 scrypt 密码哈希和账号审计字段，客户端通过管理员导入的固定 HTTPS 证书配置登录，登录成功后只在 Rust 进程内保存会话。用户中心不接收源路径、图像、状态、标注、报告或 hash。 |
+| D-018 | 标注记录绑定规范化 episode 路径与数据指纹，使用本地任务、可编辑任务描述和 `{prefix}-{NNN}` 轨迹编码。首个内置任务为 `close_oven`，前缀为 `oven`；新任务只输入名称，由系统生成稳定 ID/前缀；标注只写应用 local-data，并以追加修订保留处理人、修改开始时间和修改耗时。 |
 | D-019 | 每个进入 `main` 的 commit 都必须是完整 release-ready 内容，使用唯一新 semver、带日期 Changelog，并在 CI 成功后由 GitHub Actions 使用仓库 `GITHUB_TOKEN` 创建精确指向该 commit 的 annotated `vX.Y.Z` tag；禁止先推普通变更再另推 release commit。当前版本必须是 `CHANGELOG.md` 第一条带日期的版本记录、只能出现一次并至少包含一条具体变更，GitHub Release 正文必须直接展示该条目，并从该 clean exact tag 同时构建 Windows x64、macOS arm64 和 Ubuntu 22.04+ x64 deb 三个安装包。Codex 默认只递增 patch `+0.0.1`，minor/major 只能按开发负责人明确指令更新；当前阶段允许公开显式 `UNSIGNED` 的完整集合，但标题、说明、文件名、报告和 manifest 必须一致披露。未来签名产物必须使用新版本/tag，不覆盖 unsigned 资产。 |
 | D-020 | 用户文档使用 GitHub Wiki；`docs/wiki` 是可审查的唯一源，由 workflow 同步，避免网页内容与代码版本分叉。 |
 | D-021 | unsigned macOS app 仍必须对 FFmpeg、主程序和完整 bundle 生成结构有效的 ad-hoc seal；发布门禁必须在 synthetic quarantine 下区分“无可信身份/未公证”的预期策略拒绝、由已知良性 control app 复现的 runner XProtect 服务错误，以及 invalid signature/damaged 的产品包结构错误。 |
@@ -78,7 +78,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 5. 让用户像视频编辑器一样快速选择一段轨迹并预览，然后导出同一段数据。
 6. 通过 adapter 降低新增数据格式的成本，并保持各格式语义清晰。
 7. 在无网络环境中完成核心工作流。
-8. 用本地账号、任务标注和唯一轨迹编码记录数据处理归属，并让三种导出继承同一语义。
+8. 用局域网用户中心账号、任务标注和唯一轨迹编码记录数据处理归属，并让三种导出继承同一语义。
 9. 让用户从本机标注目录一次选择多条完整轨迹，按统一格式批量导出并逐条查看结果。
 10. 在客户端无法访问 GitHub 时，通过固定 IP 签名镜像让引导版自动升级到完整通过发布门禁的新版本。
 
@@ -101,11 +101,11 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 ### 4.3 非目标
 
 - 不直接读取 Windows 无法挂载的 ext4 分区。
-- 不提供 SSH、云同步、远程上传或多人协作。
+- 不提供 SSH、云同步、远程上传或多人协作；局域网用户中心只负责统一登录和管理员账号生命周期。
 - 不在 SD 卡上修复、重命名、删除或覆盖原始文件。
 - 不提供多段拼接、多轨编辑、逐帧标注或训练任务管理；当前标注范围只包含 episode 级任务、描述、轨迹码和处理人。
 - 不自动推断机器人 action 或 task 语义；任务由用户选择或本地创建，描述允许人工编辑。
-- 不提供云账号、远程身份验证、角色权限、跨机器账号同步或忘记密码服务。
+- 不提供云账号、组织级角色权限、跨机器标注同步或忘记密码服务；当前主机局域网用户中心仅提供账号登录和管理员创建账号。
 - 不缓存源 JPEG 或状态文件；源卷移除后不能继续回放、检查或导出。
 - 首版批量导出不保存或复用单条回放页的临时裁剪范围，只导出每个已标注 episode 的完整轨迹。
 
@@ -122,7 +122,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 
 ### 5.2 典型场景
 
-1. 操作员首次使用时创建本地账号，后续启动输入账号和密码登录。
+1. 管理员在当前主机初始化用户中心并创建操作员账号；操作员首次使用时导入管理员提供的证书配置，之后输入账号和密码登录。
 2. 操作员插入 exFAT SD 卡并选择卡根目录，应用扫描记录并自动选择第一条 session。
 3. 应用直接从源路径只读加载首条 session，运行结构/状态检查和固定百分位 JPEG 抽检；不创建本机数据副本。
 4. 其余 session 保持可用状态，用户从左侧双击或按 Enter/空格时按需读取和检查。
@@ -159,7 +159,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | 状态 | 含义 | 允许操作 |
 | --- | --- | --- |
 | 未选择 | 没有数据源 | 选择 SD 卡目录 |
-| 未登录 | 没有本地登录会话 | 登录或创建本地账号；数据 IPC 不可用 |
+| 未登录 | 没有用户中心登录会话 | 导入管理员配置并登录；数据 IPC 不可用 |
 | 已扫描 | 已发现 episode，源目录保持只读 | 首条自动读取；其他记录按需进入 |
 | 读取中 | 正在读取源记录 | 查看进度、取消；保持源卷连接 |
 | 检查中 | 正在全量解析结构/状态并按固定百分位解码图像 | 查看进度、取消 |
@@ -366,12 +366,14 @@ Issue code 和严重级别：
 - Foxglove protobuf 的 `Timestamp` 与图像/位姿消息使用同一 capture time；`frame_id` 分别为 `dohc_base` 和流名。
 - 五个图像 channel 的 metadata 包含 `mime_type`、`width` 和 `height`。
 - 数据集 metadata 包含源名称、状态条数和 `clip_start_frame`/`clip_end_frame`；存在标注时增加轨迹码、任务 ID/描述和处理人账号/显示名。
+- `dohc.dataset` metadata 必须包含 `dohc_provenance_version`、选中范围的 `capture_started_at_ns`/`capture_ended_at_ns`、`exported_at_ms`/`exported_by_*`；存在标注时增加 `annotation_created_at_ms`、`annotation_updated_at_ms`、`annotation_edit_started_at_ms`、`annotation_edit_duration_ms` 和修改人字段。
 - 文件必须能被 Foxglove Desktop 打开；Image panel 可选择五路图像，3D panel 可选择 `/dohc/pose`，Raw/Plot panel 可读取 `/dohc/state`。
 
 #### 8.5.2 HDF5 契约
 
 - 输出为单个 `.h5` 文件，根属性包括 `format=dohc-hdf5`、`format_version=1` 和 `source_name`。
 - 根属性同时保存 `clip_start_frame` 和 `clip_end_frame`。
+- 根属性和 `/provenance` 必须记录采集起止纳秒时间、标注创建/修改时间、修改耗时、修改人、导出时间和导出人；`dohc_provenance_version=1`。
 - 存在标注时，根属性保存 `trajectory_code`、`task_id`、`processed_by_username`；`/annotation` 以 UTF-8 字节 dataset 保存任务描述和处理人显示名。
 - `/states` 包含 `frame_id`、`capture_time_ns`、`position`、`velocity`、`quaternion`、`euler`、`omega` 和 `confidence`。
 - `/images/{stream}` 包含 `jpeg_data`、`offsets`、`sizes` 和 `frame_id`。
@@ -387,6 +389,7 @@ Issue code 和严重级别：
 - 数据文件为 `data/chunk-000/episode_000000.parquet`，使用 Snappy。
 - 每个流生成 `videos/chunk-000/observation.images.{stream}/episode_000000.mp4`。
 - Meta 包含 `info.json`、`tasks.jsonl`、`episodes.jsonl`、`stats.json` 和 `episodes_stats.jsonl`。
+- `info.json.dohc_provenance` 记录采集起止时间、导出时间和实际导出人；`dohc_annotation` 记录标注创建/修改时间、修改起始时间和修改耗时。
 - 存在标注时，`tasks.jsonl`/`episodes.jsonl` 使用可编辑任务描述，`info.json.dohc_annotation` 保存轨迹码、任务、处理人和修订号。
 - `codebase_version` 固定为 `v2.1`。
 - `info.json` 保存 `clip_start_frame`、`clip_end_frame`；裁剪输出目录名包含
@@ -397,17 +400,18 @@ Issue code 和严重级别：
 - FPS 从正时间差的中位数估算，并在 5% 内吸附到常见帧率；标准样例应得到 30 FPS。
 - FFmpeg 查找顺序为 `DOHC_FFMPEG`、应用资源目录、系统 PATH。Windows 发布版必须命中应用资源目录。
 
-### 8.6 本地账号与数据标注
+### 8.6 局域网用户中心账号与数据标注
 
 | 编号 | 优先级 | 需求 | 验收标准 | 状态 |
 | --- | --- | --- | --- | --- |
-| FR-AUTH-001 | P0 | 首次启动可创建本地账号，后续可登录和退出。 | 账号为 3-32 位安全字符；密码 8-128 字符，磁盘只保存 Argon2id PHC 哈希，不保存明文。 | 已实现并测试 |
+| FR-AUTH-001 | P0 | 首次启动可导入管理员提供的用户中心配置，之后登录和退出。 | 配置固定局域网 HTTPS origin、service ID 和证书；客户端只保存证书配置，不保存密码；登录后只保留进程内会话。 | 已实现并测试 |
 | FR-AUTH-002 | P0 | 数据工作区和数据 IPC 要求有效进程内会话。 | 未登录直接调用扫描、导入、加载、检查、读帧或导出均返回 `AUTH_REQUIRED`；重启后需重新登录。 | 已实现 |
+| FR-AUTH-003 | P0 | 用户中心管理员创建操作员账号。 | 服务首次初始化只能在主机本机创建首个管理员；普通账号无自助注册入口，管理员页面创建的账号才能登录客户端。 | 已实现并测试 |
 | FR-ANN-001 | P0 | 回放首页支持选择已有任务或只输入名称创建本地任务；任务描述可编辑。 | 新任务立即进入任务选择并以任务名作为默认描述；`close_oven` 仍自动带出内置默认描述。 | 已实现并通过 browser 交互测试 |
 | FR-ANN-002 | P0 | 轨迹码使用任务前缀和至少三位序号，且只能由 Rust 在保存时分配。 | 前端只读显示预览、不提交轨迹码；`close_oven` 依次使用 `oven-001`、`oven-002`，自定义任务使用系统生成前缀；后端以原子占号防止跨 episode 重复。 | 已实现并测试 |
 | FR-ANN-003 | P0 | 标注记录数据身份、处理人和修订历史。 | 绑定规范化 episode 路径与指纹；每次保存追加不可覆盖的修订文件，记录账号和时间；不写 SD 卡/episode。 | 已实现并测试 |
 
-账号文件位于 Tauri `appLocalData/accounts`，用户创建的任务位于 `appLocalData/tasks`，轨迹占号位于 `appLocalData/trajectory-codes`，标注修订位于 `appLocalData/annotations/{episodeId}`。本地账号只提供处理归因，不提供文件加密、操作系统用户隔离或企业权限管理。任意拥有该计算机文件权限的人仍可能访问应用数据目录。
+用户中心服务将账号和 scrypt 密码哈希写入当前主机服务专属私有目录；客户端将管理员提供的固定证书配置写入 Tauri `appLocalData/user-center.json`。用户创建的任务位于 `appLocalData/tasks`，轨迹占号位于 `appLocalData/trajectory-codes`，标注修订位于 `appLocalData/annotations/{episodeId}`。用户中心只提供身份和管理员账号管理，不提供文件加密、操作系统用户隔离或跨组织权限体系。
 
 内置任务目录如下；用户创建的任务只要求名称，系统据此生成稳定 ID、编码前缀和默认描述：
 
@@ -467,12 +471,12 @@ task, phase, current, total, bytesDone, totalBytes, currentPath, elapsedMs
 
 ### 9.4 离线、安全与隐私
 
-- 检查、回放、标注、报告和导出等核心数据功能不得发起网络请求；断网时全部保持可用。
+- 检查、回放、报告和导出等核心数据功能不得发起网络请求；登录用户中心只在进入工作区前进行，用户中心断开时不影响已经登录的当前进程会话。
 - 唯一运行时联网能力是登录后的自动更新：客户端只访问 `http://39.155.172.162:17879/latest.json`、`http://10.1.11.36:17879/latest.json` 及其同 origin 精确版本资产；发现更新后并行下载两个 32 KiB Range 样本，按实测速度选择完整下载路径。不直连 GitHub，不附加账号、源路径、标注、报告、hash 或遥测。失败不得阻断核心功能。
 - 更新包必须先匹配清单中的精确字节数和 1-64 MiB 上限，再使用内嵌 Ed25519/Minisign 公钥验签；任一不匹配不得进入安装。固定镜像的 HTTP 传输不替代签名，攻击者即使能修改公网或局域网流量也只能造成更新不可用，不能提供可安装的篡改字节。公钥可提交，更新私钥只能保存在发布者受控位置和 GitHub Actions secrets。
 - 镜像机是唯一访问 GitHub 更新元数据/资产的运行时组件；它不记录客户端地址或业务数据，只开放 GET/HEAD，并对单一合法字节范围返回有界 206 响应。新版本必须下载到服务自有 partial，验证完整三平台集合后原子切换，失败保留上一已验证版本。
 - 不收集遥测，不上传路径、图像、状态或 hash。
-- 本地账号密码使用 Argon2id 和操作系统 CSPRNG 盐；密码、盐和标注均不通过网络传输。
+- 用户中心使用 scrypt 和操作系统 CSPRNG 盐；客户端密码只通过固定证书 HTTPS 发送，服务不接收源路径、图像、状态、标注、报告或 hash。
 - 账号、标注与操作错误历史使用当前用户可写的应用 local-data；Unix 新文件权限为 `0600`，Windows 继承当前用户目录 ACL。
 - 源目录和导出目录选择仅由原生目录对话框触发；正常 UI 不提供导入目标选择框。
 - Tauri capability 只开放核心窗口和目录对话框需要的权限。
@@ -630,8 +634,8 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 | AT-022 | 选中范围外存在逐帧 warning/error | 范围外 issue 不阻断本次导出；范围内或全局 issue 仍按 error hard gate/warning acknowledgement 处理 |
 | AT-023 | 损坏 JPEG 只位于五个固定抽检位置之外，再运行正式全量检查 | 交互报告明确标记 `sampled` 且不声称覆盖该帧；正式 `full` 报告产生 `DECODE_FAILED` |
 | AT-024 | 分别检查 warning、error、ok 数据并重复检查 warning 数据 | warning/error 在应用 local-data 自动生成 format-v3 报告，重复检查复用同一路径且源指纹不变；ok 不生成；检查页按错误/警告/通过排序并显示后台报告状态 |
-| AT-025 | 首次创建账号、错误密码登录、正确登录、退出后直接调用数据 IPC | 密码文件不含明文；错误密码拒绝；正确登录成功；退出后数据 IPC 返回 `AUTH_REQUIRED` |
-| AT-026 | 创建“整理餐具”任务并为两个 episode 保存，第一条再由另一账号编辑描述 | 新任务默认描述可编辑；编码只读并由 Rust 依次分配 `整理餐具-001`/`整理餐具-002`，前端不能指定编号；修订历史保留两个处理人；三种导出以轨迹码命名并回读 UTF-8 标注元数据 |
+| AT-025 | 管理员在当前主机初始化用户中心并创建操作员、错误密码登录、正确登录、退出后直接调用数据 IPC | 首个管理员只能从主机本机初始化；普通账号只能由管理员创建；客户端配置固定证书和 service ID，错误密码拒绝，正确登录成功，退出后数据 IPC 返回 `AUTH_REQUIRED` |
+| AT-026 | 创建“整理餐具”任务并为两个 episode 保存，第一条再由另一中心账号编辑描述 | 新任务默认描述可编辑；编码只读并由 Rust 依次分配 `整理餐具-001`/`整理餐具-002`，前端不能指定编号；修订历史保留两个处理人和修改耗时；三种导出以轨迹码命名并回读 UTF-8 标注元数据 |
 | AT-027 | 将统一版本号和带日期 Changelog 的版本提交推送到 `main`，CI 成功 | workflow 自动创建不可改写的 annotated tag，并同时生成文件名带 `UNSIGNED` 的 Windows x64 NSIS、macOS arm64 DMG 和 Ubuntu 22.04+ x86_64 deb；三者均披露无可信发布者身份并通过依赖、安装或挂载、启动和 hash 检查；macOS 还通过 strict ad-hoc seal 与 synthetic-quarantine Gatekeeper 分类，Ubuntu deb 通过 Xvfb 启动检查，完整 draft 才自动公开 |
 | AT-028 | 修改 `docs/wiki` 并合入 main | 页面与内部链接检查通过后同步 GitHub Wiki；网页文档与仓库源一致 |
 | AT-029 | 对 macOS Release app 添加 quarantine 并执行分发策略检查 | app/main/FFmpeg 的 nested code 与 sealed resources 严格校验通过；策略报告 ad-hoc identity/missing notary ticket，或内部 XProtect 错误被独立最小 control app 同样复现并显式记录；不出现产品独有 XProtect、invalid signature、missing resources 或 damaged |
@@ -639,6 +643,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 | AT-031 | 在干净 Ubuntu 22.04 CI 用 `apt` 安装原生 deb | package/version/amd64/依赖正确，无 deb 签名声明；应用 binary、desktop、metainfo、icon、FFmpeg/许可证/manifest 完整且动态库无缺失，并在 Xvfb + D-Bus 中保持运行 10 秒 |
 | AT-032 | 本机有源断开、健康状态 error、warning 和通过的已标注数据，再执行批量 MCAP 导出 | 清单标记断开的源；后端请求仍逐条校验，断开/error 项返回失败且各自生成可定位的本机失败日志，warning 经一次确认后与通过项完成导出和回读并可定位输出；取消中止当前未完成项、不启动后续条目，且已完成输出保留 |
 | AT-033 | 固定 IP 镜像分别面对“完整新版本、部分 target、断网、清单超限、资产被篡改”，已登录引导版再检查镜像 | 镜像只原子激活完整且 hash/签名正确的三平台集合，失败继续提供上一版；客户端不访问 GitHub，只接受同 origin 精确版本路径。发现更高版本后，并行取得两个 32 KiB Range 样本，仅接受 `206`、精确 `Content-Range` 和精确样本大小，按最快成功结果下载；都不能测速时保留清单路径。完整下载仍验大小和签名后才安装重启；请求不包含本地业务数据；镜像不可达显示可重试提示且核心功能可用；大小不符、超过 64 MiB 或签名错误均拒绝安装并保留当前版本。Release 汇总缺少任一平台更新资产或签名时不得公开 |
+| AT-034 | 从同一标注分别导出 MCAP、HDF5、LeRobot | 三种输出都记录选中范围采集起止时间、标注创建/修改时间、修改耗时、修改人、实际导出时间和导出人；回读失败不得发布正式输出 |
 
 ## 14. 当前实现状态
 
@@ -675,8 +680,8 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 跨平台 `stress-check` 验收 runner、正式环境硬门禁、import 取消/partial 清理探针和原子 JSON 性能证据。
 - macOS 到 Windows x64 MSVC 的 Rust all-target 条件编译预检和边界明确的原子 JSON 证据。
 - macOS 只读虚拟 ExFAT 卷上的完整生产数据链路 smoke 和 marker 保护清理。
-- 本地账号注册/登录/退出、Argon2id 密码哈希、后端会话门禁，以及可创建任务、可编辑描述、Rust 自动编号和带处理人的 episode 级标注。
-- MCAP/HDF5/LeRobot 导出继承轨迹码、任务和处理人元数据。
+- 局域网用户中心管理员账号初始化/创建、固定证书客户端配置、中心登录/退出、后端会话门禁，以及可创建任务、可编辑描述、Rust 自动编号和带处理人的 episode 级标注。
+- MCAP/HDF5/LeRobot 导出继承轨迹码、任务、采集时间、修改时间、修改耗时、修改人和实际导出人元数据。
 - 三安装器正式 Release CD、完整集合发布门禁、安装器 verification report、SHA-256 manifest 和 GitHub build provenance 工作流。
 - `docs/wiki` 用户/发布手册、内部链接检查和 GitHub Wiki 自动同步工作流。
 
@@ -793,7 +798,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 ### 14.15 历史：`0.14.0` 固定任务目录与 episode 级数据标注
 
-- 首次启动进入本地账号创建页；密码以 Argon2id PHC 哈希和系统随机盐写入应用 local-data，登录会话不跨进程重启保留。
+- 首次启动进入本地账号创建页；该历史行为已由 `0.17.15` 的局域网用户中心取代。
 - 未登录时 Rust 扫描、导入、加载、检查、读帧和导出 commands 均拒绝执行；顶栏显示当前账号并提供退出操作。
 - 初始任务目录包含 `close_oven`，默认描述自动带出且可编辑；轨迹码按 `oven-001` 递增，由原子占号文件保证不同 episode 不重复。
 - 标注按规范化路径和数据指纹归档，每次保存追加稳定修订，记录当前处理人且不写源 SD 卡或导入副本。
@@ -934,6 +939,12 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 镜像服务为单一合法 `Range` 返回固定长度、`Content-Range` 完整的 HTTP 206 响应；普通 GET/HEAD、版本缓存、原子激活和不记录客户端数据的边界保持不变。
 - 发现更新后 Rust 并行读取公网与局域网同一资产的 32 KiB 样本，在 1 秒窗口按实测耗时选最快成功路径；只有完整下载的精确大小和 Minisign 验签同时通过才安装。旧镜像不支持 Range 或所有测速失败时继续使用已验清单 URL，不制造更新中断。
 
+### 14.36 `0.17.15` 局域网用户中心与导出审计元数据
+
+- 当前主机通过 `pnpm user-center:install` 一键部署固定 `10.1.11.36:17880` HTTPS 用户中心；首个管理员只能在服务主机本机初始化，操作员账号由管理员创建。
+- 客户端导入管理员生成的固定证书配置，校验 service ID 和私有 IP 后登录；密码不落客户端磁盘，服务不接收源数据、路径、标注或报告，已登录进程可在服务短暂断开时继续本地工作。
+- 标注修订记录采集时间范围、创建/修改时间、修改开始时间、修改耗时和处理账号；MCAP、HDF5、LeRobot 导出均写入并回读统一 provenance metadata。
+
 ## 15. 里程碑
 
 | 里程碑 | 内容 | 状态 |
@@ -953,7 +964,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 6. 后续是否需要由用户显式选择某些 episode 创建离线副本，还是长期只保留源卡直读？
 7. 产品负责人、签名证书负责人和 release approver 分别是谁？
 8. 用户创建的任务后续是否需要重命名、停用或删除；已产生的轨迹码和历史标注应如何保留？
-9. 后续是否需要接入组织账号服务器、角色权限和跨机器同步？当前本地账号只用于归因。
+9. 后续是否需要组织级角色权限和跨主机标注同步？当前局域网用户中心只提供账号生命周期和处理人归因，标注与数据仍保留在各客户端本机。
 
 ## 17. Definition of Done
 

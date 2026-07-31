@@ -5,7 +5,7 @@
 ## 1. 不可破坏的产品约束
 
 1. 源 SD 卡是只读数据源。不得在源路径创建、修改、重命名或删除任何文件。
-2. 数据运行时只处理本机目录，不增加 SSH、HTTP、云存储或遥测数据路径。唯一联网例外是登录后的应用更新：客户端只按顺序读取固定公网镜像 `http://39.155.172.162:17879` 与固定局域网 fallback `http://10.1.11.36:17879`，由该镜像机访问项目官方 GitHub Release；不得发送账号、路径、标注、报告、hash 或遥测，失败不得阻断本地工作流。
+2. 数据运行时只处理本机目录，不增加 SSH、HTTP、云存储或遥测数据路径。用户中心是唯一的业务身份例外：客户端只通过管理员导入的固定证书访问当前主机局域网 HTTPS 服务，不发送源路径、图像、状态、标注、报告或 hash；自动更新仍只按顺序读取固定公网镜像 `http://39.155.172.162:17879` 与固定局域网 fallback `http://10.1.11.36:17879`。
 3. 正常工作流是“选择 SD 卡 -> 自动扫描全部 session -> 直接只读加载首条 session -> 健康检查 -> 回放/导出”。正常 UI 不得自动复制源数据；使用期间源卷必须保持挂载。
 4. 导入器仅用于压力验收和未来显式离线导入；一旦执行完整导入，仍必须验证目标端的文件大小和 BLAKE3，不能只信任复制时的源端 hash。
 5. `capture_time_ns` 在 Rust/磁盘中为 int64，在 TypeScript 中必须保持十进制字符串；涉及差值时使用 `BigInt`。
@@ -15,7 +15,7 @@
 9. 正式输出必须先写 partial 路径，成功后再原子 rename；不得覆盖已有输出。
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
 11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录，三个 adapter 必须使用同一范围。
-12. 账号、登录会话和 episode 标注是纯本地能力。不得把账号、密码、处理人或标注发送到网络；所有数据 command 必须在 Rust 中验证当前登录会话。
+12. 账号由当前部署主机上的局域网用户中心统一管理，账号只能由管理员创建。客户端通过导入的用户中心配置固定 HTTPS 证书和 service ID，登录成功后只在 Rust 进程内保存当前会话；密码只通过该固定证书连接发送，处理人、账号和 episode 标注不得发送到用户中心。所有数据 command 必须在 Rust 中验证当前登录会话。
 13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 Ubuntu 22.04+ x86_64 原生 deb 三个可安装产物；不再构建或发布 macOS x64。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 14. 自 `v0.17.6` 之后，仓库实际默认分支 `main`（口头所称 `master`）不得保留没有对应版本 tag 的独立提交。每个进入 `main` 的 commit 都必须是完整的发布提交：同一 commit 包含全部代码/文档变更、四处一致且唯一的新 semver，以及带日期的 Changelog；CI 成功后必须由发布 workflow 创建精确指向该 commit 的 annotated `vX.Y.Z` tag。禁止先推功能、修复、文档、CI 或配置 commit，再另推 version/release commit；除自动 tag 尚在运行的短暂 pending 状态外，`main` 必须保持一 commit 对应一 tag。
 15. Codex 和其他自动化 agent 在没有收到开发负责人明确版本指令时，只能把当前 semver 的 patch 位连续增加 1（即 `+0.0.1`），不得跳号，也不得根据改动规模自行提升 minor 或 major。minor（例如 `0.17.x -> 0.18.0`）及 major 版本只能按开发负责人明确指定的版本更新；提升 minor 或 major 时 patch 归零。
@@ -37,14 +37,15 @@ DOHC_Viewer/
   src/                           React/TypeScript UI
     App.tsx                      顶层工作流和视图状态
     components/                  回放、检查、进度和导出组件
-      AuthScreen.tsx             本地账号注册和登录
+      AuthScreen.tsx             用户中心配置导入和登录
       AnnotationPanel.tsx        episode 任务、描述、轨迹码和处理人
     lib/backend.ts               所有 Tauri IPC/browser demo 适配
     types.ts                     前端共享数据类型
   src-tauri/
     src/lib.rs                   Tauri commands 和长任务调度
     src/model.rs                 Rust/IPC 数据模型
-    src/identity.rs              本地账号、Argon2id 密码哈希和进程内会话
+    src/identity.rs              进程内用户会话和身份校验
+    src/user_center.rs           固定证书用户中心配置、健康检查和登录
     src/updater.rs               固定镜像检查、有界下载、验签和平台安装
     src/annotations.rs           任务目录、轨迹占号和追加式标注修订
     src/source.rs                episode 发现、扫描、状态/帧读取
@@ -72,6 +73,9 @@ DOHC_Viewer/
   scripts/updater-signature.mjs  发布侧流式 Ed25519/Minisign 更新包验签
   scripts/update-mirror-server.mjs  GitHub 上游验签、原子缓存与只读分发服务
   scripts/install-update-mirror-macos.sh 本机 launchd 常驻服务安装
+  user-center.config.json         当前主机局域网用户中心配置
+  scripts/user-center-server.mjs  管理员账号中心 HTTPS 服务
+  scripts/install-user-center-macos.sh 用户中心 launchd 一键安装
   scripts/build-ffmpeg-linux.sh  Linux x64 最小 LGPL FFmpeg 源码构建
   scripts/build-ffmpeg-macos.sh 固定源码构建最小 LGPL FFmpeg
   scripts/seal-macos-app-adhoc.sh macOS app 嵌套代码与资源 ad-hoc 封印
@@ -101,14 +105,14 @@ React component
 - React 组件不得直接调用 `invoke()`；统一经 `src/lib/backend.ts`。
 - `lib.rs` 只负责 command 参数、任务状态和 blocking worker 调度，不放格式逻辑。
 - 同一时间只允许一个长任务；所有新增长任务必须通过 `TaskControl` 获取 guard。
-- `src-tauri/src/updater.rs` 是客户端唯一允许运行时 HTTP 的模块。检查/安装 command 必须验证当前登录会话；只接受 `tauri.conf.json` 固定镜像同 scheme/host/port、精确 `releases/vX.Y.Z/` 目录的 URL，按清单 size 有界下载并独立验签。前端不得提供任意 endpoint、URL、版本或签名。
+- `src-tauri/src/updater.rs` 是客户端唯一允许运行时更新 HTTP 的模块；`src-tauri/src/user_center.rs` 只允许连接导入配置中固定证书、固定私有 IP 的 HTTPS 用户中心。更新检查/安装和用户中心登录 command 都必须验证当前登录会话边界；前端不得提供任意 endpoint、URL、版本或签名。
 - `scripts/update-mirror-server.mjs` 是镜像机唯一的 GitHub 出站路径。它只能从固定仓库 HTTPS Release 同步，必须拒绝部分 target、错误文件名、超限、hash 或签名不符，使用服务自有 partial/版本目录原子激活，并在新同步失败时保留上一版。对客户端只开放 GET/HEAD，不增加上传 API、客户端身份或访问遥测。
 - 导出 IPC 只能使用 `ValidationCache` 中与当前源目录指纹匹配的 Rust 报告；不得接受前端回传的报告或 status 作为授权。
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
 - 源目录遍历统一使用可取消的 no-follow 路径；不要重新引入会隐式跟随 symlink 的文件判断。
 - macOS AppleDouble `._*` 和 `.DS_Store` 是平台元数据，不属于采集数据；扫描、统计、指纹、校验和显式导入必须统一忽略且不得删除源文件。其他无法映射为非负十进制帧号的 JPEG 仍是 `INVALID_FRAME_FILENAME` error。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
-- 未登录时只允许账号状态、注册、登录和退出 commands；扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁。前端隐藏工作区不能替代后端门禁。
+- 未登录时只允许用户中心状态、配置导入、登录和退出 commands；账号创建只能在用户中心管理员页面完成。扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁。前端隐藏工作区不能替代后端门禁。
 - 内置任务和用户创建任务的校验、持久化与自动编号逻辑以 `src-tauri/src/annotations.rs` 为唯一真源。新任务只接收名称，由 Rust 生成稳定 task ID/轨迹前缀；前端不得提交或指定轨迹编号。
 - 批量导出清单只能由 `src-tauri/src/annotations.rs` 回读本机最新标注；批量 IPC 只接受 episode ID、目标目录和格式，必须在 Rust 中重新解析标注、核对规范化源路径与指纹、生成可信检查缓存后再调用 adapter。不得接受前端提交的源路径、标注对象或检查状态作为授权。
 - Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。其账号、用户任务和标注只保存在当前页面进程内，刷新后重置；交互抽检基线是报告 format v3、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]` 和非空 `autoReportPath`。它不能被当作账号安全、后端门禁或数据验收。
@@ -223,7 +227,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 正常 UI 不创建 `appLocalData/imports` 副本。导入器或压力验收显式使用管理工作区时，路径固定为 `appLocalData/imports/{safe-source-name}-{path-hash}`；源路径始终只读。
 - warning/error 后台报告只能写入 Tauri `appLocalData` 下的应用专属 `reports` 目录；不得写入源卡或 episode。保持 partial、回读和原子 no-replace，同一 episode 路径/指纹/报告版本稳定去重；不得把“后台汇报”实现为网络上传。
 - 用户可见的扫描、导入、加载、检查和导出失败写入 `appLocalData/reports/operation-errors` 的不可覆盖 JSON；原始平台消息必须保留，权限类消息使用稳定码 `PERMISSION_DENIED`，Unix 文件权限为 `0600`。
-- 账号写入 `appLocalData/accounts`，用户任务写入 `appLocalData/tasks`，轨迹占号写入 `appLocalData/trajectory-codes`，标注修订写入 `appLocalData/annotations/{episodeId}`。全部使用 `create_new`、回读和原子 no-replace；Unix 新文件权限为 `0600`。不得写入源 SD 卡或 episode。
+- 用户中心主机将账号和密码哈希写入服务专属私有目录；客户端只将固定证书配置写入 `appLocalData/user-center.json`，用户任务写入 `appLocalData/tasks`，轨迹占号写入 `appLocalData/trajectory-codes`，标注修订写入 `appLocalData/annotations/{episodeId}`。全部使用 `create_new`、回读和原子 no-replace；Unix 新文件权限为 `0600`。不得写入源 SD 卡或 episode。
 
 ### 6.3 数据模型
 
@@ -333,7 +337,7 @@ pnpm check
 ```
 
 真实样例会读取私有数据，因此保持 `#[ignore]`。`--all-targets` 常规 Rust suite
-当前为 55 项（53 通过、2 个真实样例测试 ignored），其中包含本地账号、任务创建、轨迹占号、标注修订、批量导出、HDF5 UTF-8 属性回读、adapter 元数据和压力 CLI 参数测试；
+当前为 55 项（53 通过、2 个真实样例测试 ignored），其中包含用户会话、任务创建、轨迹占号、标注修订、批量导出、HDF5 UTF-8 属性回读、导出 provenance 元数据和压力 CLI 参数测试；
 debug 构建的三格式完整 smoke test 约需 69 秒。任何
 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 
@@ -549,7 +553,7 @@ GitHub Wiki，不直接在网页维护分叉版本。
 - FFmpeg 是受控 sidecar，不假设用户 PATH 中存在。
 - `tauri-plugin-opener` 只开放 `opener:allow-reveal-item-in-dir`；不得开放 URL 或任意程序启动权限。
 - Dialog capability 只开放目录选择和消息框；新增 capability 必须对应明确的用户操作。
-- `argon2 0.5.3`（MIT/Apache-2.0）及其纯 Rust `password-hash`/`blake2` 依赖用于本地 Argon2id PHC 密码哈希，`rand_core` 的操作系统 CSPRNG 生成独立盐；该路径支持 Windows/macOS/Linux，不得降级为明文或快速通用哈希。`v0.14.0` macOS ARM debug 主程序相对已安装的 `v0.13.0` 增加 2,431,504 bytes（约 3.1%，包含本版本全部账号/标注代码和依赖）；Windows release 体积仍需目标构建机记录。
+- 用户中心服务使用 Node 内置 `scrypt`（N=16384、r=8、p=1）和操作系统 CSPRNG 盐保存密码哈希；客户端不保存密码。服务端不引入账号网络同步以外的数据路径，Windows/macOS/Linux 客户端均只保存固定证书配置和进程内会话。
 - `tauri-plugin-opener 2.5.4` 为 MIT/Apache-2.0 双许可的官方跨平台实现。`v0.3.0` 全部变更使 macOS ARM debug 二进制增加 1,239,152 bytes（约 2.2%）；Windows release 体积必须在目标构建机另行记录。
 - `tauri-plugin-updater 2.10.1`（MIT/Apache-2.0）负责跨平台安装；`reqwest 0.13.4`（MIT/Apache-2.0）用于 64 MiB 上限的 HTTP(S) 流式读取，`minisign-verify 0.2.5`（MIT）使用应用内嵌公钥验证更新包。不得退回 updater 插件无大小中止能力的默认 `Vec` 下载路径，也不得关闭签名校验。固定镜像当前使用内网 HTTP，签名是安装完整性的硬门禁。
 - `foxglove 0.26.0`（MIT）、`prost 0.14.4`（Apache-2.0）和 `bytes 1.12.1`（MIT）用于生成官方 Foxglove protobuf schema/消息；Foxglove 默认 features 保持关闭。`v0.9.0` macOS ARM debug 主程序相对 `v0.8.0` 增加 383,472 bytes（约 0.5%），Windows x64 MSVC all-target 条件编译已通过，目标机 release 体积仍需另行记录。

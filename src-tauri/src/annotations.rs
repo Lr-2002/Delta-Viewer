@@ -13,7 +13,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const ANNOTATION_FORMAT_VERSION: u32 = 1;
+pub const ANNOTATION_FORMAT_VERSION: u32 = 2;
 const RESERVATION_FORMAT_VERSION: u32 = 1;
 const TASK_FORMAT_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: u64 = 256 * 1024;
@@ -383,6 +383,7 @@ pub fn save_annotation(
         .unwrap_or_default()
         .checked_add(1)
         .ok_or_else(|| AppError::Message("标注修订号已耗尽".into()))?;
+    let edit_started_at_ms = validate_edit_started_at(request.edit_started_at_ms, now)?;
     let annotation = EpisodeAnnotation {
         format_version: ANNOTATION_FORMAT_VERSION,
         episode_id: id.clone(),
@@ -398,6 +399,8 @@ pub fn save_annotation(
             .map(|record| record.created_at_ms)
             .unwrap_or(now),
         updated_at_ms: now,
+        edit_started_at_ms,
+        edit_duration_ms: now.saturating_sub(edit_started_at_ms),
     };
 
     let directory = annotations_dir(data_root).join(id);
@@ -417,6 +420,22 @@ pub fn save_annotation(
         return Err(error);
     }
     Ok(annotation)
+}
+
+fn validate_edit_started_at(value: u64, now: u64) -> AppResult<u64> {
+    const MAX_EDIT_DURATION_MS: u64 = 24 * 60 * 60 * 1_000;
+    const MAX_CLOCK_SKEW_MS: u64 = 5 * 60 * 1_000;
+    if value == 0 || value > now.saturating_add(MAX_CLOCK_SKEW_MS) {
+        return Err(AppError::Message(
+            "ANNOTATION_EDIT_TIME_INVALID: 标注修改开始时间无效".into(),
+        ));
+    }
+    if now.saturating_sub(value) > MAX_EDIT_DURATION_MS {
+        return Err(AppError::Message(
+            "ANNOTATION_EDIT_TIME_INVALID: 单次标注修改不能超过 24 小时".into(),
+        ));
+    }
+    Ok(value)
 }
 
 fn task_definition(data_root: &Path, task_id: &str) -> AppResult<TaskDefinition> {
@@ -649,7 +668,7 @@ fn validate_stored_annotation(
 ) -> AppResult<()> {
     let task = task_definition(data_root, &annotation.task_id)?;
     identity::validate_user_identity(&annotation.processed_by)?;
-    if annotation.format_version != ANNOTATION_FORMAT_VERSION
+    if !(1..=ANNOTATION_FORMAT_VERSION).contains(&annotation.format_version)
         || annotation.episode_id != episode_id
         || annotation.episode_root != episode_root.display().to_string()
         || annotation.episode_fingerprint != fingerprint
@@ -657,6 +676,13 @@ fn validate_stored_annotation(
         || validate_trajectory_code(&annotation.trajectory_code, &task.code_prefix)?
             != annotation.trajectory_code
         || validate_description(&annotation.task_description)? != annotation.task_description
+        || (annotation.format_version >= 2
+            && (annotation.edit_started_at_ms == 0
+                || annotation.edit_started_at_ms > annotation.updated_at_ms
+                || annotation.edit_duration_ms
+                    != annotation
+                        .updated_at_ms
+                        .saturating_sub(annotation.edit_started_at_ms)))
     {
         return Err(AppError::Message("标注记录格式无效".into()));
     }
@@ -1053,6 +1079,10 @@ mod tests {
             source_path: "/episode".into(),
             task_id: task_id.into(),
             task_description: description.into(),
+            edit_started_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
         }
     }
 

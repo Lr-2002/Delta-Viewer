@@ -105,6 +105,13 @@ impl ExportAdapter for LeRobotV2Adapter {
             "fps": fps,
             "clip_start_frame": context.range.start_frame,
             "clip_end_frame": context.range.end_frame,
+            "dohc_provenance": {
+                "format_version": 1,
+                "capture_started_at_ns": context.provenance.capture_started_at_ns,
+                "capture_ended_at_ns": context.provenance.capture_ended_at_ns,
+                "exported_at_ms": context.provenance.exported_at_ms,
+                "exported_by": context.provenance.exported_by,
+            },
             "splits": {"train": "0:1"},
             "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
             "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
@@ -116,7 +123,11 @@ impl ExportAdapter for LeRobotV2Adapter {
                 "task_id": annotation.task_id,
                 "task_description": annotation.task_description,
                 "processed_by": annotation.processed_by,
-                "revision": annotation.revision
+                "revision": annotation.revision,
+                "created_at_ms": context.provenance.annotation_created_at_ms,
+                "updated_at_ms": context.provenance.annotation_updated_at_ms,
+                "edit_started_at_ms": context.provenance.annotation_edit_started_at_ms,
+                "edit_duration_ms": context.provenance.annotation_edit_duration_ms
             });
         }
         write_json(&meta_dir.join("info.json"), &info)?;
@@ -236,6 +247,20 @@ fn verify_lerobot_output(root: &Path, context: &ExportContext<'_>, fps: u32) -> 
             "LeRobot 回读验证失败: info.json 不匹配".into(),
         ));
     }
+    if info["dohc_provenance"]["format_version"] != 1
+        || info["dohc_provenance"]["capture_started_at_ns"]
+            != context.provenance.capture_started_at_ns
+        || info["dohc_provenance"]["capture_ended_at_ns"] != context.provenance.capture_ended_at_ns
+        || info["dohc_provenance"]["exported_at_ms"] != context.provenance.exported_at_ms
+        || info["dohc_provenance"]["exported_by"]["username"]
+            != context.provenance.exported_by.username
+        || info["dohc_provenance"]["exported_by"]["displayName"]
+            != context.provenance.exported_by.display_name
+    {
+        return Err(AppError::Message(
+            "LeRobot 回读验证失败: 处理元数据不匹配".into(),
+        ));
+    }
     let task: Value = serde_json::from_reader(File::open(meta_dir.join("tasks.jsonl"))?)?;
     let expected_task = context
         .annotation
@@ -255,6 +280,8 @@ fn verify_lerobot_output(root: &Path, context: &ExportContext<'_>, fps: u32) -> 
             || info["dohc_annotation"]["processed_by"]["displayName"]
                 != annotation.processed_by.display_name
             || info["dohc_annotation"]["revision"] != annotation.revision
+            || info["dohc_annotation"]["updated_at_ms"] != annotation.updated_at_ms
+            || info["dohc_annotation"]["edit_duration_ms"] != annotation.edit_duration_ms
         {
             return Err(AppError::Message(
                 "LeRobot 回读验证失败: 数据标注不匹配".into(),

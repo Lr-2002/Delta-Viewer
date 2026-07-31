@@ -13,16 +13,16 @@ pub struct UserIdentity {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthStatus {
-    pub has_accounts: bool,
+    pub user_center: UserCenterStatus,
     pub current_user: Option<UserIdentity>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RegisterAccountRequest {
-    pub username: String,
-    pub display_name: String,
-    pub password: String,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserCenterStatus {
+    pub configured: bool,
+    pub endpoint: Option<String>,
+    pub service_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +61,10 @@ pub struct EpisodeAnnotation {
     pub revision: u64,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+    #[serde(default)]
+    pub edit_started_at_ms: u64,
+    #[serde(default)]
+    pub edit_duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -76,6 +80,7 @@ pub struct SaveAnnotationRequest {
     pub source_path: String,
     pub task_id: String,
     pub task_description: String,
+    pub edit_started_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

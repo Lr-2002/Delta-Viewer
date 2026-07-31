@@ -5,6 +5,19 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.15 - 2026-07-31
+
+- Added a LAN-only HTTPS user center on the current host at `10.1.11.36:17880`.
+  The host administrator initializes the first admin and creates operator
+  accounts; desktop clients import a pinned certificate configuration and do
+  not store passwords.
+- Added annotation and export provenance for capture time, annotation edits,
+  edit duration, operator identity, export time, and exporter identity across
+  MCAP, HDF5, and LeRobot metadata with readback verification.
+- Added a one-command macOS LaunchAgent installer and deployment documentation
+  for the user center, and removed the old client-side account creation path
+  from the real desktop runtime.
+
 ## 0.17.14 - 2026-07-31
 
 - Measured the fixed public and LAN update mirrors concurrently with a bounded

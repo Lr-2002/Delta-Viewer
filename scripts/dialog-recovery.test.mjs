@@ -188,11 +188,11 @@ if (!browserExecutable && requireBrowser) {
           }
           switch (command) {
             case "get_auth_status":
-              return { hasAccounts: true, currentUser: { username: "tester", displayName: "Tester" } };
+              return { userCenter: { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" }, currentUser: { username: "tester", displayName: "Tester" } };
             case "check_for_app_update":
               return {
-                currentVersion: "0.17.14",
-                latestVersion: "0.17.14",
+                currentVersion: "0.17.15",
+                latestVersion: "0.17.15",
                 available: false,
                 notes: null,
                 publishedAt: null,

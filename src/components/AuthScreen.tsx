@@ -1,21 +1,24 @@
 import { useState, type FormEvent } from "react";
-import { KeyRound, LogIn, UserPlus } from "lucide-react";
-import { loginLocalAccount, registerLocalAccount } from "../lib/backend";
-import type { UserIdentity } from "../types";
+import { FolderOpen, KeyRound, LogIn, UserPlus } from "lucide-react";
+import { configureUserCenter, loginLocalAccount, registerLocalAccount } from "../lib/backend";
+import type { UserCenterStatus, UserIdentity } from "../types";
 
 interface AuthScreenProps {
-  hasAccounts: boolean;
+  userCenter: UserCenterStatus;
+  allowDemoRegistration: boolean;
+  onUserCenterConfigured: (status: UserCenterStatus) => void;
   onAuthenticated: (user: UserIdentity) => void;
 }
 
-export function AuthScreen({ hasAccounts, onAuthenticated }: AuthScreenProps) {
-  const [mode, setMode] = useState<"login" | "register">(hasAccounts ? "login" : "register");
+export function AuthScreen({ userCenter, allowDemoRegistration, onUserCenterConfigured, onAuthenticated }: AuthScreenProps) {
+  const [mode, setMode] = useState<"login" | "register">(allowDemoRegistration ? "register" : "login");
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [configuring, setConfiguring] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -39,6 +42,19 @@ export function AuthScreen({ hasAccounts, onAuthenticated }: AuthScreenProps) {
     }
   }
 
+  async function importUserCenter() {
+    setConfiguring(true);
+    setError("");
+    try {
+      const status = await configureUserCenter();
+      onUserCenterConfigured(status);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setConfiguring(false);
+    }
+  }
+
   function switchMode(next: "login" | "register") {
     setMode(next);
     setError("");
@@ -59,11 +75,19 @@ export function AuthScreen({ hasAccounts, onAuthenticated }: AuthScreenProps) {
         <div className="auth-heading">
           <span className="auth-icon"><KeyRound size={20} /></span>
           <div>
-            <span className="section-kicker">LOCAL ACCOUNT</span>
-            <h1 id="auth-title">{mode === "login" ? "登录" : hasAccounts ? "创建本地账号" : "创建首个账号"}</h1>
+            <span className="section-kicker">USER CENTER</span>
+          <h1 id="auth-title">{userCenter.configured ? mode === "login" ? "登录" : "演示账号" : "连接用户中心"}</h1>
           </div>
         </div>
-        <form onSubmit={(event) => void submit(event)}>
+        {!userCenter.configured ? (
+          <div className="auth-connect">
+            <p>请导入管理员在局域网服务主机生成的用户中心配置文件。</p>
+            <button className="button button-primary auth-submit" type="button" onClick={() => void importUserCenter()} disabled={configuring}>
+              <FolderOpen size={17} />
+              {configuring ? "连接中" : "导入用户中心配置"}
+            </button>
+          </div>
+        ) : <form onSubmit={(event) => void submit(event)}>
           {mode === "register" ? (
             <label>
               <span>显示名称</span>
@@ -118,25 +142,25 @@ export function AuthScreen({ hasAccounts, onAuthenticated }: AuthScreenProps) {
               />
             </label>
           ) : null}
-          {error ? <div className="auth-error" role="alert">{error}</div> : null}
           <button className="button button-primary auth-submit" type="submit" disabled={busy}>
             {mode === "login" ? <LogIn size={17} /> : <UserPlus size={17} />}
             {busy ? "处理中" : mode === "login" ? "登录" : "创建并登录"}
           </button>
-        </form>
+        </form>}
+        {error ? <div className="auth-error" role="alert">{error}</div> : null}
         <div className="auth-switch">
-          {mode === "login" ? (
+          {allowDemoRegistration && mode === "login" ? (
             <button type="button" className="text-button" onClick={() => switchMode("register")}>
               创建新账号
             </button>
-          ) : hasAccounts ? (
+          ) : allowDemoRegistration && mode === "register" ? (
             <button type="button" className="text-button" onClick={() => switchMode("login")}>
               返回登录
             </button>
           ) : null}
         </div>
       </section>
-      <footer className="auth-footer">账号与标注仅保存在本机</footer>
+      <footer className="auth-footer">账号由局域网用户中心管理；采集数据仍只在本机处理</footer>
     </main>
   );
 }

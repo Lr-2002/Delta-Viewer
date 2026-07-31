@@ -7,7 +7,8 @@ pub(crate) use batch::{export_annotated_episodes, BatchExportJob};
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    EpisodeAnnotation, EpisodeData, ExportFormat, ExportRange, ExportResult, ValidationReport,
+    EpisodeAnnotation, EpisodeData, ExportFormat, ExportRange, ExportResult, UserIdentity,
+    ValidationReport,
 };
 use crate::{source, storage};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 use walkdir::WalkDir;
 
@@ -26,9 +27,23 @@ pub struct ExportContext<'a> {
     pub range: ExportRange,
     pub full_range: bool,
     pub annotation: Option<&'a EpisodeAnnotation>,
+    pub provenance: ExportProvenance,
     frame_ids: BTreeSet<u64>,
     pub app: Option<&'a AppHandle>,
     pub cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+pub struct ExportProvenance {
+    pub capture_started_at_ns: String,
+    pub capture_ended_at_ns: String,
+    pub annotation_created_at_ms: Option<u64>,
+    pub annotation_updated_at_ms: Option<u64>,
+    pub annotation_edit_started_at_ms: Option<u64>,
+    pub annotation_edit_duration_ms: Option<u64>,
+    pub modified_by: Option<UserIdentity>,
+    pub exported_at_ms: u64,
+    pub exported_by: UserIdentity,
 }
 
 impl ExportContext<'_> {
@@ -47,6 +62,7 @@ pub(crate) struct ExportJob<'a> {
     pub destination_parent: &'a Path,
     pub validation_report: &'a ValidationReport,
     pub annotation: Option<&'a EpisodeAnnotation>,
+    pub exported_by: &'a UserIdentity,
     pub acknowledge_warnings: bool,
     pub requested_range: Option<ExportRange>,
     pub app: Option<&'a AppHandle>,
@@ -60,6 +76,7 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         destination_parent,
         validation_report,
         annotation,
+        exported_by,
         acknowledge_warnings,
         requested_range,
         app,
@@ -86,6 +103,7 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         source_data.summary.total_bytes,
     )?;
     let data = select_episode_data(source_path, &source_data, range, cancelled)?;
+    let provenance = export_provenance(&data, annotation, exported_by)?;
     let frame_ids = data
         .states
         .iter()
@@ -98,6 +116,7 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         range,
         full_range: range == full_range,
         annotation,
+        provenance,
         frame_ids,
         app,
         cancelled: cancelled.clone(),
@@ -118,6 +137,41 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         range,
         state_count: data.states.len() as u64,
     })
+}
+
+fn export_provenance(
+    data: &EpisodeData,
+    annotation: Option<&EpisodeAnnotation>,
+    exported_by: &UserIdentity,
+) -> AppResult<ExportProvenance> {
+    let capture_started_at_ns = data
+        .states
+        .first()
+        .map(|state| state.capture_time_ns.clone())
+        .ok_or_else(|| AppError::Message("导出元数据缺少采集起始时间".into()))?;
+    let capture_ended_at_ns = data
+        .states
+        .last()
+        .map(|state| state.capture_time_ns.clone())
+        .ok_or_else(|| AppError::Message("导出元数据缺少采集结束时间".into()))?;
+    Ok(ExportProvenance {
+        capture_started_at_ns,
+        capture_ended_at_ns,
+        annotation_created_at_ms: annotation.map(|record| record.created_at_ms),
+        annotation_updated_at_ms: annotation.map(|record| record.updated_at_ms),
+        annotation_edit_started_at_ms: annotation.map(|record| record.edit_started_at_ms),
+        annotation_edit_duration_ms: annotation.map(|record| record.edit_duration_ms),
+        modified_by: annotation.map(|record| record.processed_by.clone()),
+        exported_at_ms: unix_millis(),
+        exported_by: exported_by.clone(),
+    })
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
 }
 
 fn ensure_export_allowed(
@@ -441,6 +495,12 @@ mod tests {
             revision: 1,
             created_at_ms: 1,
             updated_at_ms: 1,
+            edit_started_at_ms: 1,
+            edit_duration_ms: 0,
+        };
+        let exported_by = UserIdentity {
+            username: "exporter".into(),
+            display_name: "导出操作员".into(),
         };
 
         let mcap = export_episode(ExportJob {
@@ -449,6 +509,7 @@ mod tests {
             destination_parent: &output,
             validation_report: &report,
             annotation: Some(&annotation),
+            exported_by: &exported_by,
             acknowledge_warnings: true,
             requested_range: Some(clip),
             app: None,
@@ -471,6 +532,7 @@ mod tests {
             destination_parent: &output,
             validation_report: &report,
             annotation: Some(&annotation),
+            exported_by: &exported_by,
             acknowledge_warnings: true,
             requested_range: Some(clip),
             app: None,
@@ -485,6 +547,7 @@ mod tests {
             destination_parent: &output,
             validation_report: &report,
             annotation: Some(&annotation),
+            exported_by: &exported_by,
             acknowledge_warnings: true,
             requested_range: Some(clip),
             app: None,
@@ -597,6 +660,10 @@ mod tests {
             destination_parent: &output,
             validation_report: &report,
             annotation: None,
+            exported_by: &UserIdentity {
+                username: "exporter".into(),
+                display_name: "Exporter".into(),
+            },
             acknowledge_warnings: true,
             requested_range: None,
             app: None,
@@ -633,18 +700,26 @@ mod tests {
             .collect()
         );
         assert_eq!(summary.stats.unwrap().message_count, state_count as u64 * 7);
+        let metadata = mcap::read::LinearReader::new(&bytes)
+            .unwrap()
+            .find_map(|record| match record.unwrap() {
+                mcap::records::Record::Metadata(metadata) if metadata.name == "dohc.dataset" => {
+                    Some(metadata)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            metadata
+                .metadata
+                .get("dohc_provenance_version")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert!(metadata.metadata.contains_key("capture_started_at_ns"));
+        assert!(metadata.metadata.contains_key("capture_ended_at_ns"));
+        assert!(metadata.metadata.contains_key("exported_by_username"));
         if let Some(annotation) = annotation {
-            let metadata = mcap::read::LinearReader::new(&bytes)
-                .unwrap()
-                .find_map(|record| match record.unwrap() {
-                    mcap::records::Record::Metadata(metadata)
-                        if metadata.name == "dohc.dataset" =>
-                    {
-                        Some(metadata)
-                    }
-                    _ => None,
-                })
-                .unwrap();
             assert_eq!(
                 metadata.metadata.get("trajectory_code").map(String::as_str),
                 Some(annotation.trajectory_code.as_str())
