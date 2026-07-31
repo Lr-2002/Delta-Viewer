@@ -83,7 +83,7 @@ prompt while installing the replacement deb.
     an append-only local operation history. Permission failures retain the raw
     platform message and are classified as `PERMISSION_DENIED`.
 
-Interactive health reports use format v3 and explicitly identify sampled image
+Interactive health reports use format v4 and explicitly identify sampled image
 validation, the five percentages, and `autoReportPath`. Automatic reporting is
 strictly local and never writes to the SD card or source episode; repeated
 checks of the same episode path and fingerprint reuse one report. Formal stress

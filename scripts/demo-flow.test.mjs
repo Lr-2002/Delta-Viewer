@@ -246,6 +246,37 @@ if (!browserExecutable) {
     await context.close();
   });
 
+  test("checks show the expected and measured state frame rate without overflow", async () => {
+    for (const viewport of [
+      { width: 1440, height: 920 },
+      { width: 960, height: 680 },
+      { width: 390, height: 844 },
+    ]) {
+      const context = await browser.newContext({ viewport });
+      const page = await context.newPage();
+      const consoleErrors = [];
+      const pageErrors = [];
+      const failedRequests = [];
+      page.on("console", (message) => {
+        if (message.type() === "error") consoleErrors.push(message.text());
+      });
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      page.on("requestfailed", (request) => failedRequests.push(request.url()));
+
+      await registerDemoAccount(page, baseUrl, `frame-rate-${viewport.width}`);
+      await page.getByRole("button", { name: "检查", exact: true }).click();
+      await page.getByText("状态记录 · 目标 30 FPS / 实测 29.50 FPS", { exact: true }).waitFor();
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        true,
+      );
+      assert.deepEqual(consoleErrors, []);
+      assert.deepEqual(pageErrors, []);
+      assert.deepEqual(failedRequests, []);
+      await context.close();
+    }
+  });
+
   test("a missing fixture reports an actionable error before source loading", async () => {
     const context = await browser.newContext({ viewport: { width: 960, height: 680 } });
     const page = await context.newPage();

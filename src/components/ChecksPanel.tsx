@@ -41,6 +41,12 @@ export function ChecksPanel({
       : data.states.length
         ? "ok"
         : "error";
+  const stateFrameRate = report?.stateFrameRate;
+  const stateDetail = stateFrameRate?.measuredFps === null
+    ? `状态记录 · 帧率样本不足（目标 ${stateFrameRate.expectedFps} FPS）`
+    : stateFrameRate
+      ? `状态记录 · 目标 ${stateFrameRate.expectedFps} FPS / 实测 ${stateFrameRate.measuredFps.toFixed(2)} FPS`
+      : "状态记录";
   const checkRows = [
     ...data.summary.streams.map((stream) => {
       const result = report?.streams.find((item) => item.name === stream.name);
@@ -57,7 +63,7 @@ export function ChecksPanel({
     {
       key: "states",
       label: "states.jsonl",
-      detail: "状态记录",
+      detail: stateDetail,
       totalFrames: data.states.length,
       checkedFrames: "—",
       decodeFailures: "—",

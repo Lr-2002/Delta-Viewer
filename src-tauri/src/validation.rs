@@ -1,7 +1,8 @@
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ImageValidationMode, ProgressPayload, RawStateRecord, ReportExportResult, Severity,
-    StreamValidation, ValidationIssue, ValidationReport, STREAM_NAMES,
+    StateFrameRate, StreamValidation, ValidationIssue, ValidationReport,
+    EXPECTED_STATE_FRAME_RATE_FPS, STATE_FRAME_RATE_TOLERANCE_PERCENT, STREAM_NAMES,
     VALIDATION_REPORT_FORMAT_VERSION,
 };
 use crate::source::{collect_stream_files, emit_progress, is_regular_file, scan_episode};
@@ -16,6 +17,7 @@ use std::time::Instant;
 use tauri::AppHandle;
 
 pub const IMAGE_SAMPLE_PERCENTAGES: [u8; 5] = [1, 25, 50, 73, 99];
+const MIN_FRAME_RATE_INTERVALS: u64 = 3;
 
 pub fn validate_episode(
     root: &Path,
@@ -120,7 +122,7 @@ fn validate_episode_with_mode(
         }
     }
 
-    check_state_sequence(&states, &mut issues);
+    let state_frame_rate = check_state_sequence(&states, &mut issues);
     let state_frame_ids = states
         .iter()
         .filter_map(|state| u64::try_from(state.frame_id).ok())
@@ -345,6 +347,7 @@ fn validate_episode_with_mode(
             ImageValidationMode::Sampled => IMAGE_SAMPLE_PERCENTAGES.to_vec(),
             ImageValidationMode::Full => Vec::new(),
         },
+        state_frame_rate,
         auto_report_path: None,
         status: status.into(),
         checked_files,
@@ -605,7 +608,10 @@ fn contains_non_finite_token(line: &str) -> bool {
     false
 }
 
-fn check_state_sequence(states: &[RawStateRecord], issues: &mut Vec<ValidationIssue>) {
+fn check_state_sequence(
+    states: &[RawStateRecord],
+    issues: &mut Vec<ValidationIssue>,
+) -> StateFrameRate {
     if states.is_empty() {
         issues.push(issue(
             Severity::Error,
@@ -613,7 +619,12 @@ fn check_state_sequence(states: &[RawStateRecord], issues: &mut Vec<ValidationIs
             "states",
             "状态数据为空",
         ));
-        return;
+        return StateFrameRate {
+            expected_fps: EXPECTED_STATE_FRAME_RATE_FPS,
+            measured_fps: None,
+            tolerance_percent: STATE_FRAME_RATE_TOLERANCE_PERCENT,
+            interval_count: 0,
+        };
     }
     for pair in states.windows(2) {
         if pair[0].frame_id.checked_add(1) != Some(pair[1].frame_id) {
@@ -666,6 +677,53 @@ fn check_state_sequence(states: &[RawStateRecord], issues: &mut Vec<ValidationIs
             }
         }
     }
+
+    let frame_rate = measure_state_frame_rate(states);
+    if frame_rate.interval_count >= MIN_FRAME_RATE_INTERVALS {
+        if let Some(measured_fps) = frame_rate.measured_fps {
+            let expected_fps = f64::from(frame_rate.expected_fps);
+            let tolerance = f64::from(frame_rate.tolerance_percent) / 100.0;
+            if (measured_fps - expected_fps).abs() / expected_fps > tolerance {
+                issues.push(issue(
+                    Severity::Warning,
+                    "FRAME_RATE_MISMATCH",
+                    "states",
+                    &format!(
+                        "状态中位帧率为 {measured_fps:.2} FPS，期望为 {} FPS（允许偏差 ±{}%）",
+                        frame_rate.expected_fps, frame_rate.tolerance_percent
+                    ),
+                ));
+            }
+        }
+    }
+    frame_rate
+}
+
+fn measure_state_frame_rate(states: &[RawStateRecord]) -> StateFrameRate {
+    let mut frame_periods: Vec<i64> = states
+        .windows(2)
+        .filter_map(|pair| {
+            let frame_step = pair[1].frame_id.checked_sub(pair[0].frame_id)?;
+            let time_step = pair[1]
+                .capture_time_ns
+                .checked_sub(pair[0].capture_time_ns)?;
+            if frame_step <= 0 || time_step <= 0 {
+                return None;
+            }
+            let period = time_step / frame_step;
+            (period > 0).then_some(period)
+        })
+        .collect();
+    frame_periods.sort_unstable();
+    let measured_fps = frame_periods
+        .get(frame_periods.len() / 2)
+        .map(|period| 1_000_000_000.0 / *period as f64);
+    StateFrameRate {
+        expected_fps: EXPECTED_STATE_FRAME_RATE_FPS,
+        measured_fps,
+        tolerance_percent: STATE_FRAME_RATE_TOLERANCE_PERCENT,
+        interval_count: frame_periods.len() as u64,
+    }
 }
 
 fn issue(severity: Severity, code: &str, scope: &str, message: &str) -> ValidationIssue {
@@ -701,7 +759,8 @@ mod tests {
         validate_episode, validate_episode_full, IMAGE_SAMPLE_PERCENTAGES,
     };
     use crate::model::{
-        ImageValidationMode, RawStateRecord, Severity, ValidationIssue, ValidationReport,
+        ImageValidationMode, RawStateRecord, Severity, StateFrameRate, ValidationIssue,
+        ValidationReport, EXPECTED_STATE_FRAME_RATE_FPS, STATE_FRAME_RATE_TOLERANCE_PERCENT,
         STREAM_NAMES, VALIDATION_REPORT_FORMAT_VERSION,
     };
     use image::codecs::jpeg::JpegEncoder;
@@ -724,6 +783,7 @@ mod tests {
             parsed_state_count: 3,
             image_validation_mode: ImageValidationMode::Sampled,
             image_sample_percentages: IMAGE_SAMPLE_PERCENTAGES.to_vec(),
+            state_frame_rate: test_frame_rate(),
             auto_report_path: None,
             status: "warning".into(),
             checked_files: 4,
@@ -760,6 +820,7 @@ mod tests {
             parsed_state_count: 3,
             image_validation_mode: ImageValidationMode::Sampled,
             image_sample_percentages: IMAGE_SAMPLE_PERCENTAGES.to_vec(),
+            state_frame_rate: test_frame_rate(),
             auto_report_path: None,
             status: "warning".into(),
             checked_files: 4,
@@ -855,6 +916,57 @@ mod tests {
             .find(|issue| issue.code == "STATE_FRAME_GAP")
             .unwrap();
         assert_eq!(frame_gap.frame_id, Some(2));
+    }
+
+    #[test]
+    fn validates_expected_thirty_fps_with_a_bounded_tolerance() {
+        let nominal = vec![
+            state(0, 0),
+            state(1, 33_333_333),
+            state(2, 66_666_666),
+            state(3, 99_999_999),
+        ];
+        let mut nominal_issues = Vec::new();
+        let nominal_rate = check_state_sequence(&nominal, &mut nominal_issues);
+        assert_eq!(nominal_rate.expected_fps, 30);
+        assert_eq!(nominal_rate.interval_count, 3);
+        assert!(matches!(nominal_rate.measured_fps, Some(fps) if (fps - 30.0).abs() < 0.001));
+        assert!(!nominal_issues
+            .iter()
+            .any(|issue| issue.code == "FRAME_RATE_MISMATCH"));
+
+        let skipped_frames = vec![
+            state(0, 0),
+            state(2, 66_666_666),
+            state(4, 133_333_332),
+            state(6, 199_999_998),
+        ];
+        let mut skipped_frame_issues = Vec::new();
+        let skipped_rate = check_state_sequence(&skipped_frames, &mut skipped_frame_issues);
+        assert!(matches!(skipped_rate.measured_fps, Some(fps) if (fps - 30.0).abs() < 0.001));
+        assert!(skipped_frame_issues
+            .iter()
+            .any(|issue| issue.code == "STATE_FRAME_GAP"));
+        assert!(!skipped_frame_issues
+            .iter()
+            .any(|issue| issue.code == "FRAME_RATE_MISMATCH"));
+
+        let off_rate = vec![
+            state(0, 0),
+            state(1, 40_000_000),
+            state(2, 80_000_000),
+            state(3, 120_000_000),
+        ];
+        let mut off_rate_issues = Vec::new();
+        let measured = check_state_sequence(&off_rate, &mut off_rate_issues);
+        assert!(matches!(measured.measured_fps, Some(fps) if (fps - 25.0).abs() < 0.001));
+        let mismatch = off_rate_issues
+            .iter()
+            .find(|issue| issue.code == "FRAME_RATE_MISMATCH")
+            .unwrap();
+        assert_eq!(mismatch.severity, Severity::Warning);
+        assert_eq!(mismatch.frame_id, None);
+        assert!(mismatch.message.contains("25.00 FPS"));
     }
 
     #[test]
@@ -1104,10 +1216,19 @@ mod tests {
         let states = frame_ids
             .iter()
             .enumerate()
-            .map(|(index, frame_id)| state_line(*frame_id as i64, index as i64 * 10, "1.0"))
+            .map(|(index, frame_id)| state_line(*frame_id as i64, index as i64 * 33_333_333, "1.0"))
             .collect::<String>();
         fs::write(root.join("states.jsonl"), states).unwrap();
         root
+    }
+
+    fn test_frame_rate() -> StateFrameRate {
+        StateFrameRate {
+            expected_fps: EXPECTED_STATE_FRAME_RATE_FPS,
+            measured_fps: Some(f64::from(EXPECTED_STATE_FRAME_RATE_FPS)),
+            tolerance_percent: STATE_FRAME_RATE_TOLERANCE_PERCENT,
+            interval_count: 3,
+        }
     }
 
     fn state_line(frame_id: i64, capture_time_ns: i64, confidence: &str) -> String {

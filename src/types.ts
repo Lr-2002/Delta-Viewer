@@ -151,12 +151,20 @@ export interface StreamValidation {
   status: "ok" | "warning" | "error";
 }
 
+export interface StateFrameRate {
+  expectedFps: number;
+  measuredFps: number | null;
+  tolerancePercent: number;
+  intervalCount: number;
+}
+
 export interface ValidationReport {
   formatVersion: number;
   episodeRoot: string;
   parsedStateCount: number;
   imageValidationMode: "sampled" | "full";
   imageSamplePercentages: number[];
+  stateFrameRate: StateFrameRate;
   autoReportPath: string | null;
   status: "ok" | "warning" | "error";
   checkedFiles: number;

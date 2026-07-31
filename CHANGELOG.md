@@ -5,6 +5,12 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.17 - 2026-07-31
+
+- Added a 30 FPS state-timeline health gate. It measures the median raw-nanosecond
+  period per frame-ID-normalized adjacent state interval, accepts a ±5% tolerance, records the result in
+  health report v4, and reports `FRAME_RATE_MISMATCH` for stable off-rate data.
+
 ## 0.17.16 - 2026-07-31
 
 - Fixed the update mirror when GitHub's `releases/latest/download/latest.json`

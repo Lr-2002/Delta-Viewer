@@ -439,11 +439,17 @@ export async function loadEpisode(path: string, operationId: number): Promise<Ep
 export async function validateEpisode(path: string, operationId: number): Promise<ValidationReport> {
   if (isTauriRuntime()) return invoke<ValidationReport>("validate_episode", { path, operationId });
   return {
-    formatVersion: 3,
+    formatVersion: 4,
     episodeRoot: path,
     parsedStateCount: 196,
     imageValidationMode: "sampled",
     imageSamplePercentages: [1, 25, 50, 73, 99],
+    stateFrameRate: {
+      expectedFps: 30,
+      measuredFps: 29.5,
+      tolerancePercent: 5,
+      intervalCount: 195,
+    },
     autoReportPath: "/DOHC Viewer/reports/2026-07-13_07-34-12.health.json",
     status: "warning",
     checkedFiles: 26,

@@ -103,11 +103,12 @@ if (!browserExecutable && requireBrowser) {
         streams,
       };
       const report = {
-        formatVersion: 3,
+        formatVersion: 4,
         episodeRoot: "/source/episode",
         parsedStateCount: 1,
         imageValidationMode: "sampled",
         imageSamplePercentages: [1, 25, 50, 73, 99],
+        stateFrameRate: { expectedFps: 30, measuredFps: null, tolerancePercent: 5, intervalCount: 0 },
         autoReportPath: "/reports/episode.json",
         status: "warning",
         checkedFiles: 6,
@@ -191,8 +192,8 @@ if (!browserExecutable && requireBrowser) {
               return { userCenter: { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" }, currentUser: { username: "tester", displayName: "Tester" } };
             case "check_for_app_update":
               return {
-                currentVersion: "0.17.16",
-                latestVersion: "0.17.16",
+                currentVersion: "0.17.17",
+                latestVersion: "0.17.17",
                 available: false,
                 notes: null,
                 publishedAt: null,

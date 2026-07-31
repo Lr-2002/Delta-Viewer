@@ -3,8 +3,8 @@
 | 属性 | 内容 |
 | --- | --- |
 | 产品名称 | DOHC Viewer |
-| 文档版本 | 0.26 |
-| 应用版本基线 | 0.17.16 |
+| 文档版本 | 0.27 |
+| 应用版本基线 | 0.17.17 |
 | 文档状态 | 安全 Alpha，三安装器 unsigned CD、固定 IP 更新镜像与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64；Ubuntu 22.04+ x86_64 deb |
 | 文档日期 | 2026-07-31 |
@@ -15,7 +15,7 @@
 
 本文定义 DOHC Viewer 的产品边界、数据契约、用户流程、功能需求、非功能需求和发布验收标准。产品、设计、开发和测试均以本文为共同基线。
 
-本文同时记录当前 `0.17.16` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
+本文同时记录当前 `0.17.17` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
 
 ## 2. 背景与问题
 
@@ -239,7 +239,7 @@ episode/
 - `cam1`、`cam2` 为 1280x720 RGB。
 - `t265_left`、`t265_right` 为 848x800 灰度图。
 - 没有缺帧和 JPEG 解码失败。
-- 帧 180-195 存在 170-369 ms 的状态时间间隔，基准中位数为 33.9 ms，因此预期得到 `TIMESTAMP_GAP` warning。
+- 帧 180-195 存在 170-369 ms 的状态时间间隔，基准中位数为 33.9 ms，因此预期得到 `TIMESTAMP_GAP` warning。中位帧率约为 29.50 FPS，仍在 30 FPS 的 ±5% 容忍范围内，不产生帧率不匹配 warning。
 
 ## 8. 功能需求
 
@@ -285,7 +285,7 @@ Manifest `formatVersion=2`。采集数据文件集合明确排除 macOS AppleDou
 | FR-VAL-001 | P0 | 解析 `states.jsonl` 每个非空行。 | 无效 JSON、缺字段或类型不符产生 error。 | 已实现 |
 | FR-VAL-002 | P0 | 检查状态中的 NaN/Infinity。 | 任一非有限值产生 error。 | 已实现 |
 | FR-VAL-003 | P0 | 检查状态帧号和时间戳顺序。 | 帧号跳变为 warning；非单调时间戳为 error。 | 已实现 |
-| FR-VAL-004 | P0 | 检测明显时间戳间隔异常。 | 正 delta 的中位数存在时，超过中位数 3 倍产生 warning。 | 已实现 |
+| FR-VAL-004 | P0 | 检测明显时间戳间隔异常，并验证状态帧率为期望 30 FPS。 | 正 delta 的中位数存在时，超过中位数 3 倍产生 warning；以相邻状态记录的递增 frame ID 步长归一化原始纳秒周期并取中位数计算帧率，偏离 30 FPS 超过 ±5% 时产生 warning。 | 已实现并测试 |
 | FR-VAL-005 | P0 | 检查五路图像是否为空。 | 流目录缺失或零帧产生 error。 | 已实现 |
 | FR-VAL-006 | P0 | 检查图像 frame ID 连续性。 | 首尾范围内缺失位置产生 warning，并报告数量。 | 已实现 |
 | FR-VAL-007 | P0 | 交互检查按排序后帧序列的 `1% / 25% / 50% / 73% / 99%` 固定位置解码 JPEG；正式压力/发布检查解码全部 JPEG。 | 小于五帧时百分位去重；抽检或全量模式中无法解码的帧产生 error，并记录 stream/frame。 | 已实现并测试 |
@@ -310,6 +310,7 @@ Issue code 和严重级别：
 | `STATE_FRAME_GAP` | warning | 状态 frame ID 不连续 |
 | `TIMESTAMP_NOT_MONOTONIC` | error | 状态时间戳没有递增 |
 | `TIMESTAMP_GAP` | warning | 时间间隔超过中位数 3 倍 |
+| `FRAME_RATE_MISMATCH` | warning | 状态中位帧率偏离期望 30 FPS 超过 ±5% |
 | `EMPTY_STREAM` | error | 图像流为空或缺失 |
 | `INVALID_FRAME_FILENAME` | error | 排除 `._*` 平台元数据后，JPEG 文件名仍不能映射为非负十进制帧号 |
 | `DUPLICATE_FRAME_ID` | error | 多个 JPEG 文件名映射到同一帧号 |
@@ -319,7 +320,7 @@ Issue code 和严重级别：
 | `DIMENSION_MISMATCH` | error | 同一流帧尺寸不一致 |
 | `COUNT_MISMATCH` | warning | 图像帧数与状态数不一致 |
 
-机器可读报告使用 `formatVersion=3`，包含 `episodeRoot`、`parsedStateCount`、`imageValidationMode`（`sampled` 或 `full`）、`imageSamplePercentages`、`autoReportPath`、文件/流统计和完整 issue 列表。每个流的 `checkedFrames` 是实际解码数；抽检报告固定记录 `[1,25,50,73,99]`，全量报告记录空数组。可定位的 issue 附带可选 `frameId`。报告先写入隐藏 partial 文件并回读验证，再原子发布，同名时不覆盖。抽检报告不代表未抽中 JPEG 已通过解码检查。
+机器可读报告使用 `formatVersion=4`，包含 `episodeRoot`、`parsedStateCount`、`imageValidationMode`（`sampled` 或 `full`）、`imageSamplePercentages`、`stateFrameRate`（目标 FPS、实测中位 FPS、容忍百分比和有效间隔数）、`autoReportPath`、文件/流统计和完整 issue 列表。每个流的 `checkedFrames` 是实际解码数；抽检报告固定记录 `[1,25,50,73,99]`，全量报告记录空数组。可定位的 issue 附带可选 `frameId`。报告先写入隐藏 partial 文件并回读验证，再原子发布，同名时不覆盖。抽检报告不代表未抽中 JPEG 已通过解码检查。
 
 后台报告保持离线：Windows 写入 Tauri `appLocalData/com.dohc.viewer/reports`，macOS 对应 `~/Library/Application Support/com.dohc.viewer/reports`。文件名由 Windows 安全的 episode 名、报告版本，以及 episode 路径与数据指纹的 BLAKE3 派生 ID 组成。`autoReportPath` 在 warning/error 报告中记录最终普通文件路径，在 ok 报告中为 `null`。
 
@@ -948,6 +949,11 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 ### 14.37 `0.17.16` 更新镜像 latest 解析修复
 
 - GitHub `releases/latest/download/latest.json` 返回 404 时，更新镜像只查询固定的官方 latest Release API 读取 semver tag，再从该 tag 的不可变 `latest.json` 路径继续执行三平台集合、文件名、大小、SHA-256 和 Minisign 验证。任何 API 中的 URL、非 semver tag 或非 GitHub 固定资产路径仍会拒绝。
+
+### 14.38 `0.17.17` 30 FPS 状态帧率验证
+
+- 健康检查以相邻状态记录的递增 frame ID 之间的原始纳秒时间除以帧号步长，取每帧周期中位数得到实测 FPS；帧号跳号不会被误判为低帧率。
+- 报告升级为 `formatVersion=4`，新增目标 30 FPS、实测 FPS、±5% 容忍和有效间隔数；超过容忍范围生成全局 `FRAME_RATE_MISMATCH` warning，已有 `TIMESTAMP_GAP` 与非单调时间 error 语义不变。
 
 ## 15. 里程碑
 

@@ -115,7 +115,7 @@ React component
 - 未登录时只允许用户中心状态、配置导入、登录和退出 commands；账号创建只能在用户中心管理员页面完成。扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁。前端隐藏工作区不能替代后端门禁。
 - 内置任务和用户创建任务的校验、持久化与自动编号逻辑以 `src-tauri/src/annotations.rs` 为唯一真源。新任务只接收名称，由 Rust 生成稳定 task ID/轨迹前缀；前端不得提交或指定轨迹编号。
 - 批量导出清单只能由 `src-tauri/src/annotations.rs` 回读本机最新标注；批量 IPC 只接受 episode ID、目标目录和格式，必须在 Rust 中重新解析标注、核对规范化源路径与指纹、生成可信检查缓存后再调用 adapter。不得接受前端提交的源路径、标注对象或检查状态作为授权。
-- Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。其账号、用户任务和标注只保存在当前页面进程内，刷新后重置；交互抽检基线是报告 format v3、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]` 和非空 `autoReportPath`。它不能被当作账号安全、后端门禁或数据验收。
+- Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。其账号、用户任务和标注只保存在当前页面进程内，刷新后重置；交互抽检基线是报告 format v4、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]`、30 FPS 帧率统计和非空 `autoReportPath`。它不能被当作账号安全、后端门禁或数据验收。
 
 ## 4. 环境与常用命令
 
@@ -249,7 +249,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 抽检无法保证发现未命中帧的编码损坏。界面、报告、文档和测试不得把 sampled 结果描述成全量 JPEG 通过。
 - warning/error 必须在检查 command 返回前完成本地后台报告，ok 不生成；报告字段 `autoReportPath` 与实际普通文件一致，失败必须显式返回，不能显示“已生成”。
 - 导出后端必须最终具备 error hard gate，不能只依赖按钮 disabled。
-- 当前稳定 issue code 还包括 `INVALID_TIMESTAMP`、`INVALID_FRAME_FILENAME`、`DUPLICATE_FRAME_ID` 和 `FRAME_ID_MISMATCH`；改变其 severity 属于契约变更。
+- 当前稳定 issue code 还包括 `INVALID_TIMESTAMP`、`INVALID_FRAME_FILENAME`、`DUPLICATE_FRAME_ID`、`FRAME_ID_MISMATCH` 和 `FRAME_RATE_MISMATCH`；改变其 severity 属于契约变更。
 
 ## 7. 新增或修改导出 Adapter
 

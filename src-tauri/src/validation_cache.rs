@@ -70,7 +70,10 @@ impl ValidationCache {
 #[cfg(test)]
 mod tests {
     use super::ValidationCache;
-    use crate::model::{ImageValidationMode, ValidationReport, VALIDATION_REPORT_FORMAT_VERSION};
+    use crate::model::{
+        ImageValidationMode, StateFrameRate, ValidationReport, EXPECTED_STATE_FRAME_RATE_FPS,
+        STATE_FRAME_RATE_TOLERANCE_PERCENT, VALIDATION_REPORT_FORMAT_VERSION,
+    };
     use crate::validation::IMAGE_SAMPLE_PERCENTAGES;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -107,6 +110,12 @@ mod tests {
             parsed_state_count: 0,
             image_validation_mode: ImageValidationMode::Sampled,
             image_sample_percentages: IMAGE_SAMPLE_PERCENTAGES.to_vec(),
+            state_frame_rate: StateFrameRate {
+                expected_fps: EXPECTED_STATE_FRAME_RATE_FPS,
+                measured_fps: None,
+                tolerance_percent: STATE_FRAME_RATE_TOLERANCE_PERCENT,
+                interval_count: 0,
+            },
             auto_report_path: None,
             status: "ok".into(),
             checked_files: 0,

@@ -402,8 +402,9 @@ mod tests {
     use super::{ensure_export_allowed, export_episode, select_episode_data, ExportJob};
     use crate::model::{
         EpisodeAnnotation, EpisodeData, EpisodeSummary, ExportFormat, ExportRange,
-        ImageValidationMode, Severity, StreamSummary, UserIdentity, ValidationIssue,
-        ValidationReport, STREAM_NAMES, VALIDATION_REPORT_FORMAT_VERSION,
+        ImageValidationMode, Severity, StateFrameRate, StreamSummary, UserIdentity,
+        ValidationIssue, ValidationReport, EXPECTED_STATE_FRAME_RATE_FPS,
+        STATE_FRAME_RATE_TOLERANCE_PERCENT, STREAM_NAMES, VALIDATION_REPORT_FORMAT_VERSION,
     };
     use crate::validation;
     use foxglove::messages::{CompressedImage, PoseInFrame};
@@ -451,6 +452,15 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "TIMESTAMP_GAP"));
+        assert_eq!(report.state_frame_rate.expected_fps, 30);
+        assert_eq!(report.state_frame_rate.tolerance_percent, 5);
+        assert!(
+            matches!(report.state_frame_rate.measured_fps, Some(fps) if (fps - 30.0).abs() / 30.0 <= 0.05)
+        );
+        assert!(!report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "FRAME_RATE_MISMATCH"));
         assert_eq!(
             report
                 .issues
@@ -567,6 +577,7 @@ mod tests {
             parsed_state_count: 1,
             image_validation_mode: ImageValidationMode::Sampled,
             image_sample_percentages: validation::IMAGE_SAMPLE_PERCENTAGES.to_vec(),
+            state_frame_rate: test_frame_rate(),
             auto_report_path: None,
             status: "warning".into(),
             checked_files: 1,
@@ -600,6 +611,7 @@ mod tests {
             parsed_state_count: 20,
             image_validation_mode: ImageValidationMode::Sampled,
             image_sample_percentages: validation::IMAGE_SAMPLE_PERCENTAGES.to_vec(),
+            state_frame_rate: test_frame_rate(),
             auto_report_path: None,
             status: "error".into(),
             checked_files: 1,
@@ -633,6 +645,15 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    fn test_frame_rate() -> StateFrameRate {
+        StateFrameRate {
+            expected_fps: EXPECTED_STATE_FRAME_RATE_FPS,
+            measured_fps: Some(f64::from(EXPECTED_STATE_FRAME_RATE_FPS)),
+            tolerance_percent: STATE_FRAME_RATE_TOLERANCE_PERCENT,
+            interval_count: 3,
+        }
     }
 
     #[test]
