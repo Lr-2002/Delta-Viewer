@@ -300,6 +300,42 @@ if (!browserExecutable) {
     await context.close();
   });
 
+  test("segment annotations create non-overlapping timeline drafts without viewport overflow", async () => {
+    for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
+      const context = await browser.newContext({ viewport });
+      const page = await context.newPage();
+      const consoleErrors = [];
+      const pageErrors = [];
+      page.on("console", (message) => {
+        if (message.type() === "error") consoleErrors.push(message.text());
+      });
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+
+      await registerDemoAccount(page, baseUrl, `segments-${viewport.width}`);
+      await page.locator(".segment-editor-embedded").waitFor();
+      assert.equal(await page.getByRole("button", { name: "分段标注", exact: true }).count(), 0);
+      await page.getByText("当前会话草稿 · 0 个片段", { exact: true }).waitFor();
+      const segmentTrack = page.locator(".segment-track");
+      const trackBox = await segmentTrack.boundingBox();
+      assert.ok(trackBox);
+      await segmentTrack.click({ position: { x: trackBox.width * (20 / 195), y: trackBox.height / 2 } });
+      await page.getByRole("button", { name: "创建到当前帧" }).click();
+      await page.getByLabel("片段注解").fill("右手拿起桌面上的工具并移动到操作区");
+
+      assert.match(await page.locator(".segment-list").innerText(), /右手拿起桌面上的工具/);
+      assert.match(await page.locator(".segment-list").innerText(), /帧 0–20/);
+      assert.equal(await page.locator(".segment-block").count(), 1);
+      await segmentTrack.click({ position: { x: trackBox.width * (40 / 195), y: trackBox.height / 2 } });
+      await page.getByRole("button", { name: "创建到当前帧" }).click();
+      assert.equal(await page.locator(".segment-block").count(), 2);
+      assert.equal(await page.locator(".camera-grid img[aria-hidden='false']").first().evaluate((image) => image.naturalWidth > 0), true);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+      assert.deepEqual(consoleErrors, []);
+      assert.deepEqual(pageErrors, []);
+      await context.close();
+    }
+  });
+
   test("a malformed fixture reports an actionable error before source loading", async () => {
     const context = await browser.newContext({ viewport: { width: 960, height: 680 } });
     const page = await context.newPage();

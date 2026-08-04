@@ -33,8 +33,8 @@ import { ChecksPanel } from "./components/ChecksPanel";
 import { ExportPanel } from "./components/ExportPanel";
 import { FramePanel } from "./components/FramePanel";
 import { ProgressStrip } from "./components/ProgressStrip";
+import { SegmentAnnotationEditor } from "./components/SegmentAnnotationEditor";
 import { TelemetryChart } from "./components/TelemetryChart";
-import { TrimControls } from "./components/TrimControls";
 import {
   APP_VERSION,
   DEMO_ROOT,
@@ -538,42 +538,6 @@ function App() {
       setCurrentFrame(clipStartFrame);
     }
     setPlaying((value) => !value);
-  }
-
-  function updateClipStart(value: number) {
-    if (!data) return;
-    const next = Math.max(getMinFrame(data), Math.min(Math.round(value), clipEndFrame));
-    setClipStartFrame(next);
-    if (currentFrame < next) {
-      frameRef.current = next;
-      setCurrentFrame(next);
-    }
-    setPlaying(false);
-    setExportResult(null);
-  }
-
-  function updateClipEnd(value: number) {
-    if (!data) return;
-    const next = Math.min(getMaxFrame(data), Math.max(Math.round(value), clipStartFrame));
-    setClipEndFrame(next);
-    if (currentFrame > next) {
-      frameRef.current = next;
-      setCurrentFrame(next);
-    }
-    setPlaying(false);
-    setExportResult(null);
-  }
-
-  function resetClipRange() {
-    if (!data) return;
-    const start = getMinFrame(data);
-    const end = getMaxFrame(data);
-    setClipStartFrame(start);
-    setClipEndFrame(end);
-    const next = Math.max(start, Math.min(currentFrame, end));
-    frameRef.current = next;
-    setCurrentFrame(next);
-    setExportResult(null);
   }
 
   async function runExport() {
@@ -1093,17 +1057,6 @@ function App() {
                 />
               ) : !data ? null : view === "review" ? (
                 <div className="review-view">
-                  <AnnotationPanel
-                    sourcePath={data.summary.root}
-                    tasks={tasks}
-                    annotation={annotation}
-                    currentUser={currentUser}
-                    busy={busy}
-                    onTaskCreated={(task) => setTasks((current) => [...current, task])}
-                    onSaved={setAnnotation}
-                    onError={setError}
-                    onNotice={setNotice}
-                  />
                   <section className="camera-section">
                     <div className="section-heading compact-heading">
                       <div>
@@ -1125,68 +1078,52 @@ function App() {
                         />
                       ))}
                     </div>
-                    <TrimControls
+                    <AnnotationPanel
+                      sourcePath={data.summary.root}
+                      tasks={tasks}
+                      annotation={annotation}
+                      currentUser={currentUser}
+                      busy={busy}
+                      onTaskCreated={(task) => setTasks((current) => [...current, task])}
+                      onSaved={setAnnotation}
+                      onError={setError}
+                      onNotice={setNotice}
+                    />
+                    <SegmentAnnotationEditor
+                      data={data}
+                      currentFrame={currentFrame}
                       minFrame={minFrame}
                       maxFrame={maxFrame}
-                      currentFrame={currentFrame}
-                      range={clipRange}
-                      stateCount={clipStateCount}
-                      durationMs={clipDurationMs}
-                      disabled={busy}
-                      onStartChange={updateClipStart}
-                      onEndChange={updateClipEnd}
-                      onMarkStart={() => updateClipStart(currentFrame)}
-                      onMarkEnd={() => updateClipEnd(currentFrame)}
-                      onReset={resetClipRange}
+                      busy={busy}
+                      playbackControls={(
+                        <>
+                          <div className="transport-buttons">
+                            <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧"><SkipBack size={17} /></button>
+                            <button className="play-button" type="button" onClick={togglePlayback} title={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
+                            <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧"><SkipForward size={17} /></button>
+                          </div>
+                          <span className="segment-frame-readout">帧 {currentFrame} / {maxFrame}</span>
+                          <span className="time-readout">{currentState ? formatStateTime(data, currentState.captureTimeNs) : "—"}</span>
+                          <label className="speed-control">
+                            <Gauge size={16} />
+                            <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label="播放速度">
+                              <option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option>
+                            </select>
+                          </label>
+                          <label className="fps-control" title="播放帧率">
+                            <Timer size={16} />
+                            <select value={fpsOverride ?? "auto"} onChange={(event) => setFpsOverride(event.target.value === "auto" ? null : Number(event.target.value))} aria-label="播放帧率">
+                              <option value="auto">自动 {estimatedFps.toFixed(1)} FPS</option><option value={15}>15 FPS</option><option value={24}>24 FPS</option><option value={30}>30 FPS</option><option value={60}>60 FPS</option>
+                            </select>
+                          </label>
+                        </>
+                      )}
+                      onFrameChange={(frame) => {
+                        const next = Math.max(minFrame, Math.min(maxFrame, frame));
+                        frameRef.current = next;
+                        setCurrentFrame(next);
+                      }}
                     />
-                    <div className="timeline-controls">
-                      <div className="transport-buttons">
-                        <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧"><SkipBack size={17} /></button>
-                        <button className="play-button" type="button" onClick={togglePlayback} title={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"}>
-                          {playing ? <Pause size={17} /> : <Play size={17} />}
-                        </button>
-                        <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧"><SkipForward size={17} /></button>
-                      </div>
-                      <input
-                        className="timeline-slider"
-                        type="range"
-                        min={clipStartFrame}
-                        max={clipEndFrame}
-                        value={Math.max(clipStartFrame, Math.min(clipEndFrame, currentFrame))}
-                        onChange={(event) => {
-                          const next = Number(event.target.value);
-                          frameRef.current = next;
-                          setCurrentFrame(next);
-                        }}
-                        aria-label="播放帧位置"
-                      />
-                      <span className="time-readout">{currentState ? formatStateTime(data, currentState.captureTimeNs) : "—"}</span>
-                      <label className="speed-control">
-                        <Gauge size={16} />
-                        <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label="播放速度">
-                          <option value={0.25}>0.25×</option>
-                          <option value={0.5}>0.5×</option>
-                          <option value={1}>1×</option>
-                          <option value={2}>2×</option>
-                        </select>
-                      </label>
-                      <label className="fps-control" title="播放帧率">
-                        <Timer size={16} />
-                        <select
-                          value={fpsOverride ?? "auto"}
-                          onChange={(event) => {
-                            setFpsOverride(event.target.value === "auto" ? null : Number(event.target.value));
-                          }}
-                          aria-label="播放帧率"
-                        >
-                          <option value="auto">自动 {estimatedFps.toFixed(1)} FPS</option>
-                          <option value={15}>15 FPS</option>
-                          <option value={24}>24 FPS</option>
-                          <option value={30}>30 FPS</option>
-                          <option value={60}>60 FPS</option>
-                        </select>
-                      </label>
-                    </div>
                   </section>
 
                   <section className="telemetry-section">
