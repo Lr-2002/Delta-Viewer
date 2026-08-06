@@ -305,7 +305,11 @@ try {
 
         switch (command) {
           case "get_auth_status":
-            return { userCenter: { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" }, currentUser: { username: "tester", displayName: "Tester" } };
+            return {
+              workspaceMode: "managed",
+              userCenter: { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" },
+              currentUser: { username: "tester", displayName: "Tester" },
+            };
           case "check_for_app_update":
             return {
               currentVersion: "0.17.17",
