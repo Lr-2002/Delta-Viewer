@@ -5,7 +5,7 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
-## 0.17.21 - 2026-08-06
+## 0.17.22 - 2026-08-06
 
 - Added a persisted workspace-mode choice for unified LAN account management or
   account-free offline work.
@@ -14,6 +14,8 @@ after `main` CI succeeds for a coordinated version change.
   retain an internal offline-local provenance marker instead of a user account.
 - Switching modes clears the active source, loaded episode, task state, and
   operation notices before entering the new workflow.
+- Updated the playback browser regression to select unified management before
+  registering its demo account.
 
 ## 0.17.20 - 2026-08-06
 

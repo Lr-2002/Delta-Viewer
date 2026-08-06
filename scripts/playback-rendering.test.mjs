@@ -89,6 +89,7 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
     await addFrameDecodeControl(page);
 
     await page.goto(url);
+    await page.getByRole("button", { name: "统一管理模式" }).click();
     await page.locator('input[autocomplete="name"]').fill("Playback Test");
     await page.locator('input[autocomplete="username"]').fill("playback-test");
     await page.locator('input[autocomplete="new-password"]').nth(0).fill("password-123");
