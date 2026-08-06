@@ -34,6 +34,7 @@ import { ExportPanel } from "./components/ExportPanel";
 import { FramePanel } from "./components/FramePanel";
 import { ProgressStrip } from "./components/ProgressStrip";
 import { SegmentAnnotationEditor } from "./components/SegmentAnnotationEditor";
+import { SkeletonViewer } from "./components/SkeletonViewer";
 import { TelemetryChart } from "./components/TelemetryChart";
 import { TrimControls } from "./components/TrimControls";
 import {
@@ -1102,18 +1103,29 @@ function App() {
                       </div>
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
                     </div>
-                    <div className="camera-grid">
-                      {data.summary.streams.map((stream, index) => (
-                        <FramePanel
-                          key={stream.name}
-                          root={data.summary.root}
-                          stream={stream}
-                          frameId={currentFrame}
-                          playing={playing}
-                          playbackEndFrame={clipEndFrame}
-                          className={`camera-${index}`}
-                        />
-                      ))}
+                    <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
+                      <div className="camera-grid">
+                        {data.summary.streams.map((stream, index) => (
+                          <FramePanel
+                            key={stream.name}
+                            root={data.summary.root}
+                            stream={stream}
+                            frameId={currentFrame}
+                            playing={playing}
+                            playbackEndFrame={clipEndFrame}
+                            className={`camera-${index}`}
+                          />
+                        ))}
+                      </div>
+                      <div className="skeleton-side-panel">
+                        {data.skeleton ? <SkeletonViewer skeleton={data.skeleton} frameId={currentFrame} /> : null}
+                        {!data.skeleton && data.skeletonError ? (
+                          <section className="skeleton-load-error" aria-label="骨架数据">
+                            <strong>骨架数据不可用</strong>
+                            <span>{data.skeletonError}</span>
+                          </section>
+                        ) : null}
+                      </div>
                     </div>
                     <AnnotationPanel
                       sourcePath={data.summary.root}

@@ -147,6 +147,47 @@ if (!browserExecutable) {
     }
   });
 
+  test("SMPL skeleton renders beside synchronized frames and stacks on a narrow viewport", async () => {
+    for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
+      const context = await browser.newContext({ viewport });
+      const page = await context.newPage();
+      await registerDemoAccount(page, baseUrl, `skeleton-${viewport.width}`);
+      await page.getByLabel("SMPL 骨架三维视图").waitFor();
+      const layout = await page.locator(".replay-visual-row").evaluate((row) => {
+        const bounds = (element) => {
+          if (!element) return null;
+          const rect = element.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+        };
+        const camera = bounds(row.querySelector(".camera-grid"));
+        const skeleton = bounds(row.querySelector(".skeleton-side-panel"));
+        const canvas = row.querySelector('canvas[aria-label="SMPL 骨架三维视图"]');
+        if (!camera || !skeleton || !(canvas instanceof HTMLCanvasElement)) return null;
+        const gl = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+        if (!gl) return { camera, skeleton, visiblePixels: 0, scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth };
+        const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+        gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        let visiblePixels = 0;
+        for (let index = 0; index < pixels.length; index += 4) {
+          if (pixels[index + 3] > 0 && (pixels[index] > 30 || pixels[index + 1] > 35 || pixels[index + 2] > 35)) {
+            visiblePixels += 1;
+          }
+        }
+        return { camera, skeleton, visiblePixels, scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth };
+      });
+      assert.ok(layout, `missing skeleton layout at ${viewport.width}px`);
+      assert.ok(layout.visiblePixels > 100, `blank skeleton canvas at ${viewport.width}px`);
+      if (viewport.width > 760) {
+        assert.ok(layout.skeleton.left >= layout.camera.right - 0.5, JSON.stringify(layout));
+        assert.ok(Math.abs(layout.skeleton.top - layout.camera.top) < 0.5, JSON.stringify(layout));
+      } else {
+        assert.ok(layout.skeleton.top >= layout.camera.bottom - 0.5, JSON.stringify(layout));
+      }
+      assert.ok(layout.scrollWidth <= layout.viewportWidth, JSON.stringify(layout));
+      await context.close();
+    }
+  });
+
   test("custom tasks receive automatic codes, batch export succeeds, and telemetry renders colored series", async () => {
     const context = await browser.newContext({ viewport: batchViewport });
     const page = await context.newPage();

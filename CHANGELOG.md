@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.20 - 2026-08-06
+
+- Added optional local SMPL/skeleton NPZ loading with bounded Rust parsing,
+  frame-ID synchronization, and non-blocking visible parse errors.
+- Added an interactive Three.js skeleton viewer beside the five synchronized
+  camera images on desktop, with a stacked layout on narrow windows.
+
 ## 0.17.19 - 2026-08-06
 
 - Restored the continuous single-track time-trim controls after the compact

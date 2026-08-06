@@ -1,4 +1,4 @@
-import type { EpisodeSummary, StateRecord } from "../types";
+import type { EpisodeSummary, SkeletonSeries, StateRecord } from "../types";
 
 export const DEMO_EPISODE_ROOT = "/demo/2026-07-13_07-34-12";
 export const DEMO_FIXTURE_PATH = "/demo/fixture.json";
@@ -102,6 +102,36 @@ export function createDemoStates(fixture: DemoFixture): StateRecord[] {
       confidence: Math.max(0.92, 0.99 - (frameId % 17) / 1000),
     };
   });
+}
+
+const DEMO_SMPL_JOINTS: [number, number, number][] = [
+  [0, 0, 0], [-0.12, -0.08, 0], [0.12, -0.08, 0], [0, 0.16, 0],
+  [-0.15, -0.48, 0.02], [0.15, -0.48, 0.02], [0, 0.38, 0],
+  [-0.16, -0.88, 0.04], [0.16, -0.88, 0.04], [0, 0.64, 0],
+  [-0.18, -1.01, 0.17], [0.18, -1.01, 0.17], [0, 0.89, 0],
+  [-0.14, 0.91, 0], [0.14, 0.91, 0], [0, 1.12, 0],
+  [-0.31, 0.88, 0], [0.31, 0.88, 0], [-0.52, 0.68, 0.03],
+  [0.52, 0.68, 0.03], [-0.67, 0.45, 0.06], [0.67, 0.45, 0.06],
+  [-0.72, 0.4, 0.1], [0.72, 0.4, 0.1],
+];
+
+export function createDemoSkeleton(fixture: DemoFixture): SkeletonSeries {
+  return {
+    sourceName: "smpl_skeleton.npz",
+    frameCount: fixture.episode.stateCount,
+    jointCount: DEMO_SMPL_JOINTS.length,
+    frames: Array.from({ length: fixture.episode.stateCount }, (_, frameId) => {
+      const phase = frameId / 30;
+      return {
+        frameId,
+        joints: DEMO_SMPL_JOINTS.map(([x, y, z], index) => {
+          const armSwing = index >= 18 ? Math.sin(phase * 2.2) * (index % 2 === 0 ? 0.11 : -0.11) : 0;
+          const torsoShift = Math.sin(phase * 0.8) * 0.025;
+          return [x, y + (index >= 18 ? armSwing : 0), z + torsoShift] as [number, number, number];
+        }),
+      };
+    }),
+  };
 }
 
 export function demoFrameUrl(stream: string, frameId: number): string {

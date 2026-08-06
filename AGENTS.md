@@ -39,6 +39,7 @@ DOHC_Viewer/
     components/                  回放、检查、进度和导出组件
       AuthScreen.tsx             用户中心配置导入和登录
       AnnotationPanel.tsx        episode 任务、描述、轨迹码和处理人
+      SkeletonViewer.tsx         可选 SMPL/骨架 Three.js 三维回放
     lib/backend.ts               所有 Tauri IPC/browser demo 适配
     types.ts                     前端共享数据类型
   src-tauri/
@@ -49,6 +50,7 @@ DOHC_Viewer/
     src/updater.rs               固定镜像检查、有界下载、验签和平台安装
     src/annotations.rs           任务目录、轨迹占号和追加式标注修订
     src/source.rs                episode 发现、扫描、状态/帧读取
+    src/skeleton.rs              可选 SMPL/骨架 NPZ 有界只读解析
     src/storage.rs               卷信息、容量预检和 partial 安全清理
     src/importer.rs              复制、BLAKE3、manifest、命名清理
     src/stress.rs                exFAT/大容量正式验收与 JSON 证据
@@ -291,6 +293,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 操作按钮在 busy/error 状态下必须正确 disabled。
 - 进度、错误、warning 和成功结果都必须有可见状态，不能只写 console。
 - 图像面板使用稳定尺寸；加载或错误不能改变 grid 布局。
+- 可选骨架数据只能由 Rust 从当前只读 episode 源解析，前端通过 `EpisodeData` 接收坐标和 frame ID；Three.js 视图不得直接读文件。桌面端骨架面板位于五路图像右侧，窄窗口位于图像之后；NPZ 缺失或解析失败只显示非阻断状态。
 - 选择 SD 卡后自动扫描全部 session，并直接从源路径只读加载、检查第一条记录；不得自动创建本地数据副本，也不显示导入目标。左侧 episode 列表以源路径作为稳定身份：单击只选择，双击或聚焦后按 Enter/空格才读取并进入回放；异步载入成功或失败后焦点必须回到触发的 session。读取失败和权限错误必须写入本地操作历史。
 - 登录页是唯一的工作区入口；顶栏显示当前账号并提供退出。退出必须清空当前 episode、检查和标注状态，不能让未登录用户继续调用数据 IPC。
 - 回放首页顶部固定提供 episode 级数据标注。用户可以只输入名称创建本地任务；选择任务时自动填充默认描述并预览该任务的下一个轨迹码，描述可编辑。保存时必须由 Rust 原子分配或复用该 episode 的轨迹号，前端轨迹码始终只读；保存结果显示修订号和最近处理人。

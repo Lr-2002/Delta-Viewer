@@ -69,8 +69,10 @@ prompt while installing the replacement deb.
 6. Select an episode task or create one by entering its name, then edit the task
    description as needed. Rust assigns the next `{task-prefix}-{NNN}` trajectory
    code atomically when the annotation is saved; the UI cannot set the number.
-7. Review five synchronized image streams and colored state telemetry, and optionally
-   select one continuous inclusive frame range for playback and export.
+7. Review five synchronized image streams and colored state telemetry. If the episode
+   includes an optional `smpl_skeleton.npz`, a synchronized interactive 3D skeleton is
+   shown to the right of the images on desktop and below them in a narrow window. Select
+   one continuous inclusive frame range for playback and export when needed.
 8. Export the selected range as MCAP, HDF5, or LeRobot v2.1. Errors in that
    range are blocked in Rust; warnings require explicit confirmation.
 9. Open **Batch** to select multiple locally annotated full episodes and export
@@ -124,7 +126,13 @@ episode/
   t265_left/{frame_id}.jpg
   t265_right/{frame_id}.jpg
   states.jsonl
+  smpl_skeleton.npz       # optional local SMPL/skeleton coordinates
 ```
+
+When present, the optional NPZ is read directly from the mounted source in Rust. Common
+floating-point joint arrays shaped as `(frames,joints,XYZ)` or `(frames,XYZ,joints)` and
+matching frame-ID arrays are supported. The viewer never copies or modifies this file;
+invalid optional data is reported beside the viewer without blocking camera playback.
 
 Adapter output:
 

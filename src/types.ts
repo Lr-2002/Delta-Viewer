@@ -129,9 +129,23 @@ export interface StateRecord {
   confidence: number;
 }
 
+export interface SkeletonFrame {
+  frameId: number;
+  joints: [number, number, number][];
+}
+
+export interface SkeletonSeries {
+  sourceName: string;
+  frameCount: number;
+  jointCount: number;
+  frames: SkeletonFrame[];
+}
+
 export interface EpisodeData {
   summary: EpisodeSummary;
   states: StateRecord[];
+  skeleton: SkeletonSeries | null;
+  skeletonError: string | null;
 }
 
 export type Severity = "warning" | "error";

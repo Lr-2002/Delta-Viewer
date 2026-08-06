@@ -207,6 +207,24 @@ impl From<RawStateRecord> for StateRecord {
 pub struct EpisodeData {
     pub summary: EpisodeSummary,
     pub states: Vec<StateRecord>,
+    pub skeleton: Option<SkeletonSeries>,
+    pub skeleton_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkeletonFrame {
+    pub frame_id: i64,
+    pub joints: Vec<[f32; 3]>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkeletonSeries {
+    pub source_name: String,
+    pub frame_count: u64,
+    pub joint_count: u64,
+    pub frames: Vec<SkeletonFrame>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

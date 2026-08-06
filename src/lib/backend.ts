@@ -4,6 +4,7 @@ import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import packageInfo from "../../package.json";
 import {
+  createDemoSkeleton,
   createDemoStates,
   demoEpisodeSummary,
   demoFrameUrl,
@@ -428,11 +429,15 @@ export async function loadEpisode(path: string, operationId: number): Promise<Ep
     return {
       summary: sessionActivationDemoSummary(sessionActivationEpisode, fixture),
       states: createDemoStates(fixture),
+      skeleton: createDemoSkeleton(fixture),
+      skeletonError: null,
     };
   }
   return {
     summary: demoEpisodeSummary(path, fixture),
     states: createDemoStates(fixture),
+    skeleton: createDemoSkeleton(fixture),
+    skeletonError: null,
   };
 }
 

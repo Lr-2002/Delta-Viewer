@@ -1,6 +1,6 @@
 [package]
 name = "dohc-viewer"
-version = "0.17.19"
+version = "0.17.20"
 description = "Inspect and export DOHC recordings from removable media"
 authors = ["DOHC"]
 edition = "2021"
@@ -29,6 +29,8 @@ hdf5-pure = { path = "../vendor/hdf5-pure" }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 mcap = { version = "0.25", default-features = false }
 minisign-verify = "0.2.5"
+ndarray = "0.17.1"
+ndarray-npy = "0.10.0"
 parquet = { version = "59", default-features = false, features = ["arrow", "snap"] }
 prost = "0.14"
 serde = { version = "1", features = ["derive"] }

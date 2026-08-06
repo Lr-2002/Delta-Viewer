@@ -267,7 +267,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .annotation-processor-notice { margin: 5px 0 0; color: var(--subtle); font-size: 10px; }
 .frame-counter { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .camera-section { --time-axis-left: 55px; --time-axis-right: 17px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.replay-visual-row.with-skeleton { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, .72fr); gap: 7px; align-items: stretch; }
 .camera-grid { height: clamp(300px, 49vh, 520px); min-height: 300px; display: grid; grid-template-columns: 1.6fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 7px; }
+.replay-visual-row > .camera-grid { min-width: 0; }
+.skeleton-side-panel { min-width: 0; display: flex; }
+.skeleton-side-panel > .skeleton-viewer { width: 100%; height: clamp(300px, 49vh, 520px); min-height: 300px; margin: 0; display: flex; flex-direction: column; }
+.skeleton-side-panel > .skeleton-viewer .skeleton-canvas { flex: 1; height: auto; min-height: 0; }
+.skeleton-side-panel > .skeleton-load-error { width: 100%; align-self: stretch; margin: 0; align-content: start; }
 .camera-0 { grid-area: 1 / 1 / 3 / 2; }
 .camera-1 { grid-area: 1 / 2 / 2 / 3; }
 .camera-2 { grid-area: 1 / 3 / 2 / 4; }
@@ -337,6 +343,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .chart-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .chart-legend i { width: 13px; height: 3px; display: inline-block; border-radius: 1px; }
 .chart-legend .telemetry-unavailable { color: var(--status-error); font-weight: 600; }
+
+.skeleton-viewer { margin: 24px 0 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #111516; }
+.skeleton-heading { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 13px; color: #f2f5f5; border-bottom: 1px solid #384244; }
+.skeleton-heading .section-kicker { color: #9eb1b1; }
+.skeleton-heading h2 { margin: 2px 0 0; font-size: 15px; line-height: 1.15; }
+.skeleton-heading > span { color: #b7c5c5; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.skeleton-canvas { height: clamp(280px, 42vh, 480px); min-height: 280px; touch-action: none; }
+.skeleton-canvas canvas { width: 100%; height: 100%; display: block; outline: 0; }
+.skeleton-viewer footer { min-height: 30px; display: flex; align-items: center; padding: 0 13px; color: #a9b6b6; border-top: 1px solid #384244; font-size: 10px; font-variant-numeric: tabular-nums; }
+.skeleton-unavailable { margin: 0; padding: 9px 13px; color: #f2f5f5; border-top: 1px solid #384244; font-size: 11px; }
+.skeleton-load-error { display: grid; gap: 4px; margin-top: 24px; padding: 11px 13px; border: 1px solid var(--line-strong); border-left: 3px solid var(--ink); color: var(--ink); background: var(--surface-alt); font-size: 11px; }
+.skeleton-load-error span { color: var(--muted); overflow-wrap: anywhere; }
 
 .checks-view { max-width: 1100px; }
 .checks-view .section-heading { margin-bottom: 19px; }
@@ -552,9 +570,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .annotation-description textarea { height: 34px; min-height: 34px; }
   .task-create-form { grid-template-columns: 1fr; }
   .task-create-form .button { justify-self: end; }
+  .replay-visual-row.with-skeleton { grid-template-columns: 1fr; }
   .camera-grid { height: auto; min-height: 0; grid-template-columns: 1fr 1fr; grid-template-rows: auto; }
   .camera-0, .camera-1, .camera-2, .camera-3, .camera-4 { grid-area: auto; aspect-ratio: 16 / 10; }
   .camera-0 { grid-column: 1 / 3; aspect-ratio: 16 / 9; }
+  .skeleton-side-panel > .skeleton-viewer { height: 300px; min-height: 300px; }
   .timeline-controls { flex-wrap: wrap; gap: 8px; }
   .trim-heading { flex-wrap: wrap; gap: 7px; }
   .trim-summary { order: 3; flex-basis: 100%; padding-left: 23px; }
@@ -566,6 +586,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .time-readout { margin-left: auto; }
   .telemetry-chart { height: 245px; }
   .chart-legend { position: static; padding: 5px 10px 0; }
+  .skeleton-heading { align-items: flex-start; flex-direction: column; }
+  .skeleton-canvas { height: 300px; min-height: 300px; }
   .check-summary-band { grid-template-columns: 1fr; }
   .export-source-band { grid-template-columns: 1fr 1fr; }
   .format-option { grid-template-columns: 38px minmax(0, 1fr) 18px; }

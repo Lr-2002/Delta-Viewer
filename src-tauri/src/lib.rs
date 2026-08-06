@@ -7,6 +7,7 @@ mod identity;
 mod importer;
 mod model;
 mod operation_history;
+mod skeleton;
 mod source;
 mod storage;
 pub mod stress;

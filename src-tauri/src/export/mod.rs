@@ -319,7 +319,12 @@ fn select_episode_data(
     summary.start_time_ns = states.first().map(|state| state.capture_time_ns.clone());
     summary.end_time_ns = states.last().map(|state| state.capture_time_ns.clone());
     summary.streams = streams;
-    Ok(EpisodeData { summary, states })
+    Ok(EpisodeData {
+        summary,
+        states,
+        skeleton: None,
+        skeleton_error: None,
+    })
 }
 
 pub(super) fn output_stem(context: &ExportContext<'_>) -> String {
@@ -897,6 +902,8 @@ mod tests {
                 streams,
             },
             states,
+            skeleton: None,
+            skeleton_error: None,
         };
         let range = ExportRange {
             start_frame: 2,

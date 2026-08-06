@@ -118,7 +118,14 @@ pub fn load_episode(
     let summary = scan_episode(root, app, cancelled)?;
     let states_path = root.join("states.jsonl");
     let states = read_states(&states_path, cancelled)?;
-    Ok(EpisodeData { summary, states })
+    let (skeleton, skeleton_error) =
+        crate::skeleton::load_optional_skeleton(root, &states, cancelled)?;
+    Ok(EpisodeData {
+        summary,
+        states,
+        skeleton,
+        skeleton_error,
+    })
 }
 
 pub fn read_frame(root: &Path, stream: &str, frame_id: u64) -> AppResult<(String, Vec<u8>)> {
