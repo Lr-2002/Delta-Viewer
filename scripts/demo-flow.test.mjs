@@ -117,6 +117,37 @@ if (!browserExecutable) {
     await context.close();
   });
 
+  test("offline mode enters the local workspace without an account or user-center request", async () => {
+    const context = await browser.newContext({ viewport: cleanViewport });
+    const page = await context.newPage();
+    const requests = [];
+    page.on("request", (request) => requests.push(request.url()));
+    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "离线模式" }).click();
+    await page.getByText("多路回放", { exact: true }).waitFor();
+    assert.equal(await page.locator('input[autocomplete="username"]').count(), 0);
+    assert.equal(await page.getByLabel("退出登录").count(), 0);
+    assert.equal(await page.locator(".account-summary").count(), 0);
+    assert.equal(await page.locator(".annotation-processor").count(), 0);
+    assert.equal(requests.some((url) => url.includes("user-center")), false);
+
+    await page.getByRole("button", { name: "创建任务" }).click();
+    await page.getByLabel("新任务名称").fill("离线整理");
+    await page.locator(".task-create-form button[type=submit]").click();
+    await page.getByLabel("轨迹编码").waitFor();
+    await page.locator(".annotation-description textarea").fill("离线任务描述");
+    await page.getByRole("button", { name: "保存标注" }).click();
+    await page.getByText("已保存 · r1", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    if (process.env.DEMO_FLOW_OFFLINE_SCREENSHOT) {
+      await page.screenshot({ path: resolve(root, process.env.DEMO_FLOW_OFFLINE_SCREENSHOT), fullPage: true });
+    }
+
+    await page.getByLabel("切换工作模式").click();
+    await page.getByText("选择工作模式", { exact: true }).waitFor();
+    await context.close();
+  });
+
   test("trim selection rail aligns with both range controls", async () => {
     for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
       const context = await browser.newContext({ viewport });
@@ -435,6 +466,9 @@ if (!browserExecutable) {
 
 async function registerDemoAccount(page, url, suffix) {
   await page.goto(url, { waitUntil: "networkidle" });
+  if (await page.getByRole("button", { name: "统一管理模式" }).count()) {
+    await page.getByRole("button", { name: "统一管理模式" }).click();
+  }
   await page.getByLabel("显示名称").fill("Demo Test");
   await page.locator('input[autocomplete="username"]').fill(`demo-${suffix}`);
   const passwords = page.locator('input[type="password"]');

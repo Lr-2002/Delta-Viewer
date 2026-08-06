@@ -1,16 +1,31 @@
 import { useState, type FormEvent } from "react";
-import { FolderOpen, KeyRound, LogIn, UserPlus } from "lucide-react";
-import { configureUserCenter, loginLocalAccount, registerLocalAccount } from "../lib/backend";
-import type { UserCenterStatus, UserIdentity } from "../types";
+import { ArrowLeft, FolderOpen, KeyRound, LogIn, Network, UserPlus, WifiOff } from "lucide-react";
+import {
+  configureUserCenter,
+  loginLocalAccount,
+  registerLocalAccount,
+} from "../lib/backend";
+import type { UserCenterStatus, UserIdentity, WorkspaceMode } from "../types";
 
 interface AuthScreenProps {
+  workspaceMode: WorkspaceMode | null;
   userCenter: UserCenterStatus;
   allowDemoRegistration: boolean;
+  onWorkspaceModeSelected: (mode: WorkspaceMode) => Promise<void>;
+  onChooseMode: () => Promise<void>;
   onUserCenterConfigured: (status: UserCenterStatus) => void;
   onAuthenticated: (user: UserIdentity) => void;
 }
 
-export function AuthScreen({ userCenter, allowDemoRegistration, onUserCenterConfigured, onAuthenticated }: AuthScreenProps) {
+export function AuthScreen({
+  workspaceMode,
+  userCenter,
+  allowDemoRegistration,
+  onWorkspaceModeSelected,
+  onChooseMode,
+  onUserCenterConfigured,
+  onAuthenticated,
+}: AuthScreenProps) {
   const [mode, setMode] = useState<"login" | "register">(allowDemoRegistration ? "register" : "login");
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -19,6 +34,30 @@ export function AuthScreen({ userCenter, allowDemoRegistration, onUserCenterConf
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [configuring, setConfiguring] = useState(false);
+
+  async function selectMode(nextMode: WorkspaceMode) {
+    setBusy(true);
+    setError("");
+    try {
+      await onWorkspaceModeSelected(nextMode);
+    } catch (reason) {
+      setError(toMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function returnToModeChoice() {
+    setBusy(true);
+    setError("");
+    try {
+      await onChooseMode();
+    } catch (reason) {
+      setError(toMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -36,7 +75,7 @@ export function AuthScreen({ userCenter, allowDemoRegistration, onUserCenterConf
       setConfirmation("");
       onAuthenticated(user);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(toMessage(reason));
     } finally {
       setBusy(false);
     }
@@ -49,17 +88,52 @@ export function AuthScreen({ userCenter, allowDemoRegistration, onUserCenterConf
       const status = await configureUserCenter();
       onUserCenterConfigured(status);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(toMessage(reason));
     } finally {
       setConfiguring(false);
     }
   }
 
-  function switchMode(next: "login" | "register") {
+  function switchLoginMode(next: "login" | "register") {
     setMode(next);
     setError("");
     setPassword("");
     setConfirmation("");
+  }
+
+  if (workspaceMode === null) {
+    return (
+      <main className="auth-shell">
+        <header className="auth-brand">
+          <span className="brand-mark">D</span>
+          <div>
+            <strong>DOHC Viewer</strong>
+            <span>recording workspace</span>
+          </div>
+        </header>
+        <section className="auth-panel workspace-mode-panel" aria-labelledby="workspace-mode-title">
+          <div className="auth-heading">
+            <span className="auth-icon"><Network size={20} /></span>
+            <div>
+              <span className="section-kicker">WORKSPACE MODE</span>
+              <h1 id="workspace-mode-title">选择工作模式</h1>
+            </div>
+          </div>
+          <div className="workspace-mode-options">
+            <button className="workspace-mode-option" type="button" onClick={() => void selectMode("managed")} disabled={busy}>
+              <Network size={18} />
+              <span><strong>统一管理模式</strong><small>使用局域网用户中心账号</small></span>
+            </button>
+            <button className="workspace-mode-option" type="button" onClick={() => void selectMode("offline")} disabled={busy}>
+              <WifiOff size={18} />
+              <span><strong>离线模式</strong><small>不使用账号，直接在本机工作</small></span>
+            </button>
+          </div>
+          {error ? <div className="auth-error" role="alert">{error}</div> : null}
+        </section>
+        <footer className="auth-footer">采集数据始终仅在本机目录处理</footer>
+      </main>
+    );
   }
 
   return (
@@ -76,7 +150,7 @@ export function AuthScreen({ userCenter, allowDemoRegistration, onUserCenterConf
           <span className="auth-icon"><KeyRound size={20} /></span>
           <div>
             <span className="section-kicker">USER CENTER</span>
-          <h1 id="auth-title">{userCenter.configured ? mode === "login" ? "登录" : "演示账号" : "连接用户中心"}</h1>
+            <h1 id="auth-title">{userCenter.configured ? mode === "login" ? "登录" : "演示账号" : "连接用户中心"}</h1>
           </div>
         </div>
         {!userCenter.configured ? (
@@ -149,18 +223,22 @@ export function AuthScreen({ userCenter, allowDemoRegistration, onUserCenterConf
         </form>}
         {error ? <div className="auth-error" role="alert">{error}</div> : null}
         <div className="auth-switch">
+          <button type="button" className="text-button" onClick={() => void returnToModeChoice()} disabled={busy || configuring}>
+            <ArrowLeft size={14} />
+            选择工作模式
+          </button>
           {allowDemoRegistration && mode === "login" ? (
-            <button type="button" className="text-button" onClick={() => switchMode("register")}>
-              创建新账号
-            </button>
+            <button type="button" className="text-button" onClick={() => switchLoginMode("register")}>创建新账号</button>
           ) : allowDemoRegistration && mode === "register" ? (
-            <button type="button" className="text-button" onClick={() => switchMode("login")}>
-              返回登录
-            </button>
+            <button type="button" className="text-button" onClick={() => switchLoginMode("login")}>返回登录</button>
           ) : null}
         </div>
       </section>
       <footer className="auth-footer">账号由局域网用户中心管理；采集数据仍只在本机处理</footer>
     </main>
   );
+}
+
+function toMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
 }

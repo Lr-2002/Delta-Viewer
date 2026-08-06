@@ -15,6 +15,7 @@ mod updater;
 mod user_center;
 mod validation;
 mod validation_cache;
+mod workspace_mode;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -25,7 +26,7 @@ use model::{
     ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord,
     PartialImport, ProgressPayload, RecordOperationErrorRequest, ReportExportResult,
     SaveAnnotationRequest, ScanResult, TaskDefinition, UserCenterStatus, UserIdentity,
-    ValidationReport,
+    ValidationReport, WorkspaceMode,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -149,7 +150,8 @@ async fn check_for_app_update(
     app: AppHandle,
     auth: State<'_, AuthState>,
 ) -> Result<AppUpdateInfo, String> {
-    auth.require_user().map_err(|error| error.to_string())?;
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
     updater::check(&app)
         .await
         .map_err(|error| error.to_string())
@@ -162,7 +164,8 @@ async fn install_app_update(
     control: State<'_, TaskControl>,
     operation_id: u64,
 ) -> Result<bool, String> {
-    auth.require_user().map_err(|error| error.to_string())?;
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     emit_task_start(
@@ -186,14 +189,40 @@ async fn install_app_update(
 #[tauri::command]
 async fn get_auth_status(app: AppHandle, auth: State<'_, AuthState>) -> Result<AuthStatus, String> {
     let data_root = app_data_root(&app)?;
+    workspace_mode::restore(&data_root, auth.inner()).map_err(|error| error.to_string())?;
+    user_center::auth_status(&data_root, auth.inner()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn select_workspace_mode(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    mode: WorkspaceMode,
+) -> Result<AuthStatus, String> {
+    let data_root = app_data_root(&app)?;
+    workspace_mode::select(&data_root, auth.inner(), Some(mode))
+        .map_err(|error| error.to_string())?;
+    user_center::auth_status(&data_root, auth.inner()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn clear_workspace_mode(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<AuthStatus, String> {
+    let data_root = app_data_root(&app)?;
+    workspace_mode::select(&data_root, auth.inner(), None).map_err(|error| error.to_string())?;
     user_center::auth_status(&data_root, auth.inner()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn configure_user_center(
     app: AppHandle,
+    auth: State<'_, AuthState>,
     config_path: String,
 ) -> Result<UserCenterStatus, String> {
+    auth.require_managed_mode()
+        .map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
     user_center::configure(&data_root, Path::new(&config_path))
         .await
@@ -722,6 +751,8 @@ pub fn run() {
         .manage(ValidationCache::default())
         .invoke_handler(tauri::generate_handler![
             get_auth_status,
+            select_workspace_mode,
+            clear_workspace_mode,
             check_for_app_update,
             install_app_update,
             configure_user_center,

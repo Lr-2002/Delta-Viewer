@@ -15,8 +15,16 @@ pub struct UserIdentity {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthStatus {
+    pub workspace_mode: Option<WorkspaceMode>,
     pub user_center: UserCenterStatus,
     pub current_user: Option<UserIdentity>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceMode {
+    Managed,
+    Offline,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

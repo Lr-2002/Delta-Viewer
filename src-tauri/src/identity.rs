@@ -1,37 +1,92 @@
 use crate::error::{AppError, AppResult};
-use crate::model::UserIdentity;
+use crate::model::{UserIdentity, WorkspaceMode};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Default)]
 pub struct AuthState {
-    current_user: Arc<Mutex<Option<UserIdentity>>>,
+    session: Arc<Mutex<AuthSession>>,
+}
+
+#[derive(Default)]
+struct AuthSession {
+    workspace_mode: Option<WorkspaceMode>,
+    current_user: Option<UserIdentity>,
 }
 
 impl AuthState {
     pub fn current_user(&self) -> AppResult<Option<UserIdentity>> {
-        self.current_user
+        self.session
             .lock()
-            .map(|current| current.clone())
+            .map(|session| session.current_user.clone())
             .map_err(|_| AppError::Message("用户中心登录会话不可用".into()))
     }
 
+    pub fn workspace_mode(&self) -> AppResult<Option<WorkspaceMode>> {
+        self.session
+            .lock()
+            .map(|session| session.workspace_mode)
+            .map_err(|_| AppError::Message("工作模式会话不可用".into()))
+    }
+
     pub fn require_user(&self) -> AppResult<UserIdentity> {
+        match self.workspace_mode()? {
+            Some(WorkspaceMode::Offline) => Ok(offline_identity()),
+            Some(WorkspaceMode::Managed) => self
+                .current_user()?
+                .ok_or_else(|| AppError::Message("AUTH_REQUIRED: 请先登录用户中心账号".into())),
+            None => Err(AppError::Message(
+                "WORKSPACE_MODE_REQUIRED: 请选择统一管理模式或离线模式".into(),
+            )),
+        }
+    }
+
+    pub fn require_managed_mode(&self) -> AppResult<()> {
+        match self.workspace_mode()? {
+            Some(WorkspaceMode::Managed) => Ok(()),
+            Some(WorkspaceMode::Offline) => Err(AppError::Message(
+                "MANAGED_MODE_REQUIRED: 当前为离线模式，不能连接用户中心".into(),
+            )),
+            None => Err(AppError::Message(
+                "WORKSPACE_MODE_REQUIRED: 请先选择统一管理模式".into(),
+            )),
+        }
+    }
+
+    pub fn require_managed_user(&self) -> AppResult<UserIdentity> {
+        self.require_managed_mode()?;
         self.current_user()?
             .ok_or_else(|| AppError::Message("AUTH_REQUIRED: 请先登录用户中心账号".into()))
     }
 
     pub(crate) fn set_user(&self, user: Option<UserIdentity>) -> AppResult<()> {
-        let mut current = self
-            .current_user
+        let mut session = self
+            .session
             .lock()
             .map_err(|_| AppError::Message("用户中心登录会话不可用".into()))?;
-        *current = user;
+        session.current_user = user;
+        Ok(())
+    }
+
+    pub(crate) fn set_workspace_mode(&self, mode: Option<WorkspaceMode>) -> AppResult<()> {
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| AppError::Message("工作模式会话不可用".into()))?;
+        session.workspace_mode = mode;
+        session.current_user = None;
         Ok(())
     }
 }
 
 pub fn logout_account(state: &AuthState) -> AppResult<()> {
     state.set_user(None)
+}
+
+pub fn offline_identity() -> UserIdentity {
+    UserIdentity {
+        username: "offline".into(),
+        display_name: "离线本机".into(),
+    }
 }
 
 pub fn validate_user_identity(user: &UserIdentity) -> AppResult<()> {
@@ -77,12 +132,15 @@ fn validate_display_name(value: &str) -> AppResult<String> {
 #[cfg(test)]
 mod tests {
     use super::{logout_account, validate_user_identity, AuthState};
-    use crate::model::UserIdentity;
+    use crate::model::{UserIdentity, WorkspaceMode};
 
     #[test]
     fn session_requires_login_and_clears_on_logout() {
         let state = AuthState::default();
         assert!(state.require_user().is_err());
+        state
+            .set_workspace_mode(Some(WorkspaceMode::Managed))
+            .unwrap();
         let user = UserIdentity {
             username: "operator.one".into(),
             display_name: "操作员一".into(),
@@ -92,6 +150,26 @@ mod tests {
         assert_eq!(state.require_user().unwrap(), user);
         logout_account(&state).unwrap();
         assert!(state.current_user().unwrap().is_none());
+    }
+
+    #[test]
+    fn offline_mode_allows_local_operations_without_a_user_account() {
+        let state = AuthState::default();
+        state
+            .set_workspace_mode(Some(WorkspaceMode::Managed))
+            .unwrap();
+        state
+            .set_user(Some(UserIdentity {
+                username: "operator.one".into(),
+                display_name: "操作员一".into(),
+            }))
+            .unwrap();
+        state
+            .set_workspace_mode(Some(WorkspaceMode::Offline))
+            .unwrap();
+        assert_eq!(state.current_user().unwrap(), None);
+        assert_eq!(state.require_user().unwrap().username, "offline");
+        assert!(state.require_managed_user().is_err());
     }
 
     #[test]

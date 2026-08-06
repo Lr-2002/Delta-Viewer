@@ -24,6 +24,7 @@ import {
   SkipForward,
   Timer,
   UserRound,
+  Workflow,
   X,
 } from "lucide-react";
 import { AnnotationPanel } from "./components/AnnotationPanel";
@@ -43,6 +44,7 @@ import {
   cancelTask,
   checkForAppUpdate,
   chooseDirectory,
+  clearWorkspaceMode,
   confirmAction,
   exportAnnotatedEpisodes,
   exportEpisode,
@@ -60,6 +62,7 @@ import {
   onTaskProgress,
   revealOutput,
   scanSource,
+  selectWorkspaceMode,
   validateEpisode,
 } from "./lib/backend";
 import { formatBytes, shortPath } from "./lib/format";
@@ -83,6 +86,7 @@ import type {
   TaskDefinition,
   ValidationIssue,
   ValidationReport,
+  WorkspaceMode,
 } from "./types";
 
 type View = "review" | "checks" | "export" | "batch";
@@ -129,6 +133,10 @@ function App() {
   const [notice, setNotice] = useState("");
   const [currentOperationError, setCurrentOperationError] = useState(false);
   const [operationErrors, setOperationErrors] = useState<OperationErrorRecord[]>([]);
+  const workspaceMode = authStatus?.workspaceMode ?? null;
+  const workspaceActive = workspaceMode !== null;
+  const isManagedWorkspace = workspaceMode === "managed";
+  const isOfflineWorkspace = workspaceMode === "offline";
   const [historyOpen, setHistoryOpen] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("idle");
@@ -235,45 +243,47 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!authStatus?.currentUser) {
+    if (!workspaceActive || (isManagedWorkspace && !authStatus?.currentUser)) {
       setTasks([]);
       return;
     }
     void listTaskDefinitions()
       .then(setTasks)
       .catch((reason) => setError(`无法加载任务目录：${toMessage(reason)}`));
-  }, [authStatus?.currentUser?.username]);
+  }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
 
   useEffect(() => {
     if (
-      !authStatus?.currentUser
+      !isManagedWorkspace
+      || !authStatus?.currentUser
       || didAutoUpdate.current
       || busy
       || operationScopeRef.current.current()
     ) return;
     didAutoUpdate.current = true;
     void runAutomaticUpdate();
-  }, [authStatus?.currentUser?.username, busy]);
+  }, [authStatus?.currentUser?.username, busy, isManagedWorkspace]);
 
   useEffect(() => {
     if (
-      !authStatus?.currentUser
+      !isManagedWorkspace
+      || !authStatus?.currentUser
       || busy
       || updatePhase !== "available"
       || !updateInfo?.available
     ) return;
     void installAvailableUpdate();
-  }, [authStatus?.currentUser?.username, busy, updatePhase, updateInfo?.available]);
+  }, [authStatus?.currentUser?.username, busy, isManagedWorkspace, updatePhase, updateInfo?.available]);
 
   useEffect(() => {
-    if (!authStatus?.currentUser) {
+    if (!workspaceActive || (isManagedWorkspace && !authStatus?.currentUser)) {
       setOperationErrors([]);
       return;
     }
     void listOperationErrors()
       .then(setOperationErrors)
       .catch(() => undefined);
-  }, [authStatus?.currentUser?.username]);
+  }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
 
   useEffect(() => {
     frameRef.current = currentFrame;
@@ -291,10 +301,15 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (didAutoLoad.current || isTauriRuntime() || !authStatus?.currentUser) return;
+    if (
+      didAutoLoad.current
+      || isTauriRuntime()
+      || !workspaceActive
+      || (isManagedWorkspace && !authStatus?.currentUser)
+    ) return;
     didAutoLoad.current = true;
     void openSource(DEMO_ROOT, true);
-  }, [authStatus?.currentUser?.username]);
+  }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
 
   useEffect(() => {
     if (!playing || !data) return;
@@ -430,6 +445,7 @@ function App() {
       setError(presentOperationError(message));
       setCurrentOperationError(true);
     }
+    if (!workspaceActive) return;
     try {
       const record = await recordOperationError({
         operation,
@@ -486,6 +502,31 @@ function App() {
     setLoadedEpisodeSourceRoot(null);
   }
 
+  function resetWorkspaceData() {
+    resetLoadedData();
+    setSourcePath("");
+    setScan(null);
+    setSelectedEpisode(null);
+    setEpisodeSourceStates({});
+    setOperationErrors([]);
+    setHistoryOpen(false);
+    setCurrentOperationError(false);
+    setTasks([]);
+    setAnnotatedEpisodes([]);
+    setBatchSelectedIds([]);
+    setBatchExportResult(null);
+    setBatchLoading(false);
+    batchSelectionInitialized.current = false;
+    setView("review");
+    setError("");
+    setNotice("");
+    setUpdateInfo(null);
+    setUpdatePhase("idle");
+    setUpdateError("");
+    setUpdateErrorVisible(false);
+    didAutoLoad.current = false;
+  }
+
   async function refreshAuthStatus() {
     setAuthStartupError("");
     try {
@@ -499,31 +540,28 @@ function App() {
     if (operationScopeRef.current.current()) return;
     try {
       await logoutLocalAccount();
-      resetLoadedData();
-      setSourcePath("");
-      setScan(null);
-      setSelectedEpisode(null);
-      setEpisodeSourceStates({});
-      setOperationErrors([]);
-      setHistoryOpen(false);
-      setCurrentOperationError(false);
-      setTasks([]);
-      setAnnotatedEpisodes([]);
-      setBatchSelectedIds([]);
-      setBatchExportResult(null);
-      setBatchLoading(false);
-      batchSelectionInitialized.current = false;
-      setView("review");
-      setError("");
-      setNotice("");
-      didAutoLoad.current = false;
-      setAuthStatus((current) => ({
-        userCenter: current?.userCenter ?? { configured: false, endpoint: null, serviceId: null },
-        currentUser: null,
-      }));
+      resetWorkspaceData();
+      setAuthStatus((current) => current ? { ...current, currentUser: null } : current);
     } catch (reason) {
       await reportFailure("logout", reason);
     }
+  }
+
+  async function chooseWorkspaceMode() {
+    if (operationScopeRef.current.current()) return;
+    try {
+      const status = await clearWorkspaceMode();
+      resetWorkspaceData();
+      setAuthStatus(status);
+    } catch (reason) {
+      await reportFailure("clear_workspace_mode", reason, "");
+    }
+  }
+
+  async function activateWorkspaceMode(mode: WorkspaceMode) {
+    const status = await selectWorkspaceMode(mode);
+    resetWorkspaceData();
+    setAuthStatus(status);
   }
 
   function moveFrame(delta: number) {
@@ -624,7 +662,7 @@ function App() {
   }
 
   async function refreshAnnotatedEpisodeList() {
-    if (!authStatus?.currentUser) return;
+    if (!workspaceActive || (isManagedWorkspace && !authStatus?.currentUser)) return;
     setBatchLoading(true);
     try {
       const listed = await listAnnotatedEpisodes();
@@ -851,16 +889,21 @@ function App() {
     );
   }
 
-  if (!authStatus.currentUser) {
+  if (!workspaceMode || (isManagedWorkspace && !authStatus.currentUser)) {
     return (
       <AuthScreen
+        workspaceMode={workspaceMode}
         userCenter={authStatus.userCenter}
         allowDemoRegistration={!isTauriRuntime()}
+        onWorkspaceModeSelected={activateWorkspaceMode}
+        onChooseMode={chooseWorkspaceMode}
         onUserCenterConfigured={(status) => setAuthStatus((current) => ({
+          workspaceMode: current?.workspaceMode ?? "managed",
           userCenter: status,
           currentUser: current?.currentUser ?? null,
         }))}
         onAuthenticated={(user) => setAuthStatus((current) => ({
+          workspaceMode: current?.workspaceMode ?? "managed",
           userCenter: current?.userCenter ?? { configured: false, endpoint: null, serviceId: null },
           currentUser: user,
         }))}
@@ -896,24 +939,26 @@ function App() {
         </div>
         <div className="topbar-actions">
           <StatusBadge status={status} />
-          <button
-            className={`icon-button update-trigger${updatePhase === "failed" ? " update-failed" : ""}`}
-            type="button"
-            onClick={() => void (updateInfo?.available ? installAvailableUpdate() : runAutomaticUpdate())}
-            disabled={busy || updatePhase === "checking" || updatePhase === "downloading"}
-            title={updateButtonTitle}
-            aria-label={updateButtonTitle}
-          >
-            {updatePhase === "checking" || updatePhase === "downloading" ? (
-              <LoaderCircle className="spin" size={16} />
-            ) : updatePhase === "failed" ? (
-              <CircleAlert size={16} />
-            ) : updateInfo?.available ? (
-              <Download size={16} />
-            ) : (
-              <RefreshCw size={16} />
-            )}
-          </button>
+          {isManagedWorkspace && currentUser ? (
+            <button
+              className={`icon-button update-trigger${updatePhase === "failed" ? " update-failed" : ""}`}
+              type="button"
+              onClick={() => void (updateInfo?.available ? installAvailableUpdate() : runAutomaticUpdate())}
+              disabled={busy || updatePhase === "checking" || updatePhase === "downloading"}
+              title={updateButtonTitle}
+              aria-label={updateButtonTitle}
+            >
+              {updatePhase === "checking" || updatePhase === "downloading" ? (
+                <LoaderCircle className="spin" size={16} />
+              ) : updatePhase === "failed" ? (
+                <CircleAlert size={16} />
+              ) : updateInfo?.available ? (
+                <Download size={16} />
+              ) : (
+                <RefreshCw size={16} />
+              )}
+            </button>
+          ) : null}
           <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy}>
             <FolderOpen size={16} />
             选择 SD 卡
@@ -929,12 +974,20 @@ function App() {
             <History size={16} />
             {operationErrors.length ? <span>{Math.min(operationErrors.length, 99)}</span> : null}
           </button>
-          <div className="account-summary" title={`@${currentUser.username}`}>
-            <UserRound size={16} />
-            <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
-          </div>
-          <button className="icon-button" type="button" onClick={() => void logout()} disabled={busy} title="退出登录" aria-label="退出登录">
-            <LogOut size={16} />
+          {isOfflineWorkspace ? <span className="workspace-mode-indicator">离线模式</span> : null}
+          {isManagedWorkspace && currentUser ? (
+            <>
+              <div className="account-summary" title={`@${currentUser.username}`}>
+                <UserRound size={16} />
+                <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
+              </div>
+              <button className="icon-button" type="button" onClick={() => void logout()} disabled={busy} title="退出登录" aria-label="退出登录">
+                <LogOut size={16} />
+              </button>
+            </>
+          ) : null}
+          <button className="icon-button" type="button" onClick={() => void chooseWorkspaceMode()} disabled={busy} title="切换工作模式" aria-label="切换工作模式">
+            <Workflow size={16} />
           </button>
         </div>
       </header>
@@ -947,7 +1000,7 @@ function App() {
       ) : null}
 
       {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
-      {updatePhase === "failed" && updateErrorVisible ? (
+      {isManagedWorkspace && updatePhase === "failed" && updateErrorVisible ? (
         <div className="alert-banner alert-notice update-alert" role="status">
           <CircleAlert size={17} />
           <span>{updateError}。当前本地功能仍可使用。</span>
@@ -1132,6 +1185,7 @@ function App() {
                       tasks={tasks}
                       annotation={annotation}
                       currentUser={currentUser}
+                      offlineMode={isOfflineWorkspace}
                       busy={busy}
                       onTaskCreated={(task) => setTasks((current) => [...current, task])}
                       onSaved={setAnnotation}

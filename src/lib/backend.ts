@@ -36,6 +36,7 @@ import type {
   UserIdentity,
   ValidationReport,
   UserCenterStatus,
+  WorkspaceMode,
 } from "../types";
 
 export const DEMO_ROOT = DEMO_EPISODE_ROOT;
@@ -60,7 +61,9 @@ const demoTaskDefinitions: TaskDefinition[] = [
   },
 ];
 let demoCurrentUser: UserIdentity | null = null;
+let demoWorkspaceMode: WorkspaceMode | null = null;
 let sessionActivationRetryAttempts = 0;
+const DEMO_OFFLINE_IDENTITY: UserIdentity = { username: "offline", displayName: "离线本机" };
 
 export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
   if (isTauriRuntime()) return invoke<AppUpdateInfo>("check_for_app_update");
@@ -81,9 +84,24 @@ export async function installAppUpdate(operationId: number): Promise<boolean> {
 export async function getAuthStatus(): Promise<AuthStatus> {
   if (isTauriRuntime()) return invoke<AuthStatus>("get_auth_status");
   return {
+    workspaceMode: demoWorkspaceMode,
     userCenter: { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" },
     currentUser: demoCurrentUser,
   };
+}
+
+export async function selectWorkspaceMode(mode: WorkspaceMode): Promise<AuthStatus> {
+  if (isTauriRuntime()) return invoke<AuthStatus>("select_workspace_mode", { mode });
+  demoWorkspaceMode = mode;
+  demoCurrentUser = null;
+  return getAuthStatus();
+}
+
+export async function clearWorkspaceMode(): Promise<AuthStatus> {
+  if (isTauriRuntime()) return invoke<AuthStatus>("clear_workspace_mode");
+  demoWorkspaceMode = null;
+  demoCurrentUser = null;
+  return getAuthStatus();
 }
 
 export async function configureUserCenter(): Promise<UserCenterStatus> {
@@ -108,6 +126,7 @@ export async function registerLocalAccount(
   if (isTauriRuntime()) {
     throw new Error("ACCOUNT_ADMIN_MANAGED: 账号只能由用户中心管理员创建");
   }
+  requireDemoManagedMode();
   const normalized = username.trim().toLowerCase();
   if (demoAccounts.has(normalized)) throw new Error("ACCOUNT_EXISTS: 本地账号已存在");
   demoAccounts.set(normalized, { displayName: displayName.trim(), password });
@@ -122,6 +141,7 @@ export async function loginLocalAccount(
   if (isTauriRuntime()) {
     return invoke<UserIdentity>("login_account", { request: { username, password } });
   }
+  requireDemoManagedMode();
   const normalized = username.trim().toLowerCase();
   const account = demoAccounts.get(normalized);
   if (!account || account.password !== password) throw new Error("AUTH_INVALID: 账号或密码错误");
@@ -143,7 +163,7 @@ export async function createTaskDefinition(request: CreateTaskRequest): Promise<
   if (isTauriRuntime()) {
     return invoke<TaskDefinition>("create_task_definition", { request });
   }
-  if (!demoCurrentUser) throw new Error("AUTH_REQUIRED: 请先登录本地账号");
+  demoActor();
   const label = normalizeTaskLabel(request.label);
   const codePrefix = taskCodePrefix(label);
   if (demoTaskDefinitions.some((task) => (
@@ -165,6 +185,7 @@ export async function createTaskDefinition(request: CreateTaskRequest): Promise<
 
 export async function suggestTrajectoryCode(taskId: string): Promise<string> {
   if (isTauriRuntime()) return invoke<string>("suggest_trajectory_code", { taskId });
+  demoActor();
   const task = (await listTaskDefinitions()).find((item) => item.id === taskId);
   if (!task) throw new Error(`UNKNOWN_TASK: 不支持的任务 ${taskId}`);
   const used = [...demoTrajectoryReservations.values()]
@@ -188,7 +209,7 @@ export async function saveEpisodeAnnotation(
   if (isTauriRuntime()) {
     return invoke<EpisodeAnnotation>("save_episode_annotation", { request });
   }
-  if (!demoCurrentUser) throw new Error("AUTH_REQUIRED: 请先登录本地账号");
+  const actor = demoActor();
   const existing = demoAnnotations.get(request.sourcePath);
   const task = demoTaskDefinitions.find((item) => item.id === request.taskId);
   if (!task) throw new Error(`UNKNOWN_TASK: 不支持的任务 ${request.taskId}`);
@@ -207,7 +228,7 @@ export async function saveEpisodeAnnotation(
     trajectoryCode,
     taskId: request.taskId,
     taskDescription: request.taskDescription.trim(),
-    processedBy: demoCurrentUser,
+    processedBy: actor,
     revision: (existing?.revision ?? 0) + 1,
     createdAtMs: existing?.createdAtMs ?? now,
     updatedAtMs: now,
@@ -357,7 +378,7 @@ export async function recordOperationError(
     code: classifyDemoError(request.message),
     message: request.message,
     sourcePath: request.sourcePath,
-    processedBy: demoCurrentUser ?? { username: "demo", displayName: "Demo" },
+    processedBy: demoActor(),
   };
   const records = await listOperationErrors();
   window.localStorage.setItem(DEMO_OPERATION_ERRORS, JSON.stringify([record, ...records].slice(0, 200)));
@@ -384,6 +405,20 @@ function classifyDemoError(message: string): string {
     || normalized.includes("permission denied")
     ? "PERMISSION_DENIED"
     : "OPERATION_FAILED";
+}
+
+function requireDemoManagedMode(): void {
+  if (demoWorkspaceMode === "managed") return;
+  if (demoWorkspaceMode === "offline") {
+    throw new Error("MANAGED_MODE_REQUIRED: 当前为离线模式，不能使用账号");
+  }
+  throw new Error("WORKSPACE_MODE_REQUIRED: 请选择统一管理模式或离线模式");
+}
+
+function demoActor(): UserIdentity {
+  if (demoWorkspaceMode === "offline") return DEMO_OFFLINE_IDENTITY;
+  if (demoWorkspaceMode === "managed" && demoCurrentUser) return demoCurrentUser;
+  throw new Error("AUTH_REQUIRED: 请先选择工作模式并登录用户中心账号");
 }
 
 function normalizeTaskLabel(value: string): string {

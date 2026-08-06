@@ -39,7 +39,7 @@ mount, startup, and checksum gates. Verify
 `SHA256SUMS.txt` before use; detailed installation and usage instructions live
 in the Wiki.
 
-Starting with `0.17.12`, the app checks the fixed public update mirror at
+Starting with `0.17.12`, unified management mode checks the fixed public update mirror at
 `http://39.155.172.162:17879` after local login, then falls back only to
 `http://10.1.11.36:17879` for clients on the mirror LAN. The mirror host reads GitHub once,
 verifies and atomically caches the complete release, and serves clients over the
@@ -53,9 +53,11 @@ prompt while installing the replacement deb.
 
 ## Workflow
 
-1. Import the administrator-provided LAN user-center configuration and sign in
-   with an administrator-created account. The account identifies who last
-   processed an episode; the user center does not receive recording data.
+1. Choose a workspace mode. **Unified management** imports the
+   administrator-provided LAN user-center configuration and signs in with an
+   administrator-created account. **Offline** enters directly without an account,
+   user-center request, or automatic update check; local annotations use an
+   offline-local provenance marker rather than a user account.
 2. Select an SD card or a recording directory.
 3. Scan every direct-child episode without modifying the source card. The first
    session opens directly from the read-only source; no automatic app-local
@@ -96,20 +98,21 @@ User-created tasks, trajectory reservations, append-only annotation revisions,
 reports, and operation error history are stored under the operating system's
 application-local data directory. Normal UI use does not copy episode payloads
 there. A batch candidate therefore still requires its original source path to
-be mounted and its fingerprint to match the saved annotation. Password hashes
-are stored only by the LAN user center; the client never stores passwords and
-keeps login sessions only in the current process. The user center is for
-processing attribution; it does not encrypt local files, provide organization
-IAM, recover forgotten passwords, or synchronize annotation data.
+be mounted and its fingerprint to match the saved annotation. In unified
+management mode, password hashes are stored only by the LAN user center; the
+client never stores passwords and keeps login sessions only in the current
+process. Offline mode has no account or user-center request. The user center is
+for processing attribution; it does not encrypt local files, provide
+organization IAM, recover forgotten passwords, or synchronize annotation data.
 
-The runtime has no SSH or network recording-data path. It connects only to the
-configured LAN user center for login and to the automatic update mirror at
-fixed `39.155.172.162:17879`, with
-`10.1.11.36:17879` as its only LAN fallback; clients never contact GitHub and
-send no account, source path, annotation, report, hash, or telemetry data. The
-updater accepts only those configured origins and exact version paths, then
-verifies the signed bytes independently. Offline mode leaves scanning,
-playback, annotation, and export fully available. SSH was used only once to retrieve the development sample from the current ext4 card. Ubuntu can mount
+The runtime has no SSH or network recording-data path. Unified management mode
+connects only to the configured LAN user center for login and to the automatic
+update mirror at fixed `39.155.172.162:17879`, with `10.1.11.36:17879` as its
+only LAN fallback; offline mode makes neither request. Clients never contact
+GitHub or send account, source path, annotation, report, hash, or telemetry
+data. The updater accepts only those configured origins and exact version paths,
+then verifies the signed bytes independently. SSH was used only once to retrieve
+the development sample from the current ext4 card. Ubuntu can mount
 ext4 with the Linux kernel. The native deb can select any mounted path allowed
 by the current user. The complete
 command sequence is in the [Wiki installation guide](https://github.com/Lr-2002/Delta-Viewer/wiki/Installation).

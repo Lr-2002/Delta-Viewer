@@ -5,7 +5,10 @@ export interface UserIdentity {
   displayName: string;
 }
 
+export type WorkspaceMode = "managed" | "offline";
+
 export interface AuthStatus {
+  workspaceMode: WorkspaceMode | null;
   userCenter: UserCenterStatus;
   currentUser: UserIdentity | null;
 }

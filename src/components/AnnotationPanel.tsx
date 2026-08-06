@@ -11,7 +11,8 @@ interface AnnotationPanelProps {
   sourcePath: string;
   tasks: TaskDefinition[];
   annotation: EpisodeAnnotation | null;
-  currentUser: UserIdentity;
+  currentUser: UserIdentity | null;
+  offlineMode: boolean;
   busy: boolean;
   onTaskCreated: (task: TaskDefinition) => void;
   onSaved: (annotation: EpisodeAnnotation) => void;
@@ -24,6 +25,7 @@ export function AnnotationPanel({
   tasks,
   annotation,
   currentUser,
+  offlineMode,
   busy,
   onTaskCreated,
   onSaved,
@@ -105,7 +107,7 @@ export function AnnotationPanel({
       });
       setEditStartedAtMs(Date.now());
       onSaved(saved);
-      onNotice(`标注已保存：${saved.trajectoryCode} · ${saved.processedBy.displayName}`);
+      onNotice(offlineMode ? `标注已保存：${saved.trajectoryCode}` : `标注已保存：${saved.trajectoryCode} · ${saved.processedBy.displayName}`);
     } catch (reason) {
       onError(toMessage(reason));
     } finally {
@@ -149,14 +151,16 @@ export function AnnotationPanel({
           <h2 id="annotation-title">数据标注</h2>
         </div>
         <div className="annotation-heading-actions">
-          <div className="annotation-processor">
-            <UserRound size={15} />
-            <span>
-              <small>{annotation ? "最近处理" : "本次处理"}</small>
-              <strong>{lastProcessor.displayName}</strong>
-              <code>@{lastProcessor.username}</code>
-            </span>
-          </div>
+          {!offlineMode && lastProcessor ? (
+            <div className="annotation-processor">
+              <UserRound size={15} />
+              <span>
+                <small>{annotation ? "最近处理" : "本次处理"}</small>
+                <strong>{lastProcessor.displayName}</strong>
+                <code>@{lastProcessor.username}</code>
+              </span>
+            </div>
+          ) : null}
           <span className={`annotation-state${annotation && !dirty ? " saved" : ""}`}>
             {annotation && !dirty ? `已保存 · r${annotation.revision}` : "待保存"}
           </span>
@@ -228,7 +232,7 @@ export function AnnotationPanel({
           </button>
         </form>
       ) : null}
-      {annotation && annotation.processedBy.username !== currentUser.username ? (
+      {!offlineMode && annotation && currentUser && annotation.processedBy.username !== currentUser.username ? (
         <p className="annotation-processor-notice">保存后处理人将更新为 {currentUser.displayName}</p>
       ) : null}
     </section>

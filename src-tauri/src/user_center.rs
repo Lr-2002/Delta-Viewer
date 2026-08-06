@@ -79,6 +79,7 @@ pub fn auth_status(data_root: &Path, state: &AuthState) -> AppResult<AuthStatus>
         Err(error) => return Err(error),
     };
     Ok(AuthStatus {
+        workspace_mode: state.workspace_mode()?,
         user_center: config
             .as_ref()
             .map(status_from_config)
@@ -96,6 +97,7 @@ pub async fn login(
     state: &AuthState,
     request: LoginRequest,
 ) -> AppResult<UserIdentity> {
+    state.require_managed_mode()?;
     let config = load_config(data_root).map_err(|_| {
         AppError::Message("USER_CENTER_NOT_CONFIGURED: 请先导入管理员提供的用户中心配置文件".into())
     })?;

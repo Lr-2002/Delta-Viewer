@@ -5,6 +5,16 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.21 - 2026-08-06
+
+- Added a persisted workspace-mode choice for unified LAN account management or
+  account-free offline work.
+- Offline mode enters the local workspace without user-center requests, account
+  controls, processor display, or automatic update checks; local annotations
+  retain an internal offline-local provenance marker instead of a user account.
+- Switching modes clears the active source, loaded episode, task state, and
+  operation notices before entering the new workflow.
+
 ## 0.17.20 - 2026-08-06
 
 - Added optional local SMPL/skeleton NPZ loading with bounded Rust parsing,
