@@ -58,7 +58,7 @@ pub fn scan_source(
     }
 
     let volume = storage::volume_info(root)?;
-    storage::ensure_local_source(&volume)?;
+    storage::ensure_source_volume(&volume)?;
     let episodes = discover_episode_roots(root, cancelled)?;
     if episodes.is_empty() {
         return Err(AppError::NoEpisodes(root.display().to_string()));
@@ -153,7 +153,7 @@ pub fn scan_episode(
         return Err(AppError::MissingPath(root.display().to_string()));
     }
 
-    storage::ensure_local_source(&storage::volume_info(root)?)?;
+    storage::ensure_source_volume(&storage::volume_info(root)?)?;
     let all_files = collect_files(root, cancelled)?;
     let total_files = all_files.len() as u64;
     let mut total_bytes = 0_u64;
@@ -220,7 +220,7 @@ pub fn collect_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathB
 }
 
 pub fn episode_fingerprint(root: &Path, cancelled: &AtomicBool) -> AppResult<String> {
-    storage::ensure_local_source(&storage::volume_info(root)?)?;
+    storage::ensure_source_volume(&storage::volume_info(root)?)?;
     let files = collect_files(root, cancelled)?;
     let mut hasher = Hasher::new();
     for path in files {

@@ -39,12 +39,9 @@ pub fn volume_info(path: &Path) -> AppResult<VolumeInfo> {
     })
 }
 
-pub fn ensure_local_source(volume: &VolumeInfo) -> AppResult<()> {
-    if volume.drive_type == "remote" {
-        return Err(AppError::Message(
-            "不支持网络映射盘；请选择本机可移动介质或本地目录".into(),
-        ));
-    }
+/// Sources are accessed only through an operating-system-mounted filesystem path.
+/// A remote classification is useful volume metadata, not a reason to reject a mounted source.
+pub fn ensure_source_volume(_volume: &VolumeInfo) -> AppResult<()> {
     Ok(())
 }
 
@@ -92,7 +89,7 @@ pub fn inspect_import_with_files(
 
     let source = fs::canonicalize(source)?;
     let destination_parent = fs::canonicalize(destination_parent)?;
-    ensure_local_source(&volume_info(&source)?)?;
+    ensure_source_volume(&volume_info(&source)?)?;
     let files = collect_files(&source, cancelled)?;
     if files.is_empty() {
         return Err(AppError::Message("源目录没有可导入文件".into()));
@@ -702,9 +699,11 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::volume_info;
     use super::{
-        cleanup_partial_import, create_import_partial, inspect_import, is_unsupported_fat,
-        list_partial_imports, managed_import_root, publish_import_partial, publish_noreplace,
+        cleanup_partial_import, create_import_partial, ensure_source_volume, inspect_import,
+        is_unsupported_fat, list_partial_imports, managed_import_root, publish_import_partial,
+        publish_noreplace,
     };
+    use crate::model::VolumeInfo;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -747,6 +746,19 @@ mod tests {
             source: "server:/records".into(),
         };
         assert_eq!(super::linux_drive_type(&mount, true), "remote");
+    }
+
+    #[test]
+    fn permits_mapped_network_volumes_as_sources() {
+        let volume = VolumeInfo {
+            root: "Z:\\".into(),
+            filesystem: Some("SMB".into()),
+            drive_type: "remote".into(),
+            total_bytes: 1,
+            available_bytes: 1,
+        };
+
+        assert!(ensure_source_volume(&volume).is_ok());
     }
 
     #[cfg(target_os = "macos")]

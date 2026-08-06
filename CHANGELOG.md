@@ -5,6 +5,16 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.25 - 2026-08-06
+
+- Allowed operating-system-mounted network volumes, including Windows mapped
+  drives and SMB/NFS mounts, as read-only data sources for scanning, loading,
+  fingerprinting, and explicit-import source validation.
+- Kept source data read-only with no automatic copies or application-managed
+  SSH, HTTP, cloud-storage, or NAS protocol connections.
+- Kept import and export destinations on local filesystems so their capacity
+  preflight and atomic no-replace publication guarantees remain unchanged.
+
 ## 0.17.24 - 2026-08-06
 
 - Added a persisted workspace-mode choice for unified LAN account management or
