@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Plus, Scissors, Trash2 } from "lucide-react";
 import type { EpisodeData } from "../types";
-import { TrimControls } from "./TrimControls";
 
 interface Segment {
   id: string;
@@ -78,8 +77,7 @@ export function SegmentAnnotationEditor({
         <span className="segment-draft-badge">当前会话草稿 · {segments.length} 个片段</span>
       </header>
 
-      <TrimControls>
-        <section className="segment-timeline segment-timeline-embedded" aria-label="片段时间线">
+      <section className="segment-timeline segment-timeline-embedded" aria-label="片段时间线">
           <header>
             <div className="segment-playback-controls">{playbackControls}</div>
             <button className="button button-primary segment-create-action" type="button" disabled={busy || !canCreate} onClick={addSegment} title={!canCreate && nextStartFrame <= maxFrame ? `请先播放到帧 ${nextStartFrame}` : undefined}>
@@ -111,8 +109,7 @@ export function SegmentAnnotationEditor({
               {ordered.map((segment, index) => <button type="button" key={segment.id} className={segment.id === selectedId ? "selected" : ""} onClick={() => selectSegment(segment)}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{segment.title || "未命名片段"}</strong><small>帧 {segment.startFrame}–{segment.endFrame} · {segment.note || "尚未添加注解"}</small></span></button>)}
             </div>
           ) : null}
-        </section>
-      </TrimControls>
+      </section>
 
       {selected && <div className="segment-workbench">
         <aside className="segment-inspector">

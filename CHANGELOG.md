@@ -5,6 +5,15 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.19 - 2026-08-06
+
+- Restored the continuous single-track time-trim controls after the compact
+  segment workflow accidentally removed the export clip editor and its
+  playback boundary behavior.
+- Kept session-only segment drafting and its compact playback controls while
+  making it explicit that segment notes do not replace the closed interval
+  used by playback and export.
+
 ## 0.17.18 - 2026-08-04
 
 - Integrated current-session segment drafting directly below synchronized

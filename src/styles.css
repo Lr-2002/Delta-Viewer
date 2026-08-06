@@ -181,7 +181,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .segment-editor-view { width: 100%; max-width: none; }
 .segment-editor-embedded { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; margin-top: 10px; padding: 10px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: var(--surface); }
 .segment-editor-embedded > .segment-page-heading { grid-column: 1 / 3; }
-.segment-editor-embedded > .trim-editor { grid-column: 1 / 3; grid-row: 2; margin-top: 0; padding: 12px 0 14px; border: 0; border-radius: 0; background: var(--surface); }
+.segment-editor-embedded > .segment-timeline { grid-column: 1 / 3; grid-row: 2; }
 .segment-editor-embedded > .segment-workbench { grid-column: 1 / 3; grid-row: 3; }
 .segment-page-heading { align-items: flex-end; margin-bottom: 16px; }
 .segment-page-heading p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
@@ -540,9 +540,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .annotation-heading-actions { flex-wrap: wrap; justify-content: flex-end; }
   .segment-editor-embedded { grid-template-columns: 1fr; padding: 10px 0 0; }
   .segment-editor-embedded > .segment-page-heading,
-  .segment-editor-embedded > .trim-editor,
-  .segment-editor-embedded > .segment-workbench,
-  .segment-editor-embedded > .segment-timeline { grid-column: 1; grid-row: auto; }
+  .segment-editor-embedded > .segment-timeline,
+  .segment-editor-embedded > .segment-workbench { grid-column: 1; grid-row: auto; }
   .segment-inspector { min-height: 280px; }
   .segment-timeline > header { align-items: flex-start; flex-direction: column; }
   .segment-ruler, .segment-track { margin-right: 12px; margin-left: 12px; }

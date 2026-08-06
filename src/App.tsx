@@ -35,6 +35,7 @@ import { FramePanel } from "./components/FramePanel";
 import { ProgressStrip } from "./components/ProgressStrip";
 import { SegmentAnnotationEditor } from "./components/SegmentAnnotationEditor";
 import { TelemetryChart } from "./components/TelemetryChart";
+import { TrimControls } from "./components/TrimControls";
 import {
   APP_VERSION,
   DEMO_ROOT,
@@ -538,6 +539,42 @@ function App() {
       setCurrentFrame(clipStartFrame);
     }
     setPlaying((value) => !value);
+  }
+
+  function updateClipStart(value: number) {
+    if (!data) return;
+    const next = Math.max(getMinFrame(data), Math.min(Math.round(value), clipEndFrame));
+    setClipStartFrame(next);
+    if (currentFrame < next) {
+      frameRef.current = next;
+      setCurrentFrame(next);
+    }
+    setPlaying(false);
+    setExportResult(null);
+  }
+
+  function updateClipEnd(value: number) {
+    if (!data) return;
+    const next = Math.min(getMaxFrame(data), Math.max(Math.round(value), clipStartFrame));
+    setClipEndFrame(next);
+    if (currentFrame > next) {
+      frameRef.current = next;
+      setCurrentFrame(next);
+    }
+    setPlaying(false);
+    setExportResult(null);
+  }
+
+  function resetClipRange() {
+    if (!data) return;
+    const start = getMinFrame(data);
+    const end = getMaxFrame(data);
+    setClipStartFrame(start);
+    setClipEndFrame(end);
+    const next = Math.max(start, Math.min(currentFrame, end));
+    frameRef.current = next;
+    setCurrentFrame(next);
+    setExportResult(null);
   }
 
   async function runExport() {
@@ -1123,6 +1160,20 @@ function App() {
                         frameRef.current = next;
                         setCurrentFrame(next);
                       }}
+                    />
+                    <TrimControls
+                      minFrame={minFrame}
+                      maxFrame={maxFrame}
+                      currentFrame={currentFrame}
+                      range={clipRange}
+                      stateCount={clipStateCount}
+                      durationMs={clipDurationMs}
+                      disabled={busy}
+                      onStartChange={updateClipStart}
+                      onEndChange={updateClipEnd}
+                      onMarkStart={() => updateClipStart(currentFrame)}
+                      onMarkEnd={() => updateClipEnd(currentFrame)}
+                      onReset={resetClipRange}
                     />
                   </section>
 
