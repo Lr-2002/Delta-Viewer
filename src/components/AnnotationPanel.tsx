@@ -148,9 +148,28 @@ export function AnnotationPanel({
           <span className="section-kicker">DATA ANNOTATION</span>
           <h2 id="annotation-title">数据标注</h2>
         </div>
-        <span className={`annotation-state${annotation && !dirty ? " saved" : ""}`}>
-          {annotation && !dirty ? `已保存 · r${annotation.revision}` : "待保存"}
-        </span>
+        <div className="annotation-heading-actions">
+          <div className="annotation-processor">
+            <UserRound size={15} />
+            <span>
+              <small>{annotation ? "最近处理" : "本次处理"}</small>
+              <strong>{lastProcessor.displayName}</strong>
+              <code>@{lastProcessor.username}</code>
+            </span>
+          </div>
+          <span className={`annotation-state${annotation && !dirty ? " saved" : ""}`}>
+            {annotation && !dirty ? `已保存 · r${annotation.revision}` : "待保存"}
+          </span>
+          <button
+            className="button button-primary"
+            type="button"
+            onClick={() => void save()}
+            disabled={busy || saving || creatingTask || !dirty || !taskId || !description.trim()}
+          >
+            <Save size={16} />
+            {saving ? "保存中" : "保存标注"}
+          </button>
+        </div>
       </header>
       <div className="annotation-layout">
         <div className="annotation-fields">
@@ -172,34 +191,23 @@ export function AnnotationPanel({
                 {taskCreatorOpen ? <X size={15} /> : <Plus size={15} />}
               </button>
             </div>
-            {tasks.find((task) => task.id === taskId)?.codePrefix ? (
-              <small>{tasks.find((task) => task.id === taskId)?.codePrefix}-NNN</small>
-            ) : null}
           </div>
           <label>
             <span><Tag size={14} />轨迹编码</span>
             <input type="text" value={trajectoryCode} placeholder="保存时自动分配" readOnly aria-label="轨迹编码" />
           </label>
-          <div className="annotation-processor">
-            <UserRound size={15} />
-            <span>
-              <small>{annotation ? "最近处理" : "本次处理"}</small>
-              <strong>{lastProcessor.displayName}</strong>
-              <code>@{lastProcessor.username}</code>
-            </span>
-          </div>
+          <label className="annotation-description">
+            <span>任务描述</span>
+            <textarea
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              maxLength={500}
+              rows={1}
+              required
+            />
+            <small>{description.length}/500 · 可编辑</small>
+          </label>
         </div>
-        <label className="annotation-description">
-          <span>任务描述</span>
-          <textarea
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            maxLength={500}
-            rows={5}
-            required
-          />
-          <small>{description.length}/500 · 可编辑</small>
-        </label>
       </div>
       {taskCreatorOpen ? (
         <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void createTask(); }}>
@@ -220,20 +228,9 @@ export function AnnotationPanel({
           </button>
         </form>
       ) : null}
-      <div className="annotation-actions">
-        {annotation && annotation.processedBy.username !== currentUser.username ? (
-          <span>保存后处理人将更新为 {currentUser.displayName}</span>
-        ) : <span />}
-        <button
-          className="button button-primary"
-          type="button"
-          onClick={() => void save()}
-          disabled={busy || saving || creatingTask || !dirty || !taskId || !description.trim()}
-        >
-          <Save size={16} />
-          {saving ? "保存中" : "保存标注"}
-        </button>
-      </div>
+      {annotation && annotation.processedBy.username !== currentUser.username ? (
+        <p className="annotation-processor-notice">保存后处理人将更新为 {currentUser.displayName}</p>
+      ) : null}
     </section>
   );
 }

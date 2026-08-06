@@ -5,6 +5,18 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.18 - 2026-08-04
+
+- Integrated current-session segment drafting directly below synchronized
+  playback, with timeline seeking, sequential “create to current frame” ranges,
+  immediate note editing, deletion, and no source-card writes.
+- Compacted episode annotation into the playback page with task, trajectory,
+  description, processor, save status, and save action in a scan-friendly layout.
+- Reused the main playback transport in the segment timeline and removed the
+  separate segment tab, duplicate preview, trim control block, and playback rail.
+- Added responsive browser regression coverage for segment creation, notes,
+  camera rendering, console errors, and horizontal overflow.
+
 ## 0.17.17 - 2026-07-31
 
 - Added a 30 FPS state-timeline health gate. It measures the median raw-nanosecond
