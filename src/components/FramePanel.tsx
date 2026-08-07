@@ -16,6 +16,7 @@ interface FramePanelProps {
   playing?: boolean;
   playbackEndFrame: number;
   className?: string;
+  onFrameSettled?: (stream: string, frameId: number) => void;
 }
 
 const frameCache = new FrameCache(async (request) => {
@@ -51,6 +52,7 @@ export function FramePanel({
   playing = false,
   playbackEndFrame,
   className = "",
+  onFrameSettled,
 }: FramePanelProps) {
   const requestKey = frameRequestKey({ root, stream: stream.name, frameId });
   const streamKey = frameStreamKey(root, stream.name);
@@ -66,6 +68,7 @@ export function FramePanel({
     const current = framesRef.current[visibleSlotRef.current];
     if (current?.streamKey === frame.streamKey && current.key === frame.key) {
       setStatus("ready");
+      onFrameSettled?.(stream.name, frame.frameId);
       return;
     }
 
@@ -90,6 +93,7 @@ export function FramePanel({
     stagedSlotRef.current = null;
     setVisibleSlot(slot);
     setStatus("ready");
+    onFrameSettled?.(stream.name, frame.frameId);
   }
 
   function clearCurrentStreamFrames() {
@@ -107,6 +111,7 @@ export function FramePanel({
     // A failed replacement must not leave the previous frame visible as the current one.
     clearCurrentStreamFrames();
     setStatus("failed");
+    onFrameSettled?.(stream.name, frame.frameId);
   }
 
   useEffect(() => {
@@ -138,6 +143,7 @@ export function FramePanel({
         if (!active || requestedKeyRef.current !== effectRequestKey) return;
         clearCurrentStreamFrames();
         setStatus("failed");
+        onFrameSettled?.(stream.name, frameId);
       });
     if (playing) {
       const streamEnd = stream.lastFrame ?? playbackEndFrame;

@@ -5,6 +5,14 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.26 - 2026-08-07
+
+- Replaced unconditional interval-based frame stepping with a render-aware
+  playback clock that advances only after all five current camera frames have
+  loaded or reported an error, keeping video and skeleton motion synchronized.
+- Added regression coverage for ready-frame advancement, delayed-image holding,
+  and clip-end clamping.
+
 ## 0.17.25 - 2026-08-06
 
 - Allowed operating-system-mounted network volumes, including Windows mapped

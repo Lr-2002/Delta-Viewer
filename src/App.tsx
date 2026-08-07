@@ -67,6 +67,7 @@ import {
 } from "./lib/backend";
 import { formatBytes, shortPath } from "./lib/format";
 import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate";
+import { nextPlaybackFrame } from "./lib/playback-clock";
 import { OperationScope, type OperationToken } from "./lib/operationScope";
 import type {
   AnnotatedEpisodeSummary,
@@ -143,6 +144,7 @@ function App() {
   const [updateError, setUpdateError] = useState("");
   const [updateErrorVisible, setUpdateErrorVisible] = useState(false);
   const frameRef = useRef(0);
+  const settledFrameByStreamRef = useRef(new Map<string, number>());
   const didAutoLoad = useRef(false);
   const operationScopeRef = useRef(new OperationScope());
   const sourcePickerOpenRef = useRef(false);
@@ -314,16 +316,31 @@ function App() {
   useEffect(() => {
     if (!playing || !data) return;
     const playbackEnd = Math.min(clipEndFrame, getMaxFrame(data));
-    const interval = window.setInterval(() => {
-      const next = frameRef.current + 1;
-      if (next > playbackEnd) {
+    const frameDurationMs = 1000 / (playbackFps * speed);
+    let lastAdvanceTimeMs = performance.now() - frameDurationMs;
+    let animationFrame = 0;
+
+    const tick = (nowMs: number) => {
+      const current = frameRef.current;
+      const allStreamsSettled = data.summary.streams.every(
+        (stream) => settledFrameByStreamRef.current.get(stream.name) === current,
+      );
+      const canAdvance = nowMs - lastAdvanceTimeMs >= frameDurationMs;
+      const next = nextPlaybackFrame(current, playbackEnd, canAdvance && allStreamsSettled);
+      if (next !== frameRef.current) {
+        lastAdvanceTimeMs = nowMs;
+        frameRef.current = next;
+        setCurrentFrame(next);
+      }
+      if (next >= playbackEnd) {
         setPlaying(false);
         return;
       }
-      frameRef.current = next;
-      setCurrentFrame(next);
-    }, Math.max(4, Math.round(1000 / (playbackFps * speed))));
-    return () => window.clearInterval(interval);
+      animationFrame = window.requestAnimationFrame(tick);
+    };
+
+    animationFrame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(animationFrame);
   }, [clipEndFrame, data, playbackFps, playing, speed]);
 
   async function openSource(path: string, autoLoad = false) {
@@ -1167,6 +1184,9 @@ function App() {
                             playing={playing}
                             playbackEndFrame={clipEndFrame}
                             className={`camera-${index}`}
+                            onFrameSettled={(streamName, frameId) => {
+                              settledFrameByStreamRef.current.set(streamName, frameId);
+                            }}
                           />
                         ))}
                       </div>
