@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.28 - 2026-08-10
+
+- Restored episode-list focus only after React commits the loading state that
+  re-enables the target button, removing an intermittent activation race.
+- Invalidated pending focus restoration when the workspace resets so an old
+  session cannot receive focus after a mode or identity transition.
+
 ## 0.17.27 - 2026-08-10
 
 - Persisted continuous segment ranges, editable names, notes, and clip bounds in

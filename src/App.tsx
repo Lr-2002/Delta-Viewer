@@ -150,6 +150,10 @@ function App() {
   const episodeLoadInFlight = useRef(false);
   const episodeButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const episodeFocusRestoreToken = useRef(0);
+  const [episodeFocusRestoreRequest, setEpisodeFocusRestoreRequest] = useState<{
+    episodeRoot: string;
+    token: number;
+  } | null>(null);
   const batchSelectionInitialized = useRef(false);
   const didAutoUpdate = useRef(false);
   const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
@@ -238,6 +242,15 @@ function App() {
       finishOperation(owner);
     }
   }
+
+  useEffect(() => {
+    if (busy || !episodeFocusRestoreRequest) return;
+    const { episodeRoot, token } = episodeFocusRestoreRequest;
+    setEpisodeFocusRestoreRequest(null);
+    if (episodeFocusRestoreToken.current !== token) return;
+    const button = episodeButtonRefs.current.get(episodeRoot);
+    if (button && !button.disabled) button.focus();
+  }, [busy, episodeFocusRestoreRequest]);
 
   useEffect(() => {
     void refreshAuthStatus();
@@ -439,10 +452,7 @@ function App() {
   }
 
   function restoreEpisodeFocus(episodeRoot: string, token: number) {
-    window.requestAnimationFrame(() => {
-      if (episodeFocusRestoreToken.current !== token) return;
-      episodeButtonRefs.current.get(episodeRoot)?.focus();
-    });
+    setEpisodeFocusRestoreRequest({ episodeRoot, token });
   }
 
   async function reportFailure(
@@ -527,6 +537,8 @@ function App() {
   }
 
   function resetWorkspaceData() {
+    episodeFocusRestoreToken.current += 1;
+    setEpisodeFocusRestoreRequest(null);
     resetLoadedData();
     setSourcePath("");
     setScan(null);
