@@ -5,6 +5,16 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.32 - 2026-08-10
+
+- Changed source selection to a shallow session catalog that inspects each
+  immediate directory once without walking image trees or collecting file
+  metadata for every session.
+- Added a fast annotation preview path that reads states and five stream file
+  names first, then builds one reusable deep index during the health check.
+- Added explicit pending, preview, and indexed list states while preserving the
+  read-only source, source-change detection, and validation-gated export rules.
+
 ## 0.17.31 - 2026-08-10
 
 - Added a bounded in-memory source index for mounted directories. Directory

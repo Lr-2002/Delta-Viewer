@@ -88,12 +88,18 @@ export interface StreamSummary {
 export interface EpisodeSummary {
   root: string;
   name: string;
+  indexed: boolean;
   totalFiles: number;
   totalBytes: number;
   stateCount: number;
   startTimeNs: string | null;
   endTimeNs: string | null;
   streams: StreamSummary[];
+}
+
+export interface EpisodeValidationResult {
+  report: ValidationReport;
+  summary: EpisodeSummary;
 }
 
 export interface ScanResult {

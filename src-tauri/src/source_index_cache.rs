@@ -11,36 +11,34 @@ pub struct SourceIndexCache {
 }
 
 impl SourceIndexCache {
-    pub fn replace(&self, indexes: Vec<EpisodeIndex>) -> AppResult<()> {
-        let mut replacement = HashMap::with_capacity(indexes.len().min(SOURCE_INDEX_MAX_EPISODES));
-        let mut cached_frame_paths = 0_usize;
-        for mut index in indexes.into_iter().take(SOURCE_INDEX_MAX_EPISODES) {
-            let frame_paths = index.frame_path_count();
-            if cached_frame_paths.saturating_add(frame_paths) <= SOURCE_INDEX_MAX_FRAME_PATHS {
-                cached_frame_paths = cached_frame_paths.saturating_add(frame_paths);
-            } else {
-                index.stream_files.clear();
-            }
-            replacement.insert(fs::canonicalize(&index.summary.root)?, index);
+    pub fn clear(&self) -> AppResult<()> {
+        self.lock()?.clear();
+        Ok(())
+    }
+
+    pub fn store(&self, mut index: EpisodeIndex) -> AppResult<()> {
+        let root = fs::canonicalize(&index.summary.root)?;
+        let mut entries = self.lock()?;
+        if entries.len() >= SOURCE_INDEX_MAX_EPISODES && !entries.contains_key(&root) {
+            entries.clear();
         }
-        *self.lock()? = replacement;
+        let retained_frame_paths = entries
+            .iter()
+            .filter(|(path, _)| *path != &root)
+            .map(|(_, cached)| cached.frame_path_count())
+            .sum::<usize>();
+        if retained_frame_paths.saturating_add(index.frame_path_count())
+            > SOURCE_INDEX_MAX_FRAME_PATHS
+        {
+            index.stream_files.clear();
+        }
+        entries.insert(root, index);
         Ok(())
     }
 
     pub fn index_for(&self, root: &Path) -> AppResult<Option<EpisodeIndex>> {
         let root = fs::canonicalize(root)?;
         Ok(self.lock()?.get(&root).cloned())
-    }
-
-    #[cfg(test)]
-    pub fn index_for_fingerprint(
-        &self,
-        root: &Path,
-        fingerprint: &str,
-    ) -> AppResult<Option<EpisodeIndex>> {
-        Ok(self
-            .index_for(root)?
-            .filter(|index| index.fingerprint == fingerprint))
     }
 
     fn lock(&self) -> AppResult<std::sync::MutexGuard<'_, HashMap<PathBuf, EpisodeIndex>>> {
@@ -53,13 +51,13 @@ impl SourceIndexCache {
 #[cfg(test)]
 mod tests {
     use super::SourceIndexCache;
-    use crate::source::{episode_fingerprint, scan_episode_index};
+    use crate::source::scan_episode_index;
     use std::fs;
     use std::sync::atomic::AtomicBool;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn only_reuses_an_index_for_its_source_fingerprint() {
+    fn stores_and_clears_an_episode_index() {
         let root = std::env::temp_dir().join(format!(
             "dohc-viewer-source-index-{}",
             SystemTime::now()
@@ -73,20 +71,14 @@ mod tests {
         let index = scan_episode_index(&root, None, &cancelled).unwrap();
         let fingerprint = index.fingerprint.clone();
         let cache = SourceIndexCache::default();
-        cache.replace(vec![index]).unwrap();
+        cache.store(index).unwrap();
 
-        assert_eq!(episode_fingerprint(&root, &cancelled).unwrap(), fingerprint);
-        assert!(cache
-            .index_for_fingerprint(&root, &fingerprint)
-            .unwrap()
-            .is_some());
-        fs::write(root.join("changed.txt"), b"changed").unwrap();
-        let changed = episode_fingerprint(&root, &cancelled).unwrap();
-        assert_ne!(fingerprint, changed);
-        assert!(cache
-            .index_for_fingerprint(&root, &changed)
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            cache.index_for(&root).unwrap().unwrap().fingerprint,
+            fingerprint
+        );
+        cache.clear().unwrap();
+        assert!(cache.index_for(&root).unwrap().is_none());
 
         fs::remove_dir_all(root).unwrap();
     }

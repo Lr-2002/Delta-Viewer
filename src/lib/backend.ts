@@ -20,6 +20,7 @@ import type {
   CreateTaskRequest,
   EpisodeAnnotation,
   EpisodeData,
+  EpisodeValidationResult,
   ExportFormat,
   ExportRange,
   ExportResult,
@@ -369,7 +370,7 @@ export async function importEpisode(
       totalBytes: 80_531_730,
       datasetBlake3: "f5bc2dda9be850c0d89c88c1021ae8964f59592b7bad1db02159fdef24384727",
       elapsedMs: 4380,
-      validationReport: await validateEpisode(sourcePath, operationId),
+      validationReport: (await validateEpisode(sourcePath, operationId)).report,
     };
   }
   return invoke<ImportResult>("import_episode", { sourcePath, destinationParent, operationId });
@@ -497,9 +498,11 @@ export async function loadEpisode(path: string, operationId: number): Promise<Ep
   };
 }
 
-export async function validateEpisode(path: string, operationId: number): Promise<ValidationReport> {
-  if (isTauriRuntime()) return invoke<ValidationReport>("validate_episode", { path, operationId });
-  return {
+export async function validateEpisode(path: string, operationId: number): Promise<EpisodeValidationResult> {
+  if (isTauriRuntime()) return invoke<EpisodeValidationResult>("validate_episode", { path, operationId });
+  const fixture = await loadDemoFixture();
+  const sessionActivationEpisode = sessionActivationDemoEpisode(path);
+  const report: ValidationReport = {
     formatVersion: 5,
     episodeRoot: path,
     parsedStateCount: 196,
@@ -532,6 +535,12 @@ export async function validateEpisode(path: string, operationId: number): Promis
       decodeFailures: 0,
       status: "ok" as const,
     })),
+  };
+  return {
+    report,
+    summary: sessionActivationEpisode
+      ? sessionActivationDemoSummary(sessionActivationEpisode, fixture)
+      : demoEpisodeSummary(path, fixture),
   };
 }
 

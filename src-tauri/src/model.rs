@@ -135,12 +135,20 @@ pub struct StreamSummary {
 pub struct EpisodeSummary {
     pub root: String,
     pub name: String,
+    pub indexed: bool,
     pub total_files: u64,
     pub total_bytes: u64,
     pub state_count: u64,
     pub start_time_ns: Option<String>,
     pub end_time_ns: Option<String>,
     pub streams: Vec<StreamSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpisodeValidationResult {
+    pub report: ValidationReport,
+    pub summary: EpisodeSummary,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -162,6 +162,7 @@ mod tests {
             summary: EpisodeSummary {
                 root: source.display().to_string(),
                 name: "trajectory".into(),
+                indexed: true,
                 total_files: 1,
                 total_bytes: 4,
                 state_count: 2,

@@ -451,6 +451,22 @@ function App() {
     if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
   }
 
+  function updateScannedEpisode(summary: EpisodeSummary) {
+    setSelectedEpisode((current) => current?.root === summary.root ? summary : current);
+    setScan((current) => {
+      if (!current) return current;
+      const episodes = current.episodes.map((episode) => (
+        episode.root === summary.root ? summary : episode
+      ));
+      return {
+        ...current,
+        episodes,
+        totalFiles: episodes.reduce((total, episode) => total + episode.totalFiles, 0),
+        totalBytes: episodes.reduce((total, episode) => total + episode.totalBytes, 0),
+      };
+    });
+  }
+
   function restoreEpisodeFocus(episodeRoot: string, token: number) {
     setEpisodeFocusRestoreRequest({ episodeRoot, token });
   }
@@ -498,6 +514,7 @@ function App() {
     const loaded = await loadEpisode(root, owner.id);
     ensureOperationActive(owner);
     setData(loaded);
+    updateScannedEpisode(loaded.summary);
     setReport(null);
     setAnnotation(null);
     setLoadedEpisodeSourceRoot(sourceEpisodeRoot);
@@ -513,9 +530,13 @@ function App() {
     setView("review");
     setNotice(`已开始只读预览，正在检查：${loaded.summary.name}`);
 
-    const checked = await validateEpisode(root, owner.id);
+    const validated = await validateEpisode(root, owner.id);
     ensureOperationActive(owner);
-    setReport(checked);
+    setData((current) => current?.summary.root === root
+      ? { ...current, summary: validated.summary }
+      : current);
+    updateScannedEpisode(validated.summary);
+    setReport(validated.report);
     const savedAnnotation = await loadEpisodeAnnotation(root);
     ensureOperationActive(owner);
     setAnnotation(savedAnnotation);
@@ -1121,11 +1142,21 @@ function App() {
                       <ChevronRight size={15} />
                     </span>
                     <span className="episode-item-meta">
-                      {episode.stateCount} states · {formatBytes(episode.totalBytes)}
+                      {episode.indexed
+                        ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
+                        : episode.stateCount
+                          ? `${episode.stateCount} states · 快速预览`
+                          : "待读取"}
                     </span>
                     <span className="stream-dots">
                       {episode.streams.map((stream) => (
-                        <i className={stream.frameCount ? "dot-ok" : "dot-error"} key={stream.name} title={stream.label} />
+                        <i
+                          className={episode.indexed
+                            ? stream.frameCount ? "dot-ok" : "dot-error"
+                            : stream.frameCount ? "dot-ok" : ""}
+                          key={stream.name}
+                          title={stream.label}
+                        />
                       ))}
                     </span>
                   </button>
@@ -1139,8 +1170,8 @@ function App() {
             )}
           </div>
           <div className="sidebar-footer">
-            <div><span>文件</span><strong>{selectedEpisode?.totalFiles ?? "—"}</strong></div>
-            <div><span>容量</span><strong>{selectedEpisode ? formatBytes(selectedEpisode.totalBytes) : "—"}</strong></div>
+            <div><span>文件</span><strong>{selectedEpisode?.indexed ? selectedEpisode.totalFiles : "—"}</strong></div>
+            <div><span>容量</span><strong>{selectedEpisode?.indexed ? formatBytes(selectedEpisode.totalBytes) : "—"}</strong></div>
             <div><span>介质</span><strong>{scan ? driveTypeLabel(scan.volume.driveType) : "—"}</strong></div>
             <div><span>文件系统</span><strong>{scan?.volume.filesystem ?? "未知"}</strong></div>
           </div>
@@ -1379,7 +1410,9 @@ function EmptyWorkspace({
             <span>
               {busy
                 ? "正在扫描或检查源记录"
-                : `${selectedEpisode.stateCount} 条状态 · ${formatBytes(selectedEpisode.totalBytes)} · ${selectedEpisode.streams.length} 路流`}
+                : selectedEpisode.indexed
+                  ? `${selectedEpisode.stateCount} 条状态 · ${formatBytes(selectedEpisode.totalBytes)} · ${selectedEpisode.streams.length} 路流`
+                  : "待读取"}
             </span>
           </div>
         </div>
