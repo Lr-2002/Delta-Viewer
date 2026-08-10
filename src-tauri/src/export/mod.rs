@@ -920,6 +920,7 @@ mod tests {
             summary: EpisodeSummary {
                 root: source.display().to_string(),
                 name: "fixture".into(),
+                indexed: true,
                 total_files: 26,
                 total_bytes: 25,
                 state_count: 5,

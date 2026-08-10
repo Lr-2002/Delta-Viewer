@@ -95,6 +95,7 @@ if (!browserExecutable && requireBrowser) {
       const episode = {
         root: "/source/episode",
         name: "episode",
+        indexed: false,
         totalFiles: 6,
         totalBytes: 6,
         stateCount: 1,
@@ -259,7 +260,7 @@ if (!browserExecutable && requireBrowser) {
                 }],
               };
             case "validate_episode":
-              return report;
+              return { report, summary: { ...episode, root: args.path, indexed: true } };
             case "load_episode_annotation":
               return null;
             case "read_frame":

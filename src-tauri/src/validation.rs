@@ -1347,7 +1347,8 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let before = tree_digest(&root);
 
-        crate::source::scan_source(&root, None, &cancelled).unwrap();
+        crate::source::scan_source_catalog(&root, None, &cancelled).unwrap();
+        crate::source::load_episode_preview(&root, None, &cancelled).unwrap();
         crate::source::load_episode(&root, None, &cancelled).unwrap();
         validate_episode(&root, None, &cancelled).unwrap();
         crate::source::episode_fingerprint(&root, &cancelled).unwrap();

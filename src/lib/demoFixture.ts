@@ -59,6 +59,7 @@ export function demoEpisodeSummary(root: string, fixture: DemoFixture): EpisodeS
   return {
     root,
     name: episode.name,
+    indexed: true,
     totalFiles: episode.totalFiles,
     totalBytes: episode.totalBytes,
     stateCount: episode.stateCount,

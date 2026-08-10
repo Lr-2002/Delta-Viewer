@@ -189,22 +189,34 @@ try {
       height: 1,
       channels: 3,
     }));
-    const makeEpisode = (name) => ({
+    const makeEpisode = (name, indexed = false) => ({
       root: `/source/${name}`,
       name,
-      totalFiles: 6,
-      totalBytes: 6,
-      stateCount: 1,
-      startTimeNs: "1",
-      endTimeNs: "1",
-      streams,
+      indexed,
+      totalFiles: indexed ? 6 : 0,
+      totalBytes: indexed ? 6 : 0,
+      stateCount: indexed ? 1 : 0,
+      startTimeNs: indexed ? "1" : null,
+      endTimeNs: indexed ? "1" : null,
+      streams: indexed ? streams : streams.map((stream) => ({
+        ...stream,
+        frameCount: 0,
+        firstFrame: null,
+        lastFrame: null,
+        totalBytes: 0,
+        width: null,
+        height: null,
+        channels: null,
+      })),
     });
     const episodes = [makeEpisode("episode-1"), makeEpisode("episode-2")];
+    const previewEpisode = { ...makeEpisode("episode-1", true), indexed: false, totalBytes: 0 };
+    const indexedEpisode = makeEpisode("episode-1", true);
     const scan = {
       sourceRoot: "/source",
       episodes,
-      totalFiles: 12,
-      totalBytes: 12,
+      totalFiles: 0,
+      totalBytes: 0,
       volume: {
         root: "/source",
         filesystem: "exFAT",
@@ -265,7 +277,9 @@ try {
       },
       resolveActiveTask(value) {
         const task = takeActiveTask();
-        task.resolve(value ?? (task.kind === "scan" || task.kind === "validate" ? (task.kind === "scan" ? scan : report) : undefined));
+        task.resolve(value ?? (task.kind === "scan" || task.kind === "validate"
+          ? task.kind === "scan" ? scan : { report, summary: indexedEpisode }
+          : undefined));
       },
       rejectActiveTask(message) {
         takeActiveTask().reject(new Error(message));
@@ -345,7 +359,7 @@ try {
             calls.loadEpisode += 1;
             if (calls.loadEpisode === 1) return beginTask("load", args.operationId);
             return {
-              summary: episodes[0],
+              summary: previewEpisode,
               states: [{
                 frameId: 0,
                 captureTimeNs: "1",
@@ -360,7 +374,7 @@ try {
           case "validate_episode":
             calls.validateEpisode += 1;
             if (calls.validateEpisode === 1) return beginTask("validate", args.operationId);
-            return report;
+            return { report, summary: indexedEpisode };
           case "load_episode_annotation":
             return null;
           case "read_frame":
@@ -417,6 +431,7 @@ try {
   });
   const stagedLoad = await page.evaluate(() => window.__concurrencyMock.activeTask());
   assert.equal(stagedLoad?.operationId, firstScan.operationId);
+  assert.match(await page.locator(".episode-item-meta").first().innerText(), /待读取/);
   const delayedCancelAccepted = await page.evaluate((operationId) => window.__concurrencyMock.cancelWith(operationId), firstScan.operationId + 1000);
   assert.equal(delayedCancelAccepted, false);
   assert.deepEqual(await page.evaluate(() => window.__concurrencyMock.activeTask()), stagedLoad);
@@ -472,6 +487,7 @@ try {
   await page.locator(".camera-grid img").first().waitFor();
   await page.waitForFunction(() => [...document.querySelectorAll(".camera-grid img")]
     .every((image) => image.naturalWidth > 0));
+  assert.match(await page.locator(".episode-item-meta").first().innerText(), /快速预览/);
   await page.locator(".view-tabs button").filter({ hasText: "导出" }).click();
   assert.equal(await page.locator(".export-button").isDisabled(), true);
   assert.match(await page.locator(".export-heading .status-mark").innerText(), /等待检查/);
@@ -482,6 +498,7 @@ try {
   await page.locator(".episode-item").filter({ hasText: "episode-1" }).dblclick();
   await page.waitForFunction(() => window.__concurrencyMock.calls.validateEpisode === 2);
   await page.waitForFunction(() => !document.querySelector(".progress-strip"));
+  assert.match(await page.locator(".episode-item-meta").first().innerText(), /1 states/);
   assert.equal(await rescan.isDisabled(), false);
 
   for (const viewport of [

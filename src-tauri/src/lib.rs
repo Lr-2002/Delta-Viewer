@@ -23,11 +23,11 @@ use base64::Engine;
 use identity::AuthState;
 use model::{
     AnnotatedEpisodeSummary, AppUpdateInfo, AuthStatus, BatchExportCommandRequest,
-    BatchExportResult, CreateTaskRequest, EpisodeAnnotation, EpisodeData, ExportCommandRequest,
-    ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord,
-    PartialImport, ProgressPayload, RecordOperationErrorRequest, ReportExportResult,
-    SaveAnnotationRequest, ScanResult, TaskDefinition, UserCenterStatus, UserIdentity,
-    ValidationReport, WorkspaceMode,
+    BatchExportResult, CreateTaskRequest, EpisodeAnnotation, EpisodeData, EpisodeValidationResult,
+    ExportCommandRequest, ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest,
+    OperationErrorRecord, PartialImport, ProgressPayload, RecordOperationErrorRequest,
+    ReportExportResult, SaveAnnotationRequest, ScanResult, TaskDefinition, UserCenterStatus,
+    UserIdentity, WorkspaceMode,
 };
 use source_index_cache::SourceIndexCache;
 use std::path::{Path, PathBuf};
@@ -381,9 +381,8 @@ async fn scan_source(
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ScanResult> {
         let _task = task;
         let _progress = source::enter_operation_progress(operation_id);
-        let (result, indexes) =
-            source::scan_source_with_indexes(Path::new(&path), Some(&app), &cancelled)?;
-        index_cache.replace(indexes)?;
+        let result = source::scan_source_catalog(Path::new(&path), Some(&app), &cancelled)?;
+        index_cache.clear()?;
         Ok(result)
     })
     .await
@@ -411,7 +410,7 @@ async fn load_episode(
         let root = Path::new(&path);
         match index_cache.index_for(root)? {
             Some(index) => source::load_episode_with_summary(root, index.summary, &cancelled),
-            None => source::load_episode(root, Some(&app), &cancelled),
+            None => source::load_episode_preview(root, Some(&app), &cancelled),
         }
     })
     .await
@@ -428,7 +427,7 @@ async fn validate_episode(
     index_cache: State<'_, SourceIndexCache>,
     path: String,
     operation_id: u64,
-) -> Result<ValidationReport, String> {
+) -> Result<EpisodeValidationResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
@@ -440,21 +439,18 @@ async fn validate_episode(
         .map_err(|error| format!("无法定位应用报告目录: {error}"))?
         .join("reports");
     emit_task_start(&app, operation_id, "validate", "准备数据检查", &path);
-    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ValidationReport> {
+    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<EpisodeValidationResult> {
         let _task = task;
         let _progress = source::enter_operation_progress(operation_id);
         let root = Path::new(&path);
-        let cached_index = index_cache.index_for(root)?;
-        let before = match &cached_index {
-            Some(index) => index.fingerprint.clone(),
-            None => source::episode_fingerprint(root, &cancelled)?,
+        let index = match index_cache.index_for(root)? {
+            Some(index) => index,
+            None => source::scan_episode_index(root, Some(&app), &cancelled)?,
         };
-        let mut report = match &cached_index {
-            Some(index) => {
-                validation::validate_episode_with_index(root, index, Some(&app), &cancelled)?
-            }
-            None => validation::validate_episode(root, Some(&app), &cancelled)?,
-        };
+        let before = index.fingerprint.clone();
+        let summary = index.summary.clone();
+        let mut report =
+            validation::validate_episode_with_index(root, &index, Some(&app), &cancelled)?;
         let after = source::episode_fingerprint(root, &cancelled)?;
         if before != after {
             return Err(error::AppError::Message(
@@ -463,7 +459,8 @@ async fn validate_episode(
         }
         validation::persist_background_report(&mut report, &after, &reports_dir, &cancelled)?;
         cache.store(root, after, report.clone())?;
-        Ok(report)
+        index_cache.store(index)?;
+        Ok(EpisodeValidationResult { report, summary })
     })
     .await
     .map_err(|error| error.to_string())?
