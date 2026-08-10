@@ -60,6 +60,14 @@ impl ValidationCache {
         Ok(cached.report.clone())
     }
 
+    pub fn fingerprint_for(&self, root: &Path) -> AppResult<Option<String>> {
+        let root = fs::canonicalize(root)?;
+        Ok(self
+            .lock()?
+            .get(&root)
+            .map(|cached| cached.fingerprint.clone()))
+    }
+
     fn lock(&self) -> AppResult<std::sync::MutexGuard<'_, HashMap<PathBuf, CachedValidation>>> {
         self.entries
             .lock()
@@ -96,6 +104,10 @@ mod tests {
         assert!(cache.store(&root, "old".into(), stale).is_err());
 
         cache.store(&root, "one".into(), report(&root)).unwrap();
+        assert_eq!(
+            cache.fingerprint_for(&root).unwrap().as_deref(),
+            Some("one")
+        );
         assert_eq!(cache.report_for(&root, "one").unwrap().status, "ok");
         assert!(cache.report_for(&root, "two").is_err());
         assert!(cache.report_for(&root, "one").is_err());

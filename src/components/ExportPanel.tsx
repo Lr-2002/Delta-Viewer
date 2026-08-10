@@ -53,6 +53,7 @@ export function ExportPanel({
   rangeStatus,
   rangeStateCount,
   rangeDurationMs,
+  validationReady,
   selectedFormat,
   result,
   busy,
@@ -66,6 +67,7 @@ export function ExportPanel({
   rangeStatus: "ok" | "warning" | "error";
   rangeStateCount: number;
   rangeDurationMs: number | null;
+  validationReady: boolean;
   selectedFormat: ExportFormat;
   result: ExportResult | null;
   busy: boolean;
@@ -73,7 +75,7 @@ export function ExportPanel({
   onExport: () => void;
   onReveal: (path: string) => void;
 }) {
-  const blocked = rangeStatus === "error";
+  const blocked = !validationReady || rangeStatus === "error";
   const selected = FORMATS.find((format) => format.id === selectedFormat) ?? FORMATS[0];
 
   return (
@@ -84,7 +86,13 @@ export function ExportPanel({
           <h2>导出数据</h2>
         </div>
         <span className={`status-mark status-${rangeStatus}`}>
-          {blocked ? "检查未通过" : rangeStatus === "warning" ? "带警告导出" : "可导出"}
+          {!validationReady
+            ? "等待检查"
+            : rangeStatus === "error"
+              ? "检查未通过"
+              : rangeStatus === "warning"
+                ? "带警告导出"
+                : "可导出"}
         </span>
       </div>
 
@@ -176,7 +184,9 @@ export function ExportPanel({
 
       {blocked ? (
         <div className="export-blocked">
-          当前裁剪片段包含错误。请先在“检查”中处理解码、空流或状态数据问题。
+          {validationReady
+            ? "当前裁剪片段包含错误。请先在“检查”中处理解码、空流或状态数据问题。"
+            : "数据检查完成后才可导出。"}
         </div>
       ) : null}
     </div>

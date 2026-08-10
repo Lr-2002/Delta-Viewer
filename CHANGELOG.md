@@ -5,6 +5,18 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.31 - 2026-08-10
+
+- Added a bounded in-memory source index for mounted directories. Directory
+  summaries, frame indexes, and their metadata fingerprint are reused only
+  within the current process; validation and export still enforce a current
+  source fingerprint.
+- Started the read-only episode preview as soon as states and optional skeleton
+  data load, while the health check continues in the background. The export
+  action stays disabled until that check completes.
+- Added browser coverage proving that five camera frames render during a
+  pending validation task, without invoking the importer or copying source data.
+
 ## 0.17.30 - 2026-08-10
 
 - Aligned SMPL and COCO source coordinates to a stable Y-up playback view so

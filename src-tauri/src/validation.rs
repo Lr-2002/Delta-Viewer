@@ -5,7 +5,9 @@ use crate::model::{
     EXPECTED_STATE_FRAME_RATE_FPS, STATE_FRAME_RATE_TOLERANCE_PERCENT, STREAM_NAMES,
     VALIDATION_REPORT_FORMAT_VERSION,
 };
-use crate::source::{collect_stream_files, emit_progress, is_regular_file, scan_episode};
+use crate::source::{
+    collect_stream_files, emit_progress, is_regular_file, scan_episode, EpisodeIndex,
+};
 use crate::{importer, storage};
 use image::{DynamicImage, GenericImageView, ImageReader};
 use std::collections::BTreeSet;
@@ -34,6 +36,23 @@ pub fn validate_episode(
         cancelled,
         ImageValidationMode::Sampled,
         "validate",
+        None,
+    )
+}
+
+pub fn validate_episode_with_index(
+    root: &Path,
+    index: &EpisodeIndex,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+) -> AppResult<ValidationReport> {
+    validate_episode_with_mode(
+        root,
+        app,
+        cancelled,
+        ImageValidationMode::Sampled,
+        "validate",
+        Some(index),
     )
 }
 
@@ -42,7 +61,14 @@ pub fn validate_episode_full(
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<ValidationReport> {
-    validate_episode_with_mode(root, app, cancelled, ImageValidationMode::Full, "validate")
+    validate_episode_with_mode(
+        root,
+        app,
+        cancelled,
+        ImageValidationMode::Full,
+        "validate",
+        None,
+    )
 }
 
 pub fn validate_episode_full_for_import(
@@ -50,7 +76,14 @@ pub fn validate_episode_full_for_import(
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<ValidationReport> {
-    validate_episode_with_mode(root, app, cancelled, ImageValidationMode::Full, "import")
+    validate_episode_with_mode(
+        root,
+        app,
+        cancelled,
+        ImageValidationMode::Full,
+        "import",
+        None,
+    )
 }
 
 fn validate_episode_with_mode(
@@ -59,9 +92,13 @@ fn validate_episode_with_mode(
     cancelled: &AtomicBool,
     image_validation_mode: ImageValidationMode,
     progress_task: &str,
+    cached_index: Option<&EpisodeIndex>,
 ) -> AppResult<ValidationReport> {
     let started = Instant::now();
-    let summary = scan_episode(root, app, cancelled)?;
+    let summary = match cached_index {
+        Some(index) => index.summary.clone(),
+        None => scan_episode(root, app, cancelled)?,
+    };
     let mut issues = Vec::new();
     let mut checked_files = 0;
     let mut states = Vec::new();
@@ -162,7 +199,13 @@ fn validate_episode_with_mode(
         let mut checked_frames = 0;
         let mut black_screen_frames = 0_u64;
         let mut first_black_screen_frame = None;
-        let stream_files = collect_stream_files(root, &stream.name, cancelled)?;
+        let stream_files = match cached_index
+            .and_then(|index| index.stream_files.get(&stream.name))
+            .cloned()
+        {
+            Some(files) => files,
+            None => collect_stream_files(root, &stream.name, cancelled)?,
+        };
         let mut stream_has_error = false;
         let mut stream_has_warning = false;
         if stream.frame_count == 0 {
@@ -857,7 +900,8 @@ fn issue_at(
 mod tests {
     use super::{
         check_state_sequence, export_report, persist_background_report, sampled_frame_indexes,
-        validate_episode, validate_episode_full, IMAGE_SAMPLE_PERCENTAGES,
+        validate_episode, validate_episode_full, validate_episode_with_index,
+        IMAGE_SAMPLE_PERCENTAGES,
     };
     use crate::model::{
         ImageValidationMode, RawStateRecord, Severity, StateFrameRate, ValidationIssue,
@@ -1257,6 +1301,13 @@ mod tests {
             .iter()
             .all(|stream| stream.checked_frames == 5));
         assert!(!has_code(&sampled, "DECODE_FAILED"));
+
+        let index = crate::source::scan_episode_index(&root, None, &cancelled).unwrap();
+        let cached = validate_episode_with_index(&root, &index, None, &cancelled).unwrap();
+        assert_eq!(cached.status, sampled.status);
+        assert_eq!(cached.checked_files, sampled.checked_files);
+        assert_eq!(cached.issues, sampled.issues);
+        assert_eq!(cached.streams, sampled.streams);
 
         let full = validate_episode_full(&root, None, &cancelled).unwrap();
         assert_eq!(full.image_validation_mode, ImageValidationMode::Full);
