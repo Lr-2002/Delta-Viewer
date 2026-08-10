@@ -50,8 +50,6 @@ import {
   exportValidationReport,
   getAuthStatus,
   installAppUpdate,
-  importEpisode,
-  inspectImportDestination,
   isTauriRuntime,
   listAnnotatedEpisodes,
   listOperationErrors,
@@ -61,7 +59,6 @@ import {
   logoutLocalAccount,
   recordOperationError,
   onTaskProgress,
-  prepareImportWorkspace,
   revealOutput,
   scanSource,
   selectWorkspaceMode,
@@ -93,7 +90,7 @@ import type {
 } from "./types";
 
 type View = "review" | "checks" | "export" | "batch";
-type EpisodeSourceState = "available" | "loading" | "caching" | "cached" | "error";
+type EpisodeSourceState = "available" | "loading" | "error";
 type UpdatePhase = "idle" | "checking" | "available" | "current" | "downloading" | "failed";
 
 const METRICS: { key: MetricKey; label: string }[] = [
@@ -112,7 +109,6 @@ function App() {
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeSummary | null>(null);
   const [episodeSourceStates, setEpisodeSourceStates] = useState<Record<string, EpisodeSourceState>>({});
-  const [episodeLocalCopies, setEpisodeLocalCopies] = useState<Record<string, string>>({});
   const [loadedEpisodeSourceRoot, setLoadedEpisodeSourceRoot] = useState<string | null>(null);
   const [data, setData] = useState<EpisodeData | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
@@ -434,38 +430,6 @@ function App() {
       episodeLoadInFlight.current = false;
       finishOperation(owner);
       if (focusRestoreToken !== null) restoreEpisodeFocus(episode.root, focusRestoreToken);
-    }
-  }
-
-  async function cacheEpisodeLocally(episode: EpisodeSummary) {
-    const existing = episodeLocalCopies[episode.root];
-    if (existing) {
-      setNotice(`本地副本已存在：${existing}`);
-      return;
-    }
-    if (operationScopeRef.current.current()) return;
-    const owner = beginOperation();
-    if (!owner) return;
-    resetOperationFeedback(owner);
-    setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "caching" }));
-    try {
-      const destinationParent = await prepareImportWorkspace(episode.root);
-      ensureOperationActive(owner);
-      const preflight = await inspectImportDestination(episode.root, destinationParent, owner.id);
-      ensureOperationActive(owner);
-      if (!preflight.canImport) {
-        throw new Error(preflight.issues.map((issue) => issue.message).join("；") || "本地空间不足，无法缓存记录");
-      }
-      const imported = await importEpisode(episode.root, destinationParent, owner.id);
-      ensureOperationActive(owner);
-      setEpisodeLocalCopies((current) => ({ ...current, [episode.root]: imported.destination }));
-      setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "cached" }));
-      setNotice(`已缓存到本地：${imported.destination} · ${formatBytes(imported.totalBytes)}`);
-    } catch (reason) {
-      setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "available" }));
-      await reportFailure("import_episode", reason, episode.root, owner);
-    } finally {
-      finishOperation(owner);
     }
   }
 
@@ -1104,11 +1068,9 @@ function App() {
             {scan?.episodes.length ? (
               scan.episodes.map((episode) => {
                 const sourceState = episodeSourceStates[episode.root] ?? "available";
-                const activationHint = sourceState === "cached"
-                  ? `已缓存到本地：${episodeLocalCopies[episode.root]}`
-                  : sourceState === "caching"
-                    ? "正在复制并校验到本地"
-                    : "单击选择；双击缓存到本地；按 Enter/空格进入回放";
+                const activationHint = sourceState === "error"
+                  ? "单击选择；双击或按 Enter/空格重试读取"
+                  : "单击选择；双击或按 Enter/空格进入回放";
                 return (
                   <button
                     type="button"
@@ -1123,7 +1085,7 @@ function App() {
                     title={activationHint}
                     aria-label={`${episode.name}：${activationHint}`}
                     onClick={() => selectEpisode(episode)}
-                    onDoubleClick={() => void cacheEpisodeLocally(episode)}
+                    onDoubleClick={() => void loadEpisodeForReview(episode, false, true)}
                     onKeyDown={(event) => {
                       if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
                       event.preventDefault();
@@ -1419,12 +1381,6 @@ function EmptyWorkspace({
 }
 
 function EpisodeSourceMark({ state }: { state: EpisodeSourceState }) {
-  if (state === "caching") {
-    return <span className="episode-source-state"><LoaderCircle className="spin" size={13} />缓存中</span>;
-  }
-  if (state === "cached") {
-    return <span className="episode-source-state"><Download size={13} />已缓存</span>;
-  }
   if (state === "loading") {
     return <span className="episode-source-state"><LoaderCircle className="spin" size={13} />读取中</span>;
   }
@@ -1563,7 +1519,7 @@ function operationLabel(operation: string): string {
 }
 
 function exportFormatLabel(format: ExportFormat): string {
-  return format === "mcap" ? "MCAP" : format === "hdf5" ? "HDF5" : format === "lerobot_v2" ? "LeRobot v2.1" : "片段 Metadata JSON";
+  return format === "mcap" ? "MCAP" : format === "hdf5" ? "HDF5" : "LeRobot v2.1";
 }
 
 function driveTypeLabel(driveType: ScanResult["volume"]["driveType"]): string {

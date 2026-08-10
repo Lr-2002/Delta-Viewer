@@ -47,6 +47,10 @@ export function SegmentAnnotationEditor({
     setSelectedId(null);
   }, [annotation?.revision, data.summary.root, maxFrame, minFrame]);
 
+  useEffect(() => {
+    setSegments((current) => extendSegmentsToRange(current, clipStartFrame, clipEndFrame));
+  }, [clipEndFrame, clipStartFrame]);
+
   const selected = segments.find((segment) => segment.id === selectedId) ?? null;
   const span = Math.max(1, maxFrame - minFrame);
   const ordered = useMemo(() => {
@@ -86,7 +90,7 @@ export function SegmentAnnotationEditor({
         segments: visibleSegments.map(({ startFrame, endFrame, title, note }) => ({ startFrame, endFrame, title, note })),
       });
       onSaved(saved);
-      onNotice(`片段已保存到 ${saved.episodeRoot}/metadata.json · ${saved.segments.length} 个片段 · r${saved.revision}`);
+      onNotice(`片段已保存到本机标注 · ${saved.segments.length} 个片段 · r${saved.revision}`);
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -155,9 +159,9 @@ export function SegmentAnnotationEditor({
         </div>
         <div className="segment-range-status">
           <span className="segment-draft-badge">保留范围 · 帧 {clipStartFrame}–{clipEndFrame} · {visibleSegments.length} 个片段</span>
-          <span className={`segment-save-badge${dirty ? " dirty" : ""}`} title={!dirty && annotation ? `${annotation.episodeRoot}/metadata.json` : undefined}>{dirty ? "片段未保存" : `片段已保存到源目录 · r${annotation?.revision}`}</span>
-          <button className="button button-primary segment-save-action" type="button" disabled={busy || saving || !annotation} onClick={() => void saveSegments()} title={!annotation ? "请先保存上方的数据标注" : `${dirty ? "保存片段并写入" : "重新同步到"} ${data.summary.root}/metadata.json`}>
-            <Save size={14} />{saving ? "保存中…" : dirty ? "保存片段" : "同步到 U 盘"}
+          <span className={`segment-save-badge${dirty ? " dirty" : ""}`}>{dirty ? "片段未保存" : `片段已保存到本机 · r${annotation?.revision}`}</span>
+          <button className="button button-primary segment-save-action" type="button" disabled={busy || saving || !annotation} onClick={() => void saveSegments()} title={!annotation ? "请先保存上方的数据标注" : "保存片段到本机标注"}>
+            <Save size={14} />{saving ? "保存中…" : dirty ? "保存片段" : "重新保存片段"}
           </button>
           <button className="icon-button" type="button" onClick={onClipReset} disabled={busy || (clipStartFrame === minFrame && clipEndFrame === maxFrame)} title="恢复完整轨迹" aria-label="恢复完整轨迹"><RotateCcw size={15} /></button>
         </div>
@@ -222,6 +226,7 @@ export function SegmentAnnotationEditor({
       {selected && <div className="segment-workbench">
         <aside className="segment-inspector">
           <header><Scissors size={16} /><strong>注解</strong></header>
+          <label className="segment-title">片段名称<input aria-label="片段名称" maxLength={100} value={selected.title} onChange={(event) => updateSelected({ title: event.target.value })} /></label>
           <label className="segment-note"><textarea aria-label="片段注解" rows={2} maxLength={500} value={selected.note} placeholder="描述这个片段中的动作、事件或质量问题……" onChange={(event) => updateSelected({ note: event.target.value })} /><small>{selected.note.length}/500</small></label>
           <div className="segment-edit-actions">
             <button className="button button-secondary segment-delete" type="button" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={15} />合并删除片段</button>
@@ -240,7 +245,26 @@ function createSegment(startFrame: number, endFrame: number, index: number, id =
 function renumberSegments(segments: Segment[]): Segment[] {
   return [...segments]
     .sort((left, right) => left.startFrame - right.startFrame)
-    .map((segment, index) => ({ ...segment, title: `片段 ${index + 1}` }));
+    .map((segment, index) => ({
+      ...segment,
+      title: /^片段 \d+$/.test(segment.title) ? `片段 ${index + 1}` : segment.title,
+    }));
+}
+
+function extendSegmentsToRange(segments: Segment[], startFrame: number, endFrame: number): Segment[] {
+  if (!segments.length) return [createSegment(startFrame, endFrame, 0)];
+  const next = [...segments].sort((left, right) => left.startFrame - right.startFrame);
+  let changed = false;
+  if (next[0].startFrame > startFrame) {
+    next[0] = { ...next[0], startFrame };
+    changed = true;
+  }
+  const lastIndex = next.length - 1;
+  if (next[lastIndex].endFrame < endFrame) {
+    next[lastIndex] = { ...next[lastIndex], endFrame };
+    changed = true;
+  }
+  return changed ? next : segments;
 }
 
 function segmentSignature(startFrame: number | null, endFrame: number | null, segments: Array<Pick<Segment, "startFrame" | "endFrame" | "title" | "note">>): string {

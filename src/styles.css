@@ -193,7 +193,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .segment-editor-embedded > .segment-page-heading { grid-column: 1 / 3; }
 .segment-editor-embedded > .segment-timeline { grid-column: 1 / 3; grid-row: 2; }
 .segment-editor-embedded > .segment-workbench { grid-column: 1 / 3; grid-row: 3; }
-.segment-page-heading { align-items: flex-end; margin-bottom: 16px; }
+.segment-page-heading { min-width: 0; align-items: flex-end; margin-bottom: 16px; }
 .segment-page-heading p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
 .segment-draft-badge { padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--muted); background: var(--surface-alt); font-size: 10px; white-space: nowrap; }
 .segment-workbench { min-width: 0; }
@@ -226,7 +226,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .segment-timeline > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .segment-timeline > header, .segment-ruler, .segment-list { margin-right: 12px; margin-left: 12px; }
 .segment-create-action { min-height: 30px; flex: 0 0 auto; padding: 0 10px; font-size: 10px; }
-.segment-range-status { display: flex; align-items: center; gap: 7px; }
+.segment-range-status { min-width: 0; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
 .segment-save-badge { padding: 5px 8px; border: 1px solid #a8cbb1; border-radius: 12px; color: #236737; background: #edf8f0; font-size: 10px; white-space: nowrap; }
 .segment-save-badge.dirty { border-color: #d8b46a; color: #805700; background: #fff7e7; }
 .segment-save-action { min-height: 30px; padding: 5px 10px; }
@@ -575,6 +575,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .view-tabs { overflow-x: auto; }
   .view-tabs button { flex: 0 0 auto; }
   .segment-page-heading { align-items: flex-start; flex-direction: column; }
+  .segment-range-status { width: 100%; justify-content: flex-start; }
   .annotation-heading { align-items: flex-start; }
   .annotation-heading-actions { flex-wrap: wrap; justify-content: flex-end; }
   .segment-editor-embedded { grid-template-columns: 1fr; padding: 10px 0 0; }

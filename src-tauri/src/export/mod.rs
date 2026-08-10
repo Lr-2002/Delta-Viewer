@@ -128,7 +128,7 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         ExportFormat::LerobotV2 => lerobot::LeRobotV2Adapter.export(&context)?,
     };
     let metadata_output = match segment_metadata::write_companion_metadata(&context, &output) {
-        Ok(path) => Some(path),
+        Ok(path) => path,
         Err(error) => {
             if output.is_dir() {
                 let _ = fs::remove_dir_all(&output);

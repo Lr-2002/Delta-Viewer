@@ -565,7 +565,7 @@ export async function exportEpisode(
     format,
     outputPath: `${destinationParent}/${names[format]}`,
     trajectoryCode: annotation?.trajectoryCode ?? null,
-    totalFiles: format === "lerobot_v2" ? 13 : 2,
+    totalFiles: format === "lerobot_v2" ? (annotation ? 13 : 12) : (annotation ? 2 : 1),
     totalBytes: format === "mcap" ? 80_780_000 : format === "hdf5" ? 80_650_000 : 49_300_000,
     elapsedMs: format === "lerobot_v2" ? 18_400 : 3_200,
     range,

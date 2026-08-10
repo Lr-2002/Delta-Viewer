@@ -7,7 +7,6 @@ use crate::model::{
 use crate::storage;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -420,9 +419,6 @@ pub fn save_annotation(
             "ANNOTATION_REVISION_CONFLICT: 标注已被其他进程更新，请重新载入".into(),
         ));
     }
-    if !annotation.segments.is_empty() {
-        write_episode_metadata(episode_root, &annotation)?;
-    }
     if let Err(error) = write_json_noreplace(&annotation, &output) {
         if output.exists() {
             return Err(AppError::Message(
@@ -432,85 +428,6 @@ pub fn save_annotation(
         return Err(error);
     }
     Ok(annotation)
-}
-
-fn write_episode_metadata(episode_root: &Path, annotation: &EpisodeAnnotation) -> AppResult<()> {
-    let output = episode_root.join("metadata.json");
-    if output.exists() {
-        let metadata = fs::symlink_metadata(&output)?;
-        if !metadata.file_type().is_file() || metadata.len() > MAX_RECORD_BYTES {
-            return Err(AppError::Message(
-                "EPISODE_METADATA_CONFLICT: episode 中已有非应用管理的 metadata.json".into(),
-            ));
-        }
-        let existing: serde_json::Value = read_json(&output)?;
-        if existing.get("type").and_then(|value| value.as_str())
-            != Some("dohc_segmented_video_metadata")
-        {
-            return Err(AppError::Message(
-                "EPISODE_METADATA_CONFLICT: episode 中已有非应用管理的 metadata.json".into(),
-            ));
-        }
-    }
-    let document = json!({
-        "formatVersion": 1,
-        "type": "dohc_segmented_video_metadata",
-        "video": {
-            "sourceEpisodeRoot": episode_root.display().to_string(),
-            "startFrame": annotation.clip_start_frame,
-            "endFrame": annotation.clip_end_frame,
-            "frameBoundary": "inclusive"
-        },
-        "annotation": {
-            "trajectoryCode": annotation.trajectory_code,
-            "taskId": annotation.task_id,
-            "taskDescription": annotation.task_description,
-            "revision": annotation.revision,
-            "processedBy": annotation.processed_by,
-            "segments": annotation.segments
-        },
-        "updatedAtMs": annotation.updated_at_ms
-    });
-    write_json_replace(&document, &output)
-}
-
-fn write_json_replace<T: Serialize>(value: &T, output: &Path) -> AppResult<()> {
-    let parent = output
-        .parent()
-        .ok_or_else(|| AppError::Message("metadata.json 缺少父目录".into()))?;
-    let nonce = unix_nanos();
-    let partial = parent.join(format!(
-        ".metadata.json.partial-{nonce}-{}",
-        std::process::id()
-    ));
-    let backup = parent.join(format!(
-        ".metadata.json.backup-{nonce}-{}",
-        std::process::id()
-    ));
-    let result = (|| -> AppResult<()> {
-        let mut file = open_private_new(&partial)?;
-        serde_json::to_writer_pretty(&mut file, value)?;
-        file.write_all(b"\n")?;
-        file.flush()?;
-        file.sync_all()?;
-        if output.exists() {
-            fs::rename(output, &backup)?;
-        }
-        if let Err(error) = fs::rename(&partial, output) {
-            if backup.exists() {
-                let _ = fs::rename(&backup, output);
-            }
-            return Err(error.into());
-        }
-        if backup.exists() {
-            fs::remove_file(&backup)?;
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&partial);
-    }
-    result
 }
 
 fn validate_edit_started_at(value: u64, now: u64) -> AppResult<u64> {
@@ -1089,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn saves_segment_metadata_into_episode_without_changing_capture_identity() {
+    fn saves_segment_metadata_without_writing_to_episode() {
         let root = test_output("episode-metadata");
         let episode = root.join("episode");
         fs::create_dir_all(&episode).unwrap();
@@ -1110,9 +1027,8 @@ mod tests {
             note: "完整动作".into(),
         }];
         let saved = save_annotation(&root, &episode, &fingerprint, &user, request).unwrap();
-        let metadata: serde_json::Value = super::read_json(&episode.join("metadata.json")).unwrap();
-        assert_eq!(metadata["annotation"]["revision"], saved.revision);
-        assert_eq!(metadata["annotation"]["segments"][0]["note"], "完整动作");
+        assert_eq!(saved.segments[0].note, "完整动作");
+        assert!(!episode.join("metadata.json").exists());
         assert_eq!(
             crate::source::episode_fingerprint(&episode, &cancelled).unwrap(),
             fingerprint
