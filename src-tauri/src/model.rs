@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const STREAM_NAMES: [&str; 5] = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
-pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 4;
+pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 5;
 pub const EXPECTED_STATE_FRAME_RATE_FPS: u32 = 30;
 pub const STATE_FRAME_RATE_TOLERANCE_PERCENT: u8 = 5;
 
@@ -296,6 +296,8 @@ pub struct StateFrameRate {
     pub measured_fps: Option<f64>,
     pub tolerance_percent: u8,
     pub interval_count: u64,
+    pub stability_percent: Option<f64>,
+    pub stable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -382,6 +384,7 @@ pub struct ImportResult {
     pub total_bytes: u64,
     pub dataset_blake3: String,
     pub elapsed_ms: u128,
+    pub validation_report: Option<ValidationReport>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -467,6 +470,7 @@ pub struct BatchExportCommandRequest {
 pub struct ExportResult {
     pub format: String,
     pub output_path: String,
+    pub metadata_path: Option<String>,
     pub trajectory_code: Option<String>,
     pub total_files: u64,
     pub total_bytes: u64,

@@ -103,12 +103,12 @@ if (!browserExecutable && requireBrowser) {
         streams,
       };
       const report = {
-        formatVersion: 4,
+        formatVersion: 5,
         episodeRoot: "/source/episode",
         parsedStateCount: 1,
         imageValidationMode: "sampled",
         imageSamplePercentages: [1, 25, 50, 73, 99],
-        stateFrameRate: { expectedFps: 30, measuredFps: null, tolerancePercent: 5, intervalCount: 0 },
+        stateFrameRate: { expectedFps: 30, measuredFps: null, tolerancePercent: 5, intervalCount: 0, stabilityPercent: null, stable: null },
         autoReportPath: "/reports/episode.json",
         status: "warning",
         checkedFiles: 6,

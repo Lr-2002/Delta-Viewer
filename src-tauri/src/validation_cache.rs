@@ -115,6 +115,8 @@ mod tests {
                 measured_fps: None,
                 tolerance_percent: STATE_FRAME_RATE_TOLERANCE_PERCENT,
                 interval_count: 0,
+                stability_percent: None,
+                stable: None,
             },
             auto_report_path: None,
             status: "ok".into(),

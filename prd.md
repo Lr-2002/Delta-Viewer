@@ -4,7 +4,7 @@
 | --- | --- |
 | 产品名称 | DOHC Viewer |
 | 文档版本 | 0.27 |
-| 应用版本基线 | 0.17.28 |
+| 应用版本基线 | 0.17.29 |
 | 文档状态 | 安全 Alpha，三安装器 unsigned CD、固定 IP 更新镜像与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64；Ubuntu 22.04+ x86_64 deb |
 | 文档日期 | 2026-08-10 |
@@ -15,7 +15,7 @@
 
 本文定义 DOHC Viewer 的产品边界、数据契约、用户流程、功能需求、非功能需求和发布验收标准。产品、设计、开发和测试均以本文为共同基线。
 
-本文同时记录当前 `0.17.28` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
+本文同时记录当前 `0.17.29` Alpha 已经验证的能力和正式发布前仍需完成的工作。标记为“已实现”不代表已经通过目标机发布验收；当前 GitHub Release 明确为没有可信发布者身份的 unsigned 通道，可信签名安装包、真实 SD 卡和长时数据测试仍是独立的生产门槛。
 
 ## 2. 背景与问题
 
@@ -252,7 +252,7 @@ episode/
 - `cam1`、`cam2` 为 1280x720 RGB。
 - `t265_left`、`t265_right` 为 848x800 灰度图。
 - 没有缺帧和 JPEG 解码失败。
-- 帧 180-195 存在 170-369 ms 的状态时间间隔，基准中位数为 33.9 ms，因此预期得到 `TIMESTAMP_GAP` warning。中位帧率约为 29.50 FPS，仍在 30 FPS 的 ±5% 容忍范围内，不产生帧率不匹配 warning。
+- 帧 180-195 存在 170-369 ms 的状态时间间隔，基准中位数为 33.9 ms，因此预期得到 `TIMESTAMP_GAP` warning。中位帧率约为 29.50 FPS，仍在 30 FPS 的 ±5% 容忍范围内；约 91.8% 的有效间隔落在中位周期 ±10% 内，仍达到 90% 基本稳定门槛，因此不产生帧率不匹配或不稳定 warning。
 
 ## 8. 功能需求
 
@@ -286,6 +286,7 @@ episode/
 | FR-IMP-008 | P0 | 非法 Windows 文件名被安全转换。 | 冒号、斜杠、控制字符和保留设备名均被处理。 | 已实现 |
 | FR-IMP-009 | P0 | 导入前检查目标剩余空间和文件系统能力。 | 空间不足或不支持大文件时，在复制前阻止任务。 | 已实现 |
 | FR-IMP-010 | P1 | 取消/失败的 partial 目录可被识别和清理。 | 下次启动可提示清理，不会把 partial 当作 episode。 | 已实现 |
+| FR-IMP-011 | P1 | 显式导入在复制前执行完整数据健康检查。 | 全量解码五路 JPEG、检测近乎全黑图像并统计状态帧率/稳定度；warning/error 报告只写 app-local `reports`，检查报告随导入结果返回，源目录不写入。 | 已实现并测试 |
 
 Manifest `formatVersion=2`。采集数据文件集合明确排除 macOS AppleDouble `._*` 和 `.DS_Store`；其余每个文件的 `sourcePath` 保存 UTF-8 原始相对路径，`path` 保存逐组件清理后的 Windows 安全目标相对路径。若清理或大小写折叠后发生碰撞，必须在复制前阻止导入。数据集 BLAKE3 的输入序列定义为：对按原始 `sourcePath` 排序的每个文件依次写入 UTF-8 原始相对路径、单个 `0x00`、小端 `u64` 文件大小、该文件 BLAKE3 的 ASCII 十六进制文本。
 
@@ -298,7 +299,7 @@ Manifest `formatVersion=2`。采集数据文件集合明确排除 macOS AppleDou
 | FR-VAL-001 | P0 | 解析 `states.jsonl` 每个非空行。 | 无效 JSON、缺字段或类型不符产生 error。 | 已实现 |
 | FR-VAL-002 | P0 | 检查状态中的 NaN/Infinity。 | 任一非有限值产生 error。 | 已实现 |
 | FR-VAL-003 | P0 | 检查状态帧号和时间戳顺序。 | 帧号跳变为 warning；非单调时间戳为 error。 | 已实现 |
-| FR-VAL-004 | P0 | 检测明显时间戳间隔异常，并验证状态帧率为期望 30 FPS。 | 正 delta 的中位数存在时，超过中位数 3 倍产生 warning；以相邻状态记录的递增 frame ID 步长归一化原始纳秒周期并取中位数计算帧率，偏离 30 FPS 超过 ±5% 时产生 warning。 | 已实现并测试 |
+| FR-VAL-004 | P0 | 检测明显时间戳间隔异常，并验证状态帧率和稳定度。 | 正 delta 的中位数存在时，超过中位数 3 倍产生 warning；以相邻状态记录的递增 frame ID 步长归一化原始纳秒周期并取中位数计算帧率，偏离 30 FPS 超过 ±5% 时产生 warning；落在中位周期 ±10% 内的间隔不足 90% 时产生 warning。 | 已实现并测试 |
 | FR-VAL-005 | P0 | 检查五路图像是否为空。 | 流目录缺失或零帧产生 error。 | 已实现 |
 | FR-VAL-006 | P0 | 检查图像 frame ID 连续性。 | 首尾范围内缺失位置产生 warning，并报告数量。 | 已实现 |
 | FR-VAL-007 | P0 | 交互检查按排序后帧序列的 `1% / 25% / 50% / 73% / 99%` 固定位置解码 JPEG；正式压力/发布检查解码全部 JPEG。 | 小于五帧时百分位去重；抽检或全量模式中无法解码的帧产生 error，并记录 stream/frame。 | 已实现并测试 |
@@ -308,6 +309,7 @@ Manifest `formatVersion=2`。采集数据文件集合明确排除 macOS AppleDou
 | FR-VAL-011 | P0 | error 在 UI 和 Rust 导出入口形成双重阻断。 | 不能通过直接调用 IPC 绕过检查。 | 已实现并测试 |
 | FR-VAL-012 | P1 | 导出机器可读检查报告。 | 检查页使用“导出报告”操作，可生成包含版本、图像检查模式/百分位、issue 和统计的 JSON 文件。 | 已实现并测试 |
 | FR-VAL-013 | P0 | warning/error 在检查完成后自动生成本地后台报告。 | 写入应用 local-data 的 `reports` 目录，原子发布并回读；相同 episode 路径、指纹和报告版本只保留一份，ok 不生成，任一失败不得伪装成已汇报。 | 已实现并测试 |
+| FR-VAL-014 | P1 | 标注抽检或全量解码中近乎全黑的图像。 | 对每张已解码图像做最多约 32×32 点的有界亮度采样；平均亮度不高于 8 且至少 99.5% 采样点不高于 8 时，该流生成一个带首个命中 `frameId` 和命中数的 `BLACK_SCREEN` warning。 | 已实现并测试 |
 
 Issue code 和严重级别：
 
@@ -324,16 +326,18 @@ Issue code 和严重级别：
 | `TIMESTAMP_NOT_MONOTONIC` | error | 状态时间戳没有递增 |
 | `TIMESTAMP_GAP` | warning | 时间间隔超过中位数 3 倍 |
 | `FRAME_RATE_MISMATCH` | warning | 状态中位帧率偏离期望 30 FPS 超过 ±5% |
+| `FRAME_RATE_UNSTABLE` | warning | 落在中位帧周期 ±10% 内的有效间隔不足 90% |
 | `EMPTY_STREAM` | error | 图像流为空或缺失 |
 | `INVALID_FRAME_FILENAME` | error | 排除 `._*` 平台元数据后，JPEG 文件名仍不能映射为非负十进制帧号 |
 | `DUPLICATE_FRAME_ID` | error | 多个 JPEG 文件名映射到同一帧号 |
 | `MISSING_FRAMES` | warning | 图像 frame ID 范围内缺帧 |
 | `FRAME_ID_MISMATCH` | error | 数量相同时图像和状态 frame ID 集合不一致 |
 | `DECODE_FAILED` | error | JPEG 无法解码 |
+| `BLACK_SCREEN` | warning | 已解码图像中发现近乎全黑帧 |
 | `DIMENSION_MISMATCH` | error | 同一流帧尺寸不一致 |
 | `COUNT_MISMATCH` | warning | 图像帧数与状态数不一致 |
 
-机器可读报告使用 `formatVersion=4`，包含 `episodeRoot`、`parsedStateCount`、`imageValidationMode`（`sampled` 或 `full`）、`imageSamplePercentages`、`stateFrameRate`（目标 FPS、实测中位 FPS、容忍百分比和有效间隔数）、`autoReportPath`、文件/流统计和完整 issue 列表。每个流的 `checkedFrames` 是实际解码数；抽检报告固定记录 `[1,25,50,73,99]`，全量报告记录空数组。可定位的 issue 附带可选 `frameId`。报告先写入隐藏 partial 文件并回读验证，再原子发布，同名时不覆盖。抽检报告不代表未抽中 JPEG 已通过解码检查。
+机器可读报告使用 `formatVersion=5`，包含 `episodeRoot`、`parsedStateCount`、`imageValidationMode`（`sampled` 或 `full`）、`imageSamplePercentages`、`stateFrameRate`（目标 FPS、实测中位 FPS、容忍百分比、有效间隔数、稳定度百分比和稳定状态）、`autoReportPath`、文件/流统计和完整 issue 列表。每个流的 `checkedFrames` 是实际解码数；抽检报告固定记录 `[1,25,50,73,99]`，全量报告记录空数组。可定位的 issue 附带可选 `frameId`。报告先写入隐藏 partial 文件并回读验证，再原子发布，同名时不覆盖。抽检报告不代表未抽中 JPEG 已通过解码或黑屏检查。
 
 后台报告保持离线：Windows 写入 Tauri `appLocalData/com.dohc.viewer/reports`，macOS 对应 `~/Library/Application Support/com.dohc.viewer/reports`。文件名由 Windows 安全的 episode 名、报告版本，以及 episode 路径与数据指纹的 BLAKE3 派生 ID 组成。`autoReportPath` 在 warning/error 报告中记录最终普通文件路径，在 ok 报告中为 `null`。
 
@@ -353,6 +357,7 @@ Issue code 和严重级别：
 | FR-VIS-010 | P0 | 回放和时间轴遵循选中裁剪范围。 | 播放从起点开始并在终点停止，画面、曲线和片段状态数保持一致。 | 已实现 |
 | FR-VIS-011 | P1 | 连续播放不显示逐帧加载文案，并在目标帧解码前保留上一张已成功解码的图像。 | 播放过程中不出现“解码中”覆盖层；暂停、拖动或步进等待帧时保留加载提示和上一张已解码图像。新图仅在解码完成后替换；请求帧不可用时清除旧图并显示明确错误。 | 已实现 |
 | FR-VIS-012 | P1 | 在存在 SMPL/骨架数据时，用 Three.js 在五路图像右侧显示与当前 frame ID 同步的三维骨架。 | 桌面窗口中骨架面板位于图像右侧并有可交互视角；窄窗口按顺序显示在图像下方；缺少或解析失败时保留图像回放并显示明确状态。 | 已实现 |
+| FR-VIS-013 | P1 | cam0 作为主要相机画面在桌面五路网格中放大。 | cam0 跨两行且使用 2.2 倍网格轨道，从画面中心保持原始比例向可用空间扩展；960x680 和窄视口无横向溢出。 | 已实现并通过 browser 检查 |
 
 ### 8.5 数据导出
 
@@ -367,7 +372,7 @@ Issue code 和严重级别：
 | FR-EXP-007 | P1 | 导出完成后可在资源管理器中打开位置。 | 一次点击打开输出父目录并选中结果。 | 已实现 |
 | FR-EXP-008 | P0 | 三种 adapter 都支持同一闭区间帧范围。 | 输出只包含选中状态和对应五路图像；结果返回范围与状态条数。 | 已实现并测试 |
 | FR-EXP-009 | P0 | 裁剪范围内独立执行导出门禁。 | 范围外逐帧 issue 不阻断；范围内或全局 error 仍阻断，warning 仍需确认。 | 已实现并测试 |
-| FR-EXP-010 | P1 | 已标注 episode 的三个 adapter 使用统一轨迹码和标注元数据。 | 输出基础名称使用轨迹码；MCAP、HDF5、LeRobot 保存任务/处理人，并各自附带一个 `metadata.json`（单一完整时间轴，片段作为不同批注而非拆分视频）；未标注数据兼容原名称。 | 已实现并测试 |
+| FR-EXP-010 | P1 | 已标注 episode 的三个 adapter 使用统一轨迹码和标注元数据。 | 输出基础名称使用轨迹码；MCAP、HDF5、LeRobot 的正式输出内嵌任务、处理人和裁剪后的片段数组，并各自附带原子发布、回读验证的 `metadata.json`；结果返回实际 `metadataPath` 供 Windows/macOS/Linux 界面确认；未标注数据兼容原名称。 | 已实现并测试 |
 | FR-EXP-011 | P1 | 已选择工作模式的用户可以查看本机最新标注并选择源仍可用的条目。 | 清单只由 Rust 从 `appLocalData/annotations` 回读，统一管理显示处理人，离线显示本机来源而不显示为账号；两种模式都显示轨迹码、任务、描述、修订和源状态；前端不能提交任意源路径冒充标注。 | 已实现并测试 |
 | FR-EXP-012 | P1 | 用户可以把多条已标注完整 episode 顺序导出为同一种格式。 | 每条在导出前重新核对规范化路径和数据指纹、执行交互健康检查并写入可信缓存；warning 经一次批量确认后允许，error 或单条故障记录失败并继续；每条失败结果写入本机不可覆盖日志并返回路径，成功结果可直接定位输出；取消停止剩余条目，已完成输出保留。 | 已实现并测试 |
 
@@ -380,7 +385,7 @@ Issue code 和严重级别：
 - 消息 `log_time` 和 `publish_time` 使用原始 `capture_time_ns`。
 - Foxglove protobuf 的 `Timestamp` 与图像/位姿消息使用同一 capture time；`frame_id` 分别为 `dohc_base` 和流名。
 - 五个图像 channel 的 metadata 包含 `mime_type`、`width` 和 `height`。
-- 数据集 metadata 包含源名称、状态条数和 `clip_start_frame`/`clip_end_frame`；存在标注时增加轨迹码、任务 ID/描述和统一管理处理人账号/显示名或离线本机 provenance。
+- 数据集 metadata 包含源名称、状态条数和 `clip_start_frame`/`clip_end_frame`；存在标注时增加轨迹码、任务 ID/描述、统一管理处理人账号/显示名或离线本机 provenance，以及 `segment_annotations_json` 片段数组。
 - `dohc.dataset` metadata 必须包含 `dohc_provenance_version`、选中范围的 `capture_started_at_ns`/`capture_ended_at_ns`、`exported_at_ms`/`exported_by_*`；存在标注时增加 `annotation_created_at_ms`、`annotation_updated_at_ms`、`annotation_edit_started_at_ms`、`annotation_edit_duration_ms` 和修改人字段。
 - 文件必须能被 Foxglove Desktop 打开；Image panel 可选择五路图像，3D panel 可选择 `/dohc/pose`，Raw/Plot panel 可读取 `/dohc/state`。
 
@@ -389,7 +394,7 @@ Issue code 和严重级别：
 - 输出为单个 `.h5` 文件，根属性包括 `format=dohc-hdf5`、`format_version=1` 和 `source_name`。
 - 根属性同时保存 `clip_start_frame` 和 `clip_end_frame`。
 - 根属性和 `/provenance` 必须记录采集起止纳秒时间、标注创建/修改时间、修改耗时、修改人、导出时间和导出人；`dohc_provenance_version=1`。
-- 存在标注时，根属性保存 `trajectory_code`、`task_id` 和处理来源；统一管理模式保存 `processed_by_username`，离线模式保存固定本机 provenance；`/annotation` 以 UTF-8 字节 dataset 保存任务描述和可选处理人显示名。
+- 存在标注时，根属性保存 `trajectory_code`、`task_id` 和处理来源；统一管理模式保存 `processed_by_username`，离线模式保存固定本机 provenance；`/annotation` 以 UTF-8 字节 dataset 保存任务描述、可选处理人显示名和 `segments_json_utf8` 片段数组。
 - `/states` 包含 `frame_id`、`capture_time_ns`、`position`、`velocity`、`quaternion`、`euler`、`omega` 和 `confidence`。
 - `/images/{stream}` 包含 `jpeg_data`、`offsets`、`sizes` 和 `frame_id`。
 - 图像 group 属性包含 `mime_type=image/jpeg`、`width` 和 `height`。
@@ -405,7 +410,7 @@ Issue code 和严重级别：
 - 每个流生成 `videos/chunk-000/observation.images.{stream}/episode_000000.mp4`。
 - Meta 包含 `info.json`、`tasks.jsonl`、`episodes.jsonl`、`stats.json` 和 `episodes_stats.jsonl`。
 - `info.json.dohc_provenance` 记录采集起止时间、导出时间和实际导出人；`dohc_annotation` 记录标注创建/修改时间、修改起始时间和修改耗时。
-- 存在标注时，`tasks.jsonl`/`episodes.jsonl` 使用可编辑任务描述，`info.json.dohc_annotation` 保存轨迹码、任务、修订号和统一管理处理人或离线本机 provenance。
+- 存在标注时，`tasks.jsonl`/`episodes.jsonl` 使用可编辑任务描述，`info.json.dohc_annotation` 保存轨迹码、任务、修订号、统一管理处理人或离线本机 provenance，以及裁剪后的 `segments` 片段数组。
 - `codebase_version` 固定为 `v2.1`。
 - `info.json` 保存 `clip_start_frame`、`clip_end_frame`；裁剪输出目录名包含
   `_frames_START-END`，完整导出保持原有目录名。
@@ -426,6 +431,7 @@ Issue code 和严重级别：
 | FR-ANN-001 | P0 | 回放首页支持选择已有任务或只输入名称创建本地任务；任务描述可编辑。 | 新任务立即进入任务选择并以任务名作为默认描述；`close_oven` 仍自动带出内置默认描述。 | 已实现并通过 browser 交互测试 |
 | FR-ANN-002 | P0 | 轨迹码使用任务前缀和至少三位序号，且只能由 Rust 在保存时分配。 | 前端只读显示预览、不提交轨迹码；`close_oven` 依次使用 `oven-001`、`oven-002`，自定义任务使用系统生成前缀；后端以原子占号防止跨 episode 重复。 | 已实现并测试 |
 | FR-ANN-003 | P0 | 标注记录数据身份、处理来源和修订历史。 | 绑定规范化 episode 路径与指纹；每次保存追加不可覆盖的本机修订文件，统一管理模式记录账号，离线模式记录固定本机 provenance 标记且 UI 不显示为处理人；片段修订和导出 Metadata JSON 只写应用 local-data 或明确选择的导出目录。 | 已实现并测试 |
+| FR-ANN-004 | P1 | 用户可以删除不再需要的自定义任务。 | 删除经 Rust 身份门禁执行，只移除 app-local 普通任务文件；内置任务返回 `TASK_BUILT_IN`，任何历史本机标注修订仍引用的任务返回 `TASK_IN_USE`，源数据和历史标注不被修改。 | 已实现并测试 |
 
 用户中心服务将账号和 scrypt 密码哈希写入当前主机服务专属私有目录；客户端将工作模式选择追加写入 `appLocalData/workspace-mode`，统一管理配置写入 Tauri `appLocalData/user-center.json`。用户创建的任务位于 `appLocalData/tasks`，轨迹占号位于 `appLocalData/trajectory-codes`，标注修订位于 `appLocalData/annotations/{episodeId}`。离线模式不创建账号或用户中心会话；本机标记仅用于区分 provenance，不是可登录账号。用户中心只提供身份和管理员账号管理，不提供文件加密、操作系统用户隔离或跨组织权限体系。
 
@@ -1022,6 +1028,13 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 工作模式或身份切换重置工作区时同步作废尚未执行的焦点恢复请求，防止旧 session 在后续界面更新中重新获得焦点。
 - Session 激活浏览器回归连续运行 20 轮，覆盖跨 session 键盘读取、失败重试和单击选择后双击读取。
 
+### 14.47 `0.17.29` 任务删除、导入质量标记与 Metadata 落盘
+
+- 回放标注可删除尚未被任何本机标注引用的自定义任务；Rust 拒绝删除内置任务或仍被引用的任务，源数据和追加式标注历史不变。
+- 显式导入在复制前执行全量图像与状态检查；近乎全黑帧生成 `BLACK_SCREEN` warning，状态报告同时显示中位 FPS、±10% 周期带内的稳定度占比，并在低于 90% 时生成 `FRAME_RATE_UNSTABLE` warning。报告升级为 `formatVersion=5`。
+- 已标注导出把裁剪后的片段数组内嵌到 MCAP、HDF5 和 LeRobot，并继续原子写入 companion Metadata；IPC/UI 返回实际 `metadataPath`，便于 Windows 上确认文件已经落盘。
+- 桌面回放网格把 cam0 主画面轨道从 1.6 倍扩大到 2.2 倍并提高稳定高度，窄视口继续保持全宽主画面和无横向溢出。
+
 ## 15. 里程碑
 
 | 里程碑 | 内容 | 状态 |
@@ -1040,7 +1053,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 5. warning 导出是否需要附带检查报告，或写入目标格式 metadata？
 6. 后续是否需要由用户显式选择某些 episode 创建离线副本，还是长期只保留源卡直读？
 7. 产品负责人、签名证书负责人和 release approver 分别是谁？
-8. 用户创建的任务后续是否需要重命名、停用或删除；已产生的轨迹码和历史标注应如何保留？
+8. 用户创建的任务后续是否需要重命名或停用？当前只允许删除没有历史标注引用的自定义任务。
 9. 后续是否需要组织级角色权限和跨主机标注同步？当前局域网用户中心只提供账号生命周期和处理人归因，标注与数据仍保留在各客户端本机。
 
 ## 17. Definition of Done

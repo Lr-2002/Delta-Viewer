@@ -1,3 +1,4 @@
+use super::segment_metadata;
 use super::{map_error, output_stem, partial_sibling, unique_file, ExportAdapter, ExportContext};
 use crate::error::{AppError, AppResult};
 use crate::model::ProgressPayload;
@@ -151,6 +152,10 @@ impl ExportAdapter for McapAdapter {
                     .annotation_edit_duration_ms
                     .unwrap_or_default()
                     .to_string(),
+            );
+            dataset_metadata.insert(
+                "segment_annotations_json".into(),
+                serde_json::to_string(&segment_metadata::clipped_segments(context))?,
             );
         }
         writer
@@ -324,9 +329,13 @@ fn verify_mcap(path: &Path, expected_messages: u64) -> AppResult<()> {
     if schemas != expected_schemas
         || topics != expected
         || summary.stats.as_ref().map(|stats| stats.message_count) != Some(expected_messages)
+        || !summary
+            .metadata_indexes
+            .iter()
+            .any(|metadata| metadata.name == "dohc.dataset")
     {
         return Err(AppError::Message(
-            "MCAP 回读验证失败: channel 或 schema 不匹配".into(),
+            "MCAP 回读验证失败: channel、schema 或 dataset metadata 不匹配".into(),
         ));
     }
 

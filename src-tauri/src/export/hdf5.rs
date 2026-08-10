@@ -340,6 +340,11 @@ impl ExportAdapter for Hdf5Adapter {
             annotation_group
                 .create_dataset("processed_by_display_name_utf8")
                 .with_u8_data(annotation.processed_by.display_name.as_bytes());
+            let segments_json =
+                serde_json::to_vec(&super::segment_metadata::clipped_segments(context))?;
+            annotation_group
+                .create_dataset("segments_json_utf8")
+                .with_u8_data(&segments_json);
             builder.add_group(annotation_group.finish());
         }
 
@@ -609,6 +614,12 @@ fn verify_hdf5(path: &Path, context: &ExportContext<'_>) -> AppResult<()> {
                 .read_u8()
                 .map_err(map_error)?
                 != annotation.processed_by.display_name.as_bytes()
+            || file
+                .dataset("annotation/segments_json_utf8")
+                .map_err(map_error)?
+                .read_u8()
+                .map_err(map_error)?
+                != serde_json::to_vec(&super::segment_metadata::clipped_segments(context))?
         {
             return Err(AppError::Message(
                 "HDF5 回读验证失败: 数据标注不匹配".into(),

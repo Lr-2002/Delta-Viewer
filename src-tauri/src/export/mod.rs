@@ -150,6 +150,7 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
     Ok(ExportResult {
         format: format.as_str().into(),
         output_path: output.display().to_string(),
+        metadata_path: metadata_output.map(|path| path.display().to_string()),
         trajectory_code: annotation.map(|record| record.trajectory_code.clone()),
         total_files,
         total_bytes,
@@ -681,6 +682,8 @@ mod tests {
             measured_fps: Some(f64::from(EXPECTED_STATE_FRAME_RATE_FPS)),
             tolerance_percent: STATE_FRAME_RATE_TOLERANCE_PERCENT,
             interval_count: 3,
+            stability_percent: Some(100.0),
+            stable: Some(true),
         }
     }
 

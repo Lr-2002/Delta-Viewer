@@ -214,12 +214,12 @@ try {
       },
     };
     const report = {
-      formatVersion: 4,
+      formatVersion: 5,
       episodeRoot: episodes[0].root,
       parsedStateCount: 1,
       imageValidationMode: "sampled",
       imageSamplePercentages: [1, 25, 50, 73, 99],
-      stateFrameRate: { expectedFps: 30, measuredFps: 30, tolerancePercent: 5, intervalCount: 0 },
+      stateFrameRate: { expectedFps: 30, measuredFps: 30, tolerancePercent: 5, intervalCount: 0, stabilityPercent: null, stable: null },
       autoReportPath: null,
       status: "ok",
       checkedFiles: 6,

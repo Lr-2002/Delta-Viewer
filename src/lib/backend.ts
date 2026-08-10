@@ -183,6 +183,23 @@ export async function createTaskDefinition(request: CreateTaskRequest): Promise<
   return { ...task };
 }
 
+export async function deleteTaskDefinition(taskId: string): Promise<void> {
+  if (isTauriRuntime()) {
+    await invoke("delete_task_definition", { taskId });
+    return;
+  }
+  demoActor();
+  const index = demoTaskDefinitions.findIndex((task) => task.id === taskId);
+  if (index < 0) throw new Error(`UNKNOWN_TASK: 不支持的任务 ${taskId}`);
+  if (demoTaskDefinitions[index].id === "close_oven") {
+    throw new Error("TASK_BUILT_IN: 内置任务不能删除");
+  }
+  if ([...demoAnnotations.values()].some((annotation) => annotation.taskId === taskId)) {
+    throw new Error("TASK_IN_USE: 任务已被标注引用，不能删除");
+  }
+  demoTaskDefinitions.splice(index, 1);
+}
+
 export async function suggestTrajectoryCode(taskId: string): Promise<string> {
   if (isTauriRuntime()) return invoke<string>("suggest_trajectory_code", { taskId });
   demoActor();
@@ -352,6 +369,7 @@ export async function importEpisode(
       totalBytes: 80_531_730,
       datasetBlake3: "f5bc2dda9be850c0d89c88c1021ae8964f59592b7bad1db02159fdef24384727",
       elapsedMs: 4380,
+      validationReport: await validateEpisode(sourcePath, operationId),
     };
   }
   return invoke<ImportResult>("import_episode", { sourcePath, destinationParent, operationId });
@@ -482,7 +500,7 @@ export async function loadEpisode(path: string, operationId: number): Promise<Ep
 export async function validateEpisode(path: string, operationId: number): Promise<ValidationReport> {
   if (isTauriRuntime()) return invoke<ValidationReport>("validate_episode", { path, operationId });
   return {
-    formatVersion: 4,
+    formatVersion: 5,
     episodeRoot: path,
     parsedStateCount: 196,
     imageValidationMode: "sampled",
@@ -492,6 +510,8 @@ export async function validateEpisode(path: string, operationId: number): Promis
       measuredFps: 29.5,
       tolerancePercent: 5,
       intervalCount: 195,
+      stabilityPercent: 91.8,
+      stable: true,
     },
     autoReportPath: "/DOHC Viewer/reports/2026-07-13_07-34-12.health.json",
     status: "warning",
@@ -561,9 +581,15 @@ export async function exportEpisode(
     hdf5: `${baseName}${demoRangeSuffix(range)}.h5`,
     lerobot_v2: `${baseName}${demoRangeSuffix(range)}_lerobot_v2`,
   };
+  const outputPath = `${destinationParent}/${names[format]}`;
   return {
     format,
-    outputPath: `${destinationParent}/${names[format]}`,
+    outputPath,
+    metadataPath: annotation
+      ? format === "lerobot_v2"
+        ? `${outputPath}/metadata.json`
+        : `${destinationParent}/${names[format].replace(/\.[^.]+$/, "")}.metadata.json`
+      : null,
     trajectoryCode: annotation?.trajectoryCode ?? null,
     totalFiles: format === "lerobot_v2" ? (annotation ? 13 : 12) : (annotation ? 2 : 1),
     totalBytes: format === "mcap" ? 80_780_000 : format === "hdf5" ? 80_650_000 : 49_300_000,
