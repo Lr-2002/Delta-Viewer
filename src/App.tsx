@@ -416,7 +416,7 @@ function App() {
   ) {
     if (episodeLoadInFlight.current || operationScopeRef.current.current()) return;
     selectEpisode(episode);
-    if (!force && data && loadedEpisodeSourceRoot === episode.root) {
+    if (!force && data && report && loadedEpisodeSourceRoot === episode.root) {
       setPlaying(false);
       setView("review");
       return;
@@ -497,18 +497,28 @@ function App() {
     ensureOperationActive(owner);
     const loaded = await loadEpisode(root, owner.id);
     ensureOperationActive(owner);
-    const checked = await validateEpisode(root, owner.id);
-    ensureOperationActive(owner);
-    const savedAnnotation = await loadEpisodeAnnotation(root);
-    ensureOperationActive(owner);
     setData(loaded);
-    setReport(checked);
-    setAnnotation(savedAnnotation);
+    setReport(null);
+    setAnnotation(null);
     setLoadedEpisodeSourceRoot(sourceEpisodeRoot);
+    setPlaying(false);
     setExportResult(null);
     setFpsOverride(null);
     const loadedMinFrame = getMinFrame(loaded);
     const loadedMaxFrame = getMaxFrame(loaded);
+    setClipStartFrame(loadedMinFrame);
+    setClipEndFrame(loadedMaxFrame);
+    setCurrentFrame(loadedMinFrame);
+    frameRef.current = loadedMinFrame;
+    setView("review");
+    setNotice(`已开始只读预览，正在检查：${loaded.summary.name}`);
+
+    const checked = await validateEpisode(root, owner.id);
+    ensureOperationActive(owner);
+    setReport(checked);
+    const savedAnnotation = await loadEpisodeAnnotation(root);
+    ensureOperationActive(owner);
+    setAnnotation(savedAnnotation);
     const savedStart = savedAnnotation?.clipStartFrame;
     const savedEnd = savedAnnotation?.clipEndFrame;
     const restoredStart = savedStart !== null && savedStart !== undefined
@@ -1314,6 +1324,7 @@ function App() {
                   rangeStatus={clipStatus}
                   rangeStateCount={clipStateCount}
                   rangeDurationMs={clipDurationMs}
+                  validationReady={report !== null}
                   selectedFormat={exportFormat}
                   result={exportResult}
                   busy={busy}

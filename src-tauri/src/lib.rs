@@ -9,6 +9,7 @@ mod model;
 mod operation_history;
 mod skeleton;
 mod source;
+mod source_index_cache;
 mod storage;
 pub mod stress;
 mod updater;
@@ -28,6 +29,7 @@ use model::{
     SaveAnnotationRequest, ScanResult, TaskDefinition, UserCenterStatus, UserIdentity,
     ValidationReport, WorkspaceMode,
 };
+use source_index_cache::SourceIndexCache;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -312,13 +314,18 @@ async fn suggest_trajectory_code(
 async fn load_episode_annotation(
     app: AppHandle,
     auth: State<'_, AuthState>,
+    cache: State<'_, ValidationCache>,
     source_path: String,
 ) -> Result<Option<EpisodeAnnotation>, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
+    let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<Option<EpisodeAnnotation>> {
         let root = std::fs::canonicalize(Path::new(&source_path))?;
-        let fingerprint = source::episode_fingerprint(&root, &AtomicBool::new(false))?;
+        let fingerprint = match cache.fingerprint_for(&root)? {
+            Some(fingerprint) => fingerprint,
+            None => source::episode_fingerprint(&root, &AtomicBool::new(false))?,
+        };
         annotations::load_annotation(&data_root, &root, &fingerprint)
     })
     .await
@@ -362,17 +369,22 @@ async fn scan_source(
     app: AppHandle,
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
+    index_cache: State<'_, SourceIndexCache>,
     path: String,
     operation_id: u64,
 ) -> Result<ScanResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
+    let index_cache = index_cache.inner().clone();
     emit_task_start(&app, operation_id, "scan", "准备扫描", &path);
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ScanResult> {
         let _task = task;
         let _progress = source::enter_operation_progress(operation_id);
-        source::scan_source(Path::new(&path), Some(&app), &cancelled)
+        let (result, indexes) =
+            source::scan_source_with_indexes(Path::new(&path), Some(&app), &cancelled)?;
+        index_cache.replace(indexes)?;
+        Ok(result)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -384,17 +396,23 @@ async fn load_episode(
     app: AppHandle,
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
+    index_cache: State<'_, SourceIndexCache>,
     path: String,
     operation_id: u64,
 ) -> Result<EpisodeData, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
+    let index_cache = index_cache.inner().clone();
     emit_task_start(&app, operation_id, "scan", "准备加载记录", &path);
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
         let _progress = source::enter_operation_progress(operation_id);
-        source::load_episode(Path::new(&path), Some(&app), &cancelled)
+        let root = Path::new(&path);
+        match index_cache.index_for(root)? {
+            Some(index) => source::load_episode_with_summary(root, index.summary, &cancelled),
+            None => source::load_episode(root, Some(&app), &cancelled),
+        }
     })
     .await
     .map_err(|error| error.to_string())?
@@ -407,6 +425,7 @@ async fn validate_episode(
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
     cache: State<'_, ValidationCache>,
+    index_cache: State<'_, SourceIndexCache>,
     path: String,
     operation_id: u64,
 ) -> Result<ValidationReport, String> {
@@ -414,6 +433,7 @@ async fn validate_episode(
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let cache = cache.inner().clone();
+    let index_cache = index_cache.inner().clone();
     let reports_dir = app
         .path()
         .app_local_data_dir()
@@ -424,12 +444,21 @@ async fn validate_episode(
         let _task = task;
         let _progress = source::enter_operation_progress(operation_id);
         let root = Path::new(&path);
-        let before = source::episode_fingerprint(root, &cancelled)?;
-        let mut report = validation::validate_episode(root, Some(&app), &cancelled)?;
+        let cached_index = index_cache.index_for(root)?;
+        let before = match &cached_index {
+            Some(index) => index.fingerprint.clone(),
+            None => source::episode_fingerprint(root, &cancelled)?,
+        };
+        let mut report = match &cached_index {
+            Some(index) => {
+                validation::validate_episode_with_index(root, index, Some(&app), &cancelled)?
+            }
+            None => validation::validate_episode(root, Some(&app), &cancelled)?,
+        };
         let after = source::episode_fingerprint(root, &cancelled)?;
         if before != after {
             return Err(error::AppError::Message(
-                "数据在检查过程中发生变化，请重新检查".into(),
+                "数据在扫描或检查后发生变化，请重新扫描后检查".into(),
             ));
         }
         validation::persist_background_report(&mut report, &after, &reports_dir, &cancelled)?;
@@ -783,6 +812,7 @@ pub fn run() {
         .manage(AuthState::default())
         .manage(TaskControl::default())
         .manage(ValidationCache::default())
+        .manage(SourceIndexCache::default())
         .invoke_handler(tauri::generate_handler![
             get_auth_status,
             select_workspace_mode,

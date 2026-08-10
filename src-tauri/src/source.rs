@@ -17,6 +17,9 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
 
+pub(crate) const SOURCE_INDEX_MAX_EPISODES: usize = 64;
+pub(crate) const SOURCE_INDEX_MAX_FRAME_PATHS: usize = 250_000;
+
 thread_local! {
     static PROGRESS_OPERATION_ID: Cell<Option<u64>> = const { Cell::new(None) };
 }
@@ -36,17 +39,43 @@ impl Drop for ProgressOperationScope {
     }
 }
 
+#[derive(Clone)]
 pub struct StreamFiles {
     pub frames: Vec<(u64, PathBuf)>,
     pub invalid_names: Vec<String>,
     pub duplicate_ids: Vec<u64>,
 }
 
+#[derive(Clone)]
+pub struct EpisodeIndex {
+    pub summary: EpisodeSummary,
+    pub fingerprint: String,
+    pub stream_files: BTreeMap<String, StreamFiles>,
+}
+
+impl EpisodeIndex {
+    pub fn frame_path_count(&self) -> usize {
+        self.stream_files
+            .values()
+            .map(|files| files.frames.len())
+            .sum()
+    }
+}
+
+#[cfg(test)]
 pub fn scan_source(
     root: &Path,
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<ScanResult> {
+    scan_source_with_indexes(root, app, cancelled).map(|(result, _)| result)
+}
+
+pub fn scan_source_with_indexes(
+    root: &Path,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+) -> AppResult<(ScanResult, Vec<EpisodeIndex>)> {
     if !root.exists() {
         return Err(AppError::MissingPath(root.display().to_string()));
     }
@@ -66,6 +95,8 @@ pub fn scan_source(
 
     let started = Instant::now();
     let mut summaries = Vec::with_capacity(episodes.len());
+    let mut indexes = Vec::with_capacity(episodes.len().min(SOURCE_INDEX_MAX_EPISODES));
+    let mut cached_frame_paths = 0_usize;
     for (index, episode_root) in episodes.iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Err(AppError::Cancelled);
@@ -83,7 +114,17 @@ pub fn scan_source(
                 elapsed_ms: started.elapsed().as_millis(),
             },
         );
-        summaries.push(scan_episode(episode_root, app, cancelled)?);
+        let mut index = scan_episode_index(episode_root, app, cancelled)?;
+        summaries.push(index.summary.clone());
+        if indexes.len() < SOURCE_INDEX_MAX_EPISODES {
+            let frame_paths = index.frame_path_count();
+            if cached_frame_paths.saturating_add(frame_paths) <= SOURCE_INDEX_MAX_FRAME_PATHS {
+                cached_frame_paths = cached_frame_paths.saturating_add(frame_paths);
+            } else {
+                index.stream_files.clear();
+            }
+            indexes.push(index);
+        }
     }
 
     let total_files = summaries.iter().map(|item| item.total_files).sum();
@@ -101,13 +142,16 @@ pub fn scan_source(
             elapsed_ms: started.elapsed().as_millis(),
         },
     );
-    Ok(ScanResult {
-        source_root: root.display().to_string(),
-        episodes: summaries,
-        total_files,
-        total_bytes,
-        volume,
-    })
+    Ok((
+        ScanResult {
+            source_root: root.display().to_string(),
+            episodes: summaries,
+            total_files,
+            total_bytes,
+            volume,
+        },
+        indexes,
+    ))
 }
 
 pub fn load_episode(
@@ -116,6 +160,18 @@ pub fn load_episode(
     cancelled: &AtomicBool,
 ) -> AppResult<EpisodeData> {
     let summary = scan_episode(root, app, cancelled)?;
+    load_episode_with_summary(root, summary, cancelled)
+}
+
+pub fn load_episode_with_summary(
+    root: &Path,
+    summary: EpisodeSummary,
+    cancelled: &AtomicBool,
+) -> AppResult<EpisodeData> {
+    if !root.is_dir() {
+        return Err(AppError::MissingPath(root.display().to_string()));
+    }
+    storage::ensure_source_volume(&storage::volume_info(root)?)?;
     let states_path = root.join("states.jsonl");
     let states = read_states(&states_path, cancelled)?;
     let (skeleton, skeleton_error) =
@@ -149,27 +205,39 @@ pub fn scan_episode(
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<EpisodeSummary> {
+    scan_episode_index(root, app, cancelled).map(|index| index.summary)
+}
+
+pub fn scan_episode_index(
+    root: &Path,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+) -> AppResult<EpisodeIndex> {
     if !root.is_dir() {
         return Err(AppError::MissingPath(root.display().to_string()));
     }
 
     storage::ensure_source_volume(&storage::volume_info(root)?)?;
     let all_files = collect_files(root, cancelled)?;
+    let (total_bytes, fingerprint) = fingerprint_files(root, &all_files, cancelled)?;
     let total_files = all_files.len() as u64;
-    let mut total_bytes = 0_u64;
-    for path in &all_files {
-        check_cancelled(cancelled)?;
-        total_bytes = total_bytes.saturating_add(fs::metadata(path)?.len());
-    }
     let states_path = root.join("states.jsonl");
     let (state_count, start_time_ns, end_time_ns) = summarize_states(&states_path, cancelled)?;
 
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
+    let mut stream_files_by_name = BTreeMap::new();
     for (index, stream_name) in STREAM_NAMES.iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Err(AppError::Cancelled);
         }
-        streams.push(scan_stream(root, stream_name, cancelled)?);
+        let stream_files = collect_stream_files(root, stream_name, cancelled)?;
+        streams.push(scan_stream_from_files(
+            root,
+            stream_name,
+            &stream_files,
+            cancelled,
+        )?);
+        stream_files_by_name.insert((*stream_name).to_string(), stream_files);
         emit_progress(
             app,
             ProgressPayload {
@@ -185,19 +253,23 @@ pub fn scan_episode(
         );
     }
 
-    Ok(EpisodeSummary {
-        root: root.display().to_string(),
-        name: root
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("episode")
-            .to_string(),
-        total_files,
-        total_bytes,
-        state_count,
-        start_time_ns,
-        end_time_ns,
-        streams,
+    Ok(EpisodeIndex {
+        summary: EpisodeSummary {
+            root: root.display().to_string(),
+            name: root
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("episode")
+                .to_string(),
+            total_files,
+            total_bytes,
+            state_count,
+            start_time_ns,
+            end_time_ns,
+            streams,
+        },
+        fingerprint,
+        stream_files: stream_files_by_name,
     })
 }
 
@@ -222,6 +294,15 @@ pub fn collect_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathB
 pub fn episode_fingerprint(root: &Path, cancelled: &AtomicBool) -> AppResult<String> {
     storage::ensure_source_volume(&storage::volume_info(root)?)?;
     let files = collect_files(root, cancelled)?;
+    fingerprint_files(root, &files, cancelled).map(|(_, fingerprint)| fingerprint)
+}
+
+fn fingerprint_files(
+    root: &Path,
+    files: &[PathBuf],
+    cancelled: &AtomicBool,
+) -> AppResult<(u64, String)> {
+    let mut total_bytes = 0_u64;
     let mut hasher = Hasher::new();
     for path in files {
         if cancelled.load(Ordering::Relaxed) {
@@ -232,7 +313,8 @@ pub fn episode_fingerprint(root: &Path, cancelled: &AtomicBool) -> AppResult<Str
             .map_err(|error| AppError::Message(error.to_string()))?
             .to_string_lossy()
             .replace('\\', "/");
-        let metadata = fs::metadata(&path)?;
+        let metadata = fs::metadata(path)?;
+        total_bytes = total_bytes.saturating_add(metadata.len());
         let modified_ns = metadata
             .modified()
             .ok()
@@ -244,7 +326,7 @@ pub fn episode_fingerprint(root: &Path, cancelled: &AtomicBool) -> AppResult<Str
         hasher.update(&metadata.len().to_le_bytes());
         hasher.update(&modified_ns.to_le_bytes());
     }
-    Ok(hasher.finalize().to_hex().to_string())
+    Ok((total_bytes, hasher.finalize().to_hex().to_string()))
 }
 
 fn discover_episode_roots(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathBuf>> {
@@ -274,7 +356,12 @@ fn is_episode_marker(root: &Path) -> bool {
         .any(|name| is_regular_directory(&root.join(name)))
 }
 
-fn scan_stream(root: &Path, stream_name: &str, cancelled: &AtomicBool) -> AppResult<StreamSummary> {
+fn scan_stream_from_files(
+    root: &Path,
+    stream_name: &str,
+    stream_files: &StreamFiles,
+    cancelled: &AtomicBool,
+) -> AppResult<StreamSummary> {
     let stream_root = root.join(stream_name);
     let label = match stream_name {
         "cam0" => "Camera 0",
@@ -300,13 +387,12 @@ fn scan_stream(root: &Path, stream_name: &str, cancelled: &AtomicBool) -> AppRes
         });
     }
 
-    let stream_files = collect_stream_files(root, stream_name, cancelled)?;
     let mut frames = BTreeMap::<u64, PathBuf>::new();
     let mut total_bytes = 0_u64;
-    for (frame_id, path) in stream_files.frames {
+    for (frame_id, path) in &stream_files.frames {
         check_cancelled(cancelled)?;
-        total_bytes = total_bytes.saturating_add(fs::metadata(&path)?.len());
-        frames.entry(frame_id).or_insert(path);
+        total_bytes = total_bytes.saturating_add(fs::metadata(path)?.len());
+        frames.entry(*frame_id).or_insert_with(|| path.clone());
     }
 
     let first_frame = frames.keys().next().copied();
@@ -514,7 +600,8 @@ pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_files, collect_stream_files, scan_episode};
+    use super::SOURCE_INDEX_MAX_EPISODES;
+    use super::{collect_files, collect_stream_files, scan_episode, scan_source_with_indexes};
     use super::{episode_fingerprint, read_states};
     use std::fs;
     use std::path::PathBuf;
@@ -557,6 +644,22 @@ mod tests {
         fs::write(path, b"different length").unwrap();
         let after = episode_fingerprint(&root, &cancelled).unwrap();
         assert_ne!(before, after);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_indexes_are_bounded_without_hiding_episode_summaries() {
+        let root = test_output("bounded-index");
+        fs::create_dir(&root).unwrap();
+        for index in 0..=SOURCE_INDEX_MAX_EPISODES {
+            fs::create_dir_all(root.join(format!("episode-{index:03}/cam0"))).unwrap();
+        }
+        let cancelled = AtomicBool::new(false);
+
+        let (scan, indexes) = scan_source_with_indexes(&root, None, &cancelled).unwrap();
+        assert_eq!(scan.episodes.len(), SOURCE_INDEX_MAX_EPISODES + 1);
+        assert_eq!(indexes.len(), SOURCE_INDEX_MAX_EPISODES);
+
         fs::remove_dir_all(root).unwrap();
     }
 

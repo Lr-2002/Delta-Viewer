@@ -5,6 +5,7 @@ import {
   FileCheck2,
   FileDown,
   LocateFixed,
+  LoaderCircle,
   ScrollText,
   TriangleAlert,
 } from "lucide-react";
@@ -147,7 +148,12 @@ export function ChecksPanel({
 
       <section className="issue-list" aria-label="检查问题">
         <h3>错误与警告</h3>
-        {orderedIssues.length ? (
+        {!report ? (
+          <div className="issue-empty">
+            <LoaderCircle className={busy ? "spin" : undefined} size={18} />
+            {busy ? "正在检查" : "尚未完成检查"}
+          </div>
+        ) : orderedIssues.length ? (
           orderedIssues.map((issue, index) => (
             <div className={`issue-row issue-${issue.severity}`} key={`${issue.code}-${index}`}>
               <span className="issue-severity">

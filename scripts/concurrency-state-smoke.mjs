@@ -265,7 +265,7 @@ try {
       },
       resolveActiveTask(value) {
         const task = takeActiveTask();
-        task.resolve(value ?? (task.kind === "scan" ? scan : undefined));
+        task.resolve(value ?? (task.kind === "scan" || task.kind === "validate" ? (task.kind === "scan" ? scan : report) : undefined));
       },
       rejectActiveTask(message) {
         takeActiveTask().reject(new Error(message));
@@ -359,6 +359,7 @@ try {
             };
           case "validate_episode":
             calls.validateEpisode += 1;
+            if (calls.validateEpisode === 1) return beginTask("validate", args.operationId);
             return report;
           case "load_episode_annotation":
             return null;
@@ -467,9 +468,19 @@ try {
   }), finalScan.operationId);
   await page.evaluate(() => window.__concurrencyMock.resolveActiveTask());
   await page.waitForFunction(() => window.__concurrencyMock.calls.loadEpisode === 2);
+  await page.waitForFunction(() => window.__concurrencyMock.activeTask()?.kind === "validate");
   await page.locator(".camera-grid img").first().waitFor();
   await page.waitForFunction(() => [...document.querySelectorAll(".camera-grid img")]
     .every((image) => image.naturalWidth > 0));
+  await page.locator(".view-tabs button").filter({ hasText: "导出" }).click();
+  assert.equal(await page.locator(".export-button").isDisabled(), true);
+  assert.match(await page.locator(".export-heading .status-mark").innerText(), /等待检查/);
+  await page.locator(".view-tabs button").filter({ hasText: "回放" }).click();
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.validateEpisode), 1);
+  await cancel.click();
+  await page.waitForFunction(() => !document.querySelector(".progress-strip"));
+  await page.locator(".episode-item").filter({ hasText: "episode-1" }).dblclick();
+  await page.waitForFunction(() => window.__concurrencyMock.calls.validateEpisode === 2);
   await page.waitForFunction(() => !document.querySelector(".progress-strip"));
   assert.equal(await rescan.isDisabled(), false);
 
