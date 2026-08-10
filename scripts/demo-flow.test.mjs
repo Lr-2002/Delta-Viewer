@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
 import { after, before, test } from "node:test";
@@ -11,6 +11,7 @@ const browserExecutable = findBrowserExecutable();
 const requireBrowser = process.env.DEMO_FLOW_REQUIRE_BROWSER === "1";
 const cleanViewport = parseViewport(process.env.DEMO_FLOW_CLEAN_VIEWPORT) ?? { width: 1440, height: 920 };
 const batchViewport = parseViewport(process.env.DEMO_FLOW_BATCH_VIEWPORT) ?? { width: 1440, height: 920 };
+const skeletonScreenshotDirectory = process.env.DEMO_FLOW_SKELETON_SCREENSHOT_DIR;
 const fixture = JSON.parse(readFileSync(resolve(root, "public/demo/fixture.json"), "utf8"));
 const expectedFixture = {
   formatVersion: 1,
@@ -199,7 +200,7 @@ if (!browserExecutable) {
   });
 
   test("SMPL skeleton renders beside synchronized frames and stacks on a narrow viewport", async () => {
-    for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
+    for (const viewport of [{ width: 1440, height: 920 }, { width: 960, height: 680 }, { width: 390, height: 844 }]) {
       const context = await browser.newContext({ viewport });
       const page = await context.newPage();
       await registerDemoAccount(page, baseUrl, `skeleton-${viewport.width}`);
@@ -219,15 +220,35 @@ if (!browserExecutable) {
         const pixels = new Uint8Array(canvas.width * canvas.height * 4);
         gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
         let visiblePixels = 0;
+        let bonePixels = 0;
+        let minBoneX = canvas.width;
+        let maxBoneX = -1;
+        let minBoneY = canvas.height;
+        let maxBoneY = -1;
         for (let index = 0; index < pixels.length; index += 4) {
           if (pixels[index + 3] > 0 && (pixels[index] > 30 || pixels[index + 1] > 35 || pixels[index + 2] > 35)) {
             visiblePixels += 1;
           }
+          if (pixels[index + 1] > 90 && pixels[index + 1] > pixels[index] * 1.35 && pixels[index + 2] > pixels[index] * 1.3) {
+            const pixel = index / 4;
+            const x = pixel % canvas.width;
+            const y = Math.floor(pixel / canvas.width);
+            bonePixels += 1;
+            minBoneX = Math.min(minBoneX, x);
+            maxBoneX = Math.max(maxBoneX, x);
+            minBoneY = Math.min(minBoneY, y);
+            maxBoneY = Math.max(maxBoneY, y);
+          }
         }
-        return { camera, skeleton, visiblePixels, scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth };
+        const boneBounds = bonePixels > 0
+          ? { width: maxBoneX - minBoneX + 1, height: maxBoneY - minBoneY + 1 }
+          : null;
+        return { camera, skeleton, visiblePixels, bonePixels, boneBounds, scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth };
       });
       assert.ok(layout, `missing skeleton layout at ${viewport.width}px`);
       assert.ok(layout.visiblePixels > 100, `blank skeleton canvas at ${viewport.width}px`);
+      assert.ok(layout.bonePixels > 20, `missing skeleton bones at ${viewport.width}px`);
+      assert.ok(layout.boneBounds.height > layout.boneBounds.width, `skeleton is not upright at ${viewport.width}px: ${JSON.stringify(layout.boneBounds)}`);
       if (viewport.width > 760) {
         assert.ok(layout.skeleton.left >= layout.camera.right - 0.5, JSON.stringify(layout));
         assert.ok(Math.abs(layout.skeleton.top - layout.camera.top) < 0.5, JSON.stringify(layout));
@@ -235,6 +256,43 @@ if (!browserExecutable) {
         assert.ok(layout.skeleton.top >= layout.camera.bottom - 0.5, JSON.stringify(layout));
       }
       assert.ok(layout.scrollWidth <= layout.viewportWidth, JSON.stringify(layout));
+      if (skeletonScreenshotDirectory) {
+        mkdirSync(resolve(root, skeletonScreenshotDirectory), { recursive: true });
+        await page.screenshot({
+          path: resolve(root, skeletonScreenshotDirectory, `skeleton-${viewport.width}x${viewport.height}.png`),
+          fullPage: true,
+        });
+      }
+      if (viewport.width > 760) {
+        const canvas = page.getByLabel("SMPL 骨架三维视图");
+        const checksum = () => canvas.evaluate((element) => {
+          const gl = element.getContext("webgl2") ?? element.getContext("webgl");
+          if (!gl) return 0;
+          const pixels = new Uint8Array(element.width * element.height * 4);
+          gl.readPixels(0, 0, element.width, element.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+          let hash = 2166136261;
+          for (let index = 0; index < pixels.length; index += 16) {
+            hash = Math.imul(hash ^ pixels[index] ^ pixels[index + 1] ^ pixels[index + 2], 16777619);
+          }
+          return hash >>> 0;
+        });
+        const initialChecksum = await checksum();
+        for (let step = 0; step < 15; step += 1) await page.getByRole("button", { name: "下一帧" }).click();
+        await page.waitForFunction(() => document.querySelector(".segment-frame-readout")?.textContent?.includes("帧 15 / 195"));
+        await page.waitForTimeout(100);
+        const animatedChecksum = await checksum();
+        assert.notEqual(animatedChecksum, initialChecksum, "skeleton canvas did not update with playback frame");
+
+        await canvas.scrollIntoViewIfNeeded();
+        const canvasBounds = await canvas.boundingBox();
+        assert.ok(canvasBounds, "missing skeleton canvas bounds");
+        await page.mouse.move(canvasBounds.x + canvasBounds.width / 2, canvasBounds.y + canvasBounds.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(canvasBounds.x + canvasBounds.width / 2 + 48, canvasBounds.y + canvasBounds.height / 2 + 12, { steps: 4 });
+        await page.mouse.up();
+        await page.waitForTimeout(100);
+        assert.notEqual(await checksum(), animatedChecksum, "skeleton orbit controls did not redraw the canvas");
+      }
       await context.close();
     }
   });

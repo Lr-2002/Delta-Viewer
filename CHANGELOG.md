@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.30 - 2026-08-10
+
+- Aligned SMPL and COCO source coordinates to a stable Y-up playback view so
+  Z-up skeleton captures open standing instead of lying on their side.
+- Added unit and browser regression coverage for upright framing, synchronized
+  skeleton motion, orbit interaction, nonblank canvas pixels, and narrow layout.
+
 ## 0.17.29 - 2026-08-10
 
 - Added guarded deletion for unused custom tasks while preserving built-in and

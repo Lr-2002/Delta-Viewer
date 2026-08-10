@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { SkeletonFrame, SkeletonSeries } from "../types";
+import {
+  createSkeletonAlignment,
+  skeletonOrigin,
+  transformSkeletonPoint,
+} from "../lib/skeletonOrientation";
 
 interface SkeletonViewerProps {
   skeleton: SkeletonSeries;
@@ -53,6 +58,7 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
     const camera = new THREE.PerspectiveCamera(42, 1, 0.001, 1000);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 0.15, 0);
+    camera.up.set(0, 1, 0);
 
     const jointsGeometry = new THREE.BufferGeometry();
     const jointPositions = new Float32Array(skeleton.jointCount * 3);
@@ -61,6 +67,7 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
     scene.add(new THREE.Points(jointsGeometry, jointsMaterial));
 
     const edges = skeletonEdges(skeleton.jointCount);
+    const alignment = createSkeletonAlignment(skeleton);
     const bonesGeometry = new THREE.BufferGeometry();
     const bonePositions = new Float32Array(edges.length * 6);
     bonesGeometry.setAttribute("position", new THREE.BufferAttribute(bonePositions, 3));
@@ -79,7 +86,7 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
     const update = (requestedFrame: number) => {
       const frame = closestFrame(skeleton.frames, requestedFrame);
       if (!frame) return;
-      extent = fillJointPositions(frame, jointPositions, bonePositions, edges);
+      extent = fillJointPositions(frame, jointPositions, bonePositions, edges, alignment, skeleton.jointCount);
       jointsGeometry.attributes.position.needsUpdate = true;
       bonesGeometry.attributes.position.needsUpdate = true;
       render();
@@ -169,15 +176,19 @@ function fillJointPositions(
   jointPositions: Float32Array,
   bonePositions: Float32Array,
   edges: [number, number][],
+  alignment: THREE.Quaternion,
+  jointCount: number,
 ): number {
-  const origin = frame.joints[0] ?? [0, 0, 0];
+  const origin = skeletonOrigin(frame, jointCount);
   let extent = 0.5;
+  const transformed = new THREE.Vector3();
   for (let index = 0; index < jointPositions.length / 3; index += 1) {
-    const point = frame.joints[index] ?? origin;
+    const point = frame.joints[index] ?? [origin.x, origin.y, origin.z] as [number, number, number];
     const offset = index * 3;
-    jointPositions[offset] = point[0] - origin[0];
-    jointPositions[offset + 1] = point[1] - origin[1];
-    jointPositions[offset + 2] = point[2] - origin[2];
+    transformSkeletonPoint(point, origin, alignment, transformed);
+    jointPositions[offset] = transformed.x;
+    jointPositions[offset + 1] = transformed.y;
+    jointPositions[offset + 2] = transformed.z;
     extent = Math.max(extent, Math.hypot(jointPositions[offset], jointPositions[offset + 1], jointPositions[offset + 2]));
   }
   for (const [edgeIndex, [from, to]] of edges.entries()) {

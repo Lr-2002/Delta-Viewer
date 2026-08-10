@@ -127,7 +127,8 @@ export function createDemoSkeleton(fixture: DemoFixture): SkeletonSeries {
         joints: DEMO_SMPL_JOINTS.map(([x, y, z], index) => {
           const armSwing = index >= 18 ? Math.sin(phase * 2.2) * (index % 2 === 0 ? 0.11 : -0.11) : 0;
           const torsoShift = Math.sin(phase * 0.8) * 0.025;
-          return [x, y + (index >= 18 ? armSwing : 0), z + torsoShift] as [number, number, number];
+          // Exercise a Z-up source coordinate system in browser regressions.
+          return [x, -(z + torsoShift), y + (index >= 18 ? armSwing : 0)] as [number, number, number];
         }),
       };
     }),
