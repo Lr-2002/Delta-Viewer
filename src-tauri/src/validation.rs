@@ -7,7 +7,7 @@ use crate::model::{
 };
 use crate::source::{collect_stream_files, emit_progress, is_regular_file, scan_episode};
 use crate::{importer, storage};
-use image::ImageReader;
+use image::{DynamicImage, GenericImageView, ImageReader};
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -18,13 +18,23 @@ use tauri::AppHandle;
 
 pub const IMAGE_SAMPLE_PERCENTAGES: [u8; 5] = [1, 25, 50, 73, 99];
 const MIN_FRAME_RATE_INTERVALS: u64 = 3;
+const FRAME_RATE_STABILITY_BAND_PERCENT: f64 = 10.0;
+const MIN_FRAME_RATE_STABILITY_PERCENT: f64 = 90.0;
+const BLACK_SCREEN_LUMA_THRESHOLD: f64 = 8.0;
+const BLACK_SCREEN_DARK_RATIO: f64 = 0.995;
 
 pub fn validate_episode(
     root: &Path,
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<ValidationReport> {
-    validate_episode_with_mode(root, app, cancelled, ImageValidationMode::Sampled)
+    validate_episode_with_mode(
+        root,
+        app,
+        cancelled,
+        ImageValidationMode::Sampled,
+        "validate",
+    )
 }
 
 pub fn validate_episode_full(
@@ -32,7 +42,15 @@ pub fn validate_episode_full(
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<ValidationReport> {
-    validate_episode_with_mode(root, app, cancelled, ImageValidationMode::Full)
+    validate_episode_with_mode(root, app, cancelled, ImageValidationMode::Full, "validate")
+}
+
+pub fn validate_episode_full_for_import(
+    root: &Path,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+) -> AppResult<ValidationReport> {
+    validate_episode_with_mode(root, app, cancelled, ImageValidationMode::Full, "import")
 }
 
 fn validate_episode_with_mode(
@@ -40,6 +58,7 @@ fn validate_episode_with_mode(
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
     image_validation_mode: ImageValidationMode,
+    progress_task: &str,
 ) -> AppResult<ValidationReport> {
     let started = Instant::now();
     let summary = scan_episode(root, app, cancelled)?;
@@ -141,8 +160,11 @@ fn validate_episode_with_mode(
         let mut decode_failures = 0;
         let mut dimension_mismatches = 0;
         let mut checked_frames = 0;
+        let mut black_screen_frames = 0_u64;
+        let mut first_black_screen_frame = None;
         let stream_files = collect_stream_files(root, &stream.name, cancelled)?;
         let mut stream_has_error = false;
+        let mut stream_has_warning = false;
         if stream.frame_count == 0 {
             issues.push(issue(
                 Severity::Error,
@@ -259,6 +281,11 @@ fn validate_episode_with_mode(
                     } else {
                         expected_dimensions = Some(dimensions);
                     }
+                    if looks_like_black_screen(&image) {
+                        black_screen_frames = black_screen_frames.saturating_add(1);
+                        first_black_screen_frame.get_or_insert(*frame_id);
+                        stream_has_warning = true;
+                    }
                 }
                 Err(error) => {
                     decode_failures += 1;
@@ -279,7 +306,7 @@ fn validate_episode_with_mode(
                 emit_progress(
                     app,
                     crate::model::ProgressPayload {
-                        task: "validate".into(),
+                        task: progress_task.into(),
                         phase: match image_validation_mode {
                             ImageValidationMode::Sampled => "抽检图像".into(),
                             ImageValidationMode::Full => "校验图像".into(),
@@ -294,9 +321,22 @@ fn validate_episode_with_mode(
                 );
             }
         }
+        if let Some(frame_id) = first_black_screen_frame {
+            let mode = match image_validation_mode {
+                ImageValidationMode::Sampled => "抽检到",
+                ImageValidationMode::Full => "检测到",
+            };
+            issues.push(issue_at(
+                Severity::Warning,
+                "BLACK_SCREEN",
+                &stream.name,
+                &format!("{mode} {black_screen_frames} 个近乎全黑图像帧，建议标注该数据"),
+                i64::try_from(frame_id).unwrap_or(i64::MAX),
+            ));
+        }
         let status = if stream_has_error || decode_failures > 0 || dimension_mismatches > 0 {
             "error"
-        } else if stream.missing_frame_count > 0 {
+        } else if stream.missing_frame_count > 0 || stream_has_warning {
             "warning"
         } else {
             "ok"
@@ -328,7 +368,7 @@ fn validate_episode_with_mode(
     emit_progress(
         app,
         crate::model::ProgressPayload {
-            task: "validate".into(),
+            task: progress_task.into(),
             phase: "检查完成".into(),
             current: 1,
             total: 1,
@@ -624,6 +664,8 @@ fn check_state_sequence(
             measured_fps: None,
             tolerance_percent: STATE_FRAME_RATE_TOLERANCE_PERCENT,
             interval_count: 0,
+            stability_percent: None,
+            stable: None,
         };
     }
     for pair in states.windows(2) {
@@ -695,6 +737,20 @@ fn check_state_sequence(
                 ));
             }
         }
+        if frame_rate.stable == Some(false) {
+            issues.push(issue(
+                Severity::Warning,
+                "FRAME_RATE_UNSTABLE",
+                "states",
+                &format!(
+                    "状态帧率中位 {:.2} FPS，但仅 {:.1}% 的时间间隔落在中位周期 ±{:.0}% 内（要求至少 {:.0}%）",
+                    frame_rate.measured_fps.unwrap_or_default(),
+                    frame_rate.stability_percent.unwrap_or_default(),
+                    FRAME_RATE_STABILITY_BAND_PERCENT,
+                    MIN_FRAME_RATE_STABILITY_PERCENT
+                ),
+            ));
+        }
     }
     frame_rate
 }
@@ -715,15 +771,60 @@ fn measure_state_frame_rate(states: &[RawStateRecord]) -> StateFrameRate {
         })
         .collect();
     frame_periods.sort_unstable();
-    let measured_fps = frame_periods
-        .get(frame_periods.len() / 2)
-        .map(|period| 1_000_000_000.0 / *period as f64);
+    let median_period = frame_periods.get(frame_periods.len() / 2).copied();
+    let measured_fps = median_period.map(|period| 1_000_000_000.0 / period as f64);
+    let stability_percent = median_period.map(|median| {
+        let stable_intervals = frame_periods
+            .iter()
+            .filter(|period| {
+                ((**period as f64 - median as f64).abs() / median as f64) * 100.0
+                    <= FRAME_RATE_STABILITY_BAND_PERCENT
+            })
+            .count();
+        stable_intervals as f64 / frame_periods.len() as f64 * 100.0
+    });
+    let stable = stability_percent.map(|value| value >= MIN_FRAME_RATE_STABILITY_PERCENT);
     StateFrameRate {
         expected_fps: EXPECTED_STATE_FRAME_RATE_FPS,
         measured_fps,
         tolerance_percent: STATE_FRAME_RATE_TOLERANCE_PERCENT,
         interval_count: frame_periods.len() as u64,
+        stability_percent,
+        stable,
     }
+}
+
+fn looks_like_black_screen(image: &DynamicImage) -> bool {
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return false;
+    }
+    let step_x = width.div_ceil(32);
+    let step_y = height.div_ceil(32);
+    let mut total = 0_u64;
+    let mut dark = 0_u64;
+    let mut luminance_sum = 0.0_f64;
+    let mut y = 0;
+    while y < height {
+        let mut x = 0;
+        while x < width {
+            let channels = image.get_pixel(x, y).0;
+            let luminance = 0.2126 * f64::from(channels[0])
+                + 0.7152 * f64::from(channels[1])
+                + 0.0722 * f64::from(channels[2]);
+            total = total.saturating_add(1);
+            luminance_sum += luminance;
+            if luminance <= BLACK_SCREEN_LUMA_THRESHOLD {
+                dark = dark.saturating_add(1);
+            }
+            x = x.saturating_add(step_x);
+        }
+        y = y.saturating_add(step_y);
+    }
+    total > 0
+        && luminance_sum / total as f64 <= BLACK_SCREEN_LUMA_THRESHOLD
+        && dark as f64 / total as f64 >= BLACK_SCREEN_DARK_RATIO
 }
 
 fn issue(severity: Severity, code: &str, scope: &str, message: &str) -> ValidationIssue {
@@ -931,6 +1032,8 @@ mod tests {
         assert_eq!(nominal_rate.expected_fps, 30);
         assert_eq!(nominal_rate.interval_count, 3);
         assert!(matches!(nominal_rate.measured_fps, Some(fps) if (fps - 30.0).abs() < 0.001));
+        assert_eq!(nominal_rate.stable, Some(true));
+        assert!(matches!(nominal_rate.stability_percent, Some(value) if value > 99.9));
         assert!(!nominal_issues
             .iter()
             .any(|issue| issue.code == "FRAME_RATE_MISMATCH"));
@@ -967,6 +1070,20 @@ mod tests {
         assert_eq!(mismatch.severity, Severity::Warning);
         assert_eq!(mismatch.frame_id, None);
         assert!(mismatch.message.contains("25.00 FPS"));
+
+        let unstable = vec![
+            state(0, 0),
+            state(1, 33_333_333),
+            state(2, 66_666_666),
+            state(3, 166_666_666),
+            state(4, 183_333_333),
+        ];
+        let mut unstable_issues = Vec::new();
+        let unstable_rate = check_state_sequence(&unstable, &mut unstable_issues);
+        assert_eq!(unstable_rate.stable, Some(false));
+        assert!(unstable_issues
+            .iter()
+            .any(|issue| issue.code == "FRAME_RATE_UNSTABLE"));
     }
 
     #[test]
@@ -1034,10 +1151,10 @@ mod tests {
 
         let missing = valid_episode("missing-frame", &[0, 1, 2]);
         fs::remove_file(missing.join("cam0/1.jpg")).unwrap();
-        let report = report(&missing);
-        assert!(has_code(&report, "MISSING_FRAMES"));
+        let missing_report = report(&missing);
+        assert!(has_code(&missing_report, "MISSING_FRAMES"));
         assert_eq!(
-            report
+            missing_report
                 .issues
                 .iter()
                 .find(|issue| issue.code == "MISSING_FRAMES")
@@ -1076,6 +1193,27 @@ mod tests {
         fs::rename(mismatch.join("cam0/1.jpg"), mismatch.join("cam0/11.jpg")).unwrap();
         assert_codes(&mismatch, &["FRAME_ID_MISMATCH"]);
         fs::remove_dir_all(mismatch).unwrap();
+
+        let black = valid_episode("black-screen", &[0, 1, 2, 3, 4]);
+        write_jpeg_value(&black.join("cam0/2.jpg"), 1, 1, 0);
+        let black_report = report(&black);
+        let issue = black_report
+            .issues
+            .iter()
+            .find(|issue| issue.code == "BLACK_SCREEN")
+            .unwrap();
+        assert_eq!(issue.severity, Severity::Warning);
+        assert_eq!(issue.frame_id, Some(2));
+        assert_eq!(
+            black_report
+                .streams
+                .iter()
+                .find(|stream| stream.name == "cam0")
+                .unwrap()
+                .status,
+            "warning"
+        );
+        fs::remove_dir_all(black).unwrap();
     }
 
     #[test]
@@ -1228,6 +1366,8 @@ mod tests {
             measured_fps: Some(f64::from(EXPECTED_STATE_FRAME_RATE_FPS)),
             tolerance_percent: STATE_FRAME_RATE_TOLERANCE_PERCENT,
             interval_count: 3,
+            stability_percent: Some(100.0),
+            stable: Some(true),
         }
     }
 
@@ -1238,7 +1378,11 @@ mod tests {
     }
 
     fn write_jpeg(path: &std::path::Path, width: u32, height: u32) {
-        let pixels = vec![127_u8; width as usize * height as usize * 3];
+        write_jpeg_value(path, width, height, 127);
+    }
+
+    fn write_jpeg_value(path: &std::path::Path, width: u32, height: u32, value: u8) {
+        let pixels = vec![value; width as usize * height as usize * 3];
         let mut bytes = Vec::new();
         JpegEncoder::new(&mut bytes)
             .encode(&pixels, width, height, ExtendedColorType::Rgb8)

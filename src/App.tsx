@@ -1227,6 +1227,10 @@ function App() {
                       offlineMode={isOfflineWorkspace}
                       busy={busy}
                       onTaskCreated={(task) => setTasks((current) => [...current, task])}
+                      onTaskDeleted={(taskId) => {
+                        setTasks((current) => current.filter((task) => task.id !== taskId));
+                        setAnnotation((current) => (current?.taskId === taskId ? null : current));
+                      }}
                       onSaved={setAnnotation}
                       onError={setError}
                       onNotice={setNotice}

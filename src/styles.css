@@ -272,8 +272,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .annotation-fields input, .annotation-fields select { width: 100%; height: 30px; min-width: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 12px; }
 .annotation-fields input[readonly] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; background: var(--surface-alt); }
 .annotation-fields label small, .annotation-task-field small { color: var(--subtle); font-size: 9px; font-weight: 500; }
-.annotation-task-control { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 30px; gap: 5px; }
-.annotation-task-add { width: 30px; height: 30px; }
+.annotation-task-control { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 30px 30px; gap: 5px; }
+.annotation-task-add, .annotation-task-delete { width: 30px; height: 30px; }
 .annotation-processor { min-height: 30px; display: flex; align-items: center; gap: 8px; padding-top: 0; }
 .annotation-processor > span { min-width: 0; display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 6px; }
 .annotation-processor small { color: var(--subtle); font-size: 9px; }
@@ -289,10 +289,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .frame-counter { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .camera-section { --time-axis-left: 55px; --time-axis-right: 17px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
 .replay-visual-row.with-skeleton { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, .72fr); gap: 7px; align-items: stretch; }
-.camera-grid { height: clamp(300px, 49vh, 520px); min-height: 300px; display: grid; grid-template-columns: 1.6fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 7px; }
+.camera-grid { height: clamp(320px, 52vh, 560px); min-height: 320px; display: grid; grid-template-columns: 2.2fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 7px; }
 .replay-visual-row > .camera-grid { min-width: 0; }
 .skeleton-side-panel { min-width: 0; display: flex; }
-.skeleton-side-panel > .skeleton-viewer { width: 100%; height: clamp(300px, 49vh, 520px); min-height: 300px; margin: 0; display: flex; flex-direction: column; }
+.skeleton-side-panel > .skeleton-viewer { width: 100%; height: clamp(320px, 52vh, 560px); min-height: 320px; margin: 0; display: flex; flex-direction: column; }
 .skeleton-side-panel > .skeleton-viewer .skeleton-canvas { flex: 1; height: auto; min-height: 0; }
 .skeleton-side-panel > .skeleton-load-error { width: 100%; align-self: stretch; margin: 0; align-content: start; }
 .camera-0 { grid-area: 1 / 1 / 3 / 2; }
@@ -438,6 +438,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .export-result { min-height: 65px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 12px; margin-top: 14px; padding: 10px 13px; border: 1px solid #bdbdbd; border-radius: 7px; color: #333333; background: #f1f1f1; }
 .export-result > div:nth-child(2) { min-width: 0; }
 .export-result strong, .export-result span { display: block; }
+.export-result small { display: block; margin-top: 3px; overflow: hidden; color: var(--subtle); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .export-result strong { margin-bottom: 4px; font-size: 12px; }
 .export-result span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; }
 .export-result-meta { display: flex; align-items: center; gap: 12px; font-variant-numeric: tabular-nums; }

@@ -71,6 +71,7 @@ prompt while installing the replacement deb.
 6. Select an episode task or create one by entering its name, then edit the task
    description as needed. Rust assigns the next `{task-prefix}-{NNN}` trajectory
    code atomically when the annotation is saved; the UI cannot set the number.
+   Unused custom tasks can be deleted; built-in or referenced tasks are preserved.
 7. Review five synchronized image streams and colored state telemetry. If the episode
    includes an optional `smpl_skeleton.npz`, a synchronized interactive 3D skeleton is
    shown to the right of the images on desktop and below them in a narrow window. Select
@@ -87,8 +88,9 @@ prompt while installing the replacement deb.
     an append-only local operation history. Permission failures retain the raw
     platform message and are classified as `PERMISSION_DENIED`.
 
-Interactive health reports use format v4 and explicitly identify sampled image
-validation, the five percentages, and `autoReportPath`. Automatic reporting is
+Interactive health reports use format v5 and explicitly identify sampled image
+validation, the five percentages, median FPS, interval stability, black-screen
+warnings, and `autoReportPath`. Automatic reporting is
 strictly local and never writes to the SD card or source episode; repeated
 checks of the same episode path and fingerprint reuse one report. Formal stress
 and release smoke tests still decode every JPEG; a sampled result does not claim

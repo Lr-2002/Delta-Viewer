@@ -108,9 +108,21 @@ if (!browserExecutable) {
     await registerDemoAccount(page, baseUrl, "clean");
     await page.getByText("多路回放", { exact: true }).waitFor();
     await page.locator('img[alt="Camera 0 frame 0"]').waitFor();
+    await page.waitForFunction(() => {
+      const images = [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")];
+      return images.length === 5 && images.every((image) => image.naturalWidth > 0);
+    });
+    const cameraWidths = await page.locator(".camera-grid").evaluate((grid) => ({
+      cam0: grid.querySelector(".camera-0")?.getBoundingClientRect().width ?? 0,
+      cam1: grid.querySelector(".camera-1")?.getBoundingClientRect().width ?? 0,
+      scrollWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    }));
 
     assert.deepEqual(fileSystemResponses, []);
     assert.ok(fixtureStatuses.includes(200));
+    assert.ok(cameraWidths.cam0 >= cameraWidths.cam1 * 1.9, JSON.stringify(cameraWidths));
+    assert.ok(cameraWidths.scrollWidth <= cameraWidths.viewportWidth, JSON.stringify(cameraWidths));
     if (process.env.DEMO_FLOW_CLEAN_SCREENSHOT) {
       await page.screenshot({ path: resolve(root, process.env.DEMO_FLOW_CLEAN_SCREENSHOT), fullPage: true });
     }
@@ -135,6 +147,14 @@ if (!browserExecutable) {
     await page.getByLabel("新任务名称").fill("离线整理");
     await page.locator(".task-create-form button[type=submit]").click();
     await page.getByLabel("轨迹编码").waitFor();
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "删除当前自定义任务" }).click();
+    await page.getByText("任务已删除：离线整理", { exact: true }).waitFor();
+    assert.equal(await page.getByLabel("任务").locator('option[value="离线整理"]').count(), 0);
+    await page.getByRole("button", { name: "创建任务" }).click();
+    await page.getByLabel("新任务名称").fill("离线整理");
+    await page.locator(".task-create-form button[type=submit]").click();
+    await page.waitForFunction(() => document.querySelector('input[aria-label="轨迹编码"]')?.value === "离线整理-001");
     await page.locator(".annotation-description textarea").fill("离线任务描述");
     await page.getByRole("button", { name: "保存标注" }).click();
     await page.getByText("已保存 · r1", { exact: true }).waitFor();
@@ -271,6 +291,12 @@ if (!browserExecutable) {
     });
     assert.ok(coloredPixels.every((count) => count > 0), `missing telemetry colors: ${coloredPixels}`);
 
+    await page.getByRole("button", { name: "导出", exact: true }).click();
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "选择目录并导出" }).click();
+    await page.locator(".export-result").waitFor();
+    assert.match(await page.locator(".export-result").innerText(), /Metadata 已写入/);
+
     await page.getByRole("button", { name: "批量", exact: true }).click();
     await page.getByText("整理餐具-001", { exact: true }).waitFor();
     await page.waitForFunction(() => (
@@ -318,7 +344,7 @@ if (!browserExecutable) {
     await context.close();
   });
 
-  test("checks show the expected and measured state frame rate without overflow", async () => {
+  test("checks show the expected, measured, and stable state frame rate without overflow", async () => {
     for (const viewport of [
       { width: 1440, height: 920 },
       { width: 960, height: 680 },
@@ -337,7 +363,7 @@ if (!browserExecutable) {
 
       await registerDemoAccount(page, baseUrl, `frame-rate-${viewport.width}`);
       await page.getByRole("button", { name: "检查", exact: true }).click();
-      await page.getByText("状态记录 · 目标 30 FPS / 实测 29.50 FPS", { exact: true }).waitFor();
+      await page.getByText("状态记录 · 目标 30 FPS / 中位 29.50 FPS / 稳定度 91.8%", { exact: true }).waitFor();
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
         true,

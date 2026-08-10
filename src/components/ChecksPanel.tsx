@@ -45,7 +45,7 @@ export function ChecksPanel({
   const stateDetail = stateFrameRate?.measuredFps === null
     ? `状态记录 · 帧率样本不足（目标 ${stateFrameRate.expectedFps} FPS）`
     : stateFrameRate
-      ? `状态记录 · 目标 ${stateFrameRate.expectedFps} FPS / 实测 ${stateFrameRate.measuredFps.toFixed(2)} FPS`
+      ? `状态记录 · 目标 ${stateFrameRate.expectedFps} FPS / 中位 ${stateFrameRate.measuredFps.toFixed(2)} FPS / 稳定度 ${stateFrameRate.stabilityPercent?.toFixed(1) ?? "—"}%`
       : "状态记录";
   const checkRows = [
     ...data.summary.streams.map((stream) => {

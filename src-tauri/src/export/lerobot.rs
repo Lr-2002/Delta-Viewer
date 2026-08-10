@@ -127,7 +127,8 @@ impl ExportAdapter for LeRobotV2Adapter {
                 "created_at_ms": context.provenance.annotation_created_at_ms,
                 "updated_at_ms": context.provenance.annotation_updated_at_ms,
                 "edit_started_at_ms": context.provenance.annotation_edit_started_at_ms,
-                "edit_duration_ms": context.provenance.annotation_edit_duration_ms
+                "edit_duration_ms": context.provenance.annotation_edit_duration_ms,
+                "segments": super::segment_metadata::clipped_segments(context)
             });
         }
         write_json(&meta_dir.join("info.json"), &info)?;
@@ -282,6 +283,8 @@ fn verify_lerobot_output(root: &Path, context: &ExportContext<'_>, fps: u32) -> 
             || info["dohc_annotation"]["revision"] != annotation.revision
             || info["dohc_annotation"]["updated_at_ms"] != annotation.updated_at_ms
             || info["dohc_annotation"]["edit_duration_ms"] != annotation.edit_duration_ms
+            || info["dohc_annotation"]["segments"]
+                != serde_json::Value::Array(super::segment_metadata::clipped_segments(context))
         {
             return Err(AppError::Message(
                 "LeRobot 回读验证失败: 数据标注不匹配".into(),

@@ -155,6 +155,7 @@ export function ExportPanel({
           <div>
             <strong>导出完成</strong>
             <span title={result.outputPath}>{shortPath(result.outputPath, 86)}</span>
+            {result.metadataPath ? <small title={result.metadataPath}>Metadata 已写入：{shortPath(result.metadataPath, 72)}</small> : null}
           </div>
           <div className="export-result-meta">
             <span>{result.totalFiles} 个文件</span>

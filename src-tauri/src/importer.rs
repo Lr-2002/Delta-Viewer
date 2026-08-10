@@ -176,6 +176,7 @@ pub fn import_episode(
         total_bytes,
         dataset_blake3,
         elapsed_ms: started.elapsed().as_millis(),
+        validation_report: None,
     })
 }
 

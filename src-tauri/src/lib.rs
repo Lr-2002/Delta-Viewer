@@ -277,6 +277,22 @@ async fn create_task_definition(
 }
 
 #[tauri::command]
+async fn delete_task_definition(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    task_id: String,
+) -> Result<(), String> {
+    let user = auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        annotations::delete_task(&data_root, &user, &task_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn suggest_trajectory_code(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -437,6 +453,11 @@ async fn import_episode(
     auth.require_user().map_err(|error| error.to_string())?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
+    let reports_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("无法定位应用报告目录: {error}"))?
+        .join("reports");
     emit_task_start(
         &app,
         operation_id,
@@ -444,15 +465,28 @@ async fn import_episode(
         "导入预检",
         &destination_parent,
     );
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ImportResult> {
         let _task = task;
         let _progress = source::enter_operation_progress(operation_id);
-        importer::import_episode(
-            Path::new(&source_path),
+        let source_path = Path::new(&source_path);
+        let before = source::episode_fingerprint(source_path, &cancelled)?;
+        let mut report =
+            validation::validate_episode_full_for_import(source_path, Some(&app), &cancelled)?;
+        let after = source::episode_fingerprint(source_path, &cancelled)?;
+        if before != after {
+            return Err(error::AppError::Message(
+                "数据在导入检查过程中发生变化，请重新导入".into(),
+            ));
+        }
+        validation::persist_background_report(&mut report, &after, &reports_dir, &cancelled)?;
+        let mut result = importer::import_episode(
+            source_path,
             Path::new(&destination_parent),
             Some(&app),
             &cancelled,
-        )
+        )?;
+        result.validation_report = Some(report);
+        Ok(result)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -760,6 +794,7 @@ pub fn run() {
             logout_account,
             list_task_definitions,
             create_task_definition,
+            delete_task_definition,
             suggest_trajectory_code,
             load_episode_annotation,
             save_episode_annotation,

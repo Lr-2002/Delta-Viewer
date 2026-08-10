@@ -25,6 +25,30 @@ pub(super) fn write_companion_metadata(
     Ok(Some(output))
 }
 
+pub(super) fn clipped_segments(context: &ExportContext<'_>) -> Vec<serde_json::Value> {
+    context
+        .annotation
+        .map(|annotation| {
+            annotation
+                .segments
+                .iter()
+                .filter_map(|segment| {
+                    let start_frame = segment.start_frame.max(context.range.start_frame);
+                    let end_frame = segment.end_frame.min(context.range.end_frame);
+                    (start_frame <= end_frame).then(|| {
+                        json!({
+                            "startFrame": start_frame,
+                            "endFrame": end_frame,
+                            "title": segment.title,
+                            "note": segment.note
+                        })
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn write_metadata(
     context: &ExportContext<'_>,
     output: &std::path::Path,
@@ -45,22 +69,7 @@ fn write_metadata(
         )
         .map(|(end, start)| end.saturating_sub(start).to_string());
     let annotation_metadata = context.annotation.map(|annotation| {
-        let segments = annotation
-            .segments
-            .iter()
-            .filter_map(|segment| {
-                let start_frame = segment.start_frame.max(context.range.start_frame);
-                let end_frame = segment.end_frame.min(context.range.end_frame);
-                (start_frame <= end_frame).then(|| {
-                    json!({
-                        "startFrame": start_frame,
-                        "endFrame": end_frame,
-                        "title": segment.title,
-                        "note": segment.note
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
+        let segments = clipped_segments(context);
         json!({
             "trajectoryCode": annotation.trajectory_code,
             "taskId": annotation.task_id,

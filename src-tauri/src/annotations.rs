@@ -11,6 +11,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const ANNOTATION_FORMAT_VERSION: u32 = 3;
@@ -19,6 +20,7 @@ const TASK_FORMAT_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: u64 = 256 * 1024;
 const MAX_TASKS: usize = 500;
 const MAX_BATCH_EPISODES: usize = 10_000;
+static ANNOTATION_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -96,6 +98,7 @@ pub fn create_task(
     user: &UserIdentity,
     request: CreateTaskRequest,
 ) -> AppResult<TaskDefinition> {
+    let _guard = annotation_mutation_guard()?;
     identity::validate_user_identity(user)?;
     let label = validate_task_label(&request.label)?;
     let code_prefix = task_code_prefix(&label)?;
@@ -134,6 +137,37 @@ pub fn create_task(
     let digest = hasher.finalize().to_hex().to_string();
     write_json_noreplace(&record, &directory.join(format!("{}.json", &digest[..24])))?;
     Ok(task)
+}
+
+pub fn delete_task(data_root: &Path, user: &UserIdentity, task_id: &str) -> AppResult<()> {
+    let _guard = annotation_mutation_guard()?;
+    identity::validate_user_identity(user)?;
+    let task = task_definition(data_root, task_id)?;
+    if built_in_task_definitions()
+        .iter()
+        .any(|builtin| builtin.id == task.id)
+    {
+        return Err(AppError::Message("TASK_BUILT_IN: 内置任务不能删除".into()));
+    }
+    if task_has_annotation_reference(data_root, &task.id)? {
+        return Err(AppError::Message(format!(
+            "TASK_IN_USE: 任务 {} 已被标注引用，不能删除",
+            task.label
+        )));
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(task.id.as_bytes());
+    let digest = hasher.finalize().to_hex().to_string();
+    let path = tasks_dir(data_root).join(format!("{}.json", &digest[..24]));
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| AppError::Message(format!("TASK_NOT_FOUND: 任务文件不可用: {error}")))?;
+    if !metadata.file_type().is_file() {
+        return Err(AppError::Message(
+            "TASK_RECORD_INVALID: 任务文件不是普通文件".into(),
+        ));
+    }
+    fs::remove_file(path)?;
+    Ok(())
 }
 
 pub fn suggest_trajectory_code(data_root: &Path, task_id: &str) -> AppResult<String> {
@@ -362,6 +396,7 @@ pub fn save_annotation(
     user: &UserIdentity,
     request: SaveAnnotationRequest,
 ) -> AppResult<EpisodeAnnotation> {
+    let _guard = annotation_mutation_guard()?;
     validate_fingerprint(fingerprint)?;
     identity::validate_user_identity(user)?;
     let task = task_definition(data_root, &request.task_id)?;
@@ -428,6 +463,38 @@ pub fn save_annotation(
         return Err(error);
     }
     Ok(annotation)
+}
+
+fn task_has_annotation_reference(data_root: &Path, task_id: &str) -> AppResult<bool> {
+    let directory = annotations_dir(data_root);
+    if !directory.is_dir() {
+        return Ok(false);
+    }
+    for episode in fs::read_dir(directory)? {
+        let episode = episode?;
+        if !episode.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(episode.path())? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file()
+                || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+            {
+                continue;
+            }
+            let annotation: EpisodeAnnotation = read_json(&entry.path())?;
+            if annotation.task_id == task_id {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn annotation_mutation_guard() -> AppResult<MutexGuard<'static, ()>> {
+    ANNOTATION_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AppError::Message("ANNOTATION_LOCK_POISONED: 本地标注写锁不可用".into()))
 }
 
 fn validate_edit_started_at(value: u64, now: u64) -> AppResult<u64> {
@@ -852,8 +919,8 @@ fn unix_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        annotations_by_ids, create_task, list_annotations, load_annotation, save_annotation,
-        suggest_trajectory_code, task_definitions, ANNOTATION_FORMAT_VERSION,
+        annotations_by_ids, create_task, delete_task, list_annotations, load_annotation,
+        save_annotation, suggest_trajectory_code, task_definitions, ANNOTATION_FORMAT_VERSION,
     };
     use crate::model::{CreateTaskRequest, SaveAnnotationRequest, UserIdentity};
     use std::fs;
@@ -1002,6 +1069,55 @@ mod tests {
             },
         )
         .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deletes_unused_custom_tasks_but_preserves_referenced_tasks() {
+        let root = test_output("delete-task");
+        fs::create_dir_all(&root).unwrap();
+        let user = UserIdentity {
+            username: "operator".into(),
+            display_name: "Operator".into(),
+        };
+        let task = create_task(
+            &root,
+            &user,
+            CreateTaskRequest {
+                label: "整理餐具".into(),
+            },
+        )
+        .unwrap();
+        delete_task(&root, &user, &task.id).unwrap();
+        assert_eq!(task_definitions(&root).unwrap().len(), 1);
+
+        let task = create_task(
+            &root,
+            &user,
+            CreateTaskRequest {
+                label: "整理餐具".into(),
+            },
+        )
+        .unwrap();
+        save_annotation(
+            &root,
+            Path::new("/episode"),
+            FINGERPRINT_ONE,
+            &user,
+            request(&task.id, "整理餐具"),
+        )
+        .unwrap();
+        save_annotation(
+            &root,
+            Path::new("/episode"),
+            FINGERPRINT_ONE,
+            &user,
+            request("close_oven", "关闭烤箱门"),
+        )
+        .unwrap();
+        let error = delete_task(&root, &user, &task.id).unwrap_err().to_string();
+        assert!(error.starts_with("TASK_IN_USE:"));
+        assert!(delete_task(&root, &user, "close_oven").is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

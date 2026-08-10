@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ClipboardPen, Plus, Save, Tag, UserRound, X } from "lucide-react";
+import { ClipboardPen, Plus, Save, Tag, Trash2, UserRound, X } from "lucide-react";
 import {
+  confirmAction,
   createTaskDefinition,
+  deleteTaskDefinition,
   saveEpisodeAnnotation,
   suggestTrajectoryCode,
 } from "../lib/backend";
@@ -15,6 +17,7 @@ interface AnnotationPanelProps {
   offlineMode: boolean;
   busy: boolean;
   onTaskCreated: (task: TaskDefinition) => void;
+  onTaskDeleted: (taskId: string) => void;
   onSaved: (annotation: EpisodeAnnotation) => void;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
@@ -28,6 +31,7 @@ export function AnnotationPanel({
   offlineMode,
   busy,
   onTaskCreated,
+  onTaskDeleted,
   onSaved,
   onError,
   onNotice,
@@ -145,6 +149,23 @@ export function AnnotationPanel({
     }
   }
 
+  async function deleteTask() {
+    const task = tasks.find((item) => item.id === taskId);
+    if (!task || task.id === "close_oven") return;
+    if (!(await confirmAction(`确定删除任务“${task.label}”？`, "删除任务"))) return;
+    setCreatingTask(true);
+    onError("");
+    try {
+      await deleteTaskDefinition(task.id);
+      onTaskDeleted(task.id);
+      onNotice(`任务已删除：${task.label}`);
+    } catch (reason) {
+      onError(toMessage(reason));
+    } finally {
+      setCreatingTask(false);
+    }
+  }
+
   const lastProcessor = annotation?.processedBy ?? currentUser;
   return (
     <section className="annotation-section" aria-labelledby="annotation-title">
@@ -196,6 +217,16 @@ export function AnnotationPanel({
                 aria-expanded={taskCreatorOpen}
               >
                 {taskCreatorOpen ? <X size={15} /> : <Plus size={15} />}
+              </button>
+              <button
+                className="icon-button annotation-task-delete"
+                type="button"
+                onClick={() => void deleteTask()}
+                disabled={busy || saving || creatingTask || !taskId || taskId === "close_oven"}
+                title="删除当前自定义任务"
+                aria-label="删除当前自定义任务"
+              >
+                <Trash2 size={15} />
               </button>
             </div>
           </div>

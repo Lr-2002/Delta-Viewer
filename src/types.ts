@@ -186,6 +186,8 @@ export interface StateFrameRate {
   measuredFps: number | null;
   tolerancePercent: number;
   intervalCount: number;
+  stabilityPercent: number | null;
+  stable: boolean | null;
 }
 
 export interface ValidationReport {
@@ -235,6 +237,7 @@ export interface ImportResult {
   totalBytes: number;
   datasetBlake3: string;
   elapsedMs: number;
+  validationReport: ValidationReport | null;
 }
 
 export interface OperationErrorRecord {
@@ -264,6 +267,7 @@ export interface ExportRange {
 export interface ExportResult {
   format: ExportFormat;
   outputPath: string;
+  metadataPath: string | null;
   trajectoryCode: string | null;
   totalFiles: number;
   totalBytes: number;

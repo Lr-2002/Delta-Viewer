@@ -5,6 +5,15 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.29 - 2026-08-10
+
+- Added guarded deletion for unused custom tasks while preserving built-in and
+  referenced task definitions.
+- Added full pre-copy validation to explicit imports, bounded black-screen
+  detection, and report v5 median-FPS and frame-interval stability statistics.
+- Embedded clipped segment annotations in MCAP, HDF5, and LeRobot outputs,
+  returned the verified companion Metadata path, and enlarged the cam0 view.
+
 ## 0.17.28 - 2026-08-10
 
 - Restored episode-list focus only after React commits the loading state that
