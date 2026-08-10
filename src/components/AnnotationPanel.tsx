@@ -104,6 +104,9 @@ export function AnnotationPanel({
         taskId,
         taskDescription: description,
         editStartedAtMs,
+        clipStartFrame: annotation?.clipStartFrame ?? null,
+        clipEndFrame: annotation?.clipEndFrame ?? null,
+        segments: annotation?.segments ?? [],
       });
       setEditStartedAtMs(Date.now());
       onSaved(saved);

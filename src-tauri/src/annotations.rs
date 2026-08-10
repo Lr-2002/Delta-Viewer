@@ -13,7 +13,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const ANNOTATION_FORMAT_VERSION: u32 = 2;
+pub const ANNOTATION_FORMAT_VERSION: u32 = 3;
 const RESERVATION_FORMAT_VERSION: u32 = 1;
 const TASK_FORMAT_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: u64 = 256 * 1024;
@@ -366,6 +366,11 @@ pub fn save_annotation(
     identity::validate_user_identity(user)?;
     let task = task_definition(data_root, &request.task_id)?;
     let task_description = validate_description(&request.task_description)?;
+    validate_segments(
+        request.clip_start_frame,
+        request.clip_end_frame,
+        &request.segments,
+    )?;
     let id = episode_id(episode_root, fingerprint);
     let existing = load_annotation(data_root, episode_root, fingerprint)?;
     let trajectory_code =
@@ -401,6 +406,9 @@ pub fn save_annotation(
         updated_at_ms: now,
         edit_started_at_ms,
         edit_duration_ms: now.saturating_sub(edit_started_at_ms),
+        clip_start_frame: request.clip_start_frame,
+        clip_end_frame: request.clip_end_frame,
+        segments: request.segments,
     };
 
     let directory = annotations_dir(data_root).join(id);
@@ -686,6 +694,52 @@ fn validate_stored_annotation(
     {
         return Err(AppError::Message("标注记录格式无效".into()));
     }
+    validate_segments(
+        annotation.clip_start_frame,
+        annotation.clip_end_frame,
+        &annotation.segments,
+    )?;
+    Ok(())
+}
+
+fn validate_segments(
+    clip_start_frame: Option<u64>,
+    clip_end_frame: Option<u64>,
+    segments: &[crate::model::SegmentAnnotation],
+) -> AppResult<()> {
+    let (Some(clip_start), Some(clip_end)) = (clip_start_frame, clip_end_frame) else {
+        return if clip_start_frame.is_none() && clip_end_frame.is_none() && segments.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Message("片段保存范围不完整".into()))
+        };
+    };
+    if clip_start > clip_end || segments.is_empty() || segments.len() > 10_000 {
+        return Err(AppError::Message("片段保存范围无效".into()));
+    }
+    for (index, segment) in segments.iter().enumerate() {
+        if segment.start_frame > segment.end_frame
+            || segment.title.trim().is_empty()
+            || segment.title.chars().count() > 100
+            || segment.note.chars().count() > 500
+        {
+            return Err(AppError::Message("片段标注格式无效".into()));
+        }
+        if index == 0 && segment.start_frame != clip_start {
+            return Err(AppError::Message("片段没有覆盖保留范围起点".into()));
+        }
+        if let Some(previous) = index.checked_sub(1).and_then(|value| segments.get(value)) {
+            if previous.end_frame.checked_add(1) != Some(segment.start_frame) {
+                return Err(AppError::Message("片段之间存在重叠或空隙".into()));
+            }
+        }
+    }
+    if segments
+        .last()
+        .is_none_or(|segment| segment.end_frame != clip_end)
+    {
+        return Err(AppError::Message("片段没有覆盖保留范围终点".into()));
+    }
     Ok(())
 }
 
@@ -952,6 +1006,37 @@ mod tests {
     }
 
     #[test]
+    fn saves_segment_metadata_without_writing_to_episode() {
+        let root = test_output("episode-metadata");
+        let episode = root.join("episode");
+        fs::create_dir_all(&episode).unwrap();
+        fs::write(episode.join("states.jsonl"), b"state\n").unwrap();
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let fingerprint = crate::source::episode_fingerprint(&episode, &cancelled).unwrap();
+        let user = UserIdentity {
+            username: "operator".into(),
+            display_name: "Operator".into(),
+        };
+        let mut request = request("close_oven", "关闭烤箱门");
+        request.clip_start_frame = Some(0);
+        request.clip_end_frame = Some(9);
+        request.segments = vec![crate::model::SegmentAnnotation {
+            start_frame: 0,
+            end_frame: 9,
+            title: "片段 1".into(),
+            note: "完整动作".into(),
+        }];
+        let saved = save_annotation(&root, &episode, &fingerprint, &user, request).unwrap();
+        assert_eq!(saved.segments[0].note, "完整动作");
+        assert!(!episode.join("metadata.json").exists());
+        assert_eq!(
+            crate::source::episode_fingerprint(&episode, &cancelled).unwrap(),
+            fingerprint
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn lists_latest_annotations_and_preserves_requested_batch_order() {
         let root = test_output("annotation-list");
         let first_root = root.join("episodes").join("first");
@@ -1083,6 +1168,9 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64,
+            clip_start_frame: None,
+            clip_end_frame: None,
+            segments: Vec::new(),
         }
     }
 

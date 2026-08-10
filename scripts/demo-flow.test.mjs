@@ -148,16 +148,16 @@ if (!browserExecutable) {
     await context.close();
   });
 
-  test("trim selection rail aligns with both range controls", async () => {
+  test("trim handles share the segment editing track", async () => {
     for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
       const context = await browser.newContext({ viewport });
       const page = await context.newPage();
       await registerDemoAccount(page, baseUrl, `trim-${viewport.width}`);
-      await page.locator(".trim-editor").waitFor();
+      await page.locator(".segment-track").waitFor();
 
-      const alignment = await page.locator(".trim-editor").evaluate((editor) => {
-        const rail = editor.querySelector(".trim-selection-rail")?.getBoundingClientRect();
-        const controls = [...editor.querySelectorAll('.trim-range-row input[type="range"]')]
+      const alignment = await page.locator(".segment-track").evaluate((track) => {
+        const rail = track.getBoundingClientRect();
+        const controls = [...track.querySelectorAll('.segment-trim-handle')]
           .map((control) => control.getBoundingClientRect());
         return {
           rail: rail && { left: rail.left, right: rail.right },
@@ -167,7 +167,7 @@ if (!browserExecutable) {
         };
       });
 
-      assert.ok(alignment.rail, `missing trim rail at ${viewport.width}px`);
+      assert.ok(alignment.rail, `missing segment trim rail at ${viewport.width}px`);
       assert.equal(alignment.controls.length, 2);
       for (const control of alignment.controls) {
         assert.ok(Math.abs(alignment.rail.left - control.left) < 0.5, JSON.stringify(alignment));
@@ -375,36 +375,55 @@ if (!browserExecutable) {
   test("segment annotations create non-overlapping timeline drafts without viewport overflow", async () => {
     for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
       const context = await browser.newContext({ viewport });
-      const page = await context.newPage();
-      const consoleErrors = [];
-      const pageErrors = [];
-      page.on("console", (message) => {
-        if (message.type() === "error") consoleErrors.push(message.text());
-      });
-      page.on("pageerror", (error) => pageErrors.push(error.message));
+      try {
+        const page = await context.newPage();
+        const consoleErrors = [];
+        const pageErrors = [];
+        page.on("console", (message) => {
+          if (message.type() === "error") consoleErrors.push(message.text());
+        });
+        page.on("pageerror", (error) => pageErrors.push(error.message));
 
-      await registerDemoAccount(page, baseUrl, `segments-${viewport.width}`);
-      await page.locator(".segment-editor-embedded").waitFor();
-      assert.equal(await page.getByRole("button", { name: "分段标注", exact: true }).count(), 0);
-      await page.getByText("当前会话草稿 · 0 个片段", { exact: true }).waitFor();
-      const segmentTrack = page.locator(".segment-track");
-      const trackBox = await segmentTrack.boundingBox();
-      assert.ok(trackBox);
-      await segmentTrack.click({ position: { x: trackBox.width * (20 / 195), y: trackBox.height / 2 } });
-      await page.getByRole("button", { name: "创建到当前帧" }).click();
-      await page.getByLabel("片段注解").fill("右手拿起桌面上的工具并移动到操作区");
+        await registerDemoAccount(page, baseUrl, `segments-${viewport.width}`);
+        await page.locator(".segment-editor-embedded").waitFor();
+        assert.equal(await page.getByRole("button", { name: "分段标注", exact: true }).count(), 0);
+        await page.getByText("保留范围 · 帧 0–195 · 1 个片段", { exact: true }).waitFor();
+        await page.getByRole("button", { name: "保存标注" }).click();
+        await page.getByText("已保存 · r1", { exact: true }).waitFor();
+        const segmentTrack = page.locator(".segment-track");
+        const trackBox = await segmentTrack.boundingBox();
+        assert.ok(trackBox);
+        await segmentTrack.click({ position: { x: trackBox.width * (20 / 195), y: trackBox.height / 2 } });
+        await page.getByRole("button", { name: "在当前帧分割" }).click();
+        await page.getByLabel("片段名称").fill("拿取工具");
+        await page.getByLabel("片段注解").fill("右手拿起桌面上的工具并移动到操作区");
 
-      assert.match(await page.locator(".segment-list").innerText(), /右手拿起桌面上的工具/);
-      assert.match(await page.locator(".segment-list").innerText(), /帧 0–20/);
-      assert.equal(await page.locator(".segment-block").count(), 1);
-      await segmentTrack.click({ position: { x: trackBox.width * (40 / 195), y: trackBox.height / 2 } });
-      await page.getByRole("button", { name: "创建到当前帧" }).click();
-      assert.equal(await page.locator(".segment-block").count(), 2);
-      assert.equal(await page.locator(".camera-grid img[aria-hidden='false']").first().evaluate((image) => image.naturalWidth > 0), true);
-      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
-      assert.deepEqual(consoleErrors, []);
-      assert.deepEqual(pageErrors, []);
-      await context.close();
+        assert.match(await page.locator(".segment-list").innerText(), /拿取工具/);
+        assert.match(await page.locator(".segment-list").innerText(), /右手拿起桌面上的工具/);
+        assert.match(await page.locator(".segment-list").innerText(), /帧 21–195/);
+        assert.equal(await page.locator(".segment-block").count(), 2);
+        await segmentTrack.click({ position: { x: trackBox.width * (40 / 195), y: trackBox.height / 2 } });
+        await page.getByRole("button", { name: "在当前帧分割" }).click();
+        assert.equal(await page.locator(".segment-block").count(), 3);
+        await page.getByRole("button", { name: "保存片段", exact: true }).click();
+        await page.getByText("片段已保存到本机 · r2", { exact: true }).waitFor();
+        assert.match(await page.locator(".segment-list").innerText(), /拿取工具/);
+        await page.getByLabel("裁剪结束帧").fill("40");
+        await page.getByText("保留范围 · 帧 0–40 · 2 个片段", { exact: true }).waitFor();
+        await page.getByRole("button", { name: "保存片段", exact: true }).click();
+        await page.getByText("片段已保存到本机 · r3", { exact: true }).waitFor();
+        await page.getByRole("button", { name: "恢复完整轨迹" }).click();
+        await page.getByText("保留范围 · 帧 0–195 · 2 个片段", { exact: true }).waitFor();
+        assert.match(await page.locator(".segment-list").innerText(), /帧 21–195/);
+        await page.getByRole("button", { name: "保存片段", exact: true }).click();
+        await page.getByText("片段已保存到本机 · r4", { exact: true }).waitFor();
+        assert.equal(await page.locator(".camera-grid img[aria-hidden='false']").first().evaluate((image) => image.naturalWidth > 0), true);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+        assert.deepEqual(consoleErrors, []);
+        assert.deepEqual(pageErrors, []);
+      } finally {
+        await context.close();
+      }
     }
   });
 

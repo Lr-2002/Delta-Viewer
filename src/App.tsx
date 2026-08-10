@@ -37,7 +37,6 @@ import { ProgressStrip } from "./components/ProgressStrip";
 import { SegmentAnnotationEditor } from "./components/SegmentAnnotationEditor";
 import { SkeletonViewer } from "./components/SkeletonViewer";
 import { TelemetryChart } from "./components/TelemetryChart";
-import { TrimControls } from "./components/TrimControls";
 import {
   APP_VERSION,
   DEMO_ROOT,
@@ -500,10 +499,18 @@ function App() {
     setFpsOverride(null);
     const loadedMinFrame = getMinFrame(loaded);
     const loadedMaxFrame = getMaxFrame(loaded);
-    setClipStartFrame(loadedMinFrame);
-    setClipEndFrame(loadedMaxFrame);
-    setCurrentFrame(loadedMinFrame);
-    frameRef.current = loadedMinFrame;
+    const savedStart = savedAnnotation?.clipStartFrame;
+    const savedEnd = savedAnnotation?.clipEndFrame;
+    const restoredStart = savedStart !== null && savedStart !== undefined
+      ? Math.max(loadedMinFrame, Math.min(loadedMaxFrame, savedStart))
+      : loadedMinFrame;
+    const restoredEnd = savedEnd !== null && savedEnd !== undefined
+      ? Math.max(restoredStart, Math.min(loadedMaxFrame, savedEnd))
+      : loadedMaxFrame;
+    setClipStartFrame(restoredStart);
+    setClipEndFrame(restoredEnd);
+    setCurrentFrame(restoredStart);
+    frameRef.current = restoredStart;
     setView("review");
   }
 
@@ -1214,9 +1221,12 @@ function App() {
                     />
                     <SegmentAnnotationEditor
                       data={data}
+                      annotation={annotation}
                       currentFrame={currentFrame}
                       minFrame={minFrame}
                       maxFrame={maxFrame}
+                      clipStartFrame={clipStartFrame}
+                      clipEndFrame={clipEndFrame}
                       busy={busy}
                       playbackControls={(
                         <>
@@ -1241,25 +1251,17 @@ function App() {
                           </label>
                         </>
                       )}
+                      onClipStartChange={updateClipStart}
+                      onClipEndChange={updateClipEnd}
+                      onClipReset={resetClipRange}
+                      onSaved={setAnnotation}
+                      onError={setError}
+                      onNotice={setNotice}
                       onFrameChange={(frame) => {
                         const next = Math.max(minFrame, Math.min(maxFrame, frame));
                         frameRef.current = next;
                         setCurrentFrame(next);
                       }}
-                    />
-                    <TrimControls
-                      minFrame={minFrame}
-                      maxFrame={maxFrame}
-                      currentFrame={currentFrame}
-                      range={clipRange}
-                      stateCount={clipStateCount}
-                      durationMs={clipDurationMs}
-                      disabled={busy}
-                      onStartChange={updateClipStart}
-                      onEndChange={updateClipEnd}
-                      onMarkStart={() => updateClipStart(currentFrame)}
-                      onMarkEnd={() => updateClipEnd(currentFrame)}
-                      onReset={resetClipRange}
                     />
                   </section>
 

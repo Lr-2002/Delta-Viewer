@@ -123,7 +123,7 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
     assert.equal(await page.locator(".frame-error").count(), 0);
 
     await page.getByLabel("裁剪结束帧").fill("3");
-    await page.waitForFunction(() => document.querySelector(".trim-summary")?.textContent?.includes("帧 0–3"));
+    await page.waitForFunction(() => document.querySelector(".segment-draft-badge")?.textContent?.includes("帧 0–3"));
     await page.getByRole("button", { name: "播放" }).click();
     await page.waitForFunction(() => {
       const frame = Number(document.querySelector(".frame-counter")?.textContent?.match(/帧\s+(\d+)/)?.[1]);
@@ -173,7 +173,7 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
 
     await page.setViewportSize({ width: 1440, height: 920 });
     await page.getByLabel("裁剪结束帧").fill("4");
-    await page.waitForFunction(() => document.querySelector(".trim-summary")?.textContent?.includes("帧 0–4"));
+    await page.waitForFunction(() => document.querySelector(".segment-draft-badge")?.textContent?.includes("帧 0–4"));
     await page.evaluate(() => {
       const control = window.__playbackFrameControl;
       control.rejectedFrameId = 4;

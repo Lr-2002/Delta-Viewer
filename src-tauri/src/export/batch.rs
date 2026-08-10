@@ -433,6 +433,9 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64,
+            clip_start_frame: None,
+            clip_end_frame: None,
+            segments: Vec::new(),
         }
     }
 

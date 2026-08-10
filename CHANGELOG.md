@@ -5,6 +5,15 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.27 - 2026-08-10
+
+- Persisted continuous segment ranges, editable names, notes, and clip bounds in
+  append-only app-local annotation revisions without writing to source episodes.
+- Added atomically published, read-back-verified Metadata JSON companions for
+  annotated MCAP, HDF5, and LeRobot exports while preserving one video timeline.
+- Kept normal session activation on the direct read-only source path and added
+  browser coverage for segment save/restore, playback, and narrow-view overflow.
+
 ## 0.17.26 - 2026-08-07
 
 - Replaced unconditional interval-based frame stepping with a render-aware

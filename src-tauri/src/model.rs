@@ -75,6 +75,21 @@ pub struct EpisodeAnnotation {
     pub edit_started_at_ms: u64,
     #[serde(default)]
     pub edit_duration_ms: u64,
+    #[serde(default)]
+    pub clip_start_frame: Option<u64>,
+    #[serde(default)]
+    pub clip_end_frame: Option<u64>,
+    #[serde(default)]
+    pub segments: Vec<SegmentAnnotation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SegmentAnnotation {
+    pub start_frame: u64,
+    pub end_frame: u64,
+    pub title: String,
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -91,6 +106,12 @@ pub struct SaveAnnotationRequest {
     pub task_id: String,
     pub task_description: String,
     pub edit_started_at_ms: u64,
+    #[serde(default)]
+    pub clip_start_frame: Option<u64>,
+    #[serde(default)]
+    pub clip_end_frame: Option<u64>,
+    #[serde(default)]
+    pub segments: Vec<SegmentAnnotation>,
 }
 
 #[derive(Debug, Clone, Serialize)]
