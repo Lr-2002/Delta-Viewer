@@ -467,7 +467,9 @@ pub fn collect_stream_files(
 }
 
 fn is_platform_metadata_file_name(name: &OsStr) -> bool {
-    name == OsStr::new(".DS_Store") || name.to_str().is_some_and(|name| name.starts_with("._"))
+    name == OsStr::new(".DS_Store")
+        || name == OsStr::new("metadata.json")
+        || name.to_str().is_some_and(|name| name.starts_with("._"))
 }
 
 pub fn is_regular_file(path: &Path) -> bool {
@@ -561,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_macos_metadata_in_stats_streams_and_fingerprint() {
+    fn ignores_managed_and_macos_metadata_in_stats_streams_and_fingerprint() {
         let root = test_output("macos-metadata");
         let stream = root.join("cam0");
         fs::create_dir_all(&stream).unwrap();
@@ -572,6 +574,7 @@ mod tests {
         let fingerprint_before = episode_fingerprint(&root, &cancelled).unwrap();
         fs::write(root.join(".DS_Store"), b"finder metadata").unwrap();
         fs::write(root.join("._states.jsonl"), b"appledouble state metadata").unwrap();
+        fs::write(root.join("metadata.json"), b"managed segment metadata").unwrap();
         fs::write(stream.join("._0.jpg"), b"appledouble image metadata").unwrap();
 
         let files = collect_files(&root, &cancelled).unwrap();

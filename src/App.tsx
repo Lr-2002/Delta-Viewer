@@ -37,7 +37,6 @@ import { ProgressStrip } from "./components/ProgressStrip";
 import { SegmentAnnotationEditor } from "./components/SegmentAnnotationEditor";
 import { SkeletonViewer } from "./components/SkeletonViewer";
 import { TelemetryChart } from "./components/TelemetryChart";
-import { TrimControls } from "./components/TrimControls";
 import {
   APP_VERSION,
   DEMO_ROOT,
@@ -51,6 +50,8 @@ import {
   exportValidationReport,
   getAuthStatus,
   installAppUpdate,
+  importEpisode,
+  inspectImportDestination,
   isTauriRuntime,
   listAnnotatedEpisodes,
   listOperationErrors,
@@ -60,6 +61,7 @@ import {
   logoutLocalAccount,
   recordOperationError,
   onTaskProgress,
+  prepareImportWorkspace,
   revealOutput,
   scanSource,
   selectWorkspaceMode,
@@ -91,7 +93,7 @@ import type {
 } from "./types";
 
 type View = "review" | "checks" | "export" | "batch";
-type EpisodeSourceState = "available" | "loading" | "error";
+type EpisodeSourceState = "available" | "loading" | "caching" | "cached" | "error";
 type UpdatePhase = "idle" | "checking" | "available" | "current" | "downloading" | "failed";
 
 const METRICS: { key: MetricKey; label: string }[] = [
@@ -110,6 +112,7 @@ function App() {
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeSummary | null>(null);
   const [episodeSourceStates, setEpisodeSourceStates] = useState<Record<string, EpisodeSourceState>>({});
+  const [episodeLocalCopies, setEpisodeLocalCopies] = useState<Record<string, string>>({});
   const [loadedEpisodeSourceRoot, setLoadedEpisodeSourceRoot] = useState<string | null>(null);
   const [data, setData] = useState<EpisodeData | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
@@ -434,6 +437,38 @@ function App() {
     }
   }
 
+  async function cacheEpisodeLocally(episode: EpisodeSummary) {
+    const existing = episodeLocalCopies[episode.root];
+    if (existing) {
+      setNotice(`本地副本已存在：${existing}`);
+      return;
+    }
+    if (operationScopeRef.current.current()) return;
+    const owner = beginOperation();
+    if (!owner) return;
+    resetOperationFeedback(owner);
+    setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "caching" }));
+    try {
+      const destinationParent = await prepareImportWorkspace(episode.root);
+      ensureOperationActive(owner);
+      const preflight = await inspectImportDestination(episode.root, destinationParent, owner.id);
+      ensureOperationActive(owner);
+      if (!preflight.canImport) {
+        throw new Error(preflight.issues.map((issue) => issue.message).join("；") || "本地空间不足，无法缓存记录");
+      }
+      const imported = await importEpisode(episode.root, destinationParent, owner.id);
+      ensureOperationActive(owner);
+      setEpisodeLocalCopies((current) => ({ ...current, [episode.root]: imported.destination }));
+      setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "cached" }));
+      setNotice(`已缓存到本地：${imported.destination} · ${formatBytes(imported.totalBytes)}`);
+    } catch (reason) {
+      setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "available" }));
+      await reportFailure("import_episode", reason, episode.root, owner);
+    } finally {
+      finishOperation(owner);
+    }
+  }
+
   function selectEpisode(episode: EpisodeSummary) {
     setSelectedEpisode(episode);
     if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
@@ -500,10 +535,18 @@ function App() {
     setFpsOverride(null);
     const loadedMinFrame = getMinFrame(loaded);
     const loadedMaxFrame = getMaxFrame(loaded);
-    setClipStartFrame(loadedMinFrame);
-    setClipEndFrame(loadedMaxFrame);
-    setCurrentFrame(loadedMinFrame);
-    frameRef.current = loadedMinFrame;
+    const savedStart = savedAnnotation?.clipStartFrame;
+    const savedEnd = savedAnnotation?.clipEndFrame;
+    const restoredStart = savedStart !== null && savedStart !== undefined
+      ? Math.max(loadedMinFrame, Math.min(loadedMaxFrame, savedStart))
+      : loadedMinFrame;
+    const restoredEnd = savedEnd !== null && savedEnd !== undefined
+      ? Math.max(restoredStart, Math.min(loadedMaxFrame, savedEnd))
+      : loadedMaxFrame;
+    setClipStartFrame(restoredStart);
+    setClipEndFrame(restoredEnd);
+    setCurrentFrame(restoredStart);
+    frameRef.current = restoredStart;
     setView("review");
   }
 
@@ -1061,9 +1104,11 @@ function App() {
             {scan?.episodes.length ? (
               scan.episodes.map((episode) => {
                 const sourceState = episodeSourceStates[episode.root] ?? "available";
-                const activationHint = sourceState === "error"
-                  ? "单击选择；双击或按 Enter/空格重试读取"
-                  : "单击选择；双击或按 Enter/空格进入回放";
+                const activationHint = sourceState === "cached"
+                  ? `已缓存到本地：${episodeLocalCopies[episode.root]}`
+                  : sourceState === "caching"
+                    ? "正在复制并校验到本地"
+                    : "单击选择；双击缓存到本地；按 Enter/空格进入回放";
                 return (
                   <button
                     type="button"
@@ -1078,7 +1123,7 @@ function App() {
                     title={activationHint}
                     aria-label={`${episode.name}：${activationHint}`}
                     onClick={() => selectEpisode(episode)}
-                    onDoubleClick={() => void loadEpisodeForReview(episode, false, true)}
+                    onDoubleClick={() => void cacheEpisodeLocally(episode)}
                     onKeyDown={(event) => {
                       if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
                       event.preventDefault();
@@ -1214,9 +1259,12 @@ function App() {
                     />
                     <SegmentAnnotationEditor
                       data={data}
+                      annotation={annotation}
                       currentFrame={currentFrame}
                       minFrame={minFrame}
                       maxFrame={maxFrame}
+                      clipStartFrame={clipStartFrame}
+                      clipEndFrame={clipEndFrame}
                       busy={busy}
                       playbackControls={(
                         <>
@@ -1241,25 +1289,17 @@ function App() {
                           </label>
                         </>
                       )}
+                      onClipStartChange={updateClipStart}
+                      onClipEndChange={updateClipEnd}
+                      onClipReset={resetClipRange}
+                      onSaved={setAnnotation}
+                      onError={setError}
+                      onNotice={setNotice}
                       onFrameChange={(frame) => {
                         const next = Math.max(minFrame, Math.min(maxFrame, frame));
                         frameRef.current = next;
                         setCurrentFrame(next);
                       }}
-                    />
-                    <TrimControls
-                      minFrame={minFrame}
-                      maxFrame={maxFrame}
-                      currentFrame={currentFrame}
-                      range={clipRange}
-                      stateCount={clipStateCount}
-                      durationMs={clipDurationMs}
-                      disabled={busy}
-                      onStartChange={updateClipStart}
-                      onEndChange={updateClipEnd}
-                      onMarkStart={() => updateClipStart(currentFrame)}
-                      onMarkEnd={() => updateClipEnd(currentFrame)}
-                      onReset={resetClipRange}
                     />
                   </section>
 
@@ -1379,6 +1419,12 @@ function EmptyWorkspace({
 }
 
 function EpisodeSourceMark({ state }: { state: EpisodeSourceState }) {
+  if (state === "caching") {
+    return <span className="episode-source-state"><LoaderCircle className="spin" size={13} />缓存中</span>;
+  }
+  if (state === "cached") {
+    return <span className="episode-source-state"><Download size={13} />已缓存</span>;
+  }
   if (state === "loading") {
     return <span className="episode-source-state"><LoaderCircle className="spin" size={13} />读取中</span>;
   }
@@ -1517,7 +1563,7 @@ function operationLabel(operation: string): string {
 }
 
 function exportFormatLabel(format: ExportFormat): string {
-  return format === "mcap" ? "MCAP" : format === "hdf5" ? "HDF5" : "LeRobot v2.1";
+  return format === "mcap" ? "MCAP" : format === "hdf5" ? "HDF5" : format === "lerobot_v2" ? "LeRobot v2.1" : "片段 Metadata JSON";
 }
 
 function driveTypeLabel(driveType: ScanResult["volume"]["driveType"]): string {

@@ -226,14 +226,25 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .segment-timeline > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .segment-timeline > header, .segment-ruler, .segment-list { margin-right: 12px; margin-left: 12px; }
 .segment-create-action { min-height: 30px; flex: 0 0 auto; padding: 0 10px; font-size: 10px; }
+.segment-range-status { display: flex; align-items: center; gap: 7px; }
+.segment-save-badge { padding: 5px 8px; border: 1px solid #a8cbb1; border-radius: 12px; color: #236737; background: #edf8f0; font-size: 10px; white-space: nowrap; }
+.segment-save-badge.dirty { border-color: #d8b46a; color: #805700; background: #fff7e7; }
+.segment-save-action { min-height: 30px; padding: 5px 10px; }
 .segment-ruler { display: flex; justify-content: space-between; margin-right: var(--time-axis-right); margin-left: var(--time-axis-left); color: var(--subtle); font-size: 9px; font-variant-numeric: tabular-nums; }
-.segment-track { position: relative; height: 48px; margin: 4px var(--time-axis-right) 0 var(--time-axis-left); border: 0; border-radius: 3px; background: #f3f3f3; cursor: crosshair; }
-.segment-block { position: absolute; top: 7px; z-index: 1; height: 32px; min-width: 8px; display: flex; align-items: center; gap: 5px; overflow: hidden; padding: 0 7px; border: 0; border-radius: 3px; color: #fff; background: #555; cursor: pointer; font-size: 9px; white-space: nowrap; }
-.segment-block.selected { background: #111; }
+.segment-track { position: relative; height: 48px; margin: 4px var(--time-axis-right) 0 var(--time-axis-left); border: 0; border-radius: 3px; background: #d7d7d7; cursor: crosshair; }
+.segment-block { position: absolute; top: 7px; z-index: 1; height: 32px; min-width: 8px; display: flex; align-items: center; gap: 5px; overflow: hidden; padding: 0 7px; border: 0; border-radius: 3px; color: #fff; background: #111; cursor: pointer; font-size: 9px; white-space: nowrap; }
+.segment-block.selected { background: #2d2d2d; box-shadow: inset 0 0 0 1px #fff; }
 .segment-block b { font-size: 8px; }
 .segment-block span { overflow: hidden; text-overflow: ellipsis; }
 .segment-playhead { position: absolute; top: -5px; bottom: -5px; z-index: 2; width: 2px; pointer-events: none; background: #111; }
 .segment-playhead::before { content: ""; position: absolute; top: -1px; left: -4px; border: 5px solid transparent; border-top-color: #111; }
+.segment-trim-handle { position: absolute; inset: 0; z-index: 4; width: 100%; height: 48px; margin: 0; appearance: none; -webkit-appearance: none; pointer-events: none; background: transparent; }
+.segment-trim-handle::-webkit-slider-runnable-track { height: 1px; background: transparent; }
+.segment-trim-handle::-webkit-slider-thumb { width: 14px; height: 42px; margin-top: -20px; appearance: none; -webkit-appearance: none; border: 2px solid #fff; border-radius: 4px; background: #111; box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); cursor: ew-resize; pointer-events: auto; }
+.segment-trim-handle::-moz-range-track { height: 1px; background: transparent; }
+.segment-trim-handle::-moz-range-thumb { width: 10px; height: 38px; border: 2px solid #fff; border-radius: 4px; background: #111; box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); cursor: ew-resize; pointer-events: auto; }
+.segment-trim-handle:disabled::-webkit-slider-thumb { cursor: not-allowed; opacity: .45; }
+.segment-trim-handle:disabled::-moz-range-thumb { cursor: not-allowed; opacity: .45; }
 .segment-list { max-height: 170px; overflow: auto; margin-top: 10px; border-top: 0; }
 .segment-list > button { width: 100%; min-height: 44px; display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 7px; padding: 6px 8px; border: 0; color: var(--ink); background: var(--surface); cursor: pointer; text-align: left; }
 .segment-list > button.selected { background: #ededed; }

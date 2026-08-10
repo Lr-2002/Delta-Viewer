@@ -2,6 +2,7 @@ mod batch;
 mod hdf5;
 mod lerobot;
 mod mcap;
+mod segment_metadata;
 
 pub(crate) use batch::{export_annotated_episodes, BatchExportJob};
 
@@ -126,7 +127,26 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         ExportFormat::Hdf5 => hdf5::Hdf5Adapter.export(&context)?,
         ExportFormat::LerobotV2 => lerobot::LeRobotV2Adapter.export(&context)?,
     };
-    let (total_files, total_bytes) = output_size(&output)?;
+    let metadata_output = match segment_metadata::write_companion_metadata(&context, &output) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            if output.is_dir() {
+                let _ = fs::remove_dir_all(&output);
+            } else {
+                let _ = fs::remove_file(&output);
+            }
+            return Err(error);
+        }
+    };
+    let (mut total_files, mut total_bytes) = output_size(&output)?;
+    if let Some(metadata) = metadata_output
+        .as_ref()
+        .filter(|path| !path.starts_with(&output))
+    {
+        let (metadata_files, metadata_bytes) = output_size(metadata)?;
+        total_files = total_files.saturating_add(metadata_files);
+        total_bytes = total_bytes.saturating_add(metadata_bytes);
+    }
     Ok(ExportResult {
         format: format.as_str().into(),
         output_path: output.display().to_string(),
@@ -512,6 +532,9 @@ mod tests {
             updated_at_ms: 1,
             edit_started_at_ms: 1,
             edit_duration_ms: 0,
+            clip_start_frame: None,
+            clip_end_frame: None,
+            segments: Vec::new(),
         };
         let exported_by = UserIdentity {
             username: "exporter".into(),

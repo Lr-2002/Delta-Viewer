@@ -44,6 +44,16 @@ export interface EpisodeAnnotation {
   updatedAtMs: number;
   editStartedAtMs: number;
   editDurationMs: number;
+  clipStartFrame: number | null;
+  clipEndFrame: number | null;
+  segments: SegmentAnnotation[];
+}
+
+export interface SegmentAnnotation {
+  startFrame: number;
+  endFrame: number;
+  title: string;
+  note: string;
 }
 
 export interface AnnotatedEpisodeSummary {
@@ -56,6 +66,9 @@ export interface SaveAnnotationRequest {
   taskId: string;
   taskDescription: string;
   editStartedAtMs: number;
+  clipStartFrame: number | null;
+  clipEndFrame: number | null;
+  segments: SegmentAnnotation[];
 }
 
 export interface StreamSummary {
