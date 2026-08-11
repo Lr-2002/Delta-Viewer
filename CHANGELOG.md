@@ -5,6 +5,12 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.38 - 2026-08-11
+
+- Corrected the playback regression assertion for an unavailable current frame:
+  it now verifies the immediate `FRAME_UNAVAILABLE` block instead of waiting
+  for a frame counter that is intentionally unmounted with the session.
+
 ## 0.17.37 - 2026-08-11
 
 - Updated playback regression coverage to verify that a runtime unavailable

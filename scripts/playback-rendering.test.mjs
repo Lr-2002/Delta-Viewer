@@ -181,7 +181,6 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
       control.holdRejectedFrame = false;
     });
     await page.getByRole("button", { name: "下一帧" }).click();
-    await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 4 / 195"));
     await page.waitForFunction(() => (
       document.querySelector(".alert-error")?.textContent?.includes("FRAME_UNAVAILABLE")
     ));
