@@ -183,11 +183,9 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
     await page.getByRole("button", { name: "下一帧" }).click();
     await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 4 / 195"));
     await page.waitForFunction(() => (
-      document.querySelectorAll(".camera-grid .frame-error").length === 5
-      && document.querySelectorAll(".camera-grid img[aria-hidden='false']").length === 0
+      document.querySelector(".alert-error")?.textContent?.includes("FRAME_UNAVAILABLE")
     ));
-    assert.equal(await page.locator(visibleImageSelector).count(), 0);
-    assert.equal(await page.locator(".camera-grid .frame-error").count(), 5);
+    assert.equal(await page.locator(".camera-grid").count(), 0);
     const failureScreenshotPath = process.env.PLAYBACK_FAILURE_SCREENSHOT_PATH;
     if (failureScreenshotPath) await page.screenshot({ path: failureScreenshotPath, fullPage: true });
     assert.deepEqual(pageErrors, []);

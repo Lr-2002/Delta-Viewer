@@ -5,6 +5,11 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.37 - 2026-08-11
+
+- Updated playback regression coverage to verify that a runtime unavailable
+  frame stops the session and records `FRAME_UNAVAILABLE`.
+
 ## 0.17.36 - 2026-08-11
 
 - Updated browser playback regression coverage to accept the new warning gate
