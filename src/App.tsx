@@ -113,6 +113,7 @@ const UNAVAILABLE_FRAME_ISSUE_CODES = new Set([
 ]);
 const FRAME_JUMP_ISSUE_CODE = "STATE_FRAME_GAP";
 const STATIC_TRAJECTORY_ISSUE_CODE = "TRAJECTORY_STATIC";
+const UNAVAILABLE_TRAJECTORY_ISSUE_CODE = "TRAJECTORY_POSITION_UNAVAILABLE";
 
 const METRICS: { key: MetricKey; label: string }[] = [
   { key: "position", label: "位置" },
@@ -125,6 +126,7 @@ function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [authStartupError, setAuthStartupError] = useState("");
   const [tasks, setTasks] = useState<TaskDefinition[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [annotation, setAnnotation] = useState<EpisodeAnnotation | null>(null);
   const [sourcePath, setSourcePath] = useState("");
   const [scan, setScan] = useState<ScanResult | null>(null);
@@ -138,6 +140,7 @@ function App() {
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("mcap");
   const [exportResult, setExportResult] = useState<ExportResult | null>(null);
+  const [annotationTags, setAnnotationTags] = useState<Record<string, EpisodeAnnotation>>({});
   const [annotatedEpisodes, setAnnotatedEpisodes] = useState<AnnotatedEpisodeSummary[]>([]);
   const [batchSelectedIds, setBatchSelectedIds] = useState<string[]>([]);
   const [batchExportFormat, setBatchExportFormat] = useState<ExportFormat>("mcap");
@@ -166,6 +169,12 @@ function App() {
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("idle");
   const [updateError, setUpdateError] = useState("");
   const [updateErrorVisible, setUpdateErrorVisible] = useState(false);
+  const [frameRenderProgress, setFrameRenderProgress] = useState({
+    root: null as string | null,
+    frameId: 0,
+    settled: 0,
+    total: 0,
+  });
   const frameRef = useRef(0);
   const settledFrameByStreamRef = useRef(new Map<string, number>());
   const didAutoLoad = useRef(false);
@@ -291,6 +300,14 @@ function App() {
   }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
 
   useEffect(() => {
+    if (!workspaceActive || (isManagedWorkspace && !authStatus?.currentUser)) {
+      setAnnotationTags({});
+      return;
+    }
+    void refreshAnnotationTags();
+  }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
+
+  useEffect(() => {
     if (
       !isManagedWorkspace
       || !authStatus?.currentUser
@@ -326,6 +343,16 @@ function App() {
   useEffect(() => {
     frameRef.current = currentFrame;
   }, [currentFrame]);
+
+  useEffect(() => {
+    settledFrameByStreamRef.current.clear();
+    setFrameRenderProgress({
+      root: data?.summary.root ?? null,
+      frameId: currentFrame,
+      settled: 0,
+      total: data?.summary.streams.length ?? 0,
+    });
+  }, [currentFrame, data?.summary.root, data?.summary.streams.length]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -399,6 +426,7 @@ function App() {
       ensureOperationActive(owner);
       setSourcePath(result.sourceRoot);
       setScan(result);
+      void refreshAnnotationTags();
       setSkippedEpisodeRoots({});
       setPendingAnnotationConfirmation(null);
       setQueuedEpisodeRoot(null);
@@ -586,7 +614,7 @@ function App() {
       minFrame: loadedMinFrame,
       maxFrame: loadedMaxFrame,
     };
-    if (hasStaticTrajectory(validated.report)) return "skipped";
+    if (hasUnusableTrajectory(validated.report)) return "skipped";
     if (annotationConfirmationWarnings(validated.report).length) {
       setPendingAnnotationConfirmation(candidate);
       setView("review");
@@ -636,7 +664,7 @@ function App() {
       setNotice(`发现数据警告：${episode.name}。请确认是否进入标注。`);
       return;
     }
-    skipEpisode(episode, true, "检测到静止轨迹，不进入标注。");
+    skipEpisode(episode, true, "检测到不可用或静止轨迹，不进入标注。");
   }
 
   async function confirmAnnotationAfterWarning() {
@@ -719,6 +747,7 @@ function App() {
     setData(null);
     setReport(null);
     setAnnotation(null);
+    setSelectedTaskId(null);
     setPlaying(false);
     setExportResult(null);
     setCurrentFrame(0);
@@ -742,6 +771,8 @@ function App() {
     setHistoryOpen(false);
     setCurrentOperationError(false);
     setTasks([]);
+    setSelectedTaskId(null);
+    setAnnotationTags({});
     setAnnotatedEpisodes([]);
     setBatchSelectedIds([]);
     setBatchExportResult(null);
@@ -903,6 +934,9 @@ function App() {
       const initializeSelection = !batchSelectionInitialized.current;
       if (initializeSelection) batchSelectionInitialized.current = true;
       setAnnotatedEpisodes(listed);
+      setAnnotationTags(Object.fromEntries(
+        listed.map((item) => [item.annotation.episodeRoot, item.annotation]),
+      ));
       setBatchSelectedIds((current) => initializeSelection
         ? availableIds
         : current.filter((episodeId) => availableSet.has(episodeId)));
@@ -911,6 +945,27 @@ function App() {
     } finally {
       setBatchLoading(false);
     }
+  }
+
+  async function refreshAnnotationTags() {
+    if (!workspaceActive || (isManagedWorkspace && !authStatus?.currentUser)) return;
+    try {
+      const listed = await listAnnotatedEpisodes();
+      setAnnotationTags(Object.fromEntries(
+        listed.map((item) => [item.annotation.episodeRoot, item.annotation]),
+      ));
+    } catch (reason) {
+      await reportFailure("list_annotation_tags", reason, "");
+    }
+  }
+
+  function handleAnnotationSaved(saved: EpisodeAnnotation) {
+    setAnnotation(saved);
+    setAnnotationTags((current) => ({ ...current, [saved.episodeRoot]: saved }));
+    setAnnotatedEpisodes((current) => {
+      const next = current.filter((item) => item.annotation.episodeRoot !== saved.episodeRoot);
+      return [{ annotation: saved, sourceAvailable: true }, ...next];
+    });
   }
 
   function openBatchExport() {
@@ -1105,6 +1160,7 @@ function App() {
   );
   const visibleEpisodes = scan?.episodes.filter((episode) => !skippedEpisodeRoots[episode.root]) ?? [];
   const skippedEpisodeCount = (scan?.episodes.length ?? 0) - visibleEpisodes.length;
+  const selectedTaskTemplate = tasks.find((task) => task.id === (selectedTaskId ?? annotation?.taskId)) ?? null;
 
   if (!authStatus) {
     return (
@@ -1231,7 +1287,6 @@ function App() {
         />
       ) : null}
 
-      {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
       {isManagedWorkspace && updatePhase === "failed" && updateErrorVisible ? (
         <div className="alert-banner alert-notice update-alert" role="status">
           <CircleAlert size={17} />
@@ -1279,13 +1334,18 @@ function App() {
             </div>
           </div>
           <div className="sidebar-path" title={sourcePath}>{sourcePath ? shortPath(sourcePath, 38) : "等待 SD 卡"}</div>
+          {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
           <div className="episode-list">
             {visibleEpisodes.length ? (
               visibleEpisodes.map((episode) => {
                 const sourceState = episodeSourceStates[episode.root] ?? "available";
+                const savedAnnotation = annotationTags[episode.root];
                 const activationHint = sourceState === "error"
                   ? "单击选择；双击或按 Enter/空格重试读取"
                   : "单击选择；双击或按 Enter/空格进入回放";
+                const episodeTitle = savedAnnotation
+                  ? `已标注 · ${savedAnnotation.trajectoryCode}；${activationHint}`
+                  : activationHint;
                 return (
                   <div className="episode-entry" key={episode.root}>
                     <button
@@ -1297,7 +1357,7 @@ function App() {
                       }}
                       aria-pressed={selectedEpisode?.root === episode.root}
                       disabled={busy}
-                      title={activationHint}
+                      title={episodeTitle}
                       aria-label={`${episode.name}：${activationHint}`}
                       onClick={() => selectEpisode(episode)}
                       onDoubleClick={() => void loadEpisodeForReview(episode, false, true)}
@@ -1310,6 +1370,15 @@ function App() {
                       <span className="episode-item-top">
                         <Images size={16} />
                         <strong>{episode.name}</strong>
+                        {savedAnnotation ? (
+                          <span
+                            className="episode-annotation-tag"
+                            title={`已标注 · ${savedAnnotation.trajectoryCode} · r${savedAnnotation.revision}`}
+                            aria-label="已标注"
+                          >
+                            已标注
+                          </span>
+                        ) : null}
                         <EpisodeSourceMark state={sourceState} />
                         <ChevronRight size={15} />
                       </span>
@@ -1442,6 +1511,14 @@ function App() {
                             className={`camera-${index}`}
                             onFrameSettled={(streamName, frameId) => {
                               settledFrameByStreamRef.current.set(streamName, frameId);
+                              const root = data.summary.root;
+                              const settled = data.summary.streams.reduce(
+                                (count, stream) => count + (settledFrameByStreamRef.current.get(stream.name) === frameId ? 1 : 0),
+                                0,
+                              );
+                              setFrameRenderProgress((current) => current.root === root && current.frameId === frameId
+                                ? { ...current, settled }
+                                : { root, frameId, settled, total: data.summary.streams.length });
                             }}
                             onFrameUnavailable={handleFrameUnavailable}
                           />
@@ -1457,6 +1534,13 @@ function App() {
                         ) : null}
                       </div>
                     </div>
+                    <FrameRenderProgress
+                      frameId={currentFrame}
+                      settled={frameRenderProgress.root === data.summary.root && frameRenderProgress.frameId === currentFrame
+                        ? frameRenderProgress.settled
+                        : 0}
+                      total={data.summary.streams.length}
+                    />
                     <AnnotationPanel
                       sourcePath={data.summary.root}
                       tasks={tasks}
@@ -1467,15 +1551,20 @@ function App() {
                       onTaskCreated={(task) => setTasks((current) => [...current, task])}
                       onTaskDeleted={(taskId) => {
                         setTasks((current) => current.filter((task) => task.id !== taskId));
+                        setSelectedTaskId((current) => current === taskId ? null : current);
                         setAnnotation((current) => (current?.taskId === taskId ? null : current));
                       }}
-                      onSaved={setAnnotation}
+                      onTaskSelected={setSelectedTaskId}
+                      onTasksImported={setTasks}
+                      onSaved={handleAnnotationSaved}
                       onError={setError}
                       onNotice={setNotice}
                     />
                     <SegmentAnnotationEditor
                       data={data}
                       annotation={annotation}
+                      templateTaskId={selectedTaskTemplate?.id ?? null}
+                      templateSegments={selectedTaskTemplate?.defaultSegments ?? []}
                       currentFrame={currentFrame}
                       minFrame={minFrame}
                       maxFrame={maxFrame}
@@ -1508,7 +1597,7 @@ function App() {
                       onClipStartChange={updateClipStart}
                       onClipEndChange={updateClipEnd}
                       onClipReset={resetClipRange}
-                      onSaved={setAnnotation}
+                      onSaved={handleAnnotationSaved}
                       onError={setError}
                       onNotice={setNotice}
                       onFrameChange={(frame) => {
@@ -1687,6 +1776,29 @@ function EpisodeSourceMark({ state }: { state: EpisodeSourceState }) {
   return null;
 }
 
+function FrameRenderProgress({
+  frameId,
+  settled,
+  total,
+}: {
+  frameId: number;
+  settled: number;
+  total: number;
+}) {
+  if (!total) return null;
+  const boundedSettled = Math.max(0, Math.min(total, settled));
+  const percent = Math.round((boundedSettled / total) * 100);
+  return (
+    <div className="frame-render-progress" role="status" aria-live="polite">
+      <span className="frame-render-progress-label">右侧画面</span>
+      <div className="frame-render-track" aria-label={`帧 ${frameId} 已渲染 ${boundedSettled}/${total} 路`}>
+        <span style={{ width: `${percent}%` }} />
+      </div>
+      <span className="frame-render-progress-count">帧 {frameId} · {boundedSettled}/{total} 路</span>
+    </div>
+  );
+}
+
 function OperationHistoryPanel({
   records,
   onClose,
@@ -1818,8 +1930,11 @@ function hasUnavailableFrame(report: ValidationReport): boolean {
   return report.issues.some((issue) => UNAVAILABLE_FRAME_ISSUE_CODES.has(issue.code));
 }
 
-function hasStaticTrajectory(report: ValidationReport): boolean {
-  return report.issues.some((issue) => issue.code === STATIC_TRAJECTORY_ISSUE_CODE);
+function hasUnusableTrajectory(report: ValidationReport): boolean {
+  return report.issues.some((issue) => (
+    issue.code === STATIC_TRAJECTORY_ISSUE_CODE
+    || issue.code === UNAVAILABLE_TRAJECTORY_ISSUE_CODE
+  ));
 }
 
 function annotationConfirmationWarnings(report: ValidationReport): ValidationIssue[] {

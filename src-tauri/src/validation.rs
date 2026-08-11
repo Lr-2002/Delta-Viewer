@@ -641,13 +641,17 @@ fn report_partial_path(output: &Path) -> PathBuf {
 fn state_is_finite(state: &RawStateRecord) -> bool {
     state
         .position
-        .into_iter()
-        .chain(state.velocity)
-        .chain(state.quaternion)
-        .chain(state.euler)
-        .chain(state.omega)
-        .chain([state.confidence])
-        .all(f64::is_finite)
+        .iter()
+        .flatten()
+        .all(|value| value.is_none_or(f64::is_finite))
+        && state
+            .velocity
+            .into_iter()
+            .chain(state.quaternion)
+            .chain(state.euler)
+            .chain(state.omega)
+            .chain([state.confidence])
+            .all(f64::is_finite)
 }
 
 fn contains_non_finite_token(line: &str) -> bool {
@@ -803,19 +807,30 @@ fn check_state_sequence(
 fn check_trajectory_motion(states: &[RawStateRecord], issues: &mut Vec<ValidationIssue>) {
     let valid_positions = states
         .iter()
-        .filter(|state| state.position.into_iter().all(f64::is_finite))
+        .filter_map(|state| complete_position(state).map(|position| (state.frame_id, position)))
         .collect::<Vec<_>>();
-    let Some(first) = valid_positions.first() else {
+    let Some((first_frame, first_position)) = valid_positions.first() else {
+        if let Some(first_state) = states.first() {
+            issues.push(issue_at(
+                Severity::Warning,
+                "TRAJECTORY_POSITION_UNAVAILABLE",
+                "states",
+                &format!(
+                    "状态轨迹的 position 在 {} 条记录中均不可用，已跳过该数据",
+                    states.len()
+                ),
+                first_state.frame_id,
+            ));
+        }
         return;
     };
     if valid_positions.len() < 2 {
         return;
     }
-    let has_motion = valid_positions.iter().skip(1).any(|state| {
-        state
-            .position
-            .into_iter()
-            .zip(first.position)
+    let has_motion = valid_positions.iter().skip(1).any(|(_, position)| {
+        position
+            .iter()
+            .zip(first_position)
             .any(|(value, baseline)| (value - baseline).abs() > TRAJECTORY_STATIC_POSITION_EPSILON)
     });
     if !has_motion {
@@ -827,9 +842,19 @@ fn check_trajectory_motion(states: &[RawStateRecord], issues: &mut Vec<Validatio
                 "状态轨迹在 {} 条有效位置记录中没有变化，建议检查轨迹数据",
                 valid_positions.len()
             ),
-            first.frame_id,
+            *first_frame,
         ));
     }
+}
+
+fn complete_position(state: &RawStateRecord) -> Option<[f64; 3]> {
+    let [Some(x), Some(y), Some(z)] = state.position? else {
+        return None;
+    };
+    [x, y, z]
+        .into_iter()
+        .all(f64::is_finite)
+        .then_some([x, y, z])
 }
 
 fn measure_state_frame_rate(states: &[RawStateRecord]) -> StateFrameRate {
@@ -1177,12 +1202,33 @@ mod tests {
         assert_eq!(issue.frame_id, Some(0));
 
         let mut moving_states = static_states;
-        moving_states[2].position = [0.01, 0.0, 0.0];
+        moving_states[2].position = Some([Some(0.01), Some(0.0), Some(0.0)]);
         let mut moving_issues = Vec::new();
         check_state_sequence(&moving_states, &mut moving_issues);
         assert!(!moving_issues
             .iter()
             .any(|issue| issue.code == "TRAJECTORY_STATIC"));
+    }
+
+    #[test]
+    fn flags_unavailable_position_trajectory() {
+        let null_position = serde_json::from_str::<RawStateRecord>(
+            r#"{"frame_id":0,"capture_time_ns":0,"position":null,"velocity":[0,0,0],"quaternion":[0,0,0,1],"euler":[0,0,0],"omega":[0,0,0],"confidence":1}"#,
+        )
+        .unwrap();
+        let null_components = serde_json::from_str::<RawStateRecord>(
+            r#"{"frame_id":1,"capture_time_ns":33333333,"position":[null,null,null],"velocity":[0,0,0],"quaternion":[0,0,0,1],"euler":[0,0,0],"omega":[0,0,0],"confidence":1}"#,
+        )
+        .unwrap();
+        let mut issues = Vec::new();
+        check_state_sequence(&[null_position, null_components], &mut issues);
+        let issue = issues
+            .iter()
+            .find(|issue| issue.code == "TRAJECTORY_POSITION_UNAVAILABLE")
+            .unwrap();
+        assert_eq!(issue.severity, Severity::Warning);
+        assert_eq!(issue.frame_id, Some(0));
+        assert!(issue.message.contains("均不可用"));
     }
 
     #[test]
@@ -1416,7 +1462,7 @@ mod tests {
         RawStateRecord {
             frame_id,
             capture_time_ns,
-            position: [0.0; 3],
+            position: Some([Some(0.0); 3]),
             velocity: [0.0; 3],
             quaternion: [0.0, 0.0, 0.0, 1.0],
             euler: [0.0; 3],

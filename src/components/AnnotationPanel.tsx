@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ClipboardPen, Plus, Save, Tag, Trash2, UserRound, X } from "lucide-react";
+import { ClipboardPen, FileUp, Plus, Save, Tag, Trash2, UserRound, X } from "lucide-react";
 import {
   confirmAction,
   createTaskDefinition,
   deleteTaskDefinition,
+  importTaskTemplateConfig,
   isTauriRuntime,
   saveEpisodeAnnotation,
   suggestTrajectoryCode,
@@ -20,6 +21,8 @@ interface AnnotationPanelProps {
   busy: boolean;
   onTaskCreated: (task: TaskDefinition) => void;
   onTaskDeleted: (taskId: string) => void;
+  onTaskSelected: (taskId: string | null) => void;
+  onTasksImported: (tasks: TaskDefinition[]) => void;
   onSaved: (annotation: EpisodeAnnotation) => void;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
@@ -34,6 +37,8 @@ export function AnnotationPanel({
   busy,
   onTaskCreated,
   onTaskDeleted,
+  onTaskSelected,
+  onTasksImported,
   onSaved,
   onError,
   onNotice,
@@ -46,26 +51,41 @@ export function AnnotationPanel({
   const [taskCreatorOpen, setTaskCreatorOpen] = useState(false);
   const [newTaskLabel, setNewTaskLabel] = useState("");
   const [creatingTask, setCreatingTask] = useState(false);
+  const [importingTemplates, setImportingTemplates] = useState(false);
   const [editStartedAtMs, setEditStartedAtMs] = useState(() => Date.now());
   const previewRequest = useRef(0);
+  const previousSourcePath = useRef<string | null>(null);
+  const taskIds = tasks.map((task) => task.id).join("\u0000");
 
   useEffect(() => {
     let active = true;
-    const requestId = ++previewRequest.current;
+    const sourceChanged = previousSourcePath.current !== sourcePath;
+    previousSourcePath.current = sourcePath;
     if (annotation) {
+      ++previewRequest.current;
       setTaskId(annotation.taskId);
+      onTaskSelected(annotation.taskId);
       setTrajectoryCode(annotation.trajectoryCode);
       setDescription(annotation.taskDescription);
       setEditStartedAtMs(Date.now());
       return () => { active = false; };
     }
     if (!firstTask) {
+      ++previewRequest.current;
       setTaskId("");
+      onTaskSelected(null);
       setTrajectoryCode("");
       setDescription("");
       return () => { active = false; };
     }
+    // A newly created task reaches this component before its parent task list
+    // updates. Only reset selection on a source switch or a confirmed list update.
+    if (!sourceChanged && taskId && tasks.some((task) => task.id === taskId)) {
+      return () => { active = false; };
+    }
+    const requestId = ++previewRequest.current;
     setTaskId(firstTask.id);
+    onTaskSelected(firstTask.id);
     setDescription(firstTask.defaultDescription);
     setTrajectoryCode("");
     setEditStartedAtMs(Date.now());
@@ -73,7 +93,18 @@ export function AnnotationPanel({
       .then((code) => { if (active && previewRequest.current === requestId) setTrajectoryCode(code); })
       .catch((reason) => { if (active && previewRequest.current === requestId) onError(toMessage(reason)); });
     return () => { active = false; };
-  }, [annotation, firstTask, onError, sourcePath]);
+  }, [
+    annotation,
+    firstTask?.defaultDescription,
+    firstTask?.id,
+    onError,
+    onTaskSelected,
+    sourcePath,
+    taskIds,
+  ]);
+
+  const activeTask = tasks.find((task) => task.id === taskId) ?? null;
+  const descriptionTemplate = activeTask?.descriptionOptions.includes(description) ? description : "";
 
   const dirty = useMemo(() => {
     if (!annotation) return Boolean(taskId && description.trim());
@@ -85,6 +116,7 @@ export function AnnotationPanel({
     const task = tasks.find((item) => item.id === nextTaskId);
     if (!task) return;
     setTaskId(task.id);
+    onTaskSelected(task.id);
     setDescription(task.defaultDescription);
     const requestId = ++previewRequest.current;
     if (annotation?.taskId === task.id) {
@@ -137,6 +169,7 @@ export function AnnotationPanel({
       const task = await createTaskDefinition({ label: newTaskLabel });
       onTaskCreated(task);
       setTaskId(task.id);
+      onTaskSelected(task.id);
       setDescription(task.defaultDescription);
       setTrajectoryCode("");
       const requestId = ++previewRequest.current;
@@ -153,6 +186,36 @@ export function AnnotationPanel({
       onError(toMessage(reason));
     } finally {
       setCreatingTask(false);
+    }
+  }
+
+  async function importTemplates() {
+    setImportingTemplates(true);
+    onError("");
+    try {
+      const nextTasks = await importTaskTemplateConfig();
+      const previousIds = new Set(tasks.map((task) => task.id));
+      const imported = nextTasks.filter((task) => !previousIds.has(task.id));
+      onTasksImported(nextTasks);
+      const selected = imported[0] ?? null;
+      if (selected) {
+        setTaskId(selected.id);
+        onTaskSelected(selected.id);
+        setDescription(selected.defaultDescription);
+        setTrajectoryCode("");
+        const requestId = ++previewRequest.current;
+        try {
+          const code = await suggestTrajectoryCode(selected.id);
+          if (previewRequest.current === requestId) setTrajectoryCode(code);
+        } catch (reason) {
+          onError(`任务模板已导入，但暂时无法预览轨迹编码：${toMessage(reason)}`);
+        }
+      }
+      onNotice(`已导入 ${imported.length} 个任务模板`);
+    } catch (reason) {
+      onError(toMessage(reason));
+    } finally {
+      setImportingTemplates(false);
     }
   }
 
@@ -199,7 +262,7 @@ export function AnnotationPanel({
             className="button button-primary"
             type="button"
             onClick={() => void save()}
-            disabled={busy || saving || creatingTask || !dirty || !taskId || !description.trim()}
+            disabled={busy || saving || creatingTask || importingTemplates || !dirty || !taskId || !description.trim()}
           >
             <Save size={16} />
             {saving ? "保存中" : "保存标注"}
@@ -211,14 +274,14 @@ export function AnnotationPanel({
           <div className="annotation-task-field">
             <span className="annotation-field-label"><ClipboardPen size={14} />任务</span>
             <div className="annotation-task-control">
-              <select value={taskId} onChange={(event) => void changeTask(event.target.value)} disabled={!tasks.length || saving || creatingTask} aria-label="任务">
+              <select value={taskId} onChange={(event) => void changeTask(event.target.value)} disabled={!tasks.length || saving || creatingTask || importingTemplates} aria-label="任务">
                 {tasks.map((task) => <option value={task.id} key={task.id}>{task.label}</option>)}
               </select>
               <button
                 className="icon-button annotation-task-add"
                 type="button"
                 onClick={() => setTaskCreatorOpen((value) => !value)}
-                disabled={busy || saving || creatingTask}
+                disabled={busy || saving || creatingTask || importingTemplates}
                 title="创建任务"
                 aria-label="创建任务"
                 aria-expanded={taskCreatorOpen}
@@ -226,10 +289,20 @@ export function AnnotationPanel({
                 {taskCreatorOpen ? <X size={15} /> : <Plus size={15} />}
               </button>
               <button
+                className="icon-button annotation-task-import"
+                type="button"
+                onClick={() => void importTemplates()}
+                disabled={busy || saving || creatingTask || importingTemplates}
+                title="导入任务模板配置"
+                aria-label="导入模板配置"
+              >
+                <FileUp size={15} />
+              </button>
+              <button
                 className="icon-button annotation-task-delete"
                 type="button"
                 onClick={() => void deleteTask()}
-                disabled={busy || saving || creatingTask || !taskId || taskId === "close_oven"}
+                disabled={busy || saving || creatingTask || importingTemplates || !taskId || taskId === "close_oven"}
                 title="删除当前自定义任务"
                 aria-label="删除当前自定义任务"
               >
@@ -243,11 +316,25 @@ export function AnnotationPanel({
           </label>
           <label className="annotation-description">
             <span>任务描述</span>
+            <select
+              value={descriptionTemplate}
+              onChange={(event) => {
+                if (event.target.value) setDescription(event.target.value);
+              }}
+              disabled={!activeTask || saving || creatingTask || importingTemplates}
+              aria-label="描述模板"
+            >
+              <option value="">自定义描述</option>
+              {(activeTask?.descriptionOptions ?? []).map((option) => (
+                <option value={option} key={option}>{option}</option>
+              ))}
+            </select>
             <textarea
               value={description}
               onChange={(event) => setDescription(event.target.value)}
               maxLength={500}
               rows={1}
+              disabled={saving || creatingTask || importingTemplates}
               required
             />
             <small>{description.length}/500 · 可编辑</small>

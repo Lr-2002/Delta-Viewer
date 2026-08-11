@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const STREAM_NAMES: [&str; 5] = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
-pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 5;
+pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 6;
 pub const EXPECTED_STATE_FRAME_RATE_FPS: u32 = 30;
 pub const STATE_FRAME_RATE_TOLERANCE_PERCENT: u8 = 5;
 
@@ -49,6 +49,10 @@ pub struct TaskDefinition {
     pub label: String,
     pub code_prefix: String,
     pub default_description: String,
+    #[serde(default)]
+    pub description_options: Vec<String>,
+    #[serde(default)]
+    pub default_segments: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -203,7 +207,8 @@ pub struct ImportPreflight {
 pub struct RawStateRecord {
     pub frame_id: i64,
     pub capture_time_ns: i64,
-    pub position: [f64; 3],
+    #[serde(default)]
+    pub position: Option<[Option<f64>; 3]>,
     pub velocity: [f64; 3],
     pub quaternion: [f64; 4],
     pub euler: [f64; 3],
@@ -229,7 +234,10 @@ impl From<RawStateRecord> for StateRecord {
         Self {
             frame_id: value.frame_id,
             capture_time_ns: value.capture_time_ns.to_string(),
-            position: value.position,
+            position: value
+                .position
+                .unwrap_or([None; 3])
+                .map(|component| component.unwrap_or_default()),
             velocity: value.velocity,
             quaternion: value.quaternion,
             euler: value.euler,

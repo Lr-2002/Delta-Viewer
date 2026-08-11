@@ -104,7 +104,7 @@ if (!browserExecutable && requireBrowser) {
         streams,
       };
       const report = {
-        formatVersion: 5,
+        formatVersion: 6,
         episodeRoot: "/source/episode",
         parsedStateCount: 1,
         imageValidationMode: "sampled",

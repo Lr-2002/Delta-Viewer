@@ -226,7 +226,7 @@ try {
       },
     };
     const report = {
-      formatVersion: 5,
+      formatVersion: 6,
       episodeRoot: episodes[0].root,
       parsedStateCount: 1,
       imageValidationMode: "sampled",
