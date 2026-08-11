@@ -95,6 +95,7 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
     await page.locator('input[autocomplete="new-password"]').nth(0).fill("password-123");
     await page.locator('input[autocomplete="new-password"]').nth(1).fill("password-123");
     await page.getByRole("button", { name: "创建并登录" }).click();
+    await page.getByRole("button", { name: "仍要标注" }).click();
 
     await page.waitForFunction(() => {
       const images = [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")];

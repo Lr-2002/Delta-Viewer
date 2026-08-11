@@ -5,6 +5,11 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.36 - 2026-08-11
+
+- Updated browser playback regression coverage to accept the new warning gate
+  before asserting synchronized image loading and playback behavior.
+
 ## 0.17.35 - 2026-08-11
 
 - Persisted clip ranges and every segment's frame range, title and note in the
