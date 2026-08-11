@@ -554,6 +554,21 @@ function App() {
     const loadedMinFrame = getMinFrame(loaded);
     const loadedMaxFrame = getMaxFrame(loaded);
 
+    // Mount the read-only preview before the health check finishes so operators
+    // can start inspecting frames while validation runs in the background.
+    setData(loaded);
+    setReport(null);
+    setAnnotation(null);
+    setLoadedEpisodeSourceRoot(sourceEpisodeRoot);
+    setPlaying(false);
+    setExportResult(null);
+    setFpsOverride(null);
+    setClipStartFrame(loadedMinFrame);
+    setClipEndFrame(loadedMaxFrame);
+    setCurrentFrame(loadedMinFrame);
+    frameRef.current = loadedMinFrame;
+    setView("review");
+
     const validated = await validateEpisode(root, owner.id);
     ensureOperationActive(owner);
     updateScannedEpisode(validated.summary);

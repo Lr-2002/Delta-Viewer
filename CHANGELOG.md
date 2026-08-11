@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.39 - 2026-08-11
+
+- Mounted the read-only episode preview immediately after loading its states and
+  stream index, allowing frame inspection while the health check continues.
+- Kept validation as the gate for annotation and export, with failed or
+  cancelled checks clearing the provisional preview.
+
 ## 0.17.38 - 2026-08-11
 
 - Corrected the playback regression assertion for an unavailable current frame:
