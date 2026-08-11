@@ -644,6 +644,7 @@ function App() {
     if (!candidate || operationScopeRef.current.current()) return;
     const owner = beginOperation();
     if (!owner) return;
+    const focusRestoreToken = ++episodeFocusRestoreToken.current;
     setPendingAnnotationConfirmation(null);
     resetOperationFeedback(owner);
     try {
@@ -657,6 +658,7 @@ function App() {
       await reportFailure("load_episode", reason, candidate.data.summary.root, owner);
     } finally {
       finishOperation(owner);
+      restoreEpisodeFocus(candidate.sourceEpisodeRoot, focusRestoreToken);
     }
   }
 

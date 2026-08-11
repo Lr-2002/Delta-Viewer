@@ -137,6 +137,7 @@ if (!browserExecutable) {
     page.on("request", (request) => requests.push(request.url()));
     await page.goto(baseUrl, { waitUntil: "networkidle" });
     await page.getByRole("button", { name: "离线模式" }).click();
+    await page.getByRole("button", { name: "仍要标注" }).click();
     await page.getByText("多路回放", { exact: true }).waitFor();
     assert.equal(await page.locator('input[autocomplete="username"]').count(), 0);
     assert.equal(await page.getByLabel("退出登录").count(), 0);
@@ -490,17 +491,17 @@ if (!browserExecutable) {
         await page.getByRole("button", { name: "在当前帧分割" }).click();
         assert.equal(await page.locator(".segment-block").count(), 3);
         await page.getByRole("button", { name: "保存片段", exact: true }).click();
-        await page.getByText("片段已保存到本机 · r2", { exact: true }).waitFor();
+        await page.getByText("浏览器演示已保存 · 3 个片段 · r2", { exact: true }).waitFor();
         assert.match(await page.locator(".segment-list").innerText(), /拿取工具/);
         await page.getByLabel("裁剪结束帧").fill("40");
         await page.getByText("保留范围 · 帧 0–40 · 2 个片段", { exact: true }).waitFor();
         await page.getByRole("button", { name: "保存片段", exact: true }).click();
-        await page.getByText("片段已保存到本机 · r3", { exact: true }).waitFor();
+        await page.getByText("浏览器演示已保存 · 2 个片段 · r3", { exact: true }).waitFor();
         await page.getByRole("button", { name: "恢复完整轨迹" }).click();
         await page.getByText("保留范围 · 帧 0–195 · 2 个片段", { exact: true }).waitFor();
         assert.match(await page.locator(".segment-list").innerText(), /帧 21–195/);
         await page.getByRole("button", { name: "保存片段", exact: true }).click();
-        await page.getByText("片段已保存到本机 · r4", { exact: true }).waitFor();
+        await page.getByText("浏览器演示已保存 · 2 个片段 · r4", { exact: true }).waitFor();
         assert.equal(await page.locator(".camera-grid img[aria-hidden='false']").first().evaluate((image) => image.naturalWidth > 0), true);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
         assert.deepEqual(consoleErrors, []);
@@ -578,6 +579,7 @@ async function registerDemoAccount(page, url, suffix) {
   await passwords.nth(0).fill("demo-password-123");
   await passwords.nth(1).fill("demo-password-123");
   await page.getByRole("button", { name: "创建并登录" }).click();
+  await page.getByRole("button", { name: "仍要标注" }).click({ timeout: 2_000 }).catch(() => undefined);
 }
 
 async function findAvailablePort() {

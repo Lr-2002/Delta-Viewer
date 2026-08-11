@@ -5,6 +5,14 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.40 - 2026-08-11
+
+- Updated browser regression flows to explicitly accept the annotation warning
+  decision and to distinguish browser-demo saves from source `description.json`
+  persistence.
+- Restored focus to the session that opened the annotation warning after the
+  operator continues or the confirmation load fails.
+
 ## 0.17.39 - 2026-08-11
 
 - Mounted the read-only episode preview immediately after loading its states and
