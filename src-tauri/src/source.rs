@@ -297,7 +297,10 @@ pub fn collect_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathB
     for entry in WalkDir::new(root).follow_links(false) {
         check_cancelled(cancelled)?;
         let entry = entry.map_err(|error| AppError::Message(error.to_string()))?;
-        if entry.file_type().is_file() && !is_platform_metadata_file_name(entry.file_name()) {
+        if entry.file_type().is_file()
+            && !is_platform_metadata_file_name(entry.file_name())
+            && !crate::episode_metadata::is_description_partial_path(root, entry.path())
+        {
             files.push(entry.path().to_path_buf());
         }
     }
@@ -321,7 +324,11 @@ fn collect_indexed_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<I
     for entry in WalkDir::new(root).follow_links(false) {
         check_cancelled(cancelled)?;
         let entry = entry.map_err(|error| AppError::Message(error.to_string()))?;
-        if !entry.file_type().is_file() || is_platform_metadata_file_name(entry.file_name()) {
+        if !entry.file_type().is_file()
+            || is_platform_metadata_file_name(entry.file_name())
+            || crate::episode_metadata::is_description_path(root, entry.path())
+            || crate::episode_metadata::is_description_partial_path(root, entry.path())
+        {
             continue;
         }
         let metadata = entry
@@ -883,6 +890,37 @@ mod tests {
         assert_eq!(summary.total_files, 2);
         assert_eq!(summary.total_bytes, 11);
         assert_eq!(summary.streams[0].frame_count, 1);
+        assert_eq!(
+            episode_fingerprint(&root, &cancelled).unwrap(),
+            fingerprint_before
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn description_metadata_is_importable_but_does_not_change_capture_fingerprint() {
+        let root = test_output("description-metadata");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("states.jsonl"), b"state\n").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let fingerprint_before = episode_fingerprint(&root, &cancelled).unwrap();
+
+        fs::write(
+            root.join("description.json"),
+            b"{\"formatVersion\":1,\"description\":\"test\"}\n",
+        )
+        .unwrap();
+        fs::write(root.join(".description.json.partial-stale"), b"partial").unwrap();
+
+        let files = collect_files(&root, &cancelled).unwrap();
+        assert_eq!(
+            files,
+            vec![root.join("description.json"), root.join("states.jsonl")]
+        );
+        let summary = scan_episode(&root, None, &cancelled).unwrap();
+        assert_eq!(summary.total_files, 1);
+        assert_eq!(summary.total_bytes, 6);
         assert_eq!(
             episode_fingerprint(&root, &cancelled).unwrap(),
             fingerprint_before

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { RotateCcw, Save, Scissors, Trash2 } from "lucide-react";
-import { saveEpisodeAnnotation } from "../lib/backend";
+import { isTauriRuntime, saveEpisodeAnnotation } from "../lib/backend";
 import type { EpisodeAnnotation, EpisodeData } from "../types";
 
 interface Segment {
@@ -90,7 +90,8 @@ export function SegmentAnnotationEditor({
         segments: visibleSegments.map(({ startFrame, endFrame, title, note }) => ({ startFrame, endFrame, title, note })),
       });
       onSaved(saved);
-      onNotice(`片段已保存到本机标注 · ${saved.segments.length} 个片段 · r${saved.revision}`);
+      const persistenceNotice = isTauriRuntime() ? "description.json 已更新" : "浏览器演示已保存";
+      onNotice(`片段已保存 · ${persistenceNotice} · ${saved.segments.length} 个片段 · r${saved.revision}`);
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : String(reason));
     } finally {

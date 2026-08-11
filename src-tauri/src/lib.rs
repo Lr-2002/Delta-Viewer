@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod annotations;
+mod episode_metadata;
 mod error;
 mod export;
 mod identity;
@@ -344,7 +345,13 @@ async fn save_episode_annotation(
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<EpisodeAnnotation> {
         let root = std::fs::canonicalize(Path::new(&request.source_path))?;
         let fingerprint = source::episode_fingerprint(&root, &AtomicBool::new(false))?;
-        annotations::save_annotation(&data_root, &root, &fingerprint, &user, request)
+        annotations::save_annotation_with_source_description(
+            &data_root,
+            &root,
+            &fingerprint,
+            &user,
+            request,
+        )
     })
     .await
     .map_err(|error| error.to_string())?

@@ -20,7 +20,7 @@ Apple Silicon 机器下载 `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`。�
 
 `0.15.0` 的 macOS 包存在无效资源封印，可能被系统提示“已损坏”，已由 `0.15.2` 取代。`0.15.1` tag 在 CI 阶段被阻止，没有公开 Release。macOS 用户不得继续使用 `0.15.0` DMG；请下载 `0.15.2` 或更高版本。Windows `0.15.0` 安装器不受此问题影响。
 
-DOHC Viewer 本身不提供 ext4 驱动。需要读取现有 ext4 采集卡时，先按[macOS 使用 Paragon extFS 只读访问 ext4 SD 卡](Paragon-extFS-macOS)安装第三方驱动并确认卷为只读，再从 Viewer 选择系统已经挂载的卡根目录。不得把源卡挂载为可写。
+DOHC Viewer 本身不提供 ext4 驱动。需要读取现有 ext4 采集卡时，先按[macOS 使用 Paragon extFS 只读访问 ext4 SD 卡](Paragon-extFS-macOS)安装第三方驱动并确认卷为只读，再从 Viewer 选择系统已经挂载的卡根目录。只读挂载可检查、回放和导出，但不能保存需要写入 `description.json` 的标注；不得为了标注解除唯一原始卡的只读保护。
 
 ## Ubuntu 22.04 及以上 x86_64
 
@@ -33,7 +33,7 @@ sudo apt install ./DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb
 
 必须保留命令中的 `./`，这样 `apt` 会把参数识别为本地安装包并自动补齐 WebKitGTK、GTK、AppIndicator 和 librsvg 运行时依赖。安装后从应用菜单打开 **DOHC Viewer**，也可以在终端运行 `dohc-viewer`。升级时对新版本 deb 重复同一条 `sudo apt install ./...deb` 命令。
 
-原生 deb 可以选择当前 Linux 用户有权读取的已挂载 SD 卡目录。Ubuntu 内核原生支持 ext4，不需要 Paragon；仍应先以只读方式挂载源卡。DOHC Viewer 直接从源路径检查、回放和导出，不自动复制 session，也不会修改源卡；使用期间需保持卷挂载。当前只支持 x86_64 Ubuntu，ARM64 不在发布范围内。
+原生 deb 可以选择当前 Linux 用户有权读取的已挂载 SD 卡目录。Ubuntu 内核原生支持 ext4，不需要 Paragon；只读挂载可检查、回放和导出。DOHC Viewer 不自动复制 session，也不会修改采集文件；保存标注需要可写 episode，以便原子更新 `description.json`。使用期间需保持卷挂载。当前只支持 x86_64 Ubuntu，ARM64 不在发布范围内。
 
 项目不支持 Flatpak，也不保留 Flatpak 打包工具。Ubuntu 22.04 及以上 x86_64 deb 是唯一受支持的 Linux 发布安装包；Ubuntu 20.04 没有当前版本的二进制安装包。
 

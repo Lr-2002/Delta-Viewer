@@ -258,6 +258,31 @@ pub fn publish_noreplace(source: &Path, destination: &Path) -> AppResult<()> {
     Ok(())
 }
 
+pub fn replace_file_atomic(source: &Path, destination: &Path) -> AppResult<()> {
+    if source.parent() != destination.parent() {
+        return Err(AppError::Message(
+            "ATOMIC_REPLACE_CROSS_DIRECTORY: 原子替换要求 partial 与目标位于同一目录".into(),
+        ));
+    }
+    if !fs::symlink_metadata(source)?.file_type().is_file() {
+        return Err(AppError::Message(
+            "ATOMIC_REPLACE_SOURCE_INVALID: partial 不是普通文件".into(),
+        ));
+    }
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(AppError::Message(
+                "ATOMIC_REPLACE_DESTINATION_INVALID: 目标不是普通文件".into(),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(AppError::Io(error)),
+    }
+    replace_file_platform(source, destination)?;
+    Ok(())
+}
+
 pub fn list_partial_imports(destination_parent: &Path) -> AppResult<Vec<PartialImport>> {
     if !destination_parent.is_dir() {
         return Ok(Vec::new());
@@ -378,6 +403,33 @@ fn publish_noreplace_platform(source: &Path, destination: &Path) -> std::io::Res
     }
 }
 
+#[cfg(windows)]
+fn replace_file_platform(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn publish_noreplace_platform(source: &Path, destination: &Path) -> std::io::Result<()> {
     use std::ffi::CString;
@@ -392,6 +444,11 @@ fn publish_noreplace_platform(source: &Path, destination: &Path) -> std::io::Res
     } else {
         Err(std::io::Error::last_os_error())
     }
+}
+
+#[cfg(not(windows))]
+fn replace_file_platform(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
 }
 
 #[cfg(target_os = "linux")]
@@ -701,7 +758,7 @@ mod tests {
     use super::{
         cleanup_partial_import, create_import_partial, ensure_source_volume, inspect_import,
         is_unsupported_fat, list_partial_imports, managed_import_root, publish_import_partial,
-        publish_noreplace,
+        publish_noreplace, replace_file_atomic,
     };
     use crate::model::VolumeInfo;
     use std::fs;
@@ -832,6 +889,22 @@ mod tests {
         assert!(publish_noreplace(&partial, &output).is_err());
         assert_eq!(fs::read(&output).unwrap(), b"existing");
         assert_eq!(fs::read(&partial).unwrap(), b"new");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_file_replace_updates_an_existing_output() {
+        let root = test_output("replace-file");
+        fs::create_dir_all(&root).unwrap();
+        let partial = root.join(".result.partial");
+        let output = root.join("result.json");
+        fs::write(&partial, b"new").unwrap();
+        fs::write(&output, b"existing").unwrap();
+
+        replace_file_atomic(&partial, &output).unwrap();
+
+        assert_eq!(fs::read(&output).unwrap(), b"new");
+        assert!(!partial.exists());
         fs::remove_dir_all(root).unwrap();
     }
 

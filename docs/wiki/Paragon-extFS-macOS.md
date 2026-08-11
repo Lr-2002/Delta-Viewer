@@ -69,9 +69,9 @@ diskutil info "/Volumes/CARD_NAME" | grep -E "Device Node|File System Personalit
 1. 先在 Finder 中打开只读卷，确认能看到 session 目录和预期的 `cam0`、`cam1`、`cam2`、`t265_left`、`t265_right`、`states.jsonl` 数据。
 2. 启动 DOHC Viewer，选择统一管理模式后导入管理员提供的用户中心配置并登录账号；也可以选择离线模式直接继续，不需要账号或用户中心。
 3. 点击“选择 SD 卡”，通过系统目录选择框选择 `/Volumes/CARD_NAME` 对应的卡根目录。
-4. 选择完成后 DOHC Viewer 会扫描全部 session，并直接从只读源路径加载第一条记录；不会要求选择导入目标，也不会自动复制完整 session。不要把源卡改成可写。
+4. 选择完成后 DOHC Viewer 会扫描全部 session，并直接从只读源路径加载第一条记录；不会要求选择导入目标，也不会自动复制完整 session。不要为了标注把唯一原始卡改成可写。
 5. 等待结构/状态检查和固定百分位 JPEG 抽检完成。任务结束前保持读卡器连接稳定。
-6. 后续回放和导出仍从源卡读取，因此应用使用期间必须保持卷挂载。标注和检查报告只写应用 local-data，不会写回源卡。
+6. 后续检查、回放和导出仍从源卡读取，因此应用使用期间必须保持卷挂载。严格只读模式下不能保存标注，因为保存操作必须在 episode 根目录更新 `description.json`；检查报告仍只写应用 local-data。需要标注时应使用经过授权的可写工作介质，不要解除唯一原始卡的只读保护。
 
 如果目录选择框没有显示该卷，先确认 Finder 能打开它。然后进入“系统设置 -> 隐私与安全性 -> 文件与文件夹”，如果存在 DOHC Viewer 的“可移动宗卷”开关，将其打开，再通过应用内的原生目录选择框重新选择。
 
@@ -91,7 +91,7 @@ diskutil info "/Volumes/CARD_NAME" | grep -E "Device Node|File System Personalit
 - Spotlight indexing 已关闭。
 - `Mount in Read-only mode` 已开启。
 - Paragon 显示 `read-only`，附加检查中的 `Read-Only Volume` 为 `Yes`。
-- DOHC Viewer 正常界面直接只读访问源卡，不自动创建 app-local-data 数据副本。
+- DOHC Viewer 正常界面直接只读访问源卡，不自动创建 app-local-data 数据副本；本次只读流程不执行需要写 `description.json` 的标注保存。
 - 拔卡前已完成任务并正常卸载。
 
 ## 7. 常见问题

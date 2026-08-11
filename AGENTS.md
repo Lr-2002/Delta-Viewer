@@ -4,9 +4,9 @@
 
 ## 1. 不可破坏的产品约束
 
-1. 源 SD 卡是只读数据源。不得在源路径创建、修改、重命名或删除任何文件。
-2. 数据运行时只通过操作系统已挂载或映射为目录的文件系统路径访问源数据：支持本地目录及 Windows 映射盘、SMB/NFS 挂载等网络文件系统目录。应用不增加 SSH、HTTP、云存储或 NAS 连接协议，也不发送源路径、图像、状态、标注、报告或 hash。统一管理模式中，用户中心是唯一的业务身份例外：客户端只通过管理员导入的固定证书访问当前主机局域网 HTTPS 服务；自动更新仍只按顺序读取固定公网镜像 `http://39.155.172.162:17879` 与固定局域网 fallback `http://10.1.11.36:17879`。离线模式不得连接用户中心或更新镜像。
-3. 正常工作流是“选择 SD 卡 -> 自动扫描全部 session -> 直接只读加载首条 session -> 健康检查 -> 回放/导出”。正常 UI 不得自动复制源数据；使用期间源卷必须保持挂载。
+1. 源 JPEG、`states.jsonl`、骨架和其他采集文件是只读数据。唯一源端写入例外是用户明确保存标注时，在当前 episode 根目录原子创建或更新应用管理的 `description.json`；不得创建、修改、重命名或删除其他源文件。
+2. 数据运行时只通过操作系统已挂载或映射为目录的文件系统路径访问源数据：支持本地目录及 Windows 映射盘、SMB/NFS 挂载等网络文件系统目录。应用不增加 SSH、HTTP、云存储或 NAS 连接协议，也不发送源路径、图像、状态、标注、报告或 hash。除根级 `description.json` 外不写回源目录，也不自动复制。统一管理模式中，用户中心是唯一的业务身份例外：客户端只通过管理员导入的固定证书访问当前主机局域网 HTTPS 服务；自动更新仍只按顺序读取固定公网镜像 `http://39.155.172.162:17879` 与固定局域网 fallback `http://10.1.11.36:17879`。离线模式不得连接用户中心或更新镜像。
+3. 正常工作流是“选择 SD 卡 -> 自动扫描全部 session -> 直接加载首条 session -> 健康检查 -> 回放/标注/导出”。正常 UI 不得自动复制源数据；保存标注需要当前 episode 可写，其他流程保持只读；使用期间源卷必须保持挂载。
 4. 导入器仅用于压力验收和未来显式离线导入；一旦执行完整导入，仍必须验证目标端的文件大小和 BLAKE3，不能只信任复制时的源端 hash。
 5. `capture_time_ns` 在 Rust/磁盘中为 int64，在 TypeScript 中必须保持十进制字符串；涉及差值时使用 `BigInt`。
 6. 五个标准流名称固定为 `cam0`、`cam1`、`cam2`、`t265_left`、`t265_right`。
@@ -14,7 +14,7 @@
 8. LeRobot 数据不得虚构源数据中不存在的 action。规范化时间轴时必须保留原始纳秒时间。
 9. 正式输出必须先写 partial 路径，成功后再原子 rename；不得覆盖已有输出。
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
-11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改源目录，三个 adapter 必须使用同一范围。
+11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改采集文件，保存标注时只可刷新 `description.json`，三个 adapter 必须使用同一范围。
 12. 工作区有统一管理和离线两种模式，选择以 `appLocalData/workspace-mode` 的追加记录持久化。统一管理模式的账号由当前部署主机上的局域网用户中心统一管理，账号只能由管理员创建；客户端通过导入的用户中心配置固定 HTTPS 证书和 service ID，登录成功后只在 Rust 进程内保存当前会话。离线模式没有账号、登录、用户中心请求、账号 UI 或自动更新；Rust 仅为本地标注/导出 provenance 使用固定的非账号离线标记，前端不得显示其为处理人。所有数据 command 必须经 `AuthState::require_user()` 门禁，只有已选择离线模式时才可取得该本地标记；用户中心和更新 command 必须要求统一管理的已登录用户。
 13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 Ubuntu 22.04+ x86_64 原生 deb 三个可安装产物；不再构建或发布 macOS x64。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 14. 自 `v0.17.6` 之后，仓库实际默认分支 `main`（口头所称 `master`）不得保留没有对应版本 tag 的独立提交。每个进入 `main` 的 commit 都必须是完整的发布提交：同一 commit 包含全部代码/文档变更、四处一致且唯一的新 semver，以及带日期的 Changelog；CI 成功后必须由发布 workflow 创建精确指向该 commit 的 annotated `vX.Y.Z` tag。禁止先推功能、修复、文档、CI 或配置 commit，再另推 version/release commit；除自动 tag 尚在运行的短暂 pending 状态外，`main` 必须保持一 commit 对应一 tag。
@@ -50,6 +50,7 @@ DOHC_Viewer/
     src/user_center.rs           固定证书用户中心配置、健康检查和登录
     src/updater.rs               固定镜像检查、有界下载、验签和平台安装
     src/annotations.rs           任务目录、轨迹占号和追加式标注修订
+    src/episode_metadata.rs      根级 description.json 原子写入契约
     src/source.rs                episode 发现、扫描、状态/帧读取
     src/skeleton.rs              可选 SMPL/骨架 NPZ 有界只读解析
     src/storage.rs               卷信息、容量预检和 partial 安全清理
@@ -114,6 +115,7 @@ React component
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
 - 源目录遍历统一使用可取消的 no-follow 路径；不要重新引入会隐式跟随 symlink 的文件判断。
 - macOS AppleDouble `._*` 和 `.DS_Store` 是平台元数据，不属于采集数据；扫描、统计、指纹、校验和显式导入必须统一忽略且不得删除源文件。其他无法映射为非负十进制帧号的 JPEG 仍是 `INVALID_FRAME_FILENAME` error。
+- 根级 `description.json` 是应用管理的 episode metadata，不参与采集统计、健康检查或数据指纹；其 partial 必须被扫描、指纹和导入忽略，正式文件随显式导入复制并验证。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
 - 未选择模式时只允许读取/选择/清除工作模式；统一管理未登录时只允许用户中心状态、配置导入、登录和退出 commands，账号创建只能在用户中心管理员页面完成。离线模式允许本地扫描、导入、加载、检查、读帧、标注和导出，但拒绝用户中心和更新 command。扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁；前端隐藏工作区不能替代后端门禁。
 - 内置任务和用户创建任务的校验、持久化与自动编号逻辑以 `src-tauri/src/annotations.rs` 为唯一真源。新任务只接收名称，由 Rust 生成稳定 task ID/轨迹前缀；前端不得提交或指定轨迹编号。
@@ -219,7 +221,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 
 ### 6.2 文件安全
 
-- 写入前确认目标位于应用管理的导入工作区或用户明确选择的导出 destination 下。
+- 写入前确认目标位于应用管理的导入工作区、用户明确选择的导出 destination，或精确为当前规范化 episode 根目录的 `description.json`。
 - 中间结果使用唯一 `.partial-{nonce}`，完成后 rename。
 - 使用 `create_new` 防止意外覆盖。
 - 最终发布必须调用 `storage::publish_noreplace`，保持 Windows/macOS/Linux 原子 no-replace；不能退回 `exists + rename` 的竞态组合。
@@ -227,7 +229,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - Manifest 当前为 format v2：`sourcePath` 是原始相对路径，`path` 是 Windows 安全目标路径；数据集 BLAKE3 仍基于原始 `sourcePath`。
 - 取消或失败时不得出现正式输出名。
 - 如果新增自动清理，只能删除本应用可证明创建的 partial 路径，不能使用宽泛 glob 或递归删除用户目录。
-- 正常 UI 不创建 `appLocalData/imports` 副本。导入器或压力验收显式使用管理工作区时，路径固定为 `appLocalData/imports/{safe-source-name}-{path-hash}`；源路径始终只读。
+- 正常 UI 不创建 `appLocalData/imports` 副本。导入器或压力验收显式使用管理工作区时，路径固定为 `appLocalData/imports/{safe-source-name}-{path-hash}`；源采集文件始终只读。应用管理的根级 `description.json` 是唯一例外，必须使用同目录唯一 partial、回读验证和跨平台原子替换，且写入失败必须返回 `SOURCE_DESCRIPTION_WRITE_FAILED`。不得借此写入其他源文件。
 - warning/error 后台报告只能写入 Tauri `appLocalData` 下的应用专属 `reports` 目录；不得写入源卡或 episode。保持 partial、回读和原子 no-replace，同一 episode 路径/指纹/报告版本稳定去重；不得把“后台汇报”实现为网络上传。
 - 用户可见的扫描、导入、加载、检查和导出失败写入 `appLocalData/reports/operation-errors` 的不可覆盖 JSON；原始平台消息必须保留，权限类消息使用稳定码 `PERMISSION_DENIED`，Unix 文件权限为 `0600`。
 - 用户中心主机将账号和密码哈希写入服务专属私有目录；客户端将工作模式追加记录写入 `appLocalData/workspace-mode`，统一管理配置写入 `appLocalData/user-center.json`，用户任务写入 `appLocalData/tasks`，轨迹占号写入 `appLocalData/trajectory-codes`，标注修订写入 `appLocalData/annotations/{episodeId}`。全部使用 `create_new`、回读和原子 no-replace；Unix 新文件权限为 `0600`。不得写入源 SD 卡或 episode。
@@ -295,7 +297,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 - 进度、错误、warning 和成功结果都必须有可见状态，不能只写 console。
 - 图像面板使用稳定尺寸；加载或错误不能改变 grid 布局。
 - 可选骨架数据只能由 Rust 从当前只读 episode 源解析，前端通过 `EpisodeData` 接收坐标和 frame ID；Three.js 视图不得直接读文件。桌面端骨架面板位于五路图像右侧，窄窗口位于图像之后；NPZ 缺失或解析失败只显示非阻断状态。
-- 选择 SD 卡后自动扫描全部 session，并直接从源路径只读加载、检查第一条记录；不得自动创建本地数据副本，也不显示导入目标。左侧 episode 列表以源路径作为稳定身份：单击只选择，双击或聚焦后按 Enter/空格才读取并进入回放；异步载入成功或失败后焦点必须回到触发的 session。读取失败和权限错误必须写入本地操作历史。
+- 选择 SD 卡后自动扫描全部 session，并直接从源路径加载、检查第一条记录；不得自动创建本地数据副本，也不显示导入目标。扫描、检查和回放保持只读，只有保存标注可以更新 `description.json`。左侧 episode 列表以源路径作为稳定身份：单击只选择，双击或聚焦后按 Enter/空格才读取并进入回放；异步载入成功或失败后焦点必须回到触发的 session。读取失败和权限错误必须写入本地操作历史。
 - 工作模式选择是唯一的工作区入口。统一管理模式的登录页显示当前账号和退出；离线模式不显示账号、登录、处理人或自动更新入口。切换模式和统一管理退出都必须清空当前 episode、检查和标注状态；Rust 仍负责模式和会话门禁。
 - 回放首页顶部固定提供 episode 级数据标注。用户可以只输入名称创建本地任务；选择任务时自动填充默认描述并预览该任务的下一个轨迹码，描述可编辑。保存时必须由 Rust 原子分配或复用该 episode 的轨迹号，前端轨迹码始终只读；统一管理模式显示修订号和最近处理人，离线模式不显示处理人。
 - 批量页从本机最新标注列出轨迹码、任务、描述、统一管理处理人或离线本机来源、修订和源状态；源断开的条目可见但不可选。用户只选择条目、统一格式和一个目标目录，不在前端编辑源路径或检查结果。

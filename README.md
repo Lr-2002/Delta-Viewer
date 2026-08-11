@@ -59,9 +59,9 @@ prompt while installing the replacement deb.
    user-center request, or automatic update check; local annotations use an
    offline-local provenance marker rather than a user account.
 2. Select an SD card or a recording directory.
-3. Scan every direct-child episode without modifying the source card. The first
-   session opens directly from the read-only source; no automatic app-local
-   copy is created. Keep the source volume mounted while viewing or exporting.
+3. Scan every direct-child episode without modifying captured files. The first
+   session opens directly from the source; no automatic app-local copy is
+   created. Keep the source volume mounted while viewing or exporting.
 4. The left list shows every discovered session. A single click selects it;
    double-click it or press Enter/Space while it has keyboard focus to read and
    check it on demand.
@@ -71,7 +71,9 @@ prompt while installing the replacement deb.
 6. Select an episode task or create one by entering its name, then edit the task
    description as needed. Rust assigns the next `{task-prefix}-{NNN}` trajectory
    code atomically when the annotation is saved; the UI cannot set the number.
-   Unused custom tasks can be deleted; built-in or referenced tasks are preserved.
+   Saving also atomically creates or updates `description.json` in the episode
+   root, so annotation requires a writable source. Unused custom tasks can be
+   deleted; built-in or referenced tasks are preserved.
 7. Review five synchronized image streams and colored state telemetry. If the episode
    includes an optional `smpl_skeleton.npz`, a synchronized interactive 3D skeleton is
    shown to the right of the images on desktop and below them in a narrow window. Select
@@ -99,7 +101,9 @@ that unsampled frames are free of encoding damage.
 User-created tasks, trajectory reservations, append-only annotation revisions,
 reports, and operation error history are stored under the operating system's
 application-local data directory. Normal UI use does not copy episode payloads
-there. A batch candidate therefore still requires its original source path to
+there. The saved task description is additionally written as format-v1
+`description.json` in the source episode; captured JPEG/state/skeleton files
+remain unchanged. A batch candidate therefore still requires its original source path to
 be mounted and its fingerprint to match the saved annotation. In unified
 management mode, password hashes are stored only by the LAN user center; the
 client never stores passwords and keeps login sessions only in the current
@@ -159,8 +163,8 @@ Its standard `timestamp` follows the constant-rate video timeline; the original
 nanosecond clock is retained separately as `observation.capture_time_ns`.
 
 Trim ranges are inclusive: a range of frames 10-19 contains ten states and the
-matching frames from all five streams. Trimming never changes the source
-episode. Clipped output names include `_frames_10-19` after either the trajectory
+matching frames from all five streams. Trimming never changes captured data;
+saving the associated annotation may refresh `description.json`. Clipped output names include `_frames_10-19` after either the trajectory
 code or legacy recording name, and each adapter records the bounds in metadata.
 
 The MCAP adapter has been exercised with Foxglove Desktop 2.57.0: all five

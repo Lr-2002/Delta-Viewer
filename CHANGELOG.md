@@ -5,6 +5,16 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.33 - 2026-08-11
+
+- Saved the editable task description to a format-v1 `description.json` in the
+  episode root using verified, cross-platform atomic replacement.
+- Kept `description.json` outside capture statistics and fingerprints so saving
+  metadata does not invalidate health checks or annotation identity, while
+  preserving it in explicit verified imports.
+- Restricted source writes to the managed description file and report explicit
+  failures when the source episode is not writable.
+
 ## 0.17.32 - 2026-08-10
 
 - Changed source selection to a shallow session catalog that inspects each

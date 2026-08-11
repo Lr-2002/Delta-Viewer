@@ -14,7 +14,11 @@
 
 ## 出现 operation not allowed / Operation not permitted
 
-应用会把原始消息保存到操作错误历史，并归类为 `PERMISSION_DENIED`。macOS 先确认 Finder 能打开该卷，再在“系统设置 -> 隐私与安全性 -> 文件与文件夹”允许 DOHC Viewer 访问可移动宗卷；Windows 和 Ubuntu 用户确认当前账号能读取挂载目录。源卡不需要写权限，不要通过 `chmod`、关闭系统保护或把源卡改成可写来绕过问题。
+应用会把原始消息保存到操作错误历史，并归类为 `PERMISSION_DENIED`。macOS 先确认 Finder 能打开该卷，再在“系统设置 -> 隐私与安全性 -> 文件与文件夹”允许 DOHC Viewer 访问可移动宗卷；Windows 和 Ubuntu 用户确认当前账号能读取挂载目录。检查、回放和导出不需要写权限；保存标注需要在 episode 根目录原子更新 `description.json`。如果必须保持介质严格只读，则不要通过 `chmod` 或关闭系统保护绕过，只使用检查、回放和导出功能。
+
+## 保存标注提示 `SOURCE_DESCRIPTION_WRITE_FAILED`
+
+确认当前 episode 根目录可写，并且现有 `description.json` 是普通文件而不是目录或符号链接。应用只会更新这个文件，不会修改 JPEG、`states.jsonl` 或骨架。严格只读挂载无法保存标注；将数据放到经过授权的可写介质或调整挂载策略后重试。
 
 旧版本自动导入留下的 `app-local-data/imports` 不会被当前版本自动删除。退出应用并确认不再需要后再手工归档或清理，避免误删仍在使用的数据。
 

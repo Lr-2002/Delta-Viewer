@@ -389,6 +389,7 @@ fn load_latest_annotation(
     Ok(latest)
 }
 
+#[cfg(test)]
 pub fn save_annotation(
     data_root: &Path,
     episode_root: &Path,
@@ -397,6 +398,16 @@ pub fn save_annotation(
     request: SaveAnnotationRequest,
 ) -> AppResult<EpisodeAnnotation> {
     let _guard = annotation_mutation_guard()?;
+    save_annotation_locked(data_root, episode_root, fingerprint, user, request)
+}
+
+fn save_annotation_locked(
+    data_root: &Path,
+    episode_root: &Path,
+    fingerprint: &str,
+    user: &UserIdentity,
+    request: SaveAnnotationRequest,
+) -> AppResult<EpisodeAnnotation> {
     validate_fingerprint(fingerprint)?;
     identity::validate_user_identity(user)?;
     let task = task_definition(data_root, &request.task_id)?;
@@ -463,6 +474,31 @@ pub fn save_annotation(
         return Err(error);
     }
     Ok(annotation)
+}
+
+pub fn save_annotation_with_source_description(
+    data_root: &Path,
+    episode_root: &Path,
+    fingerprint: &str,
+    user: &UserIdentity,
+    request: SaveAnnotationRequest,
+) -> AppResult<EpisodeAnnotation> {
+    let _guard = annotation_mutation_guard()?;
+    validate_fingerprint(fingerprint)?;
+    identity::validate_user_identity(user)?;
+    task_definition(data_root, &request.task_id)?;
+    let description = validate_description(&request.task_description)?;
+    validate_segments(
+        request.clip_start_frame,
+        request.clip_end_frame,
+        &request.segments,
+    )?;
+    crate::episode_metadata::write_description(episode_root, &description)?;
+    save_annotation_locked(data_root, episode_root, fingerprint, user, request).map_err(|error| {
+        AppError::Message(format!(
+            "LOCAL_ANNOTATION_SAVE_FAILED_SOURCE_DESCRIPTION_SAVED: description.json 已写入，但本机标注修订保存失败: {error}"
+        ))
+    })
 }
 
 fn task_has_annotation_reference(data_root: &Path, task_id: &str) -> AppResult<bool> {
@@ -920,7 +956,8 @@ fn unix_nanos() -> u128 {
 mod tests {
     use super::{
         annotations_by_ids, create_task, delete_task, list_annotations, load_annotation,
-        save_annotation, suggest_trajectory_code, task_definitions, ANNOTATION_FORMAT_VERSION,
+        save_annotation, save_annotation_with_source_description, suggest_trajectory_code,
+        task_definitions, ANNOTATION_FORMAT_VERSION,
     };
     use crate::model::{CreateTaskRequest, SaveAnnotationRequest, UserIdentity};
     use std::fs;
@@ -1122,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn saves_segment_metadata_without_writing_to_episode() {
+    fn saves_description_metadata_without_changing_capture_fingerprint() {
         let root = test_output("episode-metadata");
         let episode = root.join("episode");
         fs::create_dir_all(&episode).unwrap();
@@ -1142,13 +1179,66 @@ mod tests {
             title: "片段 1".into(),
             note: "完整动作".into(),
         }];
-        let saved = save_annotation(&root, &episode, &fingerprint, &user, request).unwrap();
+        let saved =
+            save_annotation_with_source_description(&root, &episode, &fingerprint, &user, request)
+                .unwrap();
         assert_eq!(saved.segments[0].note, "完整动作");
-        assert!(!episode.join("metadata.json").exists());
+        let description: serde_json::Value =
+            serde_json::from_slice(&fs::read(episode.join("description.json")).unwrap()).unwrap();
+        assert_eq!(description["formatVersion"], 1);
+        assert_eq!(description["description"], "关闭烤箱门");
         assert_eq!(
             crate::source::episode_fingerprint(&episode, &cancelled).unwrap(),
             fingerprint
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_annotation_before_writing_source_description() {
+        let root = test_output("invalid-source-description");
+        let episode = root.join("episode");
+        fs::create_dir_all(&episode).unwrap();
+        let user = UserIdentity {
+            username: "operator".into(),
+            display_name: "Operator".into(),
+        };
+
+        assert!(save_annotation_with_source_description(
+            &root,
+            &episode,
+            FINGERPRINT_ONE,
+            &user,
+            request("unknown", "不应写入"),
+        )
+        .is_err());
+        assert!(!episode.join("description.json").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_description_failure_does_not_create_local_revision() {
+        let root = test_output("source-description-target");
+        let episode = root.join("episode");
+        fs::create_dir_all(episode.join("description.json")).unwrap();
+        let user = UserIdentity {
+            username: "operator".into(),
+            display_name: "Operator".into(),
+        };
+
+        let error = save_annotation_with_source_description(
+            &root,
+            &episode,
+            FINGERPRINT_ONE,
+            &user,
+            request("close_oven", "不应只保存到本机"),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.starts_with("SOURCE_DESCRIPTION_WRITE_FAILED:"));
+        assert!(!root.join("annotations").exists());
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -34,7 +34,16 @@ pnpm user-center:install
 - 当前登录账号和显示名。
 - 修订号、采集时间范围、标注创建/修改时间、修改开始时间和修改耗时。
 
-每次保存追加一个修订，不覆盖处理历史。任务定义保存在 `appLocalData/tasks`，轨迹占号和标注分别保存在 `appLocalData/trajectory-codes` 与 `appLocalData/annotations`；这些内容不写入源卡，也不上传用户中心。三个导出 adapter 会继承同一任务、轨迹码、处理人和导出审计元数据。
+每次保存追加一个本机修订，不覆盖处理历史。任务定义保存在 `appLocalData/tasks`，轨迹占号和完整标注分别保存在 `appLocalData/trajectory-codes` 与 `appLocalData/annotations`。保存标注还会在当前 episode 根目录原子创建或更新 `description.json`：
+
+```json
+{
+  "formatVersion": 1,
+  "description": "关闭烤箱门，并确认烤箱门完全闭合。"
+}
+```
+
+`description.json` 是唯一允许写入源 episode 的应用管理 metadata；JPEG、`states.jsonl`、骨架和其他采集文件不会修改。它不参与采集指纹或健康检查，因此更新描述不会让刚完成的检查失效；显式压力导入会复制并验证正式文件。源目录必须可写，严格只读挂载会返回 `SOURCE_DESCRIPTION_WRITE_FAILED`，不能完成标注保存。三个导出 adapter 继续继承同一任务、描述、轨迹码、处理人和导出审计元数据，任何内容都不会上传用户中心。
 
 离线模式保存相同的本地任务、轨迹码和修订时间字段，但不写入用户账号；后端仅写固定的本机离线 provenance，前端不显示处理人。三种导出会保留该来源标记，不能将其解释为用户中心账号。
 

@@ -4,6 +4,7 @@ import {
   confirmAction,
   createTaskDefinition,
   deleteTaskDefinition,
+  isTauriRuntime,
   saveEpisodeAnnotation,
   suggestTrajectoryCode,
 } from "../lib/backend";
@@ -114,7 +115,10 @@ export function AnnotationPanel({
       });
       setEditStartedAtMs(Date.now());
       onSaved(saved);
-      onNotice(offlineMode ? `标注已保存：${saved.trajectoryCode}` : `标注已保存：${saved.trajectoryCode} · ${saved.processedBy.displayName}`);
+      const persistenceNotice = isTauriRuntime() ? "description.json 已更新" : "浏览器演示已保存";
+      onNotice(offlineMode
+        ? `标注已保存：${saved.trajectoryCode} · ${persistenceNotice}`
+        : `标注已保存：${saved.trajectoryCode} · ${saved.processedBy.displayName} · ${persistenceNotice}`);
     } catch (reason) {
       onError(toMessage(reason));
     } finally {
