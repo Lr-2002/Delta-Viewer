@@ -24,6 +24,8 @@ export interface TaskDefinition {
   label: string;
   codePrefix: string;
   defaultDescription: string;
+  descriptionOptions: string[];
+  defaultSegments: string[];
 }
 
 export interface CreateTaskRequest {

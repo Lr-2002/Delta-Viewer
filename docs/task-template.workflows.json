@@ -1,0 +1,55 @@
+{
+  "formatVersion": 1,
+  "tasks": [
+    {
+      "label": "Sofa",
+      "description": "整理沙发靠枕",
+      "segments": ["下蹲", "拿起靠枕", "整理靠枕位置", "起身"]
+    },
+    {
+      "label": "Picking",
+      "description": "捡起物品并放下",
+      "segments": ["下蹲", "捡起物品", "转身", "放下物品"]
+    },
+    {
+      "label": "Table",
+      "description": "整理桌上瓶子",
+      "segments": ["下蹲", "整理瓶子", "起身"]
+    },
+    {
+      "label": "bedsheet",
+      "description": "将枕头放入衣柜",
+      "segments": ["下蹲", "拿起枕头", "转身", "将枕头放入衣柜", "关上衣柜门"]
+    },
+    {
+      "label": "oven2",
+      "description": "将烤盘推入烤箱",
+      "segments": ["下蹲", "拉开烤箱门", "拉出烤盘", "推入烤盘", "关上烤箱门"]
+    },
+    {
+      "label": "washing_machine",
+      "description": "将衣服放入洗衣机",
+      "segments": ["打开洗衣机门", "拿起衣服", "放入衣服", "关闭洗衣机门"]
+    },
+    {
+      "label": "BedMaking",
+      "description": "整理床铺",
+      "segments": ["向左平移", "抓起枕头", "向右行走", "放下枕头", "下蹲铺平被单"]
+    },
+    {
+      "label": "Open_Fridge",
+      "description": "整理冰箱内水瓶",
+      "segments": ["打开冰箱门", "放置水瓶", "拿起水瓶", "拉开抽屉", "放下水瓶", "关闭抽屉", "关闭冰箱门"]
+    },
+    {
+      "label": "picking_objects_to_table",
+      "description": "将物品捡起并放到桌上",
+      "segments": ["下蹲", "捡起物品", "转身", "放下物品", "下蹲", "捡起物品", "转身", "放下物品"]
+    },
+    {
+      "label": "Managing_Bottles",
+      "description": "将水瓶一字排开",
+      "segments": ["把水瓶一字排开"]
+    }
+  ]
+}

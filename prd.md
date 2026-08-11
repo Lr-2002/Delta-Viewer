@@ -312,7 +312,7 @@ Manifest `formatVersion=2`。采集数据文件集合明确排除 macOS AppleDou
 | FR-VAL-012 | P1 | 导出机器可读检查报告。 | 检查页使用“导出报告”操作，可生成包含版本、图像检查模式/百分位、issue 和统计的 JSON 文件。 | 已实现并测试 |
 | FR-VAL-013 | P0 | warning/error 在检查完成后自动生成本地后台报告。 | 写入应用 local-data 的 `reports` 目录，原子发布并回读；相同 episode 路径、指纹和报告版本只保留一份，ok 不生成，任一失败不得伪装成已汇报。 | 已实现并测试 |
 | FR-VAL-014 | P1 | 标注抽检或全量解码中近乎全黑的图像。 | 对每张已解码图像做最多约 32×32 点的有界亮度采样；平均亮度不高于 8 且至少 99.5% 采样点不高于 8 时，该流生成一个带首个命中 `frameId` 和命中数的 `BLACK_SCREEN` warning。 | 已实现并测试 |
-| FR-VAL-015 | P1 | 检查状态 position 轨迹是否静止或没有有效位置变化。 | 至少两条有限 position 的记录全部与首条相同（每个坐标差不超过 `1e-6`）时，生成带首个 `frameId` 的 `TRAJECTORY_STATIC` warning 并直接跳过该条，不进入标注；缺失或非有限 position 仍按既有状态解析/非有限值 error 报告。 | 已实现，待验证 |
+| FR-VAL-015 | P1 | 检查状态 position 轨迹是否静止或没有有效位置变化。 | 至少两条有限 position 的记录全部与首条相同（每个坐标差不超过 `1e-6`）时，生成带首个 `frameId` 的 `TRAJECTORY_STATIC` warning 并直接跳过该条，不进入标注；position 为 `null`、`[null,null,null]` 或没有完整有限三维位置时生成 `TRAJECTORY_POSITION_UNAVAILABLE` warning 并直接跳过该条。 | 已实现并测试 |
 
 Issue code 和严重级别：
 
@@ -340,8 +340,9 @@ Issue code 和严重级别：
 | `BLACK_SCREEN` | warning | 已解码图像中发现近乎全黑帧 |
 | `DIMENSION_MISMATCH` | error | 同一流帧尺寸不一致 |
 | `COUNT_MISMATCH` | warning | 图像帧数与状态数不一致 |
+| `TRAJECTORY_POSITION_UNAVAILABLE` | warning | 状态记录没有完整有限的 position 三维值，数据不进入标注 |
 
-机器可读报告使用 `formatVersion=5`，包含 `episodeRoot`、`parsedStateCount`、`imageValidationMode`（`sampled` 或 `full`）、`imageSamplePercentages`、`stateFrameRate`（目标 FPS、实测中位 FPS、容忍百分比、有效间隔数、稳定度百分比和稳定状态）、`autoReportPath`、文件/流统计和完整 issue 列表。每个流的 `checkedFrames` 是实际解码数；抽检报告固定记录 `[1,25,50,73,99]`，全量报告记录空数组。可定位的 issue 附带可选 `frameId`。报告先写入隐藏 partial 文件并回读验证，再原子发布，同名时不覆盖。抽检报告不代表未抽中 JPEG 已通过解码或黑屏检查。
+机器可读报告使用 `formatVersion=6`，包含 `episodeRoot`、`parsedStateCount`、`imageValidationMode`（`sampled` 或 `full`）、`imageSamplePercentages`、`stateFrameRate`（目标 FPS、实测中位 FPS、容忍百分比、有效间隔数、稳定度百分比和稳定状态）、`autoReportPath`、文件/流统计和完整 issue 列表。每个流的 `checkedFrames` 是实际解码数；抽检报告固定记录 `[1,25,50,73,99]`，全量报告记录空数组。可定位的 issue 附带可选 `frameId`。报告先写入隐藏 partial 文件并回读验证，再原子发布，同名时不覆盖。抽检报告不代表未抽中 JPEG 已通过解码或黑屏检查。`TRAJECTORY_POSITION_UNAVAILABLE` 是 `states` scope 的 warning：当全部状态记录的 `position` 为 `null`、`[null,null,null]` 或无完整有限三维位置时生成，前端自动跳过该条，不能进入标注。
 
 后台报告保持离线：Windows 写入 Tauri `appLocalData/com.dohc.viewer/reports`，macOS 对应 `~/Library/Application Support/com.dohc.viewer/reports`。文件名由 Windows 安全的 episode 名、报告版本，以及 episode 路径与数据指纹的 BLAKE3 派生 ID 组成。`autoReportPath` 在 warning/error 报告中记录最终普通文件路径，在 ok 报告中为 `null`。
 
@@ -436,6 +437,7 @@ Issue code 和严重级别：
 | FR-ANN-002 | P0 | 轨迹码使用任务前缀和至少三位序号，且只能由 Rust 在保存时分配。 | 前端只读显示预览、不提交轨迹码；`close_oven` 依次使用 `oven-001`、`oven-002`，自定义任务使用系统生成前缀；后端以原子占号防止跨 episode 重复。 | 已实现并测试 |
 | FR-ANN-003 | P0 | 标注记录数据身份、处理来源、整体描述、片段和修订历史。 | 绑定规范化 episode 路径与指纹；每次保存先在 episode 根目录原子写入并回读 format-v2 `description.json`（整体描述、裁剪范围和完整连续片段），再追加不可覆盖的本机修订文件。统一管理模式记录账号，离线模式记录固定本机 provenance 标记且 UI 不显示为处理人；`description.json` 不改变采集指纹。 | 已实现并测试 |
 | FR-ANN-004 | P1 | 用户可以删除不再需要的自定义任务。 | 删除经 Rust 身份门禁执行，只移除 app-local 普通任务文件；内置任务返回 `TASK_BUILT_IN`，任何历史本机标注修订仍引用的任务返回 `TASK_IN_USE`，源数据和历史标注不被修改。 | 已实现并测试 |
+| FR-ANN-005 | P1 | 用户可导入本地任务模板 JSON。 | 模板仅写入 `appLocalData/tasks`；每个任务提供一个或多个可选 description 和可选默认片段标题。选择任务或 description 后仍可直接编辑；片段标题由操作员在手动分割时间轴后选择或修改，模板不自动分配区间。导入不读取或修改源数据，任务 ID/编码前缀冲突时拒绝整个配置。 | 已实现并测试 |
 
 用户中心服务将账号和 scrypt 密码哈希写入当前主机服务专属私有目录；客户端将工作模式选择追加写入 `appLocalData/workspace-mode`，统一管理配置写入 Tauri `appLocalData/user-center.json`。用户创建的任务位于 `appLocalData/tasks`，轨迹占号位于 `appLocalData/trajectory-codes`，标注修订位于 `appLocalData/annotations/{episodeId}`。离线模式不创建账号或用户中心会话；本机标记仅用于区分 provenance，不是可登录账号。用户中心只提供身份和管理员账号管理，不提供文件加密、操作系统用户隔离或跨组织权限体系。
 
@@ -444,6 +446,8 @@ Issue code 和严重级别：
 | Task ID | 显示名 | 编码前缀 | 默认描述 |
 | --- | --- | --- | --- |
 | `close_oven` | 关闭烤箱 | `oven` | 关闭烤箱门，并确认烤箱门完全闭合。 |
+
+任务模板配置使用 `formatVersion: 1`，包含 `tasks` 数组。每项需要 `label`，并至少提供一个 `description` 或 `descriptions` 条目；`segments` 可选且按顺序提供默认片段标题。示例见 `docs/task-template.example.json`。导入只允许普通 JSON 文件，最大 256 KiB、最多 500 个任务、每任务最多 100 个默认片段；任何任务 ID 或编码前缀冲突都会拒绝该次导入。
 
 ### 8.7 任务进度与错误处理
 
@@ -530,7 +534,7 @@ task, phase, current, total, bytesDone, totalBytes, currentPath, elapsedMs
 
 - `cam0` 为主要大画面，其余四路排列在右侧或窄屏网格中。
 - 若 episode 含可识别的 SMPL/骨架 NPZ，三维骨架面板固定放在五路图像右侧；窄窗口改为图像之后纵向排列，并按当前 `frame_id` 同步。面板只读且支持旋转、平移和缩放，不改变源数据。
-- 页面顶部是 episode 级数据标注：可以选择或创建任务；轨迹码为系统只读预览，任务描述可编辑，并显示处理人和保存状态。保存成功必须明确提示 `description.json` 已更新；源不可写时显示失败，不能只保存本机后伪装完整成功。
+- 页面顶部是 episode 级数据标注：可以选择、创建或导入模板任务；轨迹码为系统只读预览，description 模板可选且仍可直接编辑，并显示处理人和保存状态。模板只提供可选片段标题，不自动分配时间区间；操作员手动分割后可选择、改名、合并和保存。保存成功必须明确提示 `description.json` 已更新；源不可写时显示失败，不能只保存本机后伪装完整成功。
 - 画面必须使用稳定尺寸，加载、错误和帧变化不能引发布局跳动。
 - 连续播放期间不显示逐帧“解码中”覆盖层；暂停、拖动或步进时仍可显示加载反馈，帧错误不得隐藏。
 - 时间轴控制位于画面下方，状态曲线位于同页后半部分。

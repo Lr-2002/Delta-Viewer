@@ -59,6 +59,8 @@ const demoTaskDefinitions: TaskDefinition[] = [
     label: "关闭烤箱",
     codePrefix: "oven",
     defaultDescription: "关闭烤箱门，并确认烤箱门完全闭合。",
+    descriptionOptions: ["关闭烤箱门，并确认烤箱门完全闭合。"],
+    defaultSegments: [],
   },
 ];
 let demoCurrentUser: UserIdentity | null = null;
@@ -179,9 +181,39 @@ export async function createTaskDefinition(request: CreateTaskRequest): Promise<
     label,
     codePrefix,
     defaultDescription: label,
+    descriptionOptions: [label],
+    defaultSegments: [],
   };
   demoTaskDefinitions.push(task);
   return { ...task };
+}
+
+export async function importTaskTemplateConfig(): Promise<TaskDefinition[]> {
+  if (isTauriRuntime()) {
+    const selection = await open({
+      directory: false,
+      multiple: false,
+      title: "导入任务模板配置",
+      filters: [{ name: "DOHC Task Templates", extensions: ["json"] }],
+    });
+    if (typeof selection !== "string") throw new Error("未选择任务模板配置文件");
+    return invoke<TaskDefinition[]>("import_task_template_config", { configPath: selection });
+  }
+  demoActor();
+  const file = await chooseDemoTaskTemplateFile();
+  if (file.size > 256 * 1024) {
+    throw new Error("TASK_TEMPLATE_CONFIG_INVALID: 任务模板配置文件无效");
+  }
+  const templates = parseDemoTaskTemplateConfig(await file.text());
+  const existingIds = new Set(demoTaskDefinitions.map((task) => task.id));
+  const existingPrefixes = new Set(demoTaskDefinitions.map((task) => task.codePrefix));
+  for (const task of templates) {
+    if (existingIds.has(task.id) || existingPrefixes.has(task.codePrefix)) {
+      throw new Error(`TASK_EXISTS: 任务名称或自动编码 ${task.codePrefix} 已存在`);
+    }
+  }
+  demoTaskDefinitions.push(...templates);
+  return listTaskDefinitions();
 }
 
 export async function deleteTaskDefinition(taskId: string): Promise<void> {
@@ -472,6 +504,115 @@ function taskCodePrefix(label: string): string {
   return prefix;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateDemoDescription(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`TASK_TEMPLATE_CONFIG_INVALID: ${field} 必须是文本`);
+  }
+  const description = value.trim();
+  const length = Array.from(description).length;
+  if (length < 1 || length > 500 || /\p{Cc}/u.test(description.replace(/[\n\r\t]/gu, ""))) {
+    throw new Error(`TASK_TEMPLATE_CONFIG_INVALID: ${field} 需为 1-500 个不含控制字符的文本`);
+  }
+  return description;
+}
+
+function appendDemoDescription(options: string[], value: unknown, field: string): void {
+  const description = validateDemoDescription(value, field);
+  if (!options.includes(description)) options.push(description);
+}
+
+function parseDemoTaskTemplateConfig(contents: string): TaskDefinition[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(contents);
+  } catch {
+    throw new Error("TASK_TEMPLATE_CONFIG_INVALID: 任务模板配置不是有效 JSON");
+  }
+  if (!isRecord(value) || value.formatVersion !== 1 || !Array.isArray(value.tasks)
+    || value.tasks.length < 1 || value.tasks.length > 500) {
+    throw new Error("TASK_TEMPLATE_CONFIG_INVALID: 任务模板配置格式无效");
+  }
+
+  const ids = new Set<string>();
+  const prefixes = new Set<string>();
+  return value.tasks.map((rawTask, index) => {
+    if (!isRecord(rawTask)) {
+      throw new Error(`TASK_TEMPLATE_CONFIG_INVALID: tasks[${index}] 必须是对象`);
+    }
+    if (typeof rawTask.label !== "string") {
+      throw new Error(`TASK_TEMPLATE_CONFIG_INVALID: tasks[${index}].label 必须是文本`);
+    }
+    const label = normalizeTaskLabel(rawTask.label);
+    const codePrefix = taskCodePrefix(label);
+    if (ids.has(codePrefix) || prefixes.has(codePrefix)) {
+      throw new Error(`TASK_EXISTS: 任务名称或自动编码 ${codePrefix} 已存在`);
+    }
+    ids.add(codePrefix);
+    prefixes.add(codePrefix);
+
+    const descriptions: string[] = [];
+    if (rawTask.description !== undefined && rawTask.description !== null) {
+      appendDemoDescription(descriptions, rawTask.description, `tasks[${index}].description`);
+    }
+    if (rawTask.descriptions !== undefined) {
+      if (!Array.isArray(rawTask.descriptions)) {
+        throw new Error(`TASK_TEMPLATE_CONFIG_INVALID: tasks[${index}].descriptions 必须是数组`);
+      }
+      rawTask.descriptions.forEach((description, descriptionIndex) => {
+        appendDemoDescription(descriptions, description, `tasks[${index}].descriptions[${descriptionIndex}]`);
+      });
+    }
+    if (!descriptions.length) {
+      throw new Error("TASK_TEMPLATE_DESCRIPTION_REQUIRED: 每个任务模板至少需要一个 description 或 descriptions 条目");
+    }
+
+    const rawSegments = rawTask.segments === undefined ? [] : rawTask.segments;
+    if (!Array.isArray(rawSegments) || rawSegments.length > 100) {
+      throw new Error(`TASK_TEMPLATE_CONFIG_INVALID: tasks[${index}].segments 无效`);
+    }
+    const defaultSegments = rawSegments.map((segment, segmentIndex) => {
+      const title = validateDemoDescription(segment, `tasks[${index}].segments[${segmentIndex}]`);
+      if (Array.from(title).length > 100 || title.includes("\n") || title.includes("\r")) {
+        throw new Error("TASK_TEMPLATE_SEGMENT_INVALID: 默认片段名称需为 1-100 个单行字符");
+      }
+      return title;
+    });
+    return {
+      id: codePrefix,
+      label,
+      codePrefix,
+      defaultDescription: descriptions[0],
+      descriptionOptions: descriptions,
+      defaultSegments,
+    };
+  });
+}
+
+function chooseDemoTaskTemplateFile(): Promise<File> {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,application/json";
+    input.style.display = "none";
+    document.body.append(input);
+    let settled = false;
+    const finish = (file: File | null) => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      if (file) resolve(file);
+      else reject(new Error("未选择任务模板配置文件"));
+    };
+    input.addEventListener("change", () => finish(input.files?.item(0) ?? null), { once: true });
+    input.addEventListener("cancel", () => finish(null), { once: true });
+    input.click();
+  });
+}
+
 export async function loadEpisode(path: string, operationId: number): Promise<EpisodeData> {
   if (isTauriRuntime()) return invoke<EpisodeData>("load_episode", { path, operationId });
   const fixture = await loadDemoFixture();
@@ -503,7 +644,7 @@ export async function validateEpisode(path: string, operationId: number): Promis
   const fixture = await loadDemoFixture();
   const sessionActivationEpisode = sessionActivationDemoEpisode(path);
   const report: ValidationReport = {
-    formatVersion: 5,
+    formatVersion: 6,
     episodeRoot: path,
     parsedStateCount: 196,
     imageValidationMode: "sampled",

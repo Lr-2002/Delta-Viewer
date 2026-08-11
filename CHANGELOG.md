@@ -5,6 +5,17 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.41 - 2026-08-11
+
+- Added local task-template JSON import with selectable, editable task descriptions
+  and reusable segment-title choices; browser preview now selects the actual JSON
+  file and imports every configured task.
+- Kept segment timing entirely manual: templates no longer split an episode into
+  inferred ranges, and operators apply titles after placing their own splits.
+- Added `TRAJECTORY_POSITION_UNAVAILABLE` for state streams whose position is
+  absent or entirely null, upgraded health reports to v6, and automatically
+  skipped those records before annotation.
+
 ## 0.17.40 - 2026-08-11
 
 - Updated browser regression flows to explicitly accept the annotation warning

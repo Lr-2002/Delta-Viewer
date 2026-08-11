@@ -22,6 +22,8 @@ interface Props {
   clipEndFrame: number;
   busy: boolean;
   annotation: EpisodeAnnotation | null;
+  templateTaskId: string | null;
+  templateSegments: string[];
   playbackControls: ReactNode;
   onFrameChange: (frame: number) => void;
   onClipStartChange: (frame: number) => void;
@@ -34,19 +36,21 @@ interface Props {
 
 export function SegmentAnnotationEditor({
   data, currentFrame, minFrame, maxFrame, clipStartFrame, clipEndFrame, busy,
-  annotation, playbackControls, onFrameChange, onClipStartChange, onClipEndChange, onClipReset,
+  annotation, templateTaskId, templateSegments, playbackControls, onFrameChange, onClipStartChange, onClipEndChange, onClipReset,
   onSaved, onError, onNotice,
 }: Props) {
   const [segments, setSegments] = useState<Segment[]>(() => [createSegment(minFrame, maxFrame, 0)]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const hasMatchingAnnotation = annotation?.taskId === templateTaskId;
 
   useEffect(() => {
-    setSegments(annotation?.segments.length
+    const savedSegments = hasMatchingAnnotation && annotation.segments.length
       ? annotation.segments.map((segment, index) => ({ ...segment, id: `saved-${annotation.revision}-${index}` }))
-      : [createSegment(minFrame, maxFrame, 0)]);
+      : [createSegment(minFrame, maxFrame, 0, `initial-${templateTaskId ?? "none"}`)];
+    setSegments(savedSegments);
     setSelectedId(null);
-  }, [annotation?.revision, data.summary.root, maxFrame, minFrame]);
+  }, [annotation?.revision, data.summary.root, hasMatchingAnnotation, maxFrame, minFrame, templateTaskId]);
 
   useEffect(() => {
     setSegments((current) => extendSegmentsToRange(current, clipStartFrame, clipEndFrame));
@@ -70,11 +74,16 @@ export function SegmentAnnotationEditor({
     && currentFrame <= segment.endFrame
   )) ?? null;
   const canSplit = containingSegment !== null && currentFrame < Math.min(containingSegment.endFrame, clipEndFrame);
-  const persistedSignature = annotation?.segments.length
+  const persistedSignature = hasMatchingAnnotation && annotation?.segments.length
     ? segmentSignature(annotation.clipStartFrame, annotation.clipEndFrame, annotation.segments)
     : null;
   const currentSignature = segmentSignature(clipStartFrame, clipEndFrame, visibleSegments);
   const dirty = persistedSignature !== currentSignature;
+  const saveStatus = !annotation || dirty
+    ? "片段未保存"
+    : isTauriRuntime()
+      ? `已保存到 description.json · r${annotation.revision}`
+      : `浏览器演示已保存 · r${annotation.revision}`;
 
   async function saveSegments() {
     if (!annotation || !visibleSegments.length) return;
@@ -163,7 +172,7 @@ export function SegmentAnnotationEditor({
         </div>
         <div className="segment-range-status">
           <span className="segment-draft-badge">保留范围 · 帧 {clipStartFrame}–{clipEndFrame} · {visibleSegments.length} 个片段</span>
-          <span className={`segment-save-badge${dirty ? " dirty" : ""}`}>{dirty ? "片段未保存" : `已保存到 description.json · r${annotation?.revision}`}</span>
+          <span className={`segment-save-badge${!annotation || dirty ? " dirty" : ""}`}>{saveStatus}</span>
           <button className="button button-primary segment-save-action" type="button" disabled={busy || saving || !annotation} onClick={() => void saveSegments()} title={!annotation ? "请先保存上方的数据标注" : "保存片段到本机标注"}>
             <Save size={14} />{saving ? "保存中…" : dirty ? "保存片段" : "重新保存片段"}
           </button>
@@ -230,6 +239,18 @@ export function SegmentAnnotationEditor({
       {selected && <div className="segment-workbench">
         <aside className="segment-inspector">
           <header><Scissors size={16} /><strong>注解</strong></header>
+          {templateSegments.length ? <label className="segment-template">片段模板
+            <select
+              aria-label="片段模板"
+              value={templateSegments.includes(selected.title) ? selected.title : ""}
+              onChange={(event) => {
+                if (event.target.value) updateSelected({ title: event.target.value });
+              }}
+            >
+              <option value="">自定义片段名称</option>
+              {templateSegments.map((title, index) => <option value={title} key={`${title}-${index}`}>{title}</option>)}
+            </select>
+          </label> : null}
           <label className="segment-title">片段名称<input aria-label="片段名称" maxLength={100} value={selected.title} onChange={(event) => updateSelected({ title: event.target.value })} /></label>
           <label className="segment-note"><textarea aria-label="片段注解" rows={2} maxLength={500} value={selected.note} placeholder="描述这个片段中的动作、事件或质量问题……" onChange={(event) => updateSelected({ note: event.target.value })} /><small>{selected.note.length}/500</small></label>
           <div className="segment-edit-actions">

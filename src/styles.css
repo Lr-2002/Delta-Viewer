@@ -60,6 +60,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .app-shell { min-height: 100vh; display: flex; flex-direction: column; }
 
+@media (min-width: 761px) {
+  .app-shell { height: 100vh; overflow: hidden; }
+}
+
 .topbar {
   min-height: 64px;
   display: flex;
@@ -154,6 +158,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .icon-button { width: 32px; height: 32px; display: inline-grid; place-items: center; padding: 0; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--muted); background: var(--surface); cursor: pointer; }
 .icon-button:hover { color: var(--ink); background: #e5e5e5; }
 .sidebar-path { margin: 0 18px 14px; padding: 8px 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: rgba(255,255,255,.58); font-size: 11px; }
+.sidebar > .progress-strip { min-height: 0; flex: 0 0 auto; flex-wrap: wrap; gap: 8px; padding: 8px 12px 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line-strong); }
+.sidebar > .progress-strip .progress-copy { min-width: 0; max-width: calc(100% - 40px); flex: 1; }
+.sidebar > .progress-strip .progress-track { order: 3; flex-basis: 100%; }
+.sidebar > .progress-strip .progress-stats { display: none; }
+.sidebar > .progress-strip .icon-button { width: 28px; height: 28px; }
 .episode-list { min-height: 0; flex: 1; overflow: auto; padding: 0 10px 12px; }
 .episode-entry { position: relative; margin-bottom: 5px; }
 .episode-item { width: 100%; display: block; padding: 11px 38px 10px 9px; margin-bottom: 0; text-align: left; border: 1px solid transparent; border-radius: 6px; color: var(--ink); background: transparent; cursor: pointer; }
@@ -167,6 +176,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .episode-item-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .episode-item-top svg:first-child { flex: 0 0 auto; color: var(--ink); }
 .episode-item-top strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.episode-annotation-tag { flex: 0 0 auto; padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: var(--surface); font-size: 9px; font-weight: 700; line-height: 1.2; white-space: nowrap; }
 .episode-item-top svg:last-child { flex: 0 0 auto; color: var(--subtle); }
 .episode-source-state { width: 49px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 3px; flex: 0 0 49px; color: var(--muted); font-size: 9px; font-weight: 650; white-space: nowrap; }
 .episode-source-state.state-error { color: var(--ink); }
@@ -216,7 +226,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .segment-inspector { min-width: 0; height: 100%; display: flex; flex-direction: column; gap: 7px; padding: 8px 0; border: 0; border-radius: 0; background: var(--surface); }
 .segment-inspector > header { display: flex; align-items: center; gap: 7px; padding-bottom: 4px; border: 0; font-size: 12px; }
 .segment-inspector label { min-width: 0; display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 650; }
-.segment-inspector input, .segment-inspector textarea { width: 100%; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 11px; }
+.segment-inspector input, .segment-inspector select, .segment-inspector textarea { width: 100%; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 11px; }
 .segment-inspector textarea { min-height: 50px; resize: vertical; line-height: 1.4; }
 .segment-frame-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .segment-note { position: relative; }
@@ -274,12 +284,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .annotation-fields label, .annotation-task-field, .annotation-description { min-width: 0; display: grid; gap: 3px; color: var(--muted); font-size: 10px; font-weight: 650; }
 .annotation-fields > label { grid-template-rows: 14px 30px 11px; align-items: center; }
 .annotation-fields > .annotation-task-field { grid-template-rows: 14px 30px; align-items: center; }
+.annotation-fields > .annotation-description { grid-template-rows: 14px 30px 30px 11px; align-items: center; }
 .annotation-fields label > span, .annotation-field-label, .annotation-description > span { display: inline-flex; align-items: center; gap: 5px; }
 .annotation-fields input, .annotation-fields select { width: 100%; height: 30px; min-width: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 12px; }
 .annotation-fields input[readonly] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; background: var(--surface-alt); }
 .annotation-fields label small, .annotation-task-field small { color: var(--subtle); font-size: 9px; font-weight: 500; }
-.annotation-task-control { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 30px 30px; gap: 5px; }
-.annotation-task-add, .annotation-task-delete { width: 30px; height: 30px; }
+.annotation-task-control { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 30px 30px 30px; gap: 5px; }
+.annotation-task-add, .annotation-task-import, .annotation-task-delete { width: 30px; height: 30px; }
 .annotation-processor { min-height: 30px; display: flex; align-items: center; gap: 8px; padding-top: 0; }
 .annotation-processor > span { min-width: 0; display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 6px; }
 .annotation-processor small { color: var(--subtle); font-size: 9px; }
@@ -297,6 +308,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .replay-visual-row.with-skeleton { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, .72fr); gap: 7px; align-items: stretch; }
 .camera-grid { height: clamp(320px, 52vh, 560px); min-height: 320px; display: grid; grid-template-columns: 2.2fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 7px; }
 .replay-visual-row > .camera-grid { min-width: 0; }
+.frame-render-progress { min-height: 32px; display: flex; align-items: center; gap: 9px; margin-top: 8px; padding: 6px 10px; border: 1px solid var(--line); background: var(--surface-alt); }
+.frame-render-progress-label { flex: 0 0 auto; color: var(--muted); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.frame-render-track { min-width: 60px; height: 5px; flex: 1; overflow: hidden; border-radius: 4px; background: #cccccc; }
+.frame-render-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .16s ease; }
+.frame-render-progress-count { flex: 0 0 auto; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .skeleton-side-panel { min-width: 0; display: flex; }
 .skeleton-side-panel > .skeleton-viewer { width: 100%; height: clamp(320px, 52vh, 560px); min-height: 320px; margin: 0; display: flex; flex-direction: column; }
 .skeleton-side-panel > .skeleton-viewer .skeleton-canvas { flex: 1; height: auto; min-height: 0; }

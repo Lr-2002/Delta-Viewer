@@ -16,9 +16,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const ANNOTATION_FORMAT_VERSION: u32 = 3;
 const RESERVATION_FORMAT_VERSION: u32 = 1;
-const TASK_FORMAT_VERSION: u32 = 1;
+const TASK_FORMAT_VERSION: u32 = 2;
+const TASK_TEMPLATE_CONFIG_FORMAT_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: u64 = 256 * 1024;
 const MAX_TASKS: usize = 500;
+const MAX_TASK_TEMPLATE_SEGMENTS: usize = 100;
 const MAX_BATCH_EPISODES: usize = 10_000;
 static ANNOTATION_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -40,12 +42,33 @@ struct StoredTaskDefinition {
     created_at_ms: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskTemplateConfig {
+    format_version: u32,
+    tasks: Vec<TaskTemplate>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskTemplate {
+    label: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    descriptions: Vec<String>,
+    #[serde(default)]
+    segments: Vec<String>,
+}
+
 fn built_in_task_definitions() -> Vec<TaskDefinition> {
     vec![TaskDefinition {
         id: "close_oven".into(),
         label: "关闭烤箱".into(),
         code_prefix: "oven".into(),
         default_description: "关闭烤箱门，并确认烤箱门完全闭合。".into(),
+        description_options: vec!["关闭烤箱门，并确认烤箱门完全闭合。".into()],
+        default_segments: Vec::new(),
     }]
 }
 
@@ -65,18 +88,18 @@ pub fn task_definitions(data_root: &Path) -> AppResult<Vec<TaskDefinition>> {
             continue;
         }
         let record: StoredTaskDefinition = read_json(&entry.path())?;
-        validate_stored_task(&record)?;
+        let task = validate_stored_task(&record)?;
         if tasks
             .iter()
             .chain(custom.iter())
-            .any(|task| task.id == record.task.id || task.code_prefix == record.task.code_prefix)
+            .any(|existing| existing.id == task.id || existing.code_prefix == task.code_prefix)
         {
             return Err(AppError::Message(format!(
                 "TASK_DEFINITION_CONFLICT: 任务 {} 的 ID 或编码前缀重复",
-                record.task.label
+                task.label
             )));
         }
-        custom.push(record.task);
+        custom.push(task);
         if tasks.len() + custom.len() > MAX_TASKS {
             return Err(AppError::Message(
                 "TASK_LIMIT_EXCEEDED: 本地任务数量超过 500".into(),
@@ -122,7 +145,9 @@ pub fn create_task(
         id: code_prefix.clone(),
         label: label.clone(),
         code_prefix,
-        default_description: label,
+        default_description: label.clone(),
+        description_options: vec![label],
+        default_segments: Vec::new(),
     };
     let record = StoredTaskDefinition {
         format_version: TASK_FORMAT_VERSION,
@@ -130,13 +155,74 @@ pub fn create_task(
         created_by: user.clone(),
         created_at_ms: unix_millis(),
     };
+    write_json_noreplace(&record, &task_record_path(data_root, &task.id))?;
+    Ok(task)
+}
+
+pub fn import_task_template_config(
+    data_root: &Path,
+    user: &UserIdentity,
+    source_path: &Path,
+) -> AppResult<Vec<TaskDefinition>> {
+    let _guard = annotation_mutation_guard()?;
+    identity::validate_user_identity(user)?;
+    let config = read_task_template_config(source_path)?;
+    if config.format_version != TASK_TEMPLATE_CONFIG_FORMAT_VERSION
+        || config.tasks.is_empty()
+        || config.tasks.len() > MAX_TASKS
+    {
+        return Err(AppError::Message(
+            "TASK_TEMPLATE_CONFIG_INVALID: 任务模板配置格式无效".into(),
+        ));
+    }
+
+    let existing = task_definitions(data_root)?;
+    if existing.len() + config.tasks.len() > MAX_TASKS {
+        return Err(AppError::Message(
+            "TASK_LIMIT_EXCEEDED: 导入后本地任务数量将超过 500".into(),
+        ));
+    }
+
+    let mut imported = Vec::with_capacity(config.tasks.len());
+    let mut ids = BTreeSet::new();
+    let mut prefixes = BTreeSet::new();
+    for template in config.tasks {
+        let task = task_from_template(template)?;
+        if !ids.insert(task.id.clone())
+            || !prefixes.insert(task.code_prefix.clone())
+            || existing
+                .iter()
+                .any(|current| current.id == task.id || current.code_prefix == task.code_prefix)
+        {
+            return Err(AppError::Message(format!(
+                "TASK_EXISTS: 任务名称或自动编码 {} 已存在",
+                task.code_prefix
+            )));
+        }
+        imported.push(task);
+    }
+
     let directory = tasks_dir(data_root);
     fs::create_dir_all(&directory)?;
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(task.id.as_bytes());
-    let digest = hasher.finalize().to_hex().to_string();
-    write_json_noreplace(&record, &directory.join(format!("{}.json", &digest[..24])))?;
-    Ok(task)
+    let created_at_ms = unix_millis();
+    let mut created = Vec::with_capacity(imported.len());
+    for task in &imported {
+        let record = StoredTaskDefinition {
+            format_version: TASK_FORMAT_VERSION,
+            task: task.clone(),
+            created_by: user.clone(),
+            created_at_ms,
+        };
+        let output = task_record_path(data_root, &task.id);
+        if let Err(error) = write_json_noreplace(&record, &output) {
+            for path in created {
+                let _ = fs::remove_file(path);
+            }
+            return Err(error);
+        }
+        created.push(output);
+    }
+    task_definitions(data_root)
 }
 
 pub fn delete_task(data_root: &Path, user: &UserIdentity, task_id: &str) -> AppResult<()> {
@@ -155,10 +241,7 @@ pub fn delete_task(data_root: &Path, user: &UserIdentity, task_id: &str) -> AppR
             task.label
         )));
     }
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(task.id.as_bytes());
-    let digest = hasher.finalize().to_hex().to_string();
-    let path = tasks_dir(data_root).join(format!("{}.json", &digest[..24]));
+    let path = task_record_path(data_root, &task.id);
     let metadata = fs::symlink_metadata(&path)
         .map_err(|error| AppError::Message(format!("TASK_NOT_FOUND: 任务文件不可用: {error}")))?;
     if !metadata.file_type().is_file() {
@@ -605,24 +688,6 @@ fn task_code_prefix(label: &str) -> AppResult<String> {
     Ok(prefix)
 }
 
-fn validate_stored_task(record: &StoredTaskDefinition) -> AppResult<()> {
-    identity::validate_user_identity(&record.created_by)?;
-    let label = validate_task_label(&record.task.label)?;
-    let prefix = task_code_prefix(&label)?;
-    if record.format_version != TASK_FORMAT_VERSION
-        || record.created_at_ms == 0
-        || record.task.label != label
-        || record.task.id != prefix
-        || record.task.code_prefix != prefix
-        || record.task.default_description != label
-    {
-        return Err(AppError::Message(
-            "TASK_RECORD_INVALID: 本地任务记录无效".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn validate_description(value: &str) -> AppResult<String> {
     let description = value.trim();
     let count = description.chars().count();
@@ -636,6 +701,114 @@ fn validate_description(value: &str) -> AppResult<String> {
         ));
     }
     Ok(description.into())
+}
+
+fn read_task_template_config(path: &Path) -> AppResult<TaskTemplateConfig> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_RECORD_BYTES {
+        return Err(AppError::Message(
+            "TASK_TEMPLATE_CONFIG_INVALID: 任务模板配置文件无效".into(),
+        ));
+    }
+    Ok(serde_json::from_reader(File::open(path)?)?)
+}
+
+fn task_from_template(template: TaskTemplate) -> AppResult<TaskDefinition> {
+    let label = validate_task_label(&template.label)?;
+    let code_prefix = task_code_prefix(&label)?;
+    let mut description_options = Vec::new();
+    if let Some(description) = template.description {
+        append_description_option(&mut description_options, description)?;
+    }
+    for description in template.descriptions {
+        append_description_option(&mut description_options, description)?;
+    }
+    let Some(default_description) = description_options.first().cloned() else {
+        return Err(AppError::Message(
+            "TASK_TEMPLATE_DESCRIPTION_REQUIRED: 每个任务模板至少需要一个 description 或 descriptions 条目".into(),
+        ));
+    };
+    let default_segments = normalize_default_segments(template.segments)?;
+    Ok(TaskDefinition {
+        id: code_prefix.clone(),
+        label,
+        code_prefix,
+        default_description,
+        description_options,
+        default_segments,
+    })
+}
+
+fn normalize_task_definition(task: TaskDefinition) -> AppResult<TaskDefinition> {
+    let label = validate_task_label(&task.label)?;
+    let code_prefix = task_code_prefix(&label)?;
+    if task.id != code_prefix || task.code_prefix != code_prefix {
+        return Err(AppError::Message(
+            "TASK_RECORD_INVALID: 本地任务记录无效".into(),
+        ));
+    }
+    let default_description = validate_description(&task.default_description)?;
+    let mut description_options = Vec::new();
+    append_description_option(&mut description_options, default_description.clone())?;
+    for description in task.description_options {
+        append_description_option(&mut description_options, description)?;
+    }
+    let default_segments = normalize_default_segments(task.default_segments)?;
+    Ok(TaskDefinition {
+        id: code_prefix.clone(),
+        label,
+        code_prefix,
+        default_description,
+        description_options,
+        default_segments,
+    })
+}
+
+fn append_description_option(options: &mut Vec<String>, value: String) -> AppResult<()> {
+    let description = validate_description(&value)?;
+    if !options.iter().any(|current| current == &description) {
+        options.push(description);
+    }
+    Ok(())
+}
+
+fn normalize_default_segments(segments: Vec<String>) -> AppResult<Vec<String>> {
+    if segments.len() > MAX_TASK_TEMPLATE_SEGMENTS {
+        return Err(AppError::Message(format!(
+            "TASK_TEMPLATE_SEGMENT_LIMIT: 默认片段不能超过 {MAX_TASK_TEMPLATE_SEGMENTS} 个"
+        )));
+    }
+    let mut normalized = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let label = validate_description(&segment)?;
+        if label.chars().count() > 100 || label.contains('\n') || label.contains('\r') {
+            return Err(AppError::Message(
+                "TASK_TEMPLATE_SEGMENT_INVALID: 默认片段名称需为 1-100 个单行字符".into(),
+            ));
+        }
+        normalized.push(label);
+    }
+    Ok(normalized)
+}
+
+fn validate_stored_task(record: &StoredTaskDefinition) -> AppResult<TaskDefinition> {
+    identity::validate_user_identity(&record.created_by)?;
+    if !matches!(record.format_version, 1 | TASK_FORMAT_VERSION) || record.created_at_ms == 0 {
+        return Err(AppError::Message(
+            "TASK_RECORD_INVALID: 本地任务记录无效".into(),
+        ));
+    }
+    let task = normalize_task_definition(record.task.clone())?;
+    if record.format_version == 1
+        && (record.task.default_description != task.label
+            || !record.task.description_options.is_empty()
+            || !record.task.default_segments.is_empty())
+    {
+        return Err(AppError::Message(
+            "TASK_RECORD_INVALID: 本地任务记录无效".into(),
+        ));
+    }
+    Ok(task)
 }
 
 fn validate_trajectory_code(value: &str, prefix: &str) -> AppResult<String> {
@@ -884,6 +1057,13 @@ fn tasks_dir(data_root: &Path) -> PathBuf {
     data_root.join("tasks")
 }
 
+fn task_record_path(data_root: &Path, task_id: &str) -> PathBuf {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(task_id.as_bytes());
+    let digest = hasher.finalize().to_hex().to_string();
+    tasks_dir(data_root).join(format!("{}.json", &digest[..24]))
+}
+
 fn reservations_dir(data_root: &Path) -> PathBuf {
     data_root.join("trajectory-codes")
 }
@@ -961,9 +1141,10 @@ fn unix_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        annotations_by_ids, create_task, delete_task, list_annotations, load_annotation,
-        save_annotation, save_annotation_with_source_description, suggest_trajectory_code,
-        task_definitions, ANNOTATION_FORMAT_VERSION,
+        annotations_by_ids, create_task, delete_task, import_task_template_config,
+        list_annotations, load_annotation, save_annotation,
+        save_annotation_with_source_description, suggest_trajectory_code, task_definitions,
+        ANNOTATION_FORMAT_VERSION,
     };
     use crate::model::{CreateTaskRequest, SaveAnnotationRequest, UserIdentity};
     use std::fs;
@@ -1112,6 +1293,45 @@ mod tests {
             },
         )
         .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_task_templates_with_selectable_descriptions_and_segments() {
+        let root = test_output("task-template-config");
+        fs::create_dir_all(&root).unwrap();
+        let config = root.join("tray-template.json");
+        fs::write(
+            &config,
+            r#"{
+  "formatVersion": 1,
+  "tasks": [{
+    "label": "操作烤盘",
+    "description": "将烤盘放到烤箱中",
+    "descriptions": ["将烤盘从烤箱中取出"],
+    "segments": ["打开烤箱", "拿起烤盘", "将烤盘放到烤箱中", "合上烤箱"]
+  }]
+}"#,
+        )
+        .unwrap();
+        let user = UserIdentity {
+            username: "operator".into(),
+            display_name: "Operator".into(),
+        };
+
+        let tasks = import_task_template_config(&root, &user, &config).unwrap();
+        let task = tasks.iter().find(|task| task.id == "操作烤盘").unwrap();
+        assert_eq!(task.default_description, "将烤盘放到烤箱中");
+        assert_eq!(
+            task.description_options,
+            ["将烤盘放到烤箱中", "将烤盘从烤箱中取出"]
+        );
+        assert_eq!(
+            task.default_segments,
+            ["打开烤箱", "拿起烤盘", "将烤盘放到烤箱中", "合上烤箱"]
+        );
+        assert_eq!(task_definitions(&root).unwrap(), tasks);
+        assert!(import_task_template_config(&root, &user, &config).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

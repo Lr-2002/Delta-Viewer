@@ -280,6 +280,22 @@ async fn create_task_definition(
 }
 
 #[tauri::command]
+async fn import_task_template_config(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    config_path: String,
+) -> Result<Vec<TaskDefinition>, String> {
+    let user = auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        annotations::import_task_template_config(&data_root, &user, Path::new(&config_path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn delete_task_definition(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -828,6 +844,7 @@ pub fn run() {
             logout_account,
             list_task_definitions,
             create_task_definition,
+            import_task_template_config,
             delete_task_definition,
             suggest_trajectory_code,
             load_episode_annotation,

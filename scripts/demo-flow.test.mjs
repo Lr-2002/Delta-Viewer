@@ -324,6 +324,8 @@ if (!browserExecutable) {
     await page.locator(".annotation-description textarea").fill("整理餐具并核对数量");
     await page.getByRole("button", { name: "保存标注" }).click();
     await page.getByText("已保存 · r1", { exact: true }).waitFor();
+    await page.locator(".episode-annotation-tag").waitFor();
+    assert.equal(await page.locator(".episode-annotation-tag").innerText(), "已标注");
     assert.equal(await page.getByLabel("轨迹编码").inputValue(), "整理餐具-001");
 
     const series = await page.locator(".chart-legend span[data-series-color]").evaluateAll((items) => (
@@ -376,6 +378,36 @@ if (!browserExecutable) {
     if (process.env.DEMO_FLOW_BATCH_SCREENSHOT) {
       await page.screenshot({ path: resolve(root, process.env.DEMO_FLOW_BATCH_SCREENSHOT), fullPage: true });
     }
+    await context.close();
+  });
+
+  test("imported task templates keep intervals manual and offer editable segment labels", async () => {
+    const context = await browser.newContext({ viewport: cleanViewport });
+    const page = await context.newPage();
+    await registerDemoAccount(page, baseUrl, "template-import");
+    await page.getByText("多路回放", { exact: true }).waitFor();
+
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "导入模板配置" }).click();
+    await (await chooser).setFiles({
+      name: "task-template.workflows.json",
+      mimeType: "application/json",
+      buffer: readFileSync(resolve(root, "docs/task-template.workflows.json")),
+    });
+    await page.getByText("已导入 10 个任务模板", { exact: true }).waitFor();
+    assert.equal(await page.getByLabel("任务", { exact: true }).inputValue(), "sofa");
+    assert.equal(await page.locator(".annotation-description textarea").inputValue(), "整理沙发靠枕");
+
+    await page.getByRole("button", { name: "保存标注" }).click();
+    await page.getByText("已保存 · r1", { exact: true }).waitFor();
+    assert.deepEqual(await page.locator(".segment-list strong").allTextContents(), ["片段 1"]);
+    await page.locator(".segment-list button").click();
+    await page.getByLabel("片段模板", { exact: true }).selectOption("拿起靠枕");
+    assert.deepEqual(await page.locator(".segment-list strong").allTextContents(), ["拿起靠枕"]);
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+      true,
+    );
     await context.close();
   });
 
