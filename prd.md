@@ -4,7 +4,7 @@
 | --- | --- |
 | 产品名称 | DOHC Viewer |
 | 文档版本 | 0.28 |
-| 应用版本基线 | 0.17.33 |
+| 应用版本基线 | 0.17.34 |
 | 文档状态 | 安全 Alpha，三安装器 unsigned CD、固定 IP 更新镜像与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64；Ubuntu 22.04+ x86_64 deb |
 | 文档日期 | 2026-08-11 |
@@ -65,7 +65,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-028 | macOS AppleDouble `._*` 和 `.DS_Store` 是平台元数据，不属于采集数据；扫描统计、数据指纹、校验和显式导入统一忽略这些文件，但不得删除或修改。应用管理的根级 `description.json` 及其 partial 同样不参与采集统计和指纹；正式 `description.json` 会随显式导入复制并校验，partial 不进入导入。其他非数字 JPEG 文件名仍按 `INVALID_FRAME_FILENAME` error 处理。 |
 | D-029 | 后续 Release 不再构建或发布 macOS Intel/x64 DMG；macOS 正式分发仅保留 Apple Silicon/arm64。已经公开的旧 tag 和其中的 x64 资产保持不可变历史，不删除、不覆盖，也不代表继续维护。 |
 | D-030 | 本机已保存的 episode 标注可作为批量导出清单，但标注不复制或缓存源数据。批量导出只处理仍可从原规范化路径读取且指纹与标注时一致的完整 episode；所有条目共用一个目标目录和一种格式，按顺序重新检查并导出。单条失败不阻断后续条目；取消会中止当前未完成条目并停止后续队列，同时保留已经原子发布的输出。 |
-| D-031 | 统一管理模式的已登录用户通过固定公网镜像 `http://39.155.172.162:17879` 和固定局域网镜像 `http://10.1.11.36:17879` 检查更新，以避免 NAT loopback；离线模式不检查、下载或安装更新。发现更高 semver 时，在当前长任务完成后，客户端并行请求两端同一精确版本资产的 32 KiB `Range` 样本，在 1 秒受限窗口内按实际完成时间选择最快路径；不支持 Range、超时或格式不正确的源不参与选择，若两端都无法测速则保留已验清单路径。完整下载、精确大小检查、嵌入应用的 Ed25519/Minisign 验签、安装和重启不变。客户端不得直连 GitHub，只接受上述两个精确 scheme/host/port 和 `releases/vX.Y.Z/` 目录；更新包必须为 1-64 MiB 且流式读取不得越界。镜像只会在受信任的请求 Host 匹配局域网地址时返回局域网资产 URL，其他请求使用公网 URL；Tauri 的 `dangerousInsecureTransportProtocol` 只能为这两个固定 HTTP endpoint 启用，且不能替代 Rust 的 origin、大小或签名 hard gate。镜像机每 5 分钟从 `Lr-2002/Delta-Viewer` 官方 HTTPS Release 同步，完整验证三个 target、文件名、大小、SHA-256 和签名后原子激活；同步失败继续提供上一完整版本，并以只读 GET/HEAD 同时提供三个正式安装包和 SHA-256 页面。不得随请求发送账号、源路径、标注、报告、hash 或遥测。Windows 使用 NSIS updater，macOS 使用 ad-hoc sealed app archive，Ubuntu 使用 x86_64 deb；Linux 安装可触发系统提权确认。检查、下载、验签或安装失败必须可见、可重试并保持当前版本可用。HTTP 的可用性可被网络攻击者干扰，但任何未通过内嵌公钥验签的字节都不得安装。`0.17.12` 是公网地址自动更新引导版，旧版本需从镜像页手动安装一次。 |
+| D-031 | 统一管理模式的已登录用户通过固定公网镜像 `http://39.155.172.162:17879` 和固定局域网镜像 `http://10.1.11.200:17879` 检查更新，以避免 NAT loopback；离线模式不检查、下载或安装更新。发现更高 semver 时，在当前长任务完成后，客户端并行请求两端同一精确版本资产的 32 KiB `Range` 样本，在 1 秒受限窗口内按实际完成时间选择最快路径；不支持 Range、超时或格式不正确的源不参与选择，若两端都无法测速则保留已验清单路径。完整下载、精确大小检查、嵌入应用的 Ed25519/Minisign 验签、安装和重启不变。客户端不得直连 GitHub，只接受上述两个精确 scheme/host/port 和 `releases/vX.Y.Z/` 目录；更新包必须为 1-64 MiB 且流式读取不得越界。镜像只会在受信任的请求 Host 匹配局域网地址时返回局域网资产 URL，其他请求使用公网 URL；Tauri 的 `dangerousInsecureTransportProtocol` 只能为这两个固定 HTTP endpoint 启用，且不能替代 Rust 的 origin、大小或签名 hard gate。镜像机每 5 分钟从 `Lr-2002/Delta-Viewer` 官方 HTTPS Release 同步，完整验证三个 target、文件名、大小、SHA-256 和签名后原子激活；同步失败继续提供上一完整版本，并以只读 GET/HEAD 同时提供三个正式安装包和 SHA-256 页面。不得随请求发送账号、源路径、标注、报告、hash 或遥测。Windows 使用 NSIS updater，macOS 使用 ad-hoc sealed app archive，Ubuntu 使用 x86_64 deb；Linux 安装可触发系统提权确认。检查、下载、验签或安装失败必须可见、可重试并保持当前版本可用。HTTP 的可用性可被网络攻击者干扰，但任何未通过内嵌公钥验签的字节都不得安装。`0.17.12` 是公网地址自动更新引导版，旧版本需从镜像页手动安装一次。 |
 | D-032 | episode 根目录中的可选 SMPL/骨架 NPZ（优先 `smpl_skeleton.npz`，也接受文件名包含 `smpl` 或 `skeleton` 的 `.npz`）由 Rust 直接从只读源读取；支持常见的 `(frames,joints,XYZ)`/`(frames,XYZ,joints)` 浮点坐标数组和可选 frame ID 数组，受有界大小限制。展示层从有限多帧估计髋部到头部/肩部的固定竖直方向并对齐 Three.js `Y-up`，使不同源坐标系默认直立，同时保留后续帧相对该固定坐标系的真实倾斜。解析失败只在回放右侧显示可行动错误，不阻断图像和状态回放；骨架流程不复制、不修改源 NPZ，也不进入三种导出。 |
 | D-033 | 工作模式选择是本地持久化的安全边界。未选择模式时数据 IPC 返回 `WORKSPACE_MODE_REQUIRED`；统一管理模式无会话时返回 `AUTH_REQUIRED`；离线模式允许本地数据 IPC，但用户中心和更新命令返回 `MANAGED_MODE_REQUIRED`。切换模式必须清空当前工作区状态，且不得修改源采集文件、发送业务数据或自动复制数据；仅用户明确保存标注时可更新根级 `description.json`。 |
 
@@ -496,7 +496,7 @@ task, phase, current, total, bytesDone, totalBytes, currentPath, elapsedMs
 ### 9.4 离线、安全与隐私
 
 - 检查、回放、报告和导出等核心数据功能不得发起网络请求；统一管理模式只在进入工作区前连接用户中心，用户中心断开时不影响已经登录的当前进程会话；离线模式不连接用户中心。
-- 统一管理模式的唯一运行时联网能力是登录后的自动更新：客户端只访问 `http://39.155.172.162:17879/latest.json`、`http://10.1.11.36:17879/latest.json` 及其同 origin 精确版本资产；离线模式不得检查或安装更新。发现更新后并行下载两个 32 KiB Range 样本，按实测速度选择完整下载路径。不直连 GitHub，不附加账号、源路径、标注、报告、hash 或遥测。失败不得阻断核心功能。
+- 统一管理模式的唯一运行时联网能力是登录后的自动更新：客户端只访问 `http://39.155.172.162:17879/latest.json`、`http://10.1.11.200:17879/latest.json` 及其同 origin 精确版本资产；离线模式不得检查或安装更新。发现更新后并行下载两个 32 KiB Range 样本，按实测速度选择完整下载路径。不直连 GitHub，不附加账号、源路径、标注、报告、hash 或遥测。失败不得阻断核心功能。
 - 更新包必须先匹配清单中的精确字节数和 1-64 MiB 上限，再使用内嵌 Ed25519/Minisign 公钥验签；任一不匹配不得进入安装。固定镜像的 HTTP 传输不替代签名，攻击者即使能修改公网或局域网流量也只能造成更新不可用，不能提供可安装的篡改字节。公钥可提交，更新私钥只能保存在发布者受控位置和 GitHub Actions secrets。
 - 镜像机是唯一访问 GitHub 更新元数据/资产的运行时组件；它不记录客户端地址或业务数据，只开放 GET/HEAD，并对单一合法字节范围返回有界 206 响应。新版本必须下载到服务自有 partial，验证完整三平台集合后原子切换，失败保留上一已验证版本。
 - 不收集遥测，不上传路径、图像、状态或 hash。
@@ -604,7 +604,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - Release 标题、说明、三个 installer 名称、verification report 和 manifest 必须显示 `UNSIGNED`；后续引入签名时恢复 Authenticode、timestamp、Developer ID、Gatekeeper、notarization 和可信 Linux 包发布门禁。
 - 三个平台同时生成自动更新资产：Windows x64 NSIS updater executable、macOS arm64 ad-hoc sealed app tarball、Ubuntu x86_64 deb。每个更新资产必须使用独立 Ed25519/Minisign 私钥签名；final job 用 `tauri.conf.json` 内嵌公钥重新验签，并生成包含三个精确 target、URL、signature、size 和 SHA-256 的 `latest.json`。更新签名只证明更新字节来自本项目发布流程，不得把外层 installer 描述为 Authenticode、Developer ID 或可信 Linux 包签名。
 - final job 重新核对三份 verification report、安装器 SHA-256、更新包大小与签名，生成 `latest.json`、`release-manifest.json`、`SHA256SUMS.txt` 和 GitHub provenance。三安装器及其更新资产集合完整后才解除 draft，已经公开的 tag 不允许覆盖。
-- 本机镜像服务由 `launchd` 常驻在 `0.0.0.0:17879`，上游固定为 GitHub `latest.json`；每 5 分钟同步一次。公网请求的客户端清单重写为 `http://39.155.172.162:17879/releases/vX.Y.Z/...`，受信任的局域网 Host 请求重写为 `http://10.1.11.36:17879/releases/vX.Y.Z/...`，签名保持原值；版本资产同时支持受控单段 Range，以供客户端用 32 KiB 样本并行测速而不重复传输完整安装包。根页面提供同版本三个正式安装包和 SHA-256，供旧版完成一次引导安装。
+- 本机镜像服务由 `launchd` 常驻在 `0.0.0.0:17879`，上游固定为 GitHub `latest.json`；每 5 分钟同步一次。公网请求的客户端清单重写为 `http://39.155.172.162:17879/releases/vX.Y.Z/...`，受信任的局域网 Host 请求重写为 `http://10.1.11.200:17879/releases/vX.Y.Z/...`，签名保持原值；版本资产同时支持受控单段 Range，以供客户端用 32 KiB 样本并行测速而不重复传输完整安装包。根页面提供同版本三个正式安装包和 SHA-256，供旧版完成一次引导安装。
 - 当前 CD 仍不需要 GitHub App ID/private key 或 release Environment；自动 tag 使用仓库 `GITHUB_TOKEN`。自动更新另需 `TAURI_SIGNING_PRIVATE_KEY` 和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 两个 GitHub Actions secret，它们只用于更新包完整性签名，不能提交到仓库或写入 artifact/log。
 - GitHub hosted runner smoke 不是 Win10/Win11 断网、目标 Mac、真实 SD 卡或 100 GB 实盘验收的替代品。
 

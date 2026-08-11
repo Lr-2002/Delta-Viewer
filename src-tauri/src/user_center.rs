@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn accepts_only_private_lan_ip_configuration() {
-        assert!(is_private_lan_ip("10.1.11.36"));
+        assert!(is_private_lan_ip("10.1.11.200"));
         assert!(is_private_lan_ip("192.168.1.2"));
         assert!(!is_private_lan_ip("39.155.172.162"));
         assert!(!is_private_lan_ip("localhost"));
@@ -324,7 +324,7 @@ mod tests {
         let invalid = UserCenterClientConfig {
             schema_version: 1,
             service_id: "11111111-1111-4111-8111-111111111111".into(),
-            server_url: "http://10.1.11.36:17880".into(),
+            server_url: "http://10.1.11.200:17880".into(),
             certificate_pem: "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----"
                 .into(),
             issued_at_ms: 1,

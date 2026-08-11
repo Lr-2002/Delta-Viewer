@@ -5,6 +5,11 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.34 - 2026-08-11
+
+- Moved the fixed LAN update-mirror and user-center endpoints to `10.1.11.200`.
+- Kept the public update mirror, ports, origin and signature verification gates unchanged.
+
 ## 0.17.33 - 2026-08-11
 
 - Saved the editable task description to a format-v1 `description.json` in the

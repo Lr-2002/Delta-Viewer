@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn creates_same_version_asset_candidates_for_every_configured_origin() {
         let public = reqwest::Url::parse("http://39.155.172.162:17879/latest.json").unwrap();
-        let lan = reqwest::Url::parse("http://10.1.11.36:17879/latest.json").unwrap();
+        let lan = reqwest::Url::parse("http://10.1.11.200:17879/latest.json").unwrap();
         let download = reqwest::Url::parse(
             "http://39.155.172.162:17879/releases/v0.17.14/DOHC-Viewer_0.17.14_UNSIGNED_ubuntu-22.04%2B-x64.deb",
         )
@@ -490,7 +490,7 @@ mod tests {
         );
         assert_eq!(
             candidates[1].as_str(),
-            "http://10.1.11.36:17879/releases/v0.17.14/DOHC-Viewer_0.17.14_UNSIGNED_ubuntu-22.04%2B-x64.deb"
+            "http://10.1.11.200:17879/releases/v0.17.14/DOHC-Viewer_0.17.14_UNSIGNED_ubuntu-22.04%2B-x64.deb"
         );
     }
 
@@ -500,7 +500,7 @@ mod tests {
             reqwest::Url::parse("http://39.155.172.162:17879/releases/v0.17.14/update.deb")
                 .unwrap();
         let lan =
-            reqwest::Url::parse("http://10.1.11.36:17879/releases/v0.17.14/update.deb").unwrap();
+            reqwest::Url::parse("http://10.1.11.200:17879/releases/v0.17.14/update.deb").unwrap();
         let fastest = fastest_probed_url(
             vec![
                 Ok(MirrorProbe {
@@ -525,14 +525,14 @@ mod tests {
     #[test]
     fn accepts_only_the_configured_mirror_origin_and_exact_version_directory() {
         let endpoint = reqwest::Url::parse("http://39.155.172.162:17879/latest.json").unwrap();
-        let fallback = reqwest::Url::parse("http://10.1.11.36:17879/latest.json").unwrap();
+        let fallback = reqwest::Url::parse("http://10.1.11.200:17879/latest.json").unwrap();
         let allowed = reqwest::Url::parse(
             "http://39.155.172.162:17879/releases/v0.17.9/DOHC-Viewer_0.17.9.deb",
         )
         .unwrap();
         assert!(is_allowed_mirror_url(&endpoint, &allowed, "0.17.9"));
         let fallback_allowed =
-            reqwest::Url::parse("http://10.1.11.36:17879/releases/v0.17.9/DOHC-Viewer_0.17.9.deb")
+            reqwest::Url::parse("http://10.1.11.200:17879/releases/v0.17.9/DOHC-Viewer_0.17.9.deb")
                 .unwrap();
         assert!(is_allowed_mirror_url(
             &fallback,

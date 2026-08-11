@@ -41,7 +41,7 @@ in the Wiki.
 
 Starting with `0.17.12`, unified management mode checks the fixed public update mirror at
 `http://39.155.172.162:17879` after local login, then falls back only to
-`http://10.1.11.36:17879` for clients on the mirror LAN. The mirror host reads GitHub once,
+`http://10.1.11.200:17879` for clients on the mirror LAN. The mirror host reads GitHub once,
 verifies and atomically caches the complete release, and serves clients over the
 reachable fixed IP. When a newer version exists the app waits for the current
 data task, downloads the matching updater, verifies its dedicated
@@ -113,7 +113,7 @@ organization IAM, recover forgotten passwords, or synchronize annotation data.
 
 The runtime has no SSH or network recording-data path. Unified management mode
 connects only to the configured LAN user center for login and to the automatic
-update mirror at fixed `39.155.172.162:17879`, with `10.1.11.36:17879` as its
+update mirror at fixed `39.155.172.162:17879`, with `10.1.11.200:17879` as its
 only LAN fallback; offline mode makes neither request. Clients never contact
 GitHub or send account, source path, annotation, report, hash, or telemetry
 data. The updater accepts only those configured origins and exact version paths,

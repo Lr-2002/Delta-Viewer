@@ -154,7 +154,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
         pubkey: updaterTestSigner.wrappedPublicKey,
         endpoints: [
           "http://39.155.172.162:17879/latest.json",
-          "http://10.1.11.36:17879/latest.json",
+          "http://10.1.11.200:17879/latest.json",
         ],
         windows: { installMode: "passive" },
       },
@@ -193,7 +193,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
     listenHost: "0.0.0.0",
     listenPort: 17879,
     publicBaseUrl: "http://39.155.172.162:17879",
-    fallbackBaseUrls: ["http://10.1.11.36:17879"],
+    fallbackBaseUrls: ["http://10.1.11.200:17879"],
     upstreamManifestUrl:
       "https://github.com/Lr-2002/Delta-Viewer/releases/latest/download/latest.json",
     refreshIntervalSeconds: 300,

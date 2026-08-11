@@ -42,7 +42,7 @@ test("user center only allows administrator-created accounts", async () => {
     schemaVersion: 1,
     listenHost: "127.0.0.1",
     listenPort: port,
-    publicBaseUrl: `https://10.1.11.36:${port}`,
+    publicBaseUrl: `https://10.1.11.200:${port}`,
     sessionTtlSeconds: 300,
   };
   const logger = { log() {}, error() {} };

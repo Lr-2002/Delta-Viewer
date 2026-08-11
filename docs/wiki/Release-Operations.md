@@ -37,7 +37,7 @@ GitHub App ID、private key 或 release Environment。
 
 客户端不访问 GitHub。GitHub Release 只是固定镜像机的签名上游；应用使用
 `http://39.155.172.162:17879/latest.json` 与
-`http://10.1.11.36:17879/latest.json`。发现更新后，客户端会对两个同版本资产并行发出受限
+`http://10.1.11.200:17879/latest.json`。发现更新后，客户端会对两个同版本资产并行发出受限
 32 KiB Range 请求，选择实测最快的成功路径；全部测速失败时保留清单路径。`update-service.config.json`、
 Tauri endpoint 和发布校验必须保持这两个固定地址一致。服务对受信任的局域网 Host 返回局域网 asset URL，
 避免 NAT loopback；任意其他 Host 始终返回公网 URL。
@@ -82,13 +82,13 @@ final job 重新读取三份报告和安装器，使用应用内嵌公钥逐个�
 
 镜像运行在当前 macOS 主机，监听 `0.0.0.0:17879`，公网客户端地址固定为
 [http://39.155.172.162:17879/](http://39.155.172.162:17879/)，局域网 fallback 为
-`http://10.1.11.36:17879/`。安装或重新加载开机常驻服务：
+`http://10.1.11.200:17879/`。安装或重新加载开机常驻服务：
 
 ```bash
 pnpm update-mirror:install
 curl --fail http://127.0.0.1:17879/healthz
 curl --fail http://39.155.172.162:17879/latest.json
-curl --fail http://10.1.11.36:17879/latest.json
+curl --fail http://10.1.11.200:17879/latest.json
 curl --fail --range 0-32767 http://127.0.0.1:17879/releases/v<version>/<updater-file> -o /dev/null
 launchctl print "gui/$(id -u)/com.dohc.viewer.update-mirror"
 ```

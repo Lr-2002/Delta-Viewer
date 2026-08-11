@@ -174,7 +174,7 @@ async function verify(options) {
     throw new Error("base Tauri config must leave updater artifacts to the controlled release jobs");
   }
   const updaterConfig = tauriConfig.plugins?.updater;
-  const expectedFallbackBaseUrls = ["http://10.1.11.36:17879"];
+  const expectedFallbackBaseUrls = ["http://10.1.11.200:17879"];
   const expectedUpdaterEndpoints = [
     `${updateServiceConfig.publicBaseUrl}/latest.json`,
     ...expectedFallbackBaseUrls.map((baseUrl) => `${baseUrl}/latest.json`),

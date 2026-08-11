@@ -1,6 +1,6 @@
 # 用户中心部署
 
-当前部署目标是本机主机 `10.1.11.36`，服务端口为 `17880`。用户中心只为统一管理模式在局域网提供账号登录，不承载采集数据或标注数据；离线模式不需要或连接该服务，客户端仍直接读取本机挂载的源卡。
+当前部署目标是本机主机 `10.1.11.200`，服务端口为 `17880`。用户中心只为统一管理模式在局域网提供账号登录，不承载采集数据或标注数据；离线模式不需要或连接该服务，客户端仍直接读取本机挂载的源卡。
 
 ## 一键安装
 
@@ -13,7 +13,7 @@ pnpm user-center:install
 要求主机安装 Node.js、pnpm、OpenSSL 和 macOS `security`/`launchctl`。脚本会：
 
 1. 在 `~/Library/Application Support/DOHC User Center/` 创建服务数据目录和权限为 `0600` 的账号数据库。
-2. 生成包含 `10.1.11.36` 与 `localhost` 的自签名 HTTPS 证书。
+2. 生成包含 `10.1.11.200` 与 `localhost` 的自签名 HTTPS 证书。
 3. 注册 `com.dohc.viewer.user-center` LaunchAgent，开机启动并自动拉起服务。
 4. 将客户端配置写到桌面 `DOHC-User-Center-Client.json`，并尝试把证书加入当前用户的登录钥匙串信任根。
 5. 打开用户中心管理页 `https://localhost:17880/`。
