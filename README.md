@@ -101,8 +101,9 @@ that unsampled frames are free of encoding damage.
 User-created tasks, trajectory reservations, append-only annotation revisions,
 reports, and operation error history are stored under the operating system's
 application-local data directory. Normal UI use does not copy episode payloads
-there. The saved task description is additionally written as format-v1
-`description.json` in the source episode; captured JPEG/state/skeleton files
+there. The saved task description and segment annotations are additionally
+written as format-v2 `description.json` in the source episode, including each
+segment's frame range, title, and note; captured JPEG/state/skeleton files
 remain unchanged. A batch candidate therefore still requires its original source path to
 be mounted and its fingerprint to match the saved annotation. In unified
 management mode, password hashes are stored only by the LAN user center; the

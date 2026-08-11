@@ -1,4 +1,5 @@
 use crate::error::{AppError, AppResult};
+use crate::model::SegmentAnnotation;
 use crate::storage;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
@@ -8,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DESCRIPTION_FILE_NAME: &str = "description.json";
-const DESCRIPTION_FORMAT_VERSION: u32 = 1;
-const DESCRIPTION_MAX_BYTES: u64 = 16 * 1024;
+const DESCRIPTION_FORMAT_VERSION: u32 = 2;
+const DESCRIPTION_MAX_BYTES: u64 = 256 * 1024;
 const DESCRIPTION_PARTIAL_PREFIX: &str = ".description.json.partial-";
 
 #[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -17,9 +18,21 @@ const DESCRIPTION_PARTIAL_PREFIX: &str = ".description.json.partial-";
 struct EpisodeDescription {
     format_version: u32,
     description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clip_start_frame: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clip_end_frame: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    segments: Vec<SegmentAnnotation>,
 }
 
-pub fn write_description(episode_root: &Path, description: &str) -> AppResult<PathBuf> {
+pub fn write_description_with_segments(
+    episode_root: &Path,
+    description: &str,
+    clip_start_frame: Option<u64>,
+    clip_end_frame: Option<u64>,
+    segments: &[SegmentAnnotation],
+) -> AppResult<PathBuf> {
     let root_metadata = fs::symlink_metadata(episode_root)?;
     if !root_metadata.file_type().is_dir() {
         return Err(AppError::Message(
@@ -48,6 +61,9 @@ pub fn write_description(episode_root: &Path, description: &str) -> AppResult<Pa
     let document = EpisodeDescription {
         format_version: DESCRIPTION_FORMAT_VERSION,
         description: description.into(),
+        clip_start_frame,
+        clip_end_frame,
+        segments: segments.to_vec(),
     };
     let partial = episode_root.join(format!(
         "{DESCRIPTION_PARTIAL_PREFIX}{}-{}",
@@ -112,7 +128,7 @@ fn unix_nanos() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_description, write_description, DESCRIPTION_FILE_NAME};
+    use super::{read_description, write_description_with_segments, DESCRIPTION_FILE_NAME};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -122,11 +138,12 @@ mod tests {
         let root = test_output("replace");
         fs::create_dir_all(&root).unwrap();
 
-        let first = write_description(&root, "第一次描述").unwrap();
+        let first = write_description_with_segments(&root, "第一次描述", None, None, &[]).unwrap();
         assert_eq!(first, root.join(DESCRIPTION_FILE_NAME));
         assert_eq!(read_description(&first).unwrap().description, "第一次描述");
 
-        let second = write_description(&root, "更新后的描述").unwrap();
+        let second =
+            write_description_with_segments(&root, "更新后的描述", None, None, &[]).unwrap();
         assert_eq!(second, first);
         assert_eq!(
             read_description(&second).unwrap().description,
@@ -142,7 +159,7 @@ mod tests {
         let root = test_output("non-file");
         fs::create_dir_all(root.join(DESCRIPTION_FILE_NAME)).unwrap();
 
-        let error = write_description(&root, "不能写入")
+        let error = write_description_with_segments(&root, "不能写入", None, None, &[])
             .unwrap_err()
             .to_string();
         assert!(error.starts_with("SOURCE_DESCRIPTION_WRITE_FAILED:"));

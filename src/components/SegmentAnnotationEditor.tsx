@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { RotateCcw, Save, Scissors, Trash2 } from "lucide-react";
 import { isTauriRuntime, saveEpisodeAnnotation } from "../lib/backend";
+import { descriptionMetadataPath } from "../lib/format";
 import type { EpisodeAnnotation, EpisodeData } from "../types";
 
 interface Segment {
@@ -90,8 +91,10 @@ export function SegmentAnnotationEditor({
         segments: visibleSegments.map(({ startFrame, endFrame, title, note }) => ({ startFrame, endFrame, title, note })),
       });
       onSaved(saved);
-      const persistenceNotice = isTauriRuntime() ? "description.json 已更新" : "浏览器演示已保存";
-      onNotice(`片段已保存 · ${persistenceNotice} · ${saved.segments.length} 个片段 · r${saved.revision}`);
+      const persistenceNotice = isTauriRuntime()
+        ? `片段已保存到 ${descriptionMetadataPath(saved.episodeRoot)}`
+        : "浏览器演示已保存";
+      onNotice(`${persistenceNotice} · ${saved.segments.length} 个片段 · r${saved.revision}`);
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -160,7 +163,7 @@ export function SegmentAnnotationEditor({
         </div>
         <div className="segment-range-status">
           <span className="segment-draft-badge">保留范围 · 帧 {clipStartFrame}–{clipEndFrame} · {visibleSegments.length} 个片段</span>
-          <span className={`segment-save-badge${dirty ? " dirty" : ""}`}>{dirty ? "片段未保存" : `片段已保存到本机 · r${annotation?.revision}`}</span>
+          <span className={`segment-save-badge${dirty ? " dirty" : ""}`}>{dirty ? "片段未保存" : `已保存到 description.json · r${annotation?.revision}`}</span>
           <button className="button button-primary segment-save-action" type="button" disabled={busy || saving || !annotation} onClick={() => void saveSegments()} title={!annotation ? "请先保存上方的数据标注" : "保存片段到本机标注"}>
             <Save size={14} />{saving ? "保存中…" : dirty ? "保存片段" : "重新保存片段"}
           </button>

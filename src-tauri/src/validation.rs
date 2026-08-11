@@ -24,6 +24,7 @@ const FRAME_RATE_STABILITY_BAND_PERCENT: f64 = 10.0;
 const MIN_FRAME_RATE_STABILITY_PERCENT: f64 = 90.0;
 const BLACK_SCREEN_LUMA_THRESHOLD: f64 = 8.0;
 const BLACK_SCREEN_DARK_RATIO: f64 = 0.995;
+const TRAJECTORY_STATIC_POSITION_EPSILON: f64 = 1e-6;
 
 pub fn validate_episode(
     root: &Path,
@@ -763,6 +764,7 @@ fn check_state_sequence(
         }
     }
 
+    check_trajectory_motion(states, issues);
     let frame_rate = measure_state_frame_rate(states);
     if frame_rate.interval_count >= MIN_FRAME_RATE_INTERVALS {
         if let Some(measured_fps) = frame_rate.measured_fps {
@@ -796,6 +798,38 @@ fn check_state_sequence(
         }
     }
     frame_rate
+}
+
+fn check_trajectory_motion(states: &[RawStateRecord], issues: &mut Vec<ValidationIssue>) {
+    let valid_positions = states
+        .iter()
+        .filter(|state| state.position.into_iter().all(f64::is_finite))
+        .collect::<Vec<_>>();
+    let Some(first) = valid_positions.first() else {
+        return;
+    };
+    if valid_positions.len() < 2 {
+        return;
+    }
+    let has_motion = valid_positions.iter().skip(1).any(|state| {
+        state
+            .position
+            .into_iter()
+            .zip(first.position)
+            .any(|(value, baseline)| (value - baseline).abs() > TRAJECTORY_STATIC_POSITION_EPSILON)
+    });
+    if !has_motion {
+        issues.push(issue_at(
+            Severity::Warning,
+            "TRAJECTORY_STATIC",
+            "states",
+            &format!(
+                "状态轨迹在 {} 条有效位置记录中没有变化，建议检查轨迹数据",
+                valid_positions.len()
+            ),
+            first.frame_id,
+        ));
+    }
 }
 
 fn measure_state_frame_rate(states: &[RawStateRecord]) -> StateFrameRate {
@@ -1128,6 +1162,27 @@ mod tests {
         assert!(unstable_issues
             .iter()
             .any(|issue| issue.code == "FRAME_RATE_UNSTABLE"));
+    }
+
+    #[test]
+    fn flags_static_position_trajectory() {
+        let static_states = vec![state(0, 0), state(1, 33_333_333), state(2, 66_666_666)];
+        let mut static_issues = Vec::new();
+        check_state_sequence(&static_states, &mut static_issues);
+        let issue = static_issues
+            .iter()
+            .find(|issue| issue.code == "TRAJECTORY_STATIC")
+            .unwrap();
+        assert_eq!(issue.severity, Severity::Warning);
+        assert_eq!(issue.frame_id, Some(0));
+
+        let mut moving_states = static_states;
+        moving_states[2].position = [0.01, 0.0, 0.0];
+        let mut moving_issues = Vec::new();
+        check_state_sequence(&moving_states, &mut moving_issues);
+        assert!(!moving_issues
+            .iter()
+            .any(|issue| issue.code == "TRAJECTORY_STATIC"));
     }
 
     #[test]

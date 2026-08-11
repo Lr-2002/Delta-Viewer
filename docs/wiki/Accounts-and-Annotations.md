@@ -38,12 +38,20 @@ pnpm user-center:install
 
 ```json
 {
-  "formatVersion": 1,
-  "description": "关闭烤箱门，并确认烤箱门完全闭合。"
+  "formatVersion": 2,
+  "description": "关闭烤箱门，并确认烤箱门完全闭合。",
+  "clipStartFrame": 0,
+  "clipEndFrame": 99,
+  "segments": [
+    { "startFrame": 0, "endFrame": 49, "title": "打开烤箱", "note": "" },
+    { "startFrame": 50, "endFrame": 99, "title": "关闭烤箱门", "note": "确认完全闭合" }
+  ]
 }
 ```
 
 `description.json` 是唯一允许写入源 episode 的应用管理 metadata；JPEG、`states.jsonl`、骨架和其他采集文件不会修改。它不参与采集指纹或健康检查，因此更新描述不会让刚完成的检查失效；显式压力导入会复制并验证正式文件。源目录必须可写，严格只读挂载会返回 `SOURCE_DESCRIPTION_WRITE_FAILED`，不能完成标注保存。三个导出 adapter 继续继承同一任务、描述、轨迹码、处理人和导出审计元数据，任何内容都不会上传用户中心。
+
+保存整体标注或片段后，界面都会显示本次实际更新的 `description.json` 完整路径。
 
 离线模式保存相同的本地任务、轨迹码和修订时间字段，但不写入用户账号；后端仅写固定的本机离线 provenance，前端不显示处理人。三种导出会保留该来源标记，不能将其解释为用户中心账号。
 

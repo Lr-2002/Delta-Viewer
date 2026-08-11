@@ -5,6 +5,20 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.35 - 2026-08-11
+
+- Persisted clip ranges and every segment's frame range, title and note in the
+  source episode `description.json` alongside the overall task description.
+- Upgraded source annotation metadata to format-v2 without changing capture
+  fingerprints or the atomic write boundary.
+- Blocked playback when the per-stream image precheck finds unavailable frames,
+  added a reversible source-list skip action, and report runtime frame failures.
+- Added a right-side annotation decision for every warning except
+  `STATE_FRAME_GAP`; declining skips to the next record, while
+  `TRAJECTORY_STATIC` skips annotation automatically.
+- Added `TRAJECTORY_STATIC` state validation for trajectories with no position
+  movement, and show the exact source metadata path after annotation saves.
+
 ## 0.17.34 - 2026-08-11
 
 - Moved the fixed LAN update-mirror and user-center endpoints to `10.1.11.200`.

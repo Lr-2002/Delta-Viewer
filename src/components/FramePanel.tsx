@@ -17,6 +17,7 @@ interface FramePanelProps {
   playbackEndFrame: number;
   className?: string;
   onFrameSettled?: (stream: string, frameId: number) => void;
+  onFrameUnavailable?: (stream: string, frameId: number) => void;
 }
 
 const frameCache = new FrameCache(async (request) => {
@@ -53,6 +54,7 @@ export function FramePanel({
   playbackEndFrame,
   className = "",
   onFrameSettled,
+  onFrameUnavailable,
 }: FramePanelProps) {
   const requestKey = frameRequestKey({ root, stream: stream.name, frameId });
   const streamKey = frameStreamKey(root, stream.name);
@@ -64,6 +66,13 @@ export function FramePanel({
   const requestedKeyRef = useRef(requestKey);
   const stagedSlotRef = useRef<FrameSlotIndex | null>(null);
   const visibleSlotRef = useRef<FrameSlotIndex>(0);
+  const unavailableFrameRef = useRef<string | null>(null);
+  function reportFrameUnavailable(frame: CachedFrame | { frameId: number }) {
+    const key = `${streamKey}:${frame.frameId}`;
+    if (unavailableFrameRef.current === key) return;
+    unavailableFrameRef.current = key;
+    onFrameUnavailable?.(stream.name, frame.frameId);
+  }
   function stageFrame(frame: CachedFrame) {
     const current = framesRef.current[visibleSlotRef.current];
     if (current?.streamKey === frame.streamKey && current.key === frame.key) {
@@ -112,6 +121,7 @@ export function FramePanel({
     clearCurrentStreamFrames();
     setStatus("failed");
     onFrameSettled?.(stream.name, frame.frameId);
+    reportFrameUnavailable(frame);
   }
 
   useEffect(() => {
@@ -144,6 +154,7 @@ export function FramePanel({
         clearCurrentStreamFrames();
         setStatus("failed");
         onFrameSettled?.(stream.name, frameId);
+        reportFrameUnavailable({ frameId });
       });
     if (playing) {
       const streamEnd = stream.lastFrame ?? playbackEndFrame;

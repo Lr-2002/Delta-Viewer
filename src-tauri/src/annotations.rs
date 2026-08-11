@@ -493,7 +493,13 @@ pub fn save_annotation_with_source_description(
         request.clip_end_frame,
         &request.segments,
     )?;
-    crate::episode_metadata::write_description(episode_root, &description)?;
+    crate::episode_metadata::write_description_with_segments(
+        episode_root,
+        &description,
+        request.clip_start_frame,
+        request.clip_end_frame,
+        &request.segments,
+    )?;
     save_annotation_locked(data_root, episode_root, fingerprint, user, request).map_err(|error| {
         AppError::Message(format!(
             "LOCAL_ANNOTATION_SAVE_FAILED_SOURCE_DESCRIPTION_SAVED: description.json 已写入，但本机标注修订保存失败: {error}"
@@ -1185,8 +1191,14 @@ mod tests {
         assert_eq!(saved.segments[0].note, "完整动作");
         let description: serde_json::Value =
             serde_json::from_slice(&fs::read(episode.join("description.json")).unwrap()).unwrap();
-        assert_eq!(description["formatVersion"], 1);
+        assert_eq!(description["formatVersion"], 2);
         assert_eq!(description["description"], "关闭烤箱门");
+        assert_eq!(description["clipStartFrame"], 0);
+        assert_eq!(description["clipEndFrame"], 9);
+        assert_eq!(description["segments"][0]["startFrame"], 0);
+        assert_eq!(description["segments"][0]["endFrame"], 9);
+        assert_eq!(description["segments"][0]["title"], "片段 1");
+        assert_eq!(description["segments"][0]["note"], "完整动作");
         assert_eq!(
             crate::source::episode_fingerprint(&episode, &cancelled).unwrap(),
             fingerprint

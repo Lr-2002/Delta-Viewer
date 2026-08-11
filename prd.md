@@ -4,7 +4,7 @@
 | --- | --- |
 | 产品名称 | DOHC Viewer |
 | 文档版本 | 0.28 |
-| 应用版本基线 | 0.17.34 |
+| 应用版本基线 | 0.17.35 |
 | 文档状态 | 安全 Alpha，三安装器 unsigned CD、固定 IP 更新镜像与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64；Ubuntu 22.04+ x86_64 deb |
 | 文档日期 | 2026-08-11 |
@@ -52,7 +52,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-015 | 历史：v0.12 开始自动处理第一条 session，v0.16 曾扩展为全部 session 自动导入；当前行为由 D-026 取代。 |
 | D-016 | v0.13 起 warning/error 检查结果必须在后台自动生成本地审计报告；ok 不自动生成。报告只写入应用本地数据目录，不上传网络、不写源卡或 episode；同一 episode 路径和数据指纹在同一报告版本下去重。 |
 | D-017 | 统一管理模式进入数据工作区前必须登录当前主机局域网用户中心账号；账号只能由管理员创建。服务只保存 scrypt 密码哈希和账号审计字段，客户端通过管理员导入的固定 HTTPS 证书配置登录，登录成功后只在 Rust 进程内保存会话。离线模式不使用账号或用户中心，标注只保留固定的本机离线 provenance 标记且 UI 不显示处理人。用户中心不接收源路径、图像、状态、标注、报告或 hash。 |
-| D-018 | 标注记录绑定规范化 episode 路径与数据指纹，使用本地任务、可编辑任务描述和 `{prefix}-{NNN}` 轨迹编码。首个内置任务为 `close_oven`，前缀为 `oven`；新任务只输入名称，由系统生成稳定 ID/前缀。保存标注时，完整修订继续追加写入应用 local-data，并在 episode 根目录原子创建或更新 format-v1 `description.json` 保存描述；该应用管理 metadata 不参与采集数据指纹。 |
+| D-018 | 标注记录绑定规范化 episode 路径与数据指纹，使用本地任务、可编辑任务描述和 `{prefix}-{NNN}` 轨迹编码。首个内置任务为 `close_oven`，前缀为 `oven`；新任务只输入名称，由系统生成稳定 ID/前缀。保存标注时，完整修订继续追加写入应用 local-data，并在 episode 根目录原子创建或更新 format-v2 `description.json` 保存整体描述、裁剪范围和连续片段数组；该应用管理 metadata 不参与采集数据指纹。 |
 | D-019 | 每个进入 `main` 的 commit 都必须是完整 release-ready 内容，使用唯一新 semver、带日期 Changelog，并在 CI 成功后由 GitHub Actions 使用仓库 `GITHUB_TOKEN` 创建精确指向该 commit 的 annotated `vX.Y.Z` tag；禁止先推普通变更再另推 release commit。当前版本必须是 `CHANGELOG.md` 第一条带日期的版本记录、只能出现一次并至少包含一条具体变更，GitHub Release 正文必须直接展示该条目，并从该 clean exact tag 同时构建 Windows x64、macOS arm64 和 Ubuntu 22.04+ x64 deb 三个安装包。Codex 默认只递增 patch `+0.0.1`，minor/major 只能按开发负责人明确指令更新；当前阶段允许公开显式 `UNSIGNED` 的完整集合，但标题、说明、文件名、报告和 manifest 必须一致披露。未来签名产物必须使用新版本/tag，不覆盖 unsigned 资产。 |
 | D-020 | 用户文档使用 GitHub Wiki；`docs/wiki` 是可审查的唯一源，由 workflow 同步，避免网页内容与代码版本分叉。 |
 | D-021 | unsigned macOS app 仍必须对 FFmpeg、主程序和完整 bundle 生成结构有效的 ad-hoc seal；发布门禁必须在 synthetic quarantine 下区分“无可信身份/未公证”的预期策略拒绝、由已知良性 control app 复现的 runner XProtect 服务错误，以及 invalid signature/damaged 的产品包结构错误。 |
@@ -208,7 +208,7 @@ episode/
 - 五个流名称固定为 `cam0`、`cam1`、`cam2`、`t265_left`、`t265_right`。
 - JPEG 文件名的 stem 是十进制 `frame_id`。
 - Episode 可以是用户选择的目录本身，也可以是所选目录的直接子目录。
-- `description.json` 使用 `{"formatVersion":1,"description":"..."}`；它不参与采集数据指纹、健康统计或导出门禁，但显式导入会复制并验证该文件。
+- `description.json` 使用 format-v2 保存 `description`、可选的 `clipStartFrame`/`clipEndFrame` 和连续 `segments` 数组（每项包含 `startFrame`、`endFrame`、`title`、`note`）；它不参与采集数据指纹、健康统计或导出门禁，但显式导入会复制并验证该文件。
 - `v1.0` 不递归发现多层嵌套 episode。
 - 扫描时不得跟随符号链接。
 - 记录器应使用 `YYYY-MM-DD_HH-MM-SS` 目录名，不能使用 Windows 保留字符。
@@ -303,7 +303,7 @@ Manifest `formatVersion=2`。采集数据文件集合明确排除 macOS AppleDou
 | FR-VAL-003 | P0 | 检查状态帧号和时间戳顺序。 | 帧号跳变为 warning；非单调时间戳为 error。 | 已实现 |
 | FR-VAL-004 | P0 | 检测明显时间戳间隔异常，并验证状态帧率和稳定度。 | 正 delta 的中位数存在时，超过中位数 3 倍产生 warning；以相邻状态记录的递增 frame ID 步长归一化原始纳秒周期并取中位数计算帧率，偏离 30 FPS 超过 ±5% 时产生 warning；落在中位周期 ±10% 内的间隔不足 90% 时产生 warning。 | 已实现并测试 |
 | FR-VAL-005 | P0 | 检查五路图像是否为空。 | 流目录缺失或零帧产生 error。 | 已实现 |
-| FR-VAL-006 | P0 | 检查图像 frame ID 连续性。 | 首尾范围内缺失位置产生 warning，并报告数量。 | 已实现 |
+| FR-VAL-006 | P0 | 检查图像 frame ID 连续性。 | 首尾范围内缺失位置产生 warning，并报告数量；加载后在右侧确认是否进入标注，选择不标注时跳到下一条。 | 已实现 |
 | FR-VAL-007 | P0 | 交互检查按排序后帧序列的 `1% / 25% / 50% / 73% / 99%` 固定位置解码 JPEG；正式压力/发布检查解码全部 JPEG。 | 小于五帧时百分位去重；抽检或全量模式中无法解码的帧产生 error，并记录 stream/frame。 | 已实现并测试 |
 | FR-VAL-008 | P0 | 检查被解码 JPEG 与该流首帧 header 尺寸是否一致。 | 交互模式覆盖五个固定抽检位置，正式模式覆盖全量；不一致产生 error。 | 已实现并测试 |
 | FR-VAL-009 | P0 | 对比图像帧数和状态条数。 | 数量不一致产生 warning。 | 已实现 |
@@ -312,6 +312,7 @@ Manifest `formatVersion=2`。采集数据文件集合明确排除 macOS AppleDou
 | FR-VAL-012 | P1 | 导出机器可读检查报告。 | 检查页使用“导出报告”操作，可生成包含版本、图像检查模式/百分位、issue 和统计的 JSON 文件。 | 已实现并测试 |
 | FR-VAL-013 | P0 | warning/error 在检查完成后自动生成本地后台报告。 | 写入应用 local-data 的 `reports` 目录，原子发布并回读；相同 episode 路径、指纹和报告版本只保留一份，ok 不生成，任一失败不得伪装成已汇报。 | 已实现并测试 |
 | FR-VAL-014 | P1 | 标注抽检或全量解码中近乎全黑的图像。 | 对每张已解码图像做最多约 32×32 点的有界亮度采样；平均亮度不高于 8 且至少 99.5% 采样点不高于 8 时，该流生成一个带首个命中 `frameId` 和命中数的 `BLACK_SCREEN` warning。 | 已实现并测试 |
+| FR-VAL-015 | P1 | 检查状态 position 轨迹是否静止或没有有效位置变化。 | 至少两条有限 position 的记录全部与首条相同（每个坐标差不超过 `1e-6`）时，生成带首个 `frameId` 的 `TRAJECTORY_STATIC` warning 并直接跳过该条，不进入标注；缺失或非有限 position 仍按既有状态解析/非有限值 error 报告。 | 已实现，待验证 |
 
 Issue code 和严重级别：
 
@@ -329,6 +330,7 @@ Issue code 和严重级别：
 | `TIMESTAMP_GAP` | warning | 时间间隔超过中位数 3 倍 |
 | `FRAME_RATE_MISMATCH` | warning | 状态中位帧率偏离期望 30 FPS 超过 ±5% |
 | `FRAME_RATE_UNSTABLE` | warning | 落在中位帧周期 ±10% 内的有效间隔不足 90% |
+| `TRAJECTORY_STATIC` | warning | 至少两条有效 position 记录中没有位置变化 |
 | `EMPTY_STREAM` | error | 图像流为空或缺失 |
 | `INVALID_FRAME_FILENAME` | error | 排除 `._*` 平台元数据后，JPEG 文件名仍不能映射为非负十进制帧号 |
 | `DUPLICATE_FRAME_ID` | error | 多个 JPEG 文件名映射到同一帧号 |
@@ -432,7 +434,7 @@ Issue code 和严重级别：
 | FR-AUTH-004 | P0 | 用户可以切换工作模式。 | 切换前清空当前 episode、检查、任务、标注和更新状态；离线界面不显示账号、登录、退出、处理人或自动更新；切回统一管理后重新要求登录。 | 已实现并测试 |
 | FR-ANN-001 | P0 | 回放首页支持选择已有任务或只输入名称创建本地任务；任务描述可编辑。 | 新任务立即进入任务选择并以任务名作为默认描述；`close_oven` 仍自动带出内置默认描述。 | 已实现并通过 browser 交互测试 |
 | FR-ANN-002 | P0 | 轨迹码使用任务前缀和至少三位序号，且只能由 Rust 在保存时分配。 | 前端只读显示预览、不提交轨迹码；`close_oven` 依次使用 `oven-001`、`oven-002`，自定义任务使用系统生成前缀；后端以原子占号防止跨 episode 重复。 | 已实现并测试 |
-| FR-ANN-003 | P0 | 标注记录数据身份、处理来源、描述和修订历史。 | 绑定规范化 episode 路径与指纹；每次保存先在 episode 根目录原子写入并回读 `description.json`，再追加不可覆盖的本机修订文件。统一管理模式记录账号，离线模式记录固定本机 provenance 标记且 UI 不显示为处理人；`description.json` 不改变采集指纹。 | 已实现并测试 |
+| FR-ANN-003 | P0 | 标注记录数据身份、处理来源、整体描述、片段和修订历史。 | 绑定规范化 episode 路径与指纹；每次保存先在 episode 根目录原子写入并回读 format-v2 `description.json`（整体描述、裁剪范围和完整连续片段），再追加不可覆盖的本机修订文件。统一管理模式记录账号，离线模式记录固定本机 provenance 标记且 UI 不显示为处理人；`description.json` 不改变采集指纹。 | 已实现并测试 |
 | FR-ANN-004 | P1 | 用户可以删除不再需要的自定义任务。 | 删除经 Rust 身份门禁执行，只移除 app-local 普通任务文件；内置任务返回 `TASK_BUILT_IN`，任何历史本机标注修订仍引用的任务返回 `TASK_IN_USE`，源数据和历史标注不被修改。 | 已实现并测试 |
 
 用户中心服务将账号和 scrypt 密码哈希写入当前主机服务专属私有目录；客户端将工作模式选择追加写入 `appLocalData/workspace-mode`，统一管理配置写入 Tauri `appLocalData/user-center.json`。用户创建的任务位于 `appLocalData/tasks`，轨迹占号位于 `appLocalData/trajectory-codes`，标注修订位于 `appLocalData/annotations/{episodeId}`。离线模式不创建账号或用户中心会话；本机标记仅用于区分 provenance，不是可登录账号。用户中心只提供身份和管理员账号管理，不提供文件加密、操作系统用户隔离或跨组织权限体系。
@@ -639,8 +641,10 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 | AT-002 | 导入标准样例 | 981 个文件、80,531,730 字节校验通过，生成 format-v2 manifest 和稳定数据集 BLAKE3 |
 | AT-003 | 修改目标副本中任意一个字节 | BLAKE3 回读失败，不发布正式目录 |
 | AT-004 | 删除一个流目录 | `EMPTY_STREAM` error，禁止导出 |
-| AT-005 | 删除中间 JPEG | `MISSING_FRAMES` warning，问题可见 |
-| AT-006 | 在任一固定百分位抽检位置使用截断或随机字节 JPEG | 交互检查产生 `DECODE_FAILED` error，并定位流和帧 |
+| AT-005 | 删除中间 JPEG | `MISSING_FRAMES` warning，右侧要求确认是否进入标注；选择不标注时跳到下一条数据 |
+| AT-006 | 在任一固定百分位抽检位置使用截断或随机字节 JPEG | 交互检查产生 `DECODE_FAILED` error，并定位流和帧；回放预检阻止加载 |
+| AT-038 | 一个或多个相机流的抽检 JPEG 始终无法解码，或回放中任一帧读取失败 | 预检或运行时显示 `FRAME_UNAVAILABLE` 提示、停止加载，左侧提供可恢复的“跳过数据”操作；跳过不修改源文件或本机标注 |
+| AT-039 | states position 连续多帧保持不动 | 检查报告生成带首个 frame ID 的 `TRAJECTORY_STATIC` warning，直接跳过该条数据而不进入标注 |
 | AT-007 | 写入无效 JSON/NaN/非单调时间戳 | 对应 error 被报告 |
 | AT-008 | 加载标准样例 | 五路 frame 0 同步显示，状态曲线可切换；X/Y/Z/W 使用稳定彩色并辅以不同线型，时间轴可播放/步进 |
 | AT-009 | 标准样例的末尾时间间隔异常 | 得到 `TIMESTAMP_GAP` warning，不被静默修复 |
@@ -671,7 +675,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 | AT-034 | 从同一标注分别导出 MCAP、HDF5、LeRobot | 三种输出都记录选中范围采集起止时间、标注创建/修改时间、修改耗时、修改人、实际导出时间和导出人；回读失败不得发布正式输出 |
 | AT-035 | episode 根目录放置合成 `smpl_skeleton.npz` 并加载回放 | Rust 读取坐标和 frame ID；Z-up fixture 在 Three.js 中以 Y-up 直立显示，三维骨架在 1440x920 中位于图像右侧、在 390x844 中位于图像下方；骨骼轮廓高度大于宽度、画布像素非空、当前帧切换同步、视角控件可交互；非法 NPZ 显示错误但不阻断图像回放 |
 | AT-036 | 分别选择统一管理和离线模式并切换 | 未选择模式只显示模式选择；统一管理显示配置/登录和更新入口；离线无用户名、登录、退出、账号/处理人和用户中心请求，但可扫描、回放、检查、标注、导出；切换模式清空当前工作区并重新执行对应门禁 |
-| AT-037 | 在可写 episode 中编辑任务描述并连续保存两次，再检查源指纹 | 根目录只有一个 format-v1 `description.json`，第二次内容原子替换第一次内容；本机标注追加两个修订，采集数据指纹与健康检查缓存保持有效；只读或非普通文件目标返回 `SOURCE_DESCRIPTION_WRITE_FAILED` |
+| AT-037 | 在可写 episode 中编辑任务描述和片段并连续保存两次，再检查源指纹 | 根目录只有一个 format-v2 `description.json`，其中保存整体描述、裁剪范围和完整片段数组，第二次内容原子替换第一次内容；本机标注追加两个修订，采集数据指纹与健康检查缓存保持有效；只读或非普通文件目标返回 `SOURCE_DESCRIPTION_WRITE_FAILED` |
 
 ## 14. 当前实现状态
 
@@ -1062,6 +1066,14 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 - 保存 episode 或片段标注时，在当前 episode 根目录写入 format-v1 `description.json`，内容为用户保存的任务描述；文件通过同目录 partial、回读验证和跨平台原子替换更新。
 - `description.json` 及应用 partial 不进入采集文件统计、健康检查或数据指纹，保存描述不会让当前可信检查缓存和标注身份失效；正式文件仍会随显式导入复制并执行大小/BLAKE3 回读。
 - 源端写入范围严格限制为根级 `description.json`；五路 JPEG、`states.jsonl`、骨架和其他采集文件保持只读。源卷不可写时标注保存明确失败，不伪装为完整成功。
+
+### 14.52 `0.17.35` 源 episode 片段 Metadata
+
+- 保存 episode 或片段标注时，在当前 episode 根目录写入 format-v2 `description.json`，内容包含用户保存的整体任务描述、裁剪范围和完整连续片段数组；文件通过同目录 partial、回读验证和跨平台原子替换更新。
+- `description.json` 及应用 partial 不进入采集文件统计、健康检查或数据指纹；片段保存会同步更新源端 metadata 和本机追加式修订。
+- 保存整体标注和保存片段都会在前端显示实际更新的 `description.json` 路径。
+- 回放先执行每流固定五点 JPEG 预检；空流、非法/重复 frame ID、frame ID 不匹配、抽检解码失败或尺寸不一致时不加载。运行时读帧失败同样停止加载；用户可跳过并恢复显示当前扫描中的数据，且不修改源文件。
+- 除 `STATE_FRAME_GAP` 外的任何 warning 会在右侧先列出并要求确认是否进入标注；选择不标注时跳到下一条。`TRAJECTORY_STATIC` 是例外，检测到位置始终不动后直接跳过该条而不进入标注。
 
 ## 15. 里程碑
 

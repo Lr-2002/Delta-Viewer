@@ -26,3 +26,8 @@ export function shortPath(path: string, maxLength = 48): string {
   if (tail.length < maxLength - 2) return `…${separator}${tail}`;
   return `…${path.slice(-(maxLength - 1))}`;
 }
+
+export function descriptionMetadataPath(episodeRoot: string): string {
+  const separator = episodeRoot.includes("\\") ? "\\" : "/";
+  return `${episodeRoot.replace(/[\\/]+$/, "")}${separator}description.json`;
+}

@@ -8,6 +8,7 @@ import {
   saveEpisodeAnnotation,
   suggestTrajectoryCode,
 } from "../lib/backend";
+import { descriptionMetadataPath } from "../lib/format";
 import type { EpisodeAnnotation, TaskDefinition, UserIdentity } from "../types";
 
 interface AnnotationPanelProps {
@@ -115,10 +116,12 @@ export function AnnotationPanel({
       });
       setEditStartedAtMs(Date.now());
       onSaved(saved);
-      const persistenceNotice = isTauriRuntime() ? "description.json 已更新" : "浏览器演示已保存";
+      const persistenceNotice = isTauriRuntime()
+        ? `标注已保存到 ${descriptionMetadataPath(saved.episodeRoot)}`
+        : "浏览器演示已保存";
       onNotice(offlineMode
-        ? `标注已保存：${saved.trajectoryCode} · ${persistenceNotice}`
-        : `标注已保存：${saved.trajectoryCode} · ${saved.processedBy.displayName} · ${persistenceNotice}`);
+        ? `${saved.trajectoryCode} · ${persistenceNotice}`
+        : `${saved.trajectoryCode} · ${saved.processedBy.displayName} · ${persistenceNotice}`);
     } catch (reason) {
       onError(toMessage(reason));
     } finally {

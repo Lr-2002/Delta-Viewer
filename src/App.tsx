@@ -5,6 +5,7 @@ import {
   ChevronRight,
   CircleAlert,
   Download,
+  EyeOff,
   FileSearch,
   FolderOpen,
   Gauge,
@@ -92,6 +93,26 @@ import type {
 type View = "review" | "checks" | "export" | "batch";
 type EpisodeSourceState = "available" | "loading" | "error";
 type UpdatePhase = "idle" | "checking" | "available" | "current" | "downloading" | "failed";
+type EpisodeLoadResult = "loaded" | "confirmation_required" | "skipped";
+
+interface PendingAnnotationConfirmation {
+  data: EpisodeData;
+  report: ValidationReport;
+  sourceEpisodeRoot: string;
+  minFrame: number;
+  maxFrame: number;
+}
+
+const UNAVAILABLE_FRAME_ISSUE_CODES = new Set([
+  "EMPTY_STREAM",
+  "INVALID_FRAME_FILENAME",
+  "DUPLICATE_FRAME_ID",
+  "FRAME_ID_MISMATCH",
+  "DECODE_FAILED",
+  "DIMENSION_MISMATCH",
+]);
+const FRAME_JUMP_ISSUE_CODE = "STATE_FRAME_GAP";
+const STATIC_TRAJECTORY_ISSUE_CODE = "TRAJECTORY_STATIC";
 
 const METRICS: { key: MetricKey; label: string }[] = [
   { key: "position", label: "位置" },
@@ -109,6 +130,9 @@ function App() {
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeSummary | null>(null);
   const [episodeSourceStates, setEpisodeSourceStates] = useState<Record<string, EpisodeSourceState>>({});
+  const [skippedEpisodeRoots, setSkippedEpisodeRoots] = useState<Record<string, true>>({});
+  const [pendingAnnotationConfirmation, setPendingAnnotationConfirmation] = useState<PendingAnnotationConfirmation | null>(null);
+  const [queuedEpisodeRoot, setQueuedEpisodeRoot] = useState<string | null>(null);
   const [loadedEpisodeSourceRoot, setLoadedEpisodeSourceRoot] = useState<string | null>(null);
   const [data, setData] = useState<EpisodeData | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
@@ -326,6 +350,15 @@ function App() {
   }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
 
   useEffect(() => {
+    if (!queuedEpisodeRoot || busy) return;
+    const episode = scan?.episodes.find((candidate) => candidate.root === queuedEpisodeRoot);
+    setQueuedEpisodeRoot(null);
+    if (episode && !skippedEpisodeRoots[episode.root]) {
+      void loadEpisodeForReview(episode, true);
+    }
+  }, [busy, queuedEpisodeRoot, scan, skippedEpisodeRoots]);
+
+  useEffect(() => {
     if (!playing || !data) return;
     const playbackEnd = Math.min(clipEndFrame, getMaxFrame(data));
     const frameDurationMs = 1000 / (playbackFps * speed);
@@ -366,6 +399,9 @@ function App() {
       ensureOperationActive(owner);
       setSourcePath(result.sourceRoot);
       setScan(result);
+      setSkippedEpisodeRoots({});
+      setPendingAnnotationConfirmation(null);
+      setQueuedEpisodeRoot(null);
       setEpisodeSourceStates(Object.fromEntries(
         result.episodes.map((episode) => [episode.root, "available" as const]),
       ));
@@ -376,10 +412,9 @@ function App() {
         operation = "load_and_validate";
         loadingEpisode = first;
         setEpisodeSourceStates((current) => ({ ...current, [first.root]: "loading" }));
-        await loadAndValidate(first.root, first.root, owner);
+        const loadResult = await loadAndValidate(first.root, first.root, owner);
         ensureOperationActive(owner);
-        setEpisodeSourceStates((current) => ({ ...current, [first.root]: "available" }));
-        setNotice(`已从源目录只读载入：${first.name}`);
+        handleLoadResult(first, loadResult);
       }
     } catch (reason) {
       const cancelled = toMessage(reason).includes("任务已取消");
@@ -428,10 +463,9 @@ function App() {
     resetOperationFeedback(owner);
     try {
       setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "loading" }));
-      await loadAndValidate(episode.root, episode.root, owner);
+      const loadResult = await loadAndValidate(episode.root, episode.root, owner);
       ensureOperationActive(owner);
-      setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "available" }));
-      setNotice(`已从源目录只读载入：${episode.name}`);
+      handleLoadResult(episode, loadResult);
     } catch (reason) {
       const cancelled = toMessage(reason).includes("任务已取消");
       setEpisodeSourceStates((current) => ({
@@ -447,6 +481,9 @@ function App() {
   }
 
   function selectEpisode(episode: EpisodeSummary) {
+    if (pendingAnnotationConfirmation?.data.summary.root !== episode.root) {
+      setPendingAnnotationConfirmation(null);
+    }
     setSelectedEpisode(episode);
     if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
   }
@@ -509,50 +546,156 @@ function App() {
     root: string,
     sourceEpisodeRoot: string,
     owner: OperationToken,
-  ) {
+  ): Promise<EpisodeLoadResult> {
     ensureOperationActive(owner);
     const loaded = await loadEpisode(root, owner.id);
     ensureOperationActive(owner);
-    setData(loaded);
     updateScannedEpisode(loaded.summary);
-    setReport(null);
-    setAnnotation(null);
-    setLoadedEpisodeSourceRoot(sourceEpisodeRoot);
-    setPlaying(false);
-    setExportResult(null);
-    setFpsOverride(null);
     const loadedMinFrame = getMinFrame(loaded);
     const loadedMaxFrame = getMaxFrame(loaded);
-    setClipStartFrame(loadedMinFrame);
-    setClipEndFrame(loadedMaxFrame);
-    setCurrentFrame(loadedMinFrame);
-    frameRef.current = loadedMinFrame;
-    setView("review");
-    setNotice(`已开始只读预览，正在检查：${loaded.summary.name}`);
 
     const validated = await validateEpisode(root, owner.id);
     ensureOperationActive(owner);
-    setData((current) => current?.summary.root === root
-      ? { ...current, summary: validated.summary }
-      : current);
     updateScannedEpisode(validated.summary);
-    setReport(validated.report);
+    if (hasUnavailableFrame(validated.report)) {
+      resetLoadedData();
+      throw new Error(
+        `FRAME_UNAVAILABLE: ${loaded.summary.name} 存在不可用图像帧，已阻止加载。请在左侧跳过该数据后继续。`,
+      );
+    }
+
+    const candidate: PendingAnnotationConfirmation = {
+      data: { ...loaded, summary: validated.summary },
+      report: validated.report,
+      sourceEpisodeRoot,
+      minFrame: loadedMinFrame,
+      maxFrame: loadedMaxFrame,
+    };
+    if (hasStaticTrajectory(validated.report)) return "skipped";
+    if (annotationConfirmationWarnings(validated.report).length) {
+      setPendingAnnotationConfirmation(candidate);
+      setView("review");
+      return "confirmation_required";
+    }
+
     const savedAnnotation = await loadEpisodeAnnotation(root);
     ensureOperationActive(owner);
+    applyLoadedEpisode(candidate, savedAnnotation);
+    return "loaded";
+  }
+
+  function applyLoadedEpisode(
+    candidate: PendingAnnotationConfirmation,
+    savedAnnotation: EpisodeAnnotation | null,
+  ) {
+    setReport(candidate.report);
+    setData(candidate.data);
     setAnnotation(savedAnnotation);
+    setLoadedEpisodeSourceRoot(candidate.sourceEpisodeRoot);
+    setPlaying(false);
+    setExportResult(null);
+    setFpsOverride(null);
     const savedStart = savedAnnotation?.clipStartFrame;
     const savedEnd = savedAnnotation?.clipEndFrame;
     const restoredStart = savedStart !== null && savedStart !== undefined
-      ? Math.max(loadedMinFrame, Math.min(loadedMaxFrame, savedStart))
-      : loadedMinFrame;
+      ? Math.max(candidate.minFrame, Math.min(candidate.maxFrame, savedStart))
+      : candidate.minFrame;
     const restoredEnd = savedEnd !== null && savedEnd !== undefined
-      ? Math.max(restoredStart, Math.min(loadedMaxFrame, savedEnd))
-      : loadedMaxFrame;
+      ? Math.max(restoredStart, Math.min(candidate.maxFrame, savedEnd))
+      : candidate.maxFrame;
     setClipStartFrame(restoredStart);
     setClipEndFrame(restoredEnd);
     setCurrentFrame(restoredStart);
     frameRef.current = restoredStart;
     setView("review");
+  }
+
+  function handleLoadResult(episode: EpisodeSummary, result: EpisodeLoadResult) {
+    if (result === "loaded") {
+      setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "available" }));
+      setNotice(`已从源目录只读载入：${episode.name}`);
+      return;
+    }
+    if (result === "confirmation_required") {
+      setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "available" }));
+      setNotice(`发现数据警告：${episode.name}。请确认是否进入标注。`);
+      return;
+    }
+    skipEpisode(episode, true, "检测到静止轨迹，不进入标注。");
+  }
+
+  async function confirmAnnotationAfterWarning() {
+    const candidate = pendingAnnotationConfirmation;
+    if (!candidate || operationScopeRef.current.current()) return;
+    const owner = beginOperation();
+    if (!owner) return;
+    setPendingAnnotationConfirmation(null);
+    resetOperationFeedback(owner);
+    try {
+      const savedAnnotation = await loadEpisodeAnnotation(candidate.data.summary.root);
+      ensureOperationActive(owner);
+      applyLoadedEpisode(candidate, savedAnnotation);
+      setEpisodeSourceStates((current) => ({ ...current, [candidate.data.summary.root]: "available" }));
+      setNotice(`已确认数据警告，进入标注：${candidate.data.summary.name}`);
+    } catch (reason) {
+      setEpisodeSourceStates((current) => ({ ...current, [candidate.data.summary.root]: "error" }));
+      await reportFailure("load_episode", reason, candidate.data.summary.root, owner);
+    } finally {
+      finishOperation(owner);
+    }
+  }
+
+  function skipPendingAnnotation() {
+    const candidate = pendingAnnotationConfirmation;
+    if (!candidate) return;
+    setPendingAnnotationConfirmation(null);
+    skipEpisode(candidate.data.summary, true, "未进入标注。");
+  }
+
+  function skipEpisode(episode: EpisodeSummary, loadNext = false, reason = "") {
+    const nextRoot = loadNext ? nextAvailableEpisodeRoot(episode.root) : null;
+    setSkippedEpisodeRoots((current) => ({ ...current, [episode.root]: true }));
+    if (pendingAnnotationConfirmation?.data.summary.root === episode.root) {
+      setPendingAnnotationConfirmation(null);
+    }
+    if (selectedEpisode?.root === episode.root) {
+      setSelectedEpisode(null);
+      resetLoadedData();
+    }
+    setEpisodeSourceStates((current) => {
+      const remaining = { ...current };
+      delete remaining[episode.root];
+      return remaining;
+    });
+    if (loadNext) setQueuedEpisodeRoot(nextRoot);
+    setNotice(nextRoot
+      ? `已跳过：${episode.name}。${reason}正在载入下一条。`
+      : `已跳过：${episode.name}。${reason}没有下一条可载入数据。`);
+  }
+
+  function nextAvailableEpisodeRoot(episodeRoot: string): string | null {
+    const episodes = scan?.episodes ?? [];
+    const index = episodes.findIndex((episode) => episode.root === episodeRoot);
+    if (index < 0) return null;
+    return episodes
+      .slice(index + 1)
+      .find((episode) => !skippedEpisodeRoots[episode.root])?.root ?? null;
+  }
+
+  function restoreSkippedEpisodes() {
+    const count = Object.keys(skippedEpisodeRoots).length;
+    setSkippedEpisodeRoots({});
+    if (count) setNotice(`已恢复 ${count} 条跳过的数据。`);
+  }
+
+  function handleFrameUnavailable(streamName: string, frameId: number) {
+    if (!data) return;
+    const episode = data.summary;
+    const stream = data.summary.streams.find((candidate) => candidate.name === streamName);
+    const message = `FRAME_UNAVAILABLE: ${episode.name} 的 ${stream?.label ?? streamName} 帧 ${frameId} 不可用，已停止加载。请在左侧跳过该数据。`;
+    setEpisodeSourceStates((current) => ({ ...current, [data.summary.root]: "error" }));
+    resetLoadedData();
+    void reportFailure("load_frame", new Error(message), data.summary.root);
   }
 
   function resetLoadedData() {
@@ -575,6 +718,9 @@ function App() {
     setScan(null);
     setSelectedEpisode(null);
     setEpisodeSourceStates({});
+    setSkippedEpisodeRoots({});
+    setPendingAnnotationConfirmation(null);
+    setQueuedEpisodeRoot(null);
     setOperationErrors([]);
     setHistoryOpen(false);
     setCurrentOperationError(false);
@@ -940,6 +1086,8 @@ function App() {
     () => statusForRange(report, clipRange),
     [clipEndFrame, clipStartFrame, report],
   );
+  const visibleEpisodes = scan?.episodes.filter((episode) => !skippedEpisodeRoots[episode.root]) ?? [];
+  const skippedEpisodeCount = (scan?.episodes.length ?? 0) - visibleEpisodes.length;
 
   if (!authStatus) {
     return (
@@ -1102,66 +1250,90 @@ function App() {
               <span className="section-kicker">SOURCE</span>
               <h1>记录</h1>
             </div>
-            <button className="icon-button" type="button" onClick={() => void chooseSource()} disabled={busy} title="重新扫描" aria-label="重新扫描">
-              <RotateCcw size={17} />
-            </button>
+            <div className="sidebar-heading-actions">
+              {skippedEpisodeCount ? (
+                <button className="icon-button" type="button" onClick={restoreSkippedEpisodes} disabled={busy} title="恢复跳过的数据" aria-label="恢复跳过的数据">
+                  <RotateCcw size={17} />
+                </button>
+              ) : null}
+              <button className="icon-button" type="button" onClick={() => void chooseSource()} disabled={busy} title="重新扫描" aria-label="重新扫描">
+                <RotateCcw size={17} />
+              </button>
+            </div>
           </div>
           <div className="sidebar-path" title={sourcePath}>{sourcePath ? shortPath(sourcePath, 38) : "等待 SD 卡"}</div>
           <div className="episode-list">
-            {scan?.episodes.length ? (
-              scan.episodes.map((episode) => {
+            {visibleEpisodes.length ? (
+              visibleEpisodes.map((episode) => {
                 const sourceState = episodeSourceStates[episode.root] ?? "available";
                 const activationHint = sourceState === "error"
                   ? "单击选择；双击或按 Enter/空格重试读取"
                   : "单击选择；双击或按 Enter/空格进入回放";
                 return (
-                  <button
-                    type="button"
-                    className={`episode-item${selectedEpisode?.root === episode.root ? " selected" : ""}`}
-                    key={episode.root}
-                    ref={(element) => {
-                      if (element) episodeButtonRefs.current.set(episode.root, element);
-                      else episodeButtonRefs.current.delete(episode.root);
-                    }}
-                    aria-pressed={selectedEpisode?.root === episode.root}
-                    disabled={busy}
-                    title={activationHint}
-                    aria-label={`${episode.name}：${activationHint}`}
-                    onClick={() => selectEpisode(episode)}
-                    onDoubleClick={() => void loadEpisodeForReview(episode, false, true)}
-                    onKeyDown={(event) => {
-                      if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
-                      event.preventDefault();
-                      void loadEpisodeForReview(episode, false, true);
-                    }}
-                  >
-                    <span className="episode-item-top">
-                      <Images size={16} />
-                      <strong>{episode.name}</strong>
-                      <EpisodeSourceMark state={sourceState} />
-                      <ChevronRight size={15} />
-                    </span>
-                    <span className="episode-item-meta">
-                      {episode.indexed
-                        ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
-                        : episode.stateCount
-                          ? `${episode.stateCount} states · 快速预览`
-                          : "待读取"}
-                    </span>
-                    <span className="stream-dots">
-                      {episode.streams.map((stream) => (
-                        <i
-                          className={episode.indexed
-                            ? stream.frameCount ? "dot-ok" : "dot-error"
-                            : stream.frameCount ? "dot-ok" : ""}
-                          key={stream.name}
-                          title={stream.label}
-                        />
-                      ))}
-                    </span>
-                  </button>
+                  <div className="episode-entry" key={episode.root}>
+                    <button
+                      type="button"
+                      className={`episode-item${selectedEpisode?.root === episode.root ? " selected" : ""}`}
+                      ref={(element) => {
+                        if (element) episodeButtonRefs.current.set(episode.root, element);
+                        else episodeButtonRefs.current.delete(episode.root);
+                      }}
+                      aria-pressed={selectedEpisode?.root === episode.root}
+                      disabled={busy}
+                      title={activationHint}
+                      aria-label={`${episode.name}：${activationHint}`}
+                      onClick={() => selectEpisode(episode)}
+                      onDoubleClick={() => void loadEpisodeForReview(episode, false, true)}
+                      onKeyDown={(event) => {
+                        if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
+                        event.preventDefault();
+                        void loadEpisodeForReview(episode, false, true);
+                      }}
+                    >
+                      <span className="episode-item-top">
+                        <Images size={16} />
+                        <strong>{episode.name}</strong>
+                        <EpisodeSourceMark state={sourceState} />
+                        <ChevronRight size={15} />
+                      </span>
+                      <span className="episode-item-meta">
+                        {episode.indexed
+                          ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
+                          : episode.stateCount
+                            ? `${episode.stateCount} states · 快速预览`
+                            : "待读取"}
+                      </span>
+                      <span className="stream-dots">
+                        {episode.streams.map((stream) => (
+                          <i
+                            className={episode.indexed
+                              ? stream.frameCount ? "dot-ok" : "dot-error"
+                              : stream.frameCount ? "dot-ok" : ""}
+                            key={stream.name}
+                            title={stream.label}
+                          />
+                        ))}
+                      </span>
+                    </button>
+                    <button
+                      className="icon-button episode-skip"
+                      type="button"
+                      onClick={() => skipEpisode(episode)}
+                      disabled={busy}
+                      title="跳过数据"
+                      aria-label={`跳过 ${episode.name}`}
+                    >
+                      <EyeOff size={15} />
+                    </button>
+                  </div>
                 );
               })
+            ) : skippedEpisodeCount ? (
+              <div className="sidebar-empty sidebar-skipped">
+                <EyeOff size={23} />
+                <span>已跳过 {skippedEpisodeCount} 条数据</span>
+                <button className="text-button" type="button" onClick={restoreSkippedEpisodes}>恢复显示</button>
+              </div>
             ) : (
               <div className="sidebar-empty">
                 <HardDrive size={23} />
@@ -1178,7 +1350,14 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {data || view === "batch" ? (
+          {pendingAnnotationConfirmation ? (
+            <AnnotationWarningGate
+              episode={pendingAnnotationConfirmation.data.summary}
+              warnings={annotationConfirmationWarnings(pendingAnnotationConfirmation.report)}
+              onContinue={() => void confirmAnnotationAfterWarning()}
+              onSkip={skipPendingAnnotation}
+            />
+          ) : data || view === "batch" ? (
             <>
               <nav className="view-tabs" aria-label="工作区视图">
                 {data ? (
@@ -1247,6 +1426,7 @@ function App() {
                             onFrameSettled={(streamName, frameId) => {
                               settledFrameByStreamRef.current.set(streamName, frameId);
                             }}
+                            onFrameUnavailable={handleFrameUnavailable}
                           />
                         ))}
                       </div>
@@ -1440,6 +1620,43 @@ function EmptyWorkspace({
   );
 }
 
+function AnnotationWarningGate({
+  episode,
+  warnings,
+  onContinue,
+  onSkip,
+}: {
+  episode: EpisodeSummary;
+  warnings: ValidationIssue[];
+  onContinue: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <section className="annotation-warning-gate" aria-label="标注前数据警告">
+      <header>
+        <CircleAlert size={22} aria-hidden="true" />
+        <div>
+          <span className="section-kicker">ANNOTATION REVIEW</span>
+          <h2>发现数据警告</h2>
+          <p>{episode.name} 存在 {warnings.length} 项警告。确定要进入标注吗？</p>
+        </div>
+      </header>
+      <div className="annotation-warning-list">
+        {warnings.map((issue, index) => (
+          <article key={`${issue.code}-${issue.scope}-${issue.frameId ?? "global"}-${index}`}>
+            <div><code>{issue.code}</code><span>{issue.scope}</span>{issue.frameId !== null ? <span>帧 {issue.frameId}</span> : null}</div>
+            <p>{issue.message}</p>
+          </article>
+        ))}
+      </div>
+      <footer>
+        <button className="button button-secondary" type="button" onClick={onSkip}>不标注，跳到下一条</button>
+        <button className="button button-primary" type="button" onClick={onContinue}>仍要标注</button>
+      </footer>
+    </section>
+  );
+}
+
 function EpisodeSourceMark({ state }: { state: EpisodeSourceState }) {
   if (state === "loading") {
     return <span className="episode-source-state"><LoaderCircle className="spin" size={13} />读取中</span>;
@@ -1554,6 +1771,7 @@ function operationErrorLabel(code: string): string {
     PERMISSION_DENIED: "权限错误",
     INSUFFICIENT_SPACE: "空间不足",
     PATH_NOT_FOUND: "路径失效",
+    FRAME_UNAVAILABLE: "帧不可用",
     OPERATION_FAILED: "操作失败",
   };
   return labels[code] ?? code;
@@ -1566,6 +1784,7 @@ function operationLabel(operation: string): string {
     import_source: "准备导入",
     import_episode: "导入 session",
     load_episode: "加载 session",
+    load_frame: "读取图像帧",
     load_and_validate: "加载与检查",
     cleanup_partial_import: "清理未完成导入",
     export_episode: "导出数据",
@@ -1576,6 +1795,20 @@ function operationLabel(operation: string): string {
     logout: "退出登录",
   };
   return labels[operation] ?? operation;
+}
+
+function hasUnavailableFrame(report: ValidationReport): boolean {
+  return report.issues.some((issue) => UNAVAILABLE_FRAME_ISSUE_CODES.has(issue.code));
+}
+
+function hasStaticTrajectory(report: ValidationReport): boolean {
+  return report.issues.some((issue) => issue.code === STATIC_TRAJECTORY_ISSUE_CODE);
+}
+
+function annotationConfirmationWarnings(report: ValidationReport): ValidationIssue[] {
+  return report.issues.filter((issue) => (
+    issue.severity === "warning" && issue.code !== FRAME_JUMP_ISSUE_CODE
+  ));
 }
 
 function exportFormatLabel(format: ExportFormat): string {
