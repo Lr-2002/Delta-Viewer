@@ -5,7 +5,9 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:https";
 import {
   chmod,
+  link,
   mkdir,
+  readdir,
   readFile,
   rename,
   rm,
@@ -23,6 +25,7 @@ const CLIENT_CONFIG_SCHEMA_VERSION = 1;
 const DATA_SCHEMA_VERSION = 1;
 const MAX_JSON_BYTES = 16 * 1024;
 const MAX_USERS = 10_000;
+const MAX_AUDIT_EVENTS = 1_000_000;
 
 function parseArguments(argv) {
   const options = {
@@ -166,6 +169,86 @@ function clientConfigPathFor(dataRoot) {
 
 function statePath(dataRoot) {
   return path.join(dataRoot, "users.json");
+}
+
+function auditRoot(dataRoot) {
+  return path.join(dataRoot, "audit-events");
+}
+
+function normalizeAuditEvent(body, username) {
+  const eventId = String(body.eventId ?? "");
+  const operation = String(body.operation ?? "");
+  const taskId = String(body.taskId ?? "");
+  const trajectoryCode = String(body.trajectoryCode ?? "");
+  const times = [body.startedAtMs, body.endedAtMs, body.occurredAtMs];
+  if (!/^[a-z0-9][a-z0-9._-]{2,127}$/i.test(eventId)
+    || operation !== "annotation_save"
+    || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(taskId)
+    || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(trajectoryCode)
+    || !Number.isSafeInteger(body.revision) || body.revision < 1
+    || times.some((value) => !Number.isSafeInteger(value) || value <= 0)
+    || body.endedAtMs < body.startedAtMs
+    || body.occurredAtMs !== body.endedAtMs) {
+    throw new Error("AUDIT_EVENT_INVALID: 审计事件字段无效");
+  }
+  return {
+    schemaVersion: 1,
+    eventId,
+    username,
+    operation,
+    taskId,
+    trajectoryCode,
+    revision: body.revision,
+    startedAtMs: body.startedAtMs,
+    endedAtMs: body.endedAtMs,
+    occurredAtMs: body.occurredAtMs,
+    durationMs: body.endedAtMs - body.startedAtMs,
+    receivedAtMs: nowMs(),
+  };
+}
+
+async function storeAuditEvent(dataRoot, event) {
+  const root = auditRoot(dataRoot);
+  const directory = path.join(root, event.username);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const files = await readdir(directory);
+  if (files.length >= MAX_AUDIT_EVENTS) throw new Error("AUDIT_EVENT_LIMIT_EXCEEDED");
+  const filePath = path.join(directory, `${event.eventId}.json`);
+  const temporary = path.join(directory, `.partial-${process.pid}-${randomBytes(8).toString("hex")}`);
+  try {
+    await writeFile(temporary, `${JSON.stringify(event, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await link(temporary, filePath);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    const existing = JSON.parse(await readFile(filePath, "utf8"));
+    const comparable = ({ receivedAtMs, ...value }) => value;
+    if (JSON.stringify(comparable(existing)) !== JSON.stringify(comparable(event))) {
+      throw new Error("AUDIT_EVENT_CONFLICT");
+    }
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+async function auditSummary(dataRoot) {
+  const directory = auditRoot(dataRoot);
+  if (!existsSync(directory)) return { users: [] };
+  const totals = new Map();
+  for (const username of await readdir(directory)) {
+    const userDirectory = path.join(directory, username);
+    for (const name of await readdir(userDirectory)) {
+      if (!name.endsWith(".json")) continue;
+      const event = JSON.parse(await readFile(path.join(userDirectory, name), "utf8"));
+      const key = `${event.username}\0${event.trajectoryCode}`;
+      const current = totals.get(event.username) ?? { username: event.username, operationCount: 0, completedTaskCount: 0, totalAnnotationMs: 0, qualityScore: null, trajectories: new Set() };
+      current.operationCount += 1;
+      current.totalAnnotationMs += event.durationMs;
+      current.trajectories.add(key);
+      current.completedTaskCount = current.trajectories.size;
+      totals.set(event.username, current);
+    }
+  }
+  return { users: [...totals.values()].map(({ trajectories, ...summary }) => summary) };
 }
 
 function certificatePath(dataRoot) {
@@ -325,8 +408,8 @@ function adminPage({ setupRequired, serviceId }) {
   const title = setupRequired ? "初始化管理员" : "用户中心";
   const setup = setupRequired
     ? `<form id="setup"><label>管理员账号<input name="username" required minlength="3" maxlength="32"></label><label>显示名称<input name="displayName" required maxlength="40"></label><label>密码<input type="password" name="password" required minlength="8" maxlength="128"></label><button>创建管理员</button></form>`
-    : `<form id="login"><label>账号<input name="username" required></label><label>密码<input type="password" name="password" required></label><button>登录</button></form><section id="admin" hidden><header><strong id="identity"></strong><button id="logout" type="button">退出</button></header><h2>账号</h2><ul id="users"></ul><h2>创建账号</h2><form id="create"><label>账号<input name="username" required minlength="3" maxlength="32"></label><label>显示名称<input name="displayName" required maxlength="40"></label><label>初始密码<input type="password" name="password" required minlength="8" maxlength="128"></label><button>创建账号</button></form></section>`;
-  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DOHC 用户中心</title><style>body{font:14px system-ui,sans-serif;margin:32px;max-width:680px;color:#111}label{display:grid;gap:6px;margin:12px 0}input,button{font:inherit;padding:8px}button{width:max-content}header{display:flex;gap:12px;align-items:center}li{margin:6px 0}#notice{min-height:20px;color:#a00}</style><main><h1>${title}</h1><p>服务 ID：<code>${escapeHtml(serviceId)}</code></p><p id="notice" role="alert"></p>${setup}</main><script>const notice=document.querySelector('#notice');let token=sessionStorage.getItem('dohc-user-center-token')||'';const request=async(path,body,method='POST')=>{const r=await fetch(path,{method,headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw new Error(j.error||'请求失败');return j};const formData=f=>Object.fromEntries(new FormData(f));const show=e=>notice.textContent=e instanceof Error?e.message:String(e);const setup=document.querySelector('#setup');if(setup)setup.onsubmit=async e=>{e.preventDefault();try{await request('/api/v1/setup',formData(setup));location.reload()}catch(x){show(x)}};const login=document.querySelector('#login');const admin=document.querySelector('#admin');const refresh=async()=>{const me=await request('/api/v1/auth/me',null,'GET');document.querySelector('#identity').textContent=me.user.displayName+' (@'+me.user.username+')';const users=await request('/api/v1/admin/users',null,'GET');document.querySelector('#users').replaceChildren(...users.users.map(u=>{const li=document.createElement('li');li.textContent=u.displayName+' (@'+u.username+') · '+u.role;return li}));login.hidden=true;admin.hidden=false};if(login){login.onsubmit=async e=>{e.preventDefault();try{const r=await request('/api/v1/auth/login',formData(login));token=r.token;sessionStorage.setItem('dohc-user-center-token',token);await refresh()}catch(x){show(x)}};document.querySelector('#create').onsubmit=async e=>{e.preventDefault();try{await request('/api/v1/admin/users',formData(document.querySelector('#create')));document.querySelector('#create').reset();await refresh()}catch(x){show(x)}};document.querySelector('#logout').onclick=()=>{sessionStorage.removeItem('dohc-user-center-token');location.reload()};if(token)refresh().catch(()=>sessionStorage.removeItem('dohc-user-center-token'))}</script></html>`;
+    : `<form id="login"><label>账号<input name="username" required></label><label>密码<input type="password" name="password" required></label><button>登录</button></form><section id="admin" hidden><header><strong id="identity"></strong><button id="logout" type="button">退出</button></header><h2>账号</h2><ul id="users"></ul><h2>标注工作量</h2><ul id="kpi"></ul><h2>创建账号</h2><form id="create"><label>账号<input name="username" required minlength="3" maxlength="32"></label><label>显示名称<input name="displayName" required maxlength="40"></label><label>初始密码<input type="password" name="password" required minlength="8" maxlength="128"></label><button>创建账号</button></form></section>`;
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DOHC 用户中心</title><style>body{font:14px system-ui,sans-serif;margin:32px;max-width:680px;color:#111}label{display:grid;gap:6px;margin:12px 0}input,button{font:inherit;padding:8px}button{width:max-content}header{display:flex;gap:12px;align-items:center}li{margin:6px 0}#notice{min-height:20px;color:#a00}</style><main><h1>${title}</h1><p>服务 ID：<code>${escapeHtml(serviceId)}</code></p><p id="notice" role="alert"></p>${setup}</main><script>const notice=document.querySelector('#notice');let token=sessionStorage.getItem('dohc-user-center-token')||'';const request=async(path,body,method='POST')=>{const r=await fetch(path,{method,headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw new Error(j.error||'请求失败');return j};const formData=f=>Object.fromEntries(new FormData(f));const show=e=>notice.textContent=e instanceof Error?e.message:String(e);const setup=document.querySelector('#setup');if(setup)setup.onsubmit=async e=>{e.preventDefault();try{await request('/api/v1/setup',formData(setup));location.reload()}catch(x){show(x)}};const login=document.querySelector('#login');const admin=document.querySelector('#admin');const refresh=async()=>{const me=await request('/api/v1/auth/me',null,'GET');document.querySelector('#identity').textContent=me.user.displayName+' (@'+me.user.username+')';const users=await request('/api/v1/admin/users',null,'GET');document.querySelector('#users').replaceChildren(...users.users.map(u=>{const li=document.createElement('li');li.textContent=u.displayName+' (@'+u.username+') · '+u.role;return li}));const kpi=await request('/api/v1/admin/kpi-summary',null,'GET');document.querySelector('#kpi').replaceChildren(...kpi.users.map(u=>{const li=document.createElement('li');li.textContent='@'+u.username+' · 完成 '+u.completedTaskCount+' · 操作 '+u.operationCount+' · 标注 '+Math.round(u.totalAnnotationMs/60000)+' 分钟 · 质量评分 '+(u.qualityScore??'待检测');return li}));login.hidden=true;admin.hidden=false};if(login){login.onsubmit=async e=>{e.preventDefault();try{const r=await request('/api/v1/auth/login',formData(login));token=r.token;sessionStorage.setItem('dohc-user-center-token',token);await refresh()}catch(x){show(x)}};document.querySelector('#create').onsubmit=async e=>{e.preventDefault();try{await request('/api/v1/admin/users',formData(document.querySelector('#create')));document.querySelector('#create').reset();await refresh()}catch(x){show(x)}};document.querySelector('#logout').onclick=()=>{sessionStorage.removeItem('dohc-user-center-token');location.reload()};if(token)refresh().catch(()=>sessionStorage.removeItem('dohc-user-center-token'))}</script></html>`;
 }
 
 export async function createUserCenter(inputConfiguration, dataRoot, logger = console) {
@@ -421,6 +504,18 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const state = await readState(dataRoot);
         return sendJson(response, 200, { users: state.users.map(publicUser) });
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/audit/events") {
+        const session = authorize(request);
+        if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        const event = normalizeAuditEvent(await parseJsonBody(request), session.user.username);
+        await storeAuditEvent(dataRoot, event);
+        return sendJson(response, 201, { accepted: true, eventId: event.eventId });
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/admin/kpi-summary") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        return sendJson(response, 200, await auditSummary(dataRoot));
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/users") {
         const session = authorize(request, true);

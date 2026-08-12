@@ -34,7 +34,21 @@ struct HealthResponse {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LoginResponse {
+    token: String,
     user: UserIdentity,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotationAuditEvent<'a> {
+    pub event_id: &'a str,
+    pub operation: &'a str,
+    pub task_id: &'a str,
+    pub trajectory_code: &'a str,
+    pub revision: u64,
+    pub started_at_ms: u64,
+    pub ended_at_ms: u64,
+    pub occurred_at_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -124,8 +138,38 @@ pub async fn login(
         .await
         .map_err(|error| AppError::Message(format!("用户中心登录响应无效: {error}")))?;
     crate::identity::validate_user_identity(&result.user)?;
-    state.set_user(Some(result.user.clone()))?;
+    if result.token.len() < 32 || result.token.len() > 256 {
+        return Err(AppError::Message("用户中心登录令牌无效".into()));
+    }
+    state.set_authenticated_user(result.user.clone(), result.token)?;
     Ok(result.user)
+}
+
+pub async fn upload_annotation_audit(
+    data_root: &Path,
+    state: &AuthState,
+    event: &AnnotationAuditEvent<'_>,
+) -> AppResult<()> {
+    let config = load_config(data_root)?;
+    let token = state.access_token()?;
+    let response = client_for(&config)?
+        .post(endpoint(&config, "api/v1/audit/events")?)
+        .bearer_auth(token)
+        .json(event)
+        .send()
+        .await
+        .map_err(|error| {
+            AppError::Message(format!(
+                "AUDIT_UPLOAD_FAILED: 标注已保存在本机，但审计上传失败: {error}"
+            ))
+        })?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(format!(
+            "AUDIT_UPLOAD_FAILED: 标注已保存在本机，但审计上传失败: {}",
+            remote_error(response).await
+        )));
+    }
+    Ok(())
 }
 
 async fn request_health(

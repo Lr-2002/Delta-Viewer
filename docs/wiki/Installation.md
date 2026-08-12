@@ -2,7 +2,7 @@
 
 ## 工作模式与局域网用户中心
 
-应用首次启动时提供统一管理和离线两种模式。离线模式无需账号、用户中心或额外服务，直接使用本机数据流程。需要处理人审计时选择统一管理模式：账号由当前主机的用户中心管理员创建，服务主机执行 `pnpm user-center:install` 完成一键安装和 LaunchAgent 部署；详细步骤见[用户中心部署](User-Center-Deployment)。客户端首次启动时导入管理员提供的 `DOHC-User-Center-Client.json`，不能在客户端自助注册账号。
+应用首次启动时要求进入登录模式。账号由当前主机的用户中心管理员创建，服务主机执行 `pnpm user-center:install` 完成一键安装和 LaunchAgent 部署；详细步骤见[用户中心部署](User-Center-Deployment)。客户端首次启动时导入管理员提供的 `DOHC-User-Center-Client.json`，不能在客户端自助注册账号。
 
 只从固定更新镜像 [http://39.155.172.162:17879/](http://39.155.172.162:17879/) 下载安装包，用户不需要访问 GitHub。当前发布通道没有可信发布者签名，页面中的三个安装包文件名都必须显示 `UNSIGNED`。macOS app 带有用于验证包完整性的本地 ad-hoc seal，但没有 Apple Developer ID 或 notarization；Ubuntu deb 同样没有可信发行者签名。镜像没有同时列出 Windows x64、macOS arm64 和 Ubuntu deb 时不要使用临时 artifact 或本地 debug bundle。
 

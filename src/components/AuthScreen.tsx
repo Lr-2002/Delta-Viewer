@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { ArrowLeft, FolderOpen, KeyRound, LogIn, Network, UserPlus, WifiOff } from "lucide-react";
+import { ArrowLeft, FolderOpen, KeyRound, LogIn, Network, UserPlus } from "lucide-react";
 import {
   configureUserCenter,
   loginLocalAccount,
@@ -122,16 +122,12 @@ export function AuthScreen({
           <div className="workspace-mode-options">
             <button className="workspace-mode-option" type="button" onClick={() => void selectMode("managed")} disabled={busy}>
               <Network size={18} />
-              <span><strong>统一管理模式</strong><small>使用局域网用户中心账号</small></span>
-            </button>
-            <button className="workspace-mode-option" type="button" onClick={() => void selectMode("offline")} disabled={busy}>
-              <WifiOff size={18} />
-              <span><strong>离线模式</strong><small>不使用账号，直接在本机工作</small></span>
+              <span><strong>登录工作区</strong><small>使用局域网用户中心账号，标注操作纳入审计</small></span>
             </button>
           </div>
           {error ? <div className="auth-error" role="alert">{error}</div> : null}
         </section>
-        <footer className="auth-footer">采集数据始终仅在本机目录处理</footer>
+        <footer className="auth-footer">所有用户必须登录；采集数据仍只在本机目录处理</footer>
       </main>
     );
   }

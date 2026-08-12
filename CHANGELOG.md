@@ -5,6 +5,10 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.42 - 2026-08-12
+
+- Require every data user to sign in through the pinned-certificate LAN user center, upload an idempotent annotation audit event after each save, and expose administrator-only per-user task-count, operation-count, and annotation-duration totals for later KPI quality scoring.
+
 ## 0.17.41 - 2026-08-11
 
 - Added local task-template JSON import with selectable, editable task descriptions

@@ -11,6 +11,7 @@ pub struct AuthState {
 struct AuthSession {
     workspace_mode: Option<WorkspaceMode>,
     current_user: Option<UserIdentity>,
+    access_token: Option<String>,
 }
 
 impl AuthState {
@@ -30,7 +31,9 @@ impl AuthState {
 
     pub fn require_user(&self) -> AppResult<UserIdentity> {
         match self.workspace_mode()? {
-            Some(WorkspaceMode::Offline) => Ok(offline_identity()),
+            Some(WorkspaceMode::Offline) => Err(AppError::Message(
+                "AUTH_REQUIRED: 离线模式已停用，请登录用户中心账号".into(),
+            )),
             Some(WorkspaceMode::Managed) => self
                 .current_user()?
                 .ok_or_else(|| AppError::Message("AUTH_REQUIRED: 请先登录用户中心账号".into())),
@@ -64,7 +67,33 @@ impl AuthState {
             .lock()
             .map_err(|_| AppError::Message("用户中心登录会话不可用".into()))?;
         session.current_user = user;
+        if session.current_user.is_none() {
+            session.access_token = None;
+        }
         Ok(())
+    }
+
+    pub(crate) fn set_authenticated_user(
+        &self,
+        user: UserIdentity,
+        access_token: String,
+    ) -> AppResult<()> {
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| AppError::Message("用户中心登录会话不可用".into()))?;
+        session.current_user = Some(user);
+        session.access_token = Some(access_token);
+        Ok(())
+    }
+
+    pub(crate) fn access_token(&self) -> AppResult<String> {
+        self.session
+            .lock()
+            .map_err(|_| AppError::Message("用户中心登录会话不可用".into()))?
+            .access_token
+            .clone()
+            .ok_or_else(|| AppError::Message("AUTH_REQUIRED: 请先登录用户中心账号".into()))
     }
 
     pub(crate) fn set_workspace_mode(&self, mode: Option<WorkspaceMode>) -> AppResult<()> {
@@ -80,13 +109,6 @@ impl AuthState {
 
 pub fn logout_account(state: &AuthState) -> AppResult<()> {
     state.set_user(None)
-}
-
-pub fn offline_identity() -> UserIdentity {
-    UserIdentity {
-        username: "offline".into(),
-        display_name: "离线本机".into(),
-    }
 }
 
 pub fn validate_user_identity(user: &UserIdentity) -> AppResult<()> {
@@ -153,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn offline_mode_allows_local_operations_without_a_user_account() {
+    fn offline_mode_cannot_bypass_login() {
         let state = AuthState::default();
         state
             .set_workspace_mode(Some(WorkspaceMode::Managed))
@@ -168,7 +190,7 @@ mod tests {
             .set_workspace_mode(Some(WorkspaceMode::Offline))
             .unwrap();
         assert_eq!(state.current_user().unwrap(), None);
-        assert_eq!(state.require_user().unwrap().username, "offline");
+        assert!(state.require_user().is_err());
         assert!(state.require_managed_user().is_err());
     }
 
