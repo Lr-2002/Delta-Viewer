@@ -356,22 +356,49 @@ async fn save_episode_annotation(
     auth: State<'_, AuthState>,
     request: SaveAnnotationRequest,
 ) -> Result<EpisodeAnnotation, String> {
-    let user = auth.require_user().map_err(|error| error.to_string())?;
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
-    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<EpisodeAnnotation> {
-        let root = std::fs::canonicalize(Path::new(&request.source_path))?;
-        let fingerprint = source::episode_fingerprint(&root, &AtomicBool::new(false))?;
-        annotations::save_annotation_with_source_description(
-            &data_root,
-            &root,
-            &fingerprint,
-            &user,
-            request,
-        )
+    let request_started_at_ms = request.edit_started_at_ms;
+    let saved = tauri::async_runtime::spawn_blocking({
+        let data_root = data_root.clone();
+        move || -> error::AppResult<EpisodeAnnotation> {
+            let root = std::fs::canonicalize(Path::new(&request.source_path))?;
+            let fingerprint = source::episode_fingerprint(&root, &AtomicBool::new(false))?;
+            annotations::save_annotation_with_source_description(
+                &data_root,
+                &root,
+                &fingerprint,
+                &user,
+                request,
+            )
+        }
     })
     .await
     .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    let event_id = format!(
+        "annotation-save-{}-{}",
+        saved.trajectory_code, saved.revision
+    );
+    user_center::upload_annotation_audit(
+        &data_root,
+        auth.inner(),
+        &user_center::AnnotationAuditEvent {
+            event_id: &event_id,
+            operation: "annotation_save",
+            task_id: &saved.task_id,
+            trajectory_code: &saved.trajectory_code,
+            revision: saved.revision,
+            started_at_ms: request_started_at_ms,
+            ended_at_ms: saved.updated_at_ms,
+            occurred_at_ms: saved.updated_at_ms,
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(saved)
 }
 
 #[tauri::command]

@@ -78,6 +78,31 @@ test("user center only allows administrator-created accounts", async () => {
     assert.equal(operator.status, 200);
     const denied = await request(port, ca, "GET", "/api/v1/admin/users", null, operator.body.token);
     assert.equal(denied.status, 403);
+    const auditEvent = {
+      eventId: "annotation-save-oven-001-1",
+      operation: "annotation_save",
+      taskId: "close_oven",
+      trajectoryCode: "oven-001",
+      revision: 1,
+      startedAtMs: 1_800_000_000_000,
+      endedAtMs: 1_800_000_005_000,
+      occurredAtMs: 1_800_000_005_000,
+    };
+    const audited = await request(port, ca, "POST", "/api/v1/audit/events", auditEvent, operator.body.token);
+    assert.equal(audited.status, 201);
+    const retried = await request(port, ca, "POST", "/api/v1/audit/events", auditEvent, operator.body.token);
+    assert.equal(retried.status, 201);
+    const operatorSummary = await request(port, ca, "GET", "/api/v1/admin/kpi-summary", null, operator.body.token);
+    assert.equal(operatorSummary.status, 403);
+    const summary = await request(port, ca, "GET", "/api/v1/admin/kpi-summary", null, login.body.token);
+    assert.equal(summary.status, 200);
+    assert.deepEqual(summary.body.users, [{
+      username: "operator",
+      operationCount: 1,
+      completedTaskCount: 1,
+      totalAnnotationMs: 5000,
+      qualityScore: null,
+    }]);
     assert.match(initialized.clientConfigPath, /DOHC-User-Center-Client\.json$/);
   } finally {
     await service?.stop().catch(() => {});
