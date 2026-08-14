@@ -1165,10 +1165,12 @@ mod tests {
         let alice = UserIdentity {
             username: "alice".into(),
             display_name: "Alice".into(),
+            role: None,
         };
         let bob = UserIdentity {
             username: "bob".into(),
             display_name: "Bob".into(),
+            role: None,
         };
         assert_eq!(task_definitions(&root).unwrap()[0].id, "close_oven");
         assert_eq!(
@@ -1231,6 +1233,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
         let task = create_task(
             &root,
@@ -1317,6 +1320,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
 
         let tasks = import_task_template_config(&root, &user, &config).unwrap();
@@ -1342,6 +1346,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
         let task = create_task(
             &root,
@@ -1395,6 +1400,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
         let mut request = request("close_oven", "关闭烤箱门");
         request.clip_start_frame = Some(0);
@@ -1434,6 +1440,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
 
         assert!(save_annotation_with_source_description(
@@ -1457,6 +1464,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
 
         let error = save_annotation_with_source_description(
@@ -1484,6 +1492,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
         let first = save_annotation(
             &root,
@@ -1565,6 +1574,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
         assert!(save_annotation(
             &root,
@@ -1577,6 +1587,7 @@ mod tests {
         let invalid_user = UserIdentity {
             username: "../operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
         assert!(save_annotation(
             &root,

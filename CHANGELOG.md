@@ -5,6 +5,37 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.42 - 2026-08-13
+
+- Added authenticated managed-mode annotation activity auditing and a role-gated administrator dashboard with operation timelines, saved-task counts and a reserved quality-score field; offline work remains local and sends no audit events.
+- Reused the desktop application's unified login window for both account types: operators enter the data workspace, while administrators are routed directly to the in-app supervision dashboard.
+- Reworked supervision around per-account assignments, completions today, unique lifetime video completions and average first-save duration while retaining detailed audit events without displaying them.
+- Added a second supervision module that read-only scans a user-selected mounted NAS task root, merges dated task folders and shows completed `description.json` episodes against total `states.jsonl` episodes.
+- Accepted flat `seed_deliver` episode directories as a task source by deriving task names from their optional date prefix and trailing sequence number.
+- Made task names expandable with centrally persisted details, supporting external JSON import and administrator-authored fallback text without writing to the NAS source.
+- Split supervision into a dedicated `/supervision` page so KPI and activity review no longer shares the account-creation interface.
+- Removed free-form segment-name editing while retaining annotation, merge-delete and imported-template selection for manually split intervals.
+- Preserved the imported task-template segment selector for manually split intervals without restoring the free-form segment-name field or inventing frame boundaries absent from the template JSON.
+- Allowed the user-center administration page to call its same-origin HTTPS API,
+  restoring browser-based administrator initialization, login and account creation.
+- Installed the Rustls cryptography provider before constructing HTTPS clients on
+  macOS and Linux, preventing managed-mode startup from closing the application.
+- Restricted Rustls user-center verification to the certificate embedded in the
+  imported configuration, allowing pinned self-signed LAN certificates to connect.
+- Separated the user-center local CA from its server leaf certificate and migrated
+  existing self-signed deployments, avoiding `CaUsedAsEndEntity` TLS rejection.
+- Added a compact, read-only release-history button beside the current version;
+  it lists every dated Changelog entry without allowing arbitrary installs or downgrades.
+- Kept the release-history interface fully Chinese while preserving the repository
+  Changelog as the complete technical source of truth.
+- Added distinct Chinese summaries for all 59 dated releases instead of repeating
+  only each version's update-item count.
+- Preserved every original Changelog item behind an expandable full-record control
+  for each release, so the Chinese summaries no longer hide technical detail.
+- Kept the segment-template control visible for tasks without configured segments,
+  with a disabled state and an actionable JSON-import hint instead of silently
+  falling back to the legacy-looking name and note fields.
+
 ## 0.17.41 - 2026-08-11
 
 - Added local task-template JSON import with selectable, editable task descriptions

@@ -13,6 +13,7 @@ mod source;
 mod source_index_cache;
 mod storage;
 pub mod stress;
+mod supervision;
 mod updater;
 mod user_center;
 mod validation;
@@ -23,12 +24,13 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use identity::AuthState;
 use model::{
-    AnnotatedEpisodeSummary, AppUpdateInfo, AuthStatus, BatchExportCommandRequest,
-    BatchExportResult, CreateTaskRequest, EpisodeAnnotation, EpisodeData, EpisodeValidationResult,
-    ExportCommandRequest, ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest,
-    OperationErrorRecord, PartialImport, ProgressPayload, RecordOperationErrorRequest,
-    ReportExportResult, SaveAnnotationRequest, ScanResult, TaskDefinition, UserCenterStatus,
-    UserIdentity, WorkspaceMode,
+    AnnotatedEpisodeSummary, AnnotationAuditRequest, AppUpdateInfo, AuthStatus,
+    BatchExportCommandRequest, BatchExportResult, CreateTaskRequest, EpisodeAnnotation,
+    EpisodeData, EpisodeValidationResult, ExportCommandRequest, ExportResult, FramePayload,
+    ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
+    ProgressPayload, RecordOperationErrorRequest, ReportExportResult, SaveAnnotationRequest,
+    ScanResult, SupervisionAccount, SupervisionDashboardData, SupervisionTaskCatalog,
+    SupervisionTaskDetail, TaskDefinition, UserCenterStatus, UserIdentity, WorkspaceMode,
 };
 use source_index_cache::SourceIndexCache;
 use std::path::{Path, PathBuf};
@@ -248,6 +250,94 @@ async fn login_account(
 #[tauri::command]
 fn logout_account(auth: State<'_, AuthState>) -> Result<(), String> {
     identity::logout_account(auth.inner()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn record_annotation_audit(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    request: AnnotationAuditRequest,
+) -> Result<(), String> {
+    let data_root = app_data_root(&app)?;
+    user_center::record_annotation_audit(&data_root, auth.inner(), request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_supervision_dashboard(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<SupervisionDashboardData, String> {
+    let data_root = app_data_root(&app)?;
+    user_center::supervision_dashboard(&data_root, auth.inner())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_supervision_assigned_tasks(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    username: String,
+    assigned_tasks: u64,
+) -> Result<SupervisionAccount, String> {
+    let data_root = app_data_root(&app)?;
+    user_center::set_assigned_tasks(&data_root, auth.inner(), &username, assigned_tasks)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn scan_supervision_tasks(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    source_path: String,
+    operation_id: u64,
+) -> Result<SupervisionTaskCatalog, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账户".into());
+    }
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    emit_task_start(&app, operation_id, "scan", "读取任务目录", &source_path);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = task;
+        let _progress = source::enter_operation_progress(operation_id);
+        supervision::scan_task_catalog(Path::new(&source_path), &cancelled)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn update_supervision_task_detail(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    task: String,
+    detail: String,
+) -> Result<Vec<SupervisionTaskDetail>, String> {
+    let data_root = app_data_root(&app)?;
+    user_center::update_task_detail(&data_root, auth.inner(), &task, &detail)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn import_supervision_task_details(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    config_path: String,
+) -> Result<Vec<SupervisionTaskDetail>, String> {
+    let data_root = app_data_root(&app)?;
+    user_center::import_task_details(&data_root, auth.inner(), Path::new(&config_path))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -825,6 +915,9 @@ async fn read_frame(
 }
 
 pub fn run() {
+    #[cfg(not(target_os = "windows"))]
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -842,6 +935,12 @@ pub fn run() {
             configure_user_center,
             login_account,
             logout_account,
+            record_annotation_audit,
+            get_supervision_dashboard,
+            set_supervision_assigned_tasks,
+            scan_supervision_tasks,
+            update_supervision_task_detail,
+            import_supervision_task_details,
             list_task_definitions,
             create_task_definition,
             import_task_template_config,

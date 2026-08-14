@@ -355,6 +355,7 @@ fn run_inner(
                 exported_by: &UserIdentity {
                     username: "stress-check".into(),
                     display_name: "Stress Check".into(),
+                    role: None,
                 },
                 acknowledge_warnings: true,
                 requested_range: None,

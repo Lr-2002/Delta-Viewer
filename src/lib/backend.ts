@@ -14,6 +14,7 @@ import {
 } from "./demoFixture";
 import type {
   AnnotatedEpisodeSummary,
+  AnnotationAuditRequest,
   AppUpdateInfo,
   AuthStatus,
   BatchExportResult,
@@ -32,6 +33,10 @@ import type {
   ReportExportResult,
   SaveAnnotationRequest,
   ScanResult,
+  SupervisionDashboardData,
+  SupervisionAccount,
+  SupervisionTaskCatalog,
+  SupervisionTaskDetail,
   TaskProgress,
   TaskDefinition,
   UserIdentity,
@@ -133,7 +138,7 @@ export async function registerLocalAccount(
   const normalized = username.trim().toLowerCase();
   if (demoAccounts.has(normalized)) throw new Error("ACCOUNT_EXISTS: 本地账号已存在");
   demoAccounts.set(normalized, { displayName: displayName.trim(), password });
-  demoCurrentUser = { username: normalized, displayName: displayName.trim() };
+  demoCurrentUser = { username: normalized, displayName: displayName.trim(), role: "operator" };
   return demoCurrentUser;
 }
 
@@ -148,8 +153,51 @@ export async function loginLocalAccount(
   const normalized = username.trim().toLowerCase();
   const account = demoAccounts.get(normalized);
   if (!account || account.password !== password) throw new Error("AUTH_INVALID: 账号或密码错误");
-  demoCurrentUser = { username: normalized, displayName: account.displayName };
+  demoCurrentUser = { username: normalized, displayName: account.displayName, role: "operator" };
   return demoCurrentUser;
+}
+
+export async function getSupervisionDashboard(): Promise<SupervisionDashboardData> {
+  if (isTauriRuntime()) return invoke<SupervisionDashboardData>("get_supervision_dashboard");
+  throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
+}
+
+export async function setSupervisionAssignedTasks(username: string, assignedTasks: number): Promise<SupervisionAccount> {
+  if (isTauriRuntime()) {
+    return invoke<SupervisionAccount>("set_supervision_assigned_tasks", { username, assignedTasks });
+  }
+  throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
+}
+
+export async function chooseAndScanSupervisionTasks(): Promise<SupervisionTaskCatalog | null> {
+  if (!isTauriRuntime()) throw new Error("监管任务目录只能在桌面应用中读取");
+  const selection = await open({
+    directory: true,
+    multiple: false,
+    title: "选择 NAS 导出的任务根目录（例如 Seed_sample）",
+  });
+  if (typeof selection !== "string") return null;
+  return invoke<SupervisionTaskCatalog>("scan_supervision_tasks", {
+    sourcePath: selection,
+    operationId: Date.now(),
+  });
+}
+
+export async function updateSupervisionTaskDetail(task: string, detail: string): Promise<SupervisionTaskDetail[]> {
+  if (isTauriRuntime()) return invoke<SupervisionTaskDetail[]>("update_supervision_task_detail", { task, detail });
+  throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
+}
+
+export async function importSupervisionTaskDetails(): Promise<SupervisionTaskDetail[] | null> {
+  if (!isTauriRuntime()) throw new Error("监管任务详情只能在桌面应用中导入");
+  const selection = await open({
+    directory: false,
+    multiple: false,
+    title: "导入任务详情 JSON",
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (typeof selection !== "string") return null;
+  return invoke<SupervisionTaskDetail[]>("import_supervision_task_details", { configPath: selection });
 }
 
 export async function logoutLocalAccount(): Promise<void> {
@@ -251,6 +299,12 @@ export async function loadEpisodeAnnotation(sourcePath: string): Promise<Episode
     return invoke<EpisodeAnnotation | null>("load_episode_annotation", { sourcePath });
   }
   return demoAnnotations.get(sourcePath) ?? null;
+}
+
+export async function recordAnnotationAudit(request: AnnotationAuditRequest): Promise<void> {
+  if (isTauriRuntime()) {
+    await invoke("record_annotation_audit", { request });
+  }
 }
 
 export async function saveEpisodeAnnotation(

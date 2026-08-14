@@ -327,6 +327,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
         let available = annotations::save_annotation(
             &data_root,

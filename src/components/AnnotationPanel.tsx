@@ -10,7 +10,7 @@ import {
   suggestTrajectoryCode,
 } from "../lib/backend";
 import { descriptionMetadataPath } from "../lib/format";
-import type { EpisodeAnnotation, TaskDefinition, UserIdentity } from "../types";
+import type { AnnotationAuditAction, EpisodeAnnotation, TaskDefinition, UserIdentity } from "../types";
 
 interface AnnotationPanelProps {
   sourcePath: string;
@@ -26,6 +26,7 @@ interface AnnotationPanelProps {
   onSaved: (annotation: EpisodeAnnotation) => void;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
+  onActivity: (action: AnnotationAuditAction, taskId: string, trajectoryCode: string) => void;
 }
 
 export function AnnotationPanel({
@@ -42,6 +43,7 @@ export function AnnotationPanel({
   onSaved,
   onError,
   onNotice,
+  onActivity,
 }: AnnotationPanelProps) {
   const firstTask = tasks[0] ?? null;
   const [taskId, setTaskId] = useState("");
@@ -118,6 +120,7 @@ export function AnnotationPanel({
     setTaskId(task.id);
     onTaskSelected(task.id);
     setDescription(task.defaultDescription);
+    onActivity("task_changed", task.id, trajectoryCode);
     const requestId = ++previewRequest.current;
     if (annotation?.taskId === task.id) {
       setTrajectoryCode(annotation.trajectoryCode);
@@ -148,6 +151,7 @@ export function AnnotationPanel({
       });
       setEditStartedAtMs(Date.now());
       onSaved(saved);
+      onActivity("annotation_saved", saved.taskId, saved.trajectoryCode);
       const persistenceNotice = isTauriRuntime()
         ? `标注已保存到 ${descriptionMetadataPath(saved.episodeRoot)}`
         : "浏览器演示已保存";
@@ -321,6 +325,7 @@ export function AnnotationPanel({
               onChange={(event) => {
                 if (event.target.value) setDescription(event.target.value);
               }}
+              onBlur={() => onActivity("description_changed", taskId, trajectoryCode)}
               disabled={!activeTask || saving || creatingTask || importingTemplates}
               aria-label="描述模板"
             >
@@ -332,6 +337,7 @@ export function AnnotationPanel({
             <textarea
               value={description}
               onChange={(event) => setDescription(event.target.value)}
+              onBlur={() => onActivity("description_changed", taskId, trajectoryCode)}
               maxLength={500}
               rows={1}
               disabled={saving || creatingTask || importingTemplates}

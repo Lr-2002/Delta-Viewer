@@ -527,6 +527,7 @@ mod tests {
             processed_by: UserIdentity {
                 username: "operator".into(),
                 display_name: "测试操作员".into(),
+                role: None,
             },
             revision: 1,
             created_at_ms: 1,
@@ -540,6 +541,7 @@ mod tests {
         let exported_by = UserIdentity {
             username: "exporter".into(),
             display_name: "导出操作员".into(),
+            role: None,
         };
 
         let mcap = export_episode(ExportJob {
@@ -715,6 +717,7 @@ mod tests {
             exported_by: &UserIdentity {
                 username: "exporter".into(),
                 display_name: "Exporter".into(),
+                role: None,
             },
             acknowledge_warnings: true,
             requested_range: None,
