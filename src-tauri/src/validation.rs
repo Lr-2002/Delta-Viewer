@@ -194,6 +194,7 @@ fn validate_episode_with_mode(
         .sum();
     let mut total_checked_frames = 0_u64;
     let mut stream_reports = Vec::with_capacity(STREAM_NAMES.len());
+    let is_mp4_episode = crate::source::is_mp4_episode(root);
     for stream in &summary.streams {
         let mut decode_failures = 0;
         let mut dimension_mismatches = 0;
@@ -391,7 +392,10 @@ fn validate_episode_with_mode(
             decode_failures,
             status: status.into(),
         });
-        if stream.frame_count != states.len() as u64 && stream.frame_count > 0 && !states.is_empty()
+        if !is_mp4_episode
+            && stream.frame_count != states.len() as u64
+            && stream.frame_count > 0
+            && !states.is_empty()
         {
             issues.push(issue(
                 Severity::Warning,

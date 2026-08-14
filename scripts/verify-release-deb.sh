@@ -74,7 +74,7 @@ package_dependencies="$(dpkg-deb -f "$deb_path" Depends)"
 [[ "$package_name" == "dohc-viewer" ]] || { echo "Unexpected package name: $package_name" >&2; exit 1; }
 [[ "$package_version" == "$version" ]] || { echo "Unexpected package version: $package_version" >&2; exit 1; }
 [[ "$package_architecture" == "amd64" ]] || { echo "Unexpected package architecture: $package_architecture" >&2; exit 1; }
-for dependency in libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 librsvg2-2; do
+for dependency in libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 librsvg2-2 gstreamer1.0-libav gstreamer1.0-vaapi; do
   grep -Eq "(^|, )[[:space:]]*$dependency([[:space:]]|,|$)" <<<"$package_dependencies" || {
     echo "Debian package dependency is missing: $dependency" >&2
     exit 1

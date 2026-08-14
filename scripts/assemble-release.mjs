@@ -203,6 +203,8 @@ async function validateArtifact(options, expected, version, updaterPublicKey) {
       "libgtk-3-0",
       "libayatana-appindicator3-1",
       "librsvg2-2",
+      "gstreamer1.0-libav",
+      "gstreamer1.0-vaapi",
     ];
     const dependencies = report.deb?.dependencies ?? [];
     if (

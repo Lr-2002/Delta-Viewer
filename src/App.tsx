@@ -71,7 +71,7 @@ import {
 import { formatBytes, shortPath } from "./lib/format";
 import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate";
 import { OperationScope, type OperationToken } from "./lib/operationScope";
-import { nextPlaybackFrame } from "./lib/playback-clock";
+import { clampPlaybackFrame, nextPlaybackFrame, playbackStartFrame } from "./lib/playback-clock";
 import type {
   AnnotatedEpisodeSummary,
   AnnotationAuditAction,
@@ -760,8 +760,12 @@ function App() {
       : candidate.maxFrame;
     setClipStartFrame(restoredStart);
     setClipEndFrame(restoredEnd);
-    setCurrentFrame(restoredStart);
-    frameRef.current = restoredStart;
+    // The preview is interactive while validation runs. Preserve the live
+    // playback position when validation finishes instead of snapping an
+    // operator who already started reviewing back to the annotation start.
+    const restoredFrame = clampPlaybackFrame(frameRef.current, restoredStart, restoredEnd);
+    setCurrentFrame(restoredFrame);
+    frameRef.current = restoredFrame;
     setView("review");
   }
 
@@ -946,9 +950,16 @@ function App() {
 
   function togglePlayback() {
     if (!data) return;
-    if (!playing && currentFrame >= clipEndFrame) {
-      frameRef.current = clipStartFrame;
-      setCurrentFrame(clipStartFrame);
+    // Timeline seeks update frameRef synchronously while React may not have
+    // committed currentFrame yet. Reading currentFrame here can therefore
+    // mistake a fresh middle seek for the previous end frame and restart the
+    // first play attempt from the clip beginning.
+    if (!playing) {
+      const startFrame = playbackStartFrame(frameRef.current, clipStartFrame, clipEndFrame);
+      if (startFrame !== frameRef.current) {
+        frameRef.current = startFrame;
+        setCurrentFrame(startFrame);
+      }
     }
     setPlaying((value) => !value);
   }
@@ -1656,6 +1667,8 @@ function App() {
                             frameId={currentFrame}
                             playing={playing}
                             playbackEndFrame={clipEndFrame}
+                            playbackFps={playbackFps}
+                            speed={speed}
                             className={`camera-${index}`}
                             onFrameSettled={(streamName, frameId) => {
                               settledFrameByStreamRef.current.set(streamName, frameId);

@@ -137,7 +137,7 @@ test("drops queued read-ahead when a cached frame becomes current", async () => 
   const current = cache.requestCurrent({ root, stream, frameId: 0 });
   cache.scheduleReadAhead({ root, stream, frameId: 0, endFrame: 2 });
   await flushScheduler();
-  assert.equal(cache.pendingWorkCountForStream(root, stream), 1 + FRAME_READ_AHEAD_FRAMES);
+  assert.equal(cache.pendingWorkCountForStream(root, stream), 1 + Math.min(FRAME_READ_AHEAD_FRAMES, 2));
 
   await cache.requestCurrent({ root, stream, frameId: 3 });
   assert.equal(cache.pendingWorkCountForStream(root, stream), 1);

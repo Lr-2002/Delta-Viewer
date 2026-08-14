@@ -30,7 +30,8 @@ use model::{
     ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
     ProgressPayload, RecordOperationErrorRequest, ReportExportResult, SaveAnnotationRequest,
     ScanResult, SupervisionAccount, SupervisionDashboardData, SupervisionTaskCatalog,
-    SupervisionTaskDetail, TaskDefinition, UserCenterStatus, UserIdentity, WorkspaceMode,
+    SupervisionTaskDetail, TaskDefinition, UserCenterStatus, UserIdentity, VideoSource,
+    WorkspaceMode,
 };
 use source_index_cache::SourceIndexCache;
 use std::path::{Path, PathBuf};
@@ -895,7 +896,25 @@ fn cancel_task(control: State<'_, TaskControl>, operation_id: u64) -> bool {
 }
 
 #[tauri::command]
+fn get_video_source(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    root: String,
+    stream: String,
+) -> Result<VideoSource, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let source =
+        source::video_source(Path::new(&root), &stream).map_err(|error| error.to_string())?;
+    let scope = app.asset_protocol_scope();
+    for path in &source.paths {
+        scope.allow_file(path).map_err(|error| error.to_string())?;
+    }
+    Ok(source)
+}
+
+#[tauri::command]
 async fn read_frame(
+    app: AppHandle,
     auth: State<'_, AuthState>,
     root: String,
     stream: String,
@@ -903,7 +922,8 @@ async fn read_frame(
 ) -> Result<FramePayload, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let (mime_type, bytes) = source::read_frame(Path::new(&root), &stream, frame_id)?;
+        let (mime_type, bytes) =
+            source::read_frame(Path::new(&root), &stream, frame_id, Some(&app))?;
         Ok::<FramePayload, error::AppError>(FramePayload {
             mime_type,
             data: BASE64.encode(bytes),
@@ -963,6 +983,7 @@ pub fn run() {
             export_annotated_episodes,
             export_validation_report,
             cancel_task,
+            get_video_source,
             read_frame
         ])
         .run(tauri::generate_context!())

@@ -70,6 +70,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-033 | 工作模式选择是本地持久化的安全边界。未选择模式时数据 IPC 返回 `WORKSPACE_MODE_REQUIRED`；统一管理模式无会话时返回 `AUTH_REQUIRED`；离线模式允许本地数据 IPC，但用户中心和更新命令返回 `MANAGED_MODE_REQUIRED`。切换模式必须清空当前工作区状态，且不得修改源采集文件、发送业务数据或自动复制数据；仅用户明确保存标注时可更新根级 `description.json`。 |
 | D-034 | 顶部当前版本旁提供只读历史版本入口，按 Changelog 展示全部带日期的发布记录。历史列表不得提供任意版本选择、降级或安装能力；更新安装仍只接受后端可信清单决定的签名新版本。 |
 | D-035 | 统一管理模式通过用户中心进程内 Bearer 会话上报标注行为时间，包括开始/结束、任务与描述变更、裁剪、片段分割/模板/注解/删除、保存及导出。只发送账号、不可逆 episode 路径摘要、任务 ID、轨迹码、行为类型与客户端/服务端时间；不得发送源路径、图像、状态或标注正文。离线模式不连接监管服务。用户中心以追加式私有 JSONL 保存全部事件，但监管工作台只展示两个汇总模块，不展示操作明细：第一模块按账号纵向展示分配任务、当天完成、总计完成和平均完成时间；第二模块由监管员选择操作系统已挂载的 NAS/本地任务根目录，既支持按 `YYYY-MM-DD-{task}` 顶层目录去除日期并合并同名任务，也支持 `seed_deliver` 一类以 `{可选日期_}{task}_{sequence}` 命名的扁平 episode 目录；以含普通 `states.jsonl` 的 episode 为总量、同级含普通 `description.json` 的 episode 为已完成量，显示“现已完成/总计数量”。点击任务名展开任务详情；管理员可导入最大 16 KiB 的 JSON，其中 `tasks` 项使用 `task`/`label` 标识任务并使用 `detail`/`description` 或首个 `descriptions` 作为说明；没有导入详情时可由管理员编辑保存。任务目录扫描只在客户端 Rust 进程内只读执行，不把 NAS 路径、文件或统计发送到用户中心；任务说明作为管理员明确维护的业务配置保存在用户中心。监管员可为普通账号设置分配任务数；一次完整视频首次保存标注计为一个完成任务，同一视频重复修订不重复累计；“当天完成”按用户中心主机自然日计算，平均完成时间按开始标注至首次保存计算。监管 API 要求 `admin` 角色，普通账号和离线模式不得访问。桌面客户端复用统一管理登录窗口，`operator` 登录后进入数据工作区，`admin` 登录后直接进入应用内监管工作台。 |
+| D-036 | 读取流程同时识别 `h264-split-mp4-v1` 记录：根级 `manifest.json` 声明五路固定流的分段 MP4、帧率、帧数和分辨率，`states.jsonl` 使用 60 Hz `batch_id` 主时间轴并允许位姿位于可空的 `pose` 对象中。界面按主时间轴和各流清单帧率只读同步解码预览，不修改或复制 MP4；连续播放必须复用每路持续的视频解码上下文，不得逐帧启动 FFmpeg，运行时本地媒体权限只允许清单列出的、规范化后仍位于当前 episode 内的普通 MP4 文件。隐藏的 recorder benchmark/QC 目录不作为 episode。首版 MP4 兼容范围仅为扫描、状态读取和回放；仍依赖逐帧 JPEG 语义的 MCAP/HDF5/LeRobot adapter 必须后端明确阻断，直至各格式完成 MP4 原生适配与回读验收。 |
 
 ### 3.1 分段标注首版边界
 
@@ -214,6 +215,22 @@ episode/
 - `v1.0` 不递归发现多层嵌套 episode。
 - 扫描时不得跟随符号链接。
 - 记录器应使用 `YYYY-MM-DD_HH-MM-SS` 目录名，不能使用 Windows 保留字符。
+
+MP4 记录可使用以下只读预览结构：
+
+```text
+episode/
+  manifest.json                 storage_format 为 h264-split-mp4-v1
+  cam0/cam0-00000.mp4
+  cam1/cam1-00000.mp4
+  cam2/cam2-00000.mp4
+  t265_left/t265_left-00000.mp4
+  t265_right/t265_right-00000.mp4
+  states.jsonl                  60 Hz batch_id 主时间轴，pose 可空
+```
+
+后续分段按清单中的 `segments[].path` 顺序读取；每一路以清单 `fps` 将主时间轴
+映射到本路帧序号。源 MP4 和清单保持只读，当前不进入三种 JPEG 导出 adapter。
 
 ### 7.2 状态记录
 
@@ -599,7 +616,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 ### 12.3 Ubuntu deb 包要求
 
 - 原生 deb 正式支持 x86_64 Ubuntu 22.04 及以上，文件名固定为 `DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`。
-- deb job 固定在 Ubuntu 22.04 runner 构建。deb 必须声明 `libwebkit2gtk-4.1-0`、`libgtk-3-0`、`libayatana-appindicator3-1` 和 `librsvg2-2`，并用 `apt` 安装后检查 `amd64` 元数据、动态库、应用资源和启动；不得把只解包或只构建当作安装通过。
+- deb job 固定在 Ubuntu 22.04 runner 构建。deb 必须声明 `libwebkit2gtk-4.1-0`、`libgtk-3-0`、`libayatana-appindicator3-1`、`librsvg2-2`、提供 H.264 软件解码的 `gstreamer1.0-libav` 和可用时提供硬件解码的 `gstreamer1.0-vaapi`，并用 `apt` 安装后检查 `amd64` 元数据、动态库、媒体解码插件、应用资源和启动；不得把只解包或只构建当作安装通过。
 - Ubuntu 的扫描、检查、回放和导出不联网且不写源 SD 卡；保存标注需要 episode 可写并只更新根级 `description.json`。自动更新仍只使用 D-031 的固定 IP 镜像。
 
 ### 12.4 正式 CD 与 GitHub Release

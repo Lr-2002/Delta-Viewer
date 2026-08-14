@@ -1,7 +1,7 @@
 use crate::error::{AppError, AppResult};
 use crate::model::{
     EpisodeData, EpisodeSummary, ProgressPayload, RawStateRecord, ScanResult, StateRecord,
-    StreamSummary, TaskProgressEvent, STREAM_NAMES,
+    StreamSummary, TaskProgressEvent, VideoSource, STREAM_NAMES,
 };
 use crate::storage;
 use blake3::Hasher;
@@ -12,6 +12,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
@@ -136,11 +137,18 @@ pub fn load_episode_preview(
     let states = read_states(&root.join("states.jsonl"), cancelled)?;
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
     let mut frame_file_count = 0_u64;
+    let mp4_manifest = read_mp4_manifest(root)?;
     for (index, stream_name) in STREAM_NAMES.iter().enumerate() {
         check_cancelled(cancelled)?;
-        let files = collect_stream_files(root, stream_name, cancelled)?;
-        frame_file_count = frame_file_count.saturating_add(files.frames.len() as u64);
-        streams.push(preview_stream_summary(stream_name, &files));
+        if let Some(manifest) = mp4_manifest.as_ref() {
+            let summary = mp4_stream_summary(root, stream_name, manifest);
+            frame_file_count = frame_file_count.saturating_add(summary.frame_count);
+            streams.push(summary);
+        } else {
+            let files = collect_stream_files(root, stream_name, cancelled)?;
+            frame_file_count = frame_file_count.saturating_add(files.frames.len() as u64);
+            streams.push(preview_stream_summary(stream_name, &files));
+        }
         emit_progress(
             app,
             ProgressPayload {
@@ -200,7 +208,12 @@ pub fn load_episode_with_summary(
     })
 }
 
-pub fn read_frame(root: &Path, stream: &str, frame_id: u64) -> AppResult<(String, Vec<u8>)> {
+pub fn read_frame(
+    root: &Path,
+    stream: &str,
+    frame_id: u64,
+    app: Option<&AppHandle>,
+) -> AppResult<(String, Vec<u8>)> {
     if !STREAM_NAMES.contains(&stream) {
         return Err(AppError::InvalidStream(stream.to_string()));
     }
@@ -209,11 +222,165 @@ pub fn read_frame(root: &Path, stream: &str, frame_id: u64) -> AppResult<(String
         return Err(AppError::MissingPath(stream_root.display().to_string()));
     }
     let path = stream_root.join(format!("{frame_id}.jpg"));
-    if !is_regular_file(&path) {
-        return Err(AppError::MissingPath(path.display().to_string()));
+    if is_regular_file(&path) {
+        let bytes = fs::read(&path)?;
+        return Ok(("image/jpeg".into(), bytes));
     }
-    let bytes = fs::read(&path)?;
-    Ok(("image/jpeg".into(), bytes))
+    read_mp4_frame(root, stream, frame_id, app)
+}
+
+fn read_mp4_frame(
+    root: &Path,
+    stream: &str,
+    frame_id: u64,
+    app: Option<&AppHandle>,
+) -> AppResult<(String, Vec<u8>)> {
+    let manifest = read_mp4_manifest(root)?.ok_or_else(|| {
+        AppError::MissingPath(
+            root.join(stream)
+                .join(format!("{frame_id}.jpg"))
+                .display()
+                .to_string(),
+        )
+    })?;
+    let stream_info = manifest
+        .streams
+        .get(stream)
+        .ok_or_else(|| AppError::InvalidStream(stream.to_string()))?;
+    let fps = stream_info
+        .get("fps")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(60.0);
+    let target_index = ((frame_id as f64) * fps / 60.0).floor() as u64;
+    let frame_count = stream_info
+        .get("frame_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    if target_index >= frame_count {
+        return Err(AppError::MissingPath(format!(
+            "{stream} MP4 帧 {target_index}"
+        )));
+    }
+    let segments = stream_info
+        .get("segments")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| AppError::Message(format!("{stream} 的 MP4 清单缺少 segments")))?;
+    let segment_seconds = manifest.segment_seconds.unwrap_or(300.0).max(1.0);
+    let timestamp_seconds = target_index as f64 / fps.max(1.0);
+    let segment_index = (timestamp_seconds / segment_seconds).floor() as usize;
+    let relative_path = segments
+        .get(segment_index)
+        .and_then(|value| value.get("path"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| AppError::Message(format!("{stream} 找不到对应的 MP4 分段")))?;
+    let video_path = root.join(relative_path);
+    if !is_regular_file(&video_path) {
+        return Err(AppError::MissingPath(video_path.display().to_string()));
+    }
+    let local_timestamp = timestamp_seconds - segment_index as f64 * segment_seconds;
+    let mut failures = Vec::new();
+    for ffmpeg in crate::export::lerobot::ffmpeg_candidates(app) {
+        let output = Command::new(&ffmpeg)
+            .args(["-v", "error", "-ss", &format!("{local_timestamp:.6}"), "-i"])
+            .arg(&video_path)
+            .args([
+                "-frames:v",
+                "1",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "pipe:1",
+            ])
+            .output();
+        match output {
+            Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+                return Ok(("image/jpeg".into(), output.stdout));
+            }
+            Ok(output) => failures.push(format!(
+                "{}: {}",
+                ffmpeg.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+            Err(error) => failures.push(format!("{}: {error}", ffmpeg.display())),
+        }
+    }
+    Err(AppError::Message(format!(
+        "没有可用的 FFmpeg 能解码该 MP4: {}",
+        failures.join("；")
+    )))
+}
+
+struct Mp4Manifest {
+    segment_seconds: Option<f64>,
+    streams: serde_json::Map<String, serde_json::Value>,
+}
+
+fn read_mp4_manifest(root: &Path) -> AppResult<Option<Mp4Manifest>> {
+    let path = root.join("manifest.json");
+    if !is_regular_file(&path) {
+        return Ok(None);
+    }
+    let value: serde_json::Value = serde_json::from_reader(BufReader::new(File::open(path)?))?;
+    if value.get("storage_format").and_then(|item| item.as_str()) != Some("h264-split-mp4-v1") {
+        return Ok(None);
+    }
+    let streams = value
+        .get("streams")
+        .and_then(|item| item.as_object())
+        .cloned()
+        .ok_or_else(|| AppError::Message("MP4 manifest.json 缺少 streams".into()))?;
+    Ok(Some(Mp4Manifest {
+        segment_seconds: value.get("segment_seconds").and_then(|item| item.as_f64()),
+        streams,
+    }))
+}
+
+pub(crate) fn is_mp4_episode(root: &Path) -> bool {
+    read_mp4_manifest(root).ok().flatten().is_some()
+}
+
+pub(crate) fn video_source(root: &Path, stream: &str) -> AppResult<VideoSource> {
+    if !STREAM_NAMES.contains(&stream) {
+        return Err(AppError::InvalidStream(stream.to_string()));
+    }
+    let canonical_root = root.canonicalize()?;
+    let manifest = read_mp4_manifest(&canonical_root)?
+        .ok_or_else(|| AppError::Message("当前记录不是 MP4 视频格式".into()))?;
+    let info = manifest
+        .streams
+        .get(stream)
+        .ok_or_else(|| AppError::InvalidStream(stream.to_string()))?;
+    let fps = info
+        .get("fps")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(60.0);
+    let segments = info
+        .get("segments")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| AppError::Message(format!("{stream} 的 MP4 清单缺少 segments")))?;
+    let mut paths = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let relative = segment
+            .get("path")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| AppError::Message(format!("{stream} 的 MP4 分段路径无效")))?;
+        let path = canonical_root.join(relative).canonicalize()?;
+        if !path.starts_with(&canonical_root) || !is_regular_file(&path) {
+            return Err(AppError::Message(format!(
+                "MP4 分段不在当前记录内: {relative}"
+            )));
+        }
+        paths.push(path.display().to_string());
+    }
+    if paths.is_empty() {
+        return Err(AppError::Message(format!("{stream} 没有 MP4 分段")));
+    }
+    Ok(VideoSource {
+        fps,
+        segment_seconds: manifest.segment_seconds.unwrap_or(300.0).max(1.0),
+        paths,
+    })
 }
 
 pub fn scan_episode(
@@ -244,6 +411,7 @@ pub fn scan_episode_index(
     let states_path = root.join("states.jsonl");
     let (state_count, start_time_ns, end_time_ns) = summarize_states(&states_path, cancelled)?;
 
+    let mp4_manifest = read_mp4_manifest(root)?;
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
     let mut stream_files_by_name = BTreeMap::new();
     for (index, stream_name) in STREAM_NAMES.iter().enumerate() {
@@ -252,13 +420,17 @@ pub fn scan_episode_index(
         }
         let (stream_files, stream_total_bytes) =
             collect_stream_files_from_index(root, stream_name, &indexed_files);
-        streams.push(scan_stream_from_files(
-            root,
-            stream_name,
-            &stream_files,
-            stream_total_bytes,
-            cancelled,
-        )?);
+        streams.push(if let Some(manifest) = mp4_manifest.as_ref() {
+            mp4_stream_summary(root, stream_name, manifest)
+        } else {
+            scan_stream_from_files(
+                root,
+                stream_name,
+                &stream_files,
+                stream_total_bytes,
+                cancelled,
+            )?
+        });
         stream_files_by_name.insert((*stream_name).to_string(), stream_files);
         emit_progress(
             app,
@@ -290,6 +462,46 @@ pub fn scan_episode_index(
         fingerprint,
         stream_files: stream_files_by_name,
     })
+}
+
+fn mp4_stream_summary(root: &Path, stream_name: &str, manifest: &Mp4Manifest) -> StreamSummary {
+    let info = manifest.streams.get(stream_name);
+    let frame_count = info
+        .and_then(|item| item.get("frame_count"))
+        .and_then(|item| item.as_u64())
+        .unwrap_or_default();
+    let total_bytes = info
+        .and_then(|item| item.get("size"))
+        .and_then(|item| item.as_u64())
+        .unwrap_or_else(|| {
+            info.and_then(|item| item.get("segments"))
+                .and_then(|item| item.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|segment| segment.get("path").and_then(|path| path.as_str()))
+                .filter_map(|relative| fs::metadata(root.join(relative)).ok())
+                .map(|metadata| metadata.len())
+                .sum()
+        });
+    StreamSummary {
+        name: stream_name.to_string(),
+        label: stream_label(stream_name).to_string(),
+        frame_count,
+        first_frame: (frame_count > 0).then_some(0),
+        last_frame: frame_count.checked_sub(1),
+        missing_frames: Vec::new(),
+        missing_frame_count: 0,
+        total_bytes,
+        width: info
+            .and_then(|item| item.get("width"))
+            .and_then(|item| item.as_u64())
+            .and_then(|value| u32::try_from(value).ok()),
+        height: info
+            .and_then(|item| item.get("height"))
+            .and_then(|item| item.as_u64())
+            .and_then(|value| u32::try_from(value).ok()),
+        channels: Some(3),
+    }
 }
 
 pub fn collect_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathBuf>> {
@@ -395,9 +607,15 @@ fn inspect_episode_directory(
         let entry = entry?;
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
+            let name = entry.file_name();
+            if name.to_str().is_some_and(|value| value.starts_with('.'))
+                || name == OsStr::new("System Volume Information")
+            {
+                continue;
+            }
             if STREAM_NAMES
                 .iter()
-                .any(|stream_name| entry.file_name() == OsStr::new(stream_name))
+                .any(|stream_name| name == OsStr::new(stream_name))
             {
                 return Ok((true, Vec::new()));
             }
@@ -786,8 +1004,8 @@ pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_files, collect_stream_files, load_episode_preview, scan_episode,
-        scan_source_catalog,
+        collect_files, collect_stream_files, load_episode, load_episode_preview, read_frame,
+        scan_episode, scan_source_catalog, video_source,
     };
     use super::{episode_fingerprint, read_states};
     use std::fs;
@@ -952,6 +1170,41 @@ mod tests {
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a private h264-split-mp4-v1 episode and FFmpeg"]
+    fn loads_private_mp4_episode_and_decodes_a_synchronized_frame() {
+        let root = PathBuf::from(
+            std::env::var_os("DOHC_MP4_SAMPLE_ROOT")
+                .expect("DOHC_MP4_SAMPLE_ROOT must point to the mounted episode"),
+        );
+        let cancelled = AtomicBool::new(false);
+        let catalog = scan_source_catalog(root.parent().unwrap(), None, &cancelled).unwrap();
+        assert!(catalog
+            .episodes
+            .iter()
+            .any(|episode| episode.root == root.display().to_string()));
+        assert!(catalog
+            .episodes
+            .iter()
+            .all(|episode| !episode.name.starts_with('.')));
+        let data = load_episode(&root, None, &cancelled).unwrap();
+        assert_eq!(data.states.len(), 1055);
+        assert_eq!(data.summary.streams[0].frame_count, 527);
+        assert_eq!(data.summary.streams[3].frame_count, 1054);
+        let native_video = video_source(&root, "cam0").unwrap();
+        assert_eq!(native_video.paths.len(), 1);
+        assert_eq!(native_video.fps, 30.0);
+        let (mime, bytes) = read_frame(&root, "cam0", 60, None).unwrap();
+        assert_eq!(mime, "image/jpeg");
+        let image = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((image.width(), image.height()), (3840, 2160));
+        let report = crate::validation::validate_episode(&root, None, &cancelled).unwrap();
+        assert!(report
+            .issues
+            .iter()
+            .all(|issue| issue.code != "COUNT_MISMATCH"));
     }
 
     fn test_output(label: &str) -> PathBuf {

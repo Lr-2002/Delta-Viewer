@@ -157,6 +157,12 @@ export interface StreamSummary {
   channels: number | null;
 }
 
+export interface VideoSource {
+  fps: number;
+  segmentSeconds: number;
+  paths: string[];
+}
+
 export interface EpisodeSummary {
   root: string;
   name: string;

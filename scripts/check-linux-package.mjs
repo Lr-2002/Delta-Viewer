@@ -44,6 +44,8 @@ async function main() {
     "libgtk-3-0",
     "libayatana-appindicator3-1",
     "librsvg2-2",
+    "gstreamer1.0-libav",
+    "gstreamer1.0-vaapi",
   ]) {
     requireCondition(deb.depends.includes(dependency), `Linux deb dependency is missing: ${dependency}`);
   }
