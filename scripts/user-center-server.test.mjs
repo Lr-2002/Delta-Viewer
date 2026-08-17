@@ -34,6 +34,24 @@ function request(port, ca, method, pathname, body = null, token = null) {
   });
 }
 
+function requestHeaders(port, ca, pathname) {
+  return new Promise((resolve, reject) => {
+    const request = httpsRequest({
+      hostname: "127.0.0.1",
+      port,
+      method: "GET",
+      path: pathname,
+      ca,
+      rejectUnauthorized: false,
+    }, (response) => {
+      response.resume();
+      response.on("end", () => resolve(response.headers));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
 test("user center only allows administrator-created accounts", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dohc-user-center-test-"));
   const port = 17981;
@@ -50,21 +68,26 @@ test("user center only allows administrator-created accounts", async () => {
     const initialized = await initializeUserCenter(configuration, root);
     service = await createUserCenter(configuration, root, logger);
     await service.start();
-    const ca = await readFile(path.join(root, "tls/server.crt"));
+    const ca = await readFile(path.join(root, "tls/ca.crt"));
     const health = await request(port, ca, "GET", "/healthz");
     assert.equal(health.status, 200);
     assert.equal(health.body.setupRequired, true);
+    const pageHeaders = await requestHeaders(port, ca, "/");
+    assert.match(pageHeaders["content-security-policy"], /(?:^|;)\s*connect-src 'self'(?:;|$)/);
+    const supervisionHeaders = await requestHeaders(port, ca, "/supervision");
+    assert.match(supervisionHeaders["content-type"], /text\/html/);
     const setup = await request(port, ca, "POST", "/api/v1/setup", {
-      username: "admin",
+      username: "supervisor",
       displayName: "管理员",
       password: "admin-password",
     });
     assert.equal(setup.status, 201);
     const login = await request(port, ca, "POST", "/api/v1/auth/login", {
-      username: "admin",
+      username: "supervisor",
       password: "admin-password",
     });
     assert.equal(login.status, 200);
+    assert.equal(login.body.user.role, "admin");
     const created = await request(port, ca, "POST", "/api/v1/admin/users", {
       username: "operator",
       displayName: "操作员",
@@ -76,33 +99,65 @@ test("user center only allows administrator-created accounts", async () => {
       password: "operator-password",
     });
     assert.equal(operator.status, 200);
+    assert.equal(operator.body.user.role, "operator");
+    const assigned = await request(port, ca, "PUT", "/api/v1/admin/users/operator/assignment", {
+      assignedTasks: 12,
+    }, login.body.token);
+    assert.equal(assigned.status, 200);
+    assert.equal(assigned.body.user.assignedTasks, 12);
+    const editedDetail = await request(port, ca, "PUT", "/api/v1/admin/task-details", {
+      task: "Bedsheet",
+      detail: "整理床单并完成整段视频标注。",
+    }, login.body.token);
+    assert.equal(editedDetail.status, 200);
+    assert.equal(editedDetail.body.taskDetails[0].source, "admin");
+    const importedDetail = await request(port, ca, "POST", "/api/v1/admin/task-details/import", {
+      tasks: [{ task: "Sofa", detail: "整理沙发。" }],
+    }, login.body.token);
+    assert.equal(importedDetail.status, 200);
+    assert.equal(importedDetail.body.taskDetails.length, 2);
+    const startedAtMs = Date.now() - 60_000;
+    const started = await request(port, ca, "POST", "/api/v1/audit/events", {
+      episodeId: "12345678abcdef00",
+      taskId: "sofa",
+      trajectoryCode: "sofa-001",
+      action: "annotation_started",
+      occurredAtMs: startedAtMs,
+    }, operator.body.token);
+    assert.equal(started.status, 201);
+    const event = await request(port, ca, "POST", "/api/v1/audit/events", {
+      episodeId: "12345678abcdef00",
+      taskId: "sofa",
+      trajectoryCode: "sofa-001",
+      action: "annotation_saved",
+      occurredAtMs: Date.now(),
+    }, operator.body.token);
+    assert.equal(event.status, 201);
+    const revision = await request(port, ca, "POST", "/api/v1/audit/events", {
+      episodeId: "12345678abcdef00",
+      taskId: "sofa",
+      trajectoryCode: "sofa-001",
+      action: "annotation_saved",
+      occurredAtMs: Date.now(),
+    }, operator.body.token);
+    assert.equal(revision.status, 201);
+    const audit = await request(port, ca, "GET", "/api/v1/admin/audit", null, login.body.token);
+    assert.equal(audit.status, 200);
+    const operatorSummary = audit.body.users.find((user) => user.username === "operator");
+    assert.equal(operatorSummary.assignedTasks, 12);
+    assert.equal(operatorSummary.completedToday, 1);
+    assert.equal(operatorSummary.totalCompleted, 1);
+    assert.ok(operatorSummary.averageCompletionMs >= 60_000);
+    assert.equal(audit.body.taskDetails.length, 2);
+    assert.equal(audit.body.events[0].action, "annotation_saved");
+    const auditDenied = await request(port, ca, "GET", "/api/v1/admin/audit", null, operator.body.token);
+    assert.equal(auditDenied.status, 403);
     const denied = await request(port, ca, "GET", "/api/v1/admin/users", null, operator.body.token);
     assert.equal(denied.status, 403);
-    const auditEvent = {
-      eventId: "annotation-save-oven-001-1",
-      operation: "annotation_save",
-      taskId: "close_oven",
-      trajectoryCode: "oven-001",
-      revision: 1,
-      startedAtMs: 1_800_000_000_000,
-      endedAtMs: 1_800_000_005_000,
-      occurredAtMs: 1_800_000_005_000,
-    };
-    const audited = await request(port, ca, "POST", "/api/v1/audit/events", auditEvent, operator.body.token);
-    assert.equal(audited.status, 201);
-    const retried = await request(port, ca, "POST", "/api/v1/audit/events", auditEvent, operator.body.token);
-    assert.equal(retried.status, 201);
-    const operatorSummary = await request(port, ca, "GET", "/api/v1/admin/kpi-summary", null, operator.body.token);
-    assert.equal(operatorSummary.status, 403);
-    const summary = await request(port, ca, "GET", "/api/v1/admin/kpi-summary", null, login.body.token);
-    assert.equal(summary.status, 200);
-    assert.deepEqual(summary.body.users, [{
-      username: "operator",
-      operationCount: 1,
-      completedTaskCount: 1,
-      totalAnnotationMs: 5000,
-      qualityScore: null,
-    }]);
+    const assignmentDenied = await request(port, ca, "PUT", "/api/v1/admin/users/operator/assignment", {
+      assignedTasks: 3,
+    }, operator.body.token);
+    assert.equal(assignmentDenied.status, 403);
     assert.match(initialized.clientConfigPath, /DOHC-User-Center-Client\.json$/);
   } finally {
     await service?.stop().catch(() => {});

@@ -11,7 +11,7 @@ pub struct AuthState {
 struct AuthSession {
     workspace_mode: Option<WorkspaceMode>,
     current_user: Option<UserIdentity>,
-    access_token: Option<String>,
+    user_center_token: Option<String>,
 }
 
 impl AuthState {
@@ -38,7 +38,7 @@ impl AuthState {
                 .current_user()?
                 .ok_or_else(|| AppError::Message("AUTH_REQUIRED: 请先登录用户中心账号".into())),
             None => Err(AppError::Message(
-                "WORKSPACE_MODE_REQUIRED: 请选择统一管理模式或离线模式".into(),
+                "WORKSPACE_MODE_REQUIRED: 请登录用户中心账号".into(),
             )),
         }
     }
@@ -68,32 +68,29 @@ impl AuthState {
             .map_err(|_| AppError::Message("用户中心登录会话不可用".into()))?;
         session.current_user = user;
         if session.current_user.is_none() {
-            session.access_token = None;
+            session.user_center_token = None;
         }
         Ok(())
     }
 
-    pub(crate) fn set_authenticated_user(
-        &self,
-        user: UserIdentity,
-        access_token: String,
-    ) -> AppResult<()> {
+    pub(crate) fn set_managed_session(&self, user: UserIdentity, token: String) -> AppResult<()> {
         let mut session = self
             .session
             .lock()
             .map_err(|_| AppError::Message("用户中心登录会话不可用".into()))?;
         session.current_user = Some(user);
-        session.access_token = Some(access_token);
+        session.user_center_token = Some(token);
         Ok(())
     }
 
-    pub(crate) fn access_token(&self) -> AppResult<String> {
+    pub(crate) fn managed_token(&self) -> AppResult<String> {
+        self.require_managed_user()?;
         self.session
             .lock()
             .map_err(|_| AppError::Message("用户中心登录会话不可用".into()))?
-            .access_token
+            .user_center_token
             .clone()
-            .ok_or_else(|| AppError::Message("AUTH_REQUIRED: 请先登录用户中心账号".into()))
+            .ok_or_else(|| AppError::Message("AUTH_REQUIRED: 请重新登录用户中心账号".into()))
     }
 
     pub(crate) fn set_workspace_mode(&self, mode: Option<WorkspaceMode>) -> AppResult<()> {
@@ -103,6 +100,7 @@ impl AuthState {
             .map_err(|_| AppError::Message("工作模式会话不可用".into()))?;
         session.workspace_mode = mode;
         session.current_user = None;
+        session.user_center_token = None;
         Ok(())
     }
 }
@@ -114,6 +112,7 @@ pub fn logout_account(state: &AuthState) -> AppResult<()> {
 pub fn validate_user_identity(user: &UserIdentity) -> AppResult<()> {
     if normalize_username(&user.username)? != user.username
         || validate_display_name(&user.display_name)? != user.display_name
+        || !matches!(user.role.as_deref(), Some("admin" | "operator") | None)
     {
         return Err(AppError::Message("用户身份记录格式无效".into()));
     }
@@ -166,6 +165,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator.one".into(),
             display_name: "操作员一".into(),
+            role: None,
         };
         validate_user_identity(&user).unwrap();
         state.set_user(Some(user.clone())).unwrap();
@@ -184,6 +184,7 @@ mod tests {
             .set_user(Some(UserIdentity {
                 username: "operator.one".into(),
                 display_name: "操作员一".into(),
+                role: None,
             }))
             .unwrap();
         state
@@ -199,6 +200,7 @@ mod tests {
         assert!(validate_user_identity(&UserIdentity {
             username: "../operator".into(),
             display_name: "Operator".into(),
+            role: None,
         })
         .is_err());
     }

@@ -5,6 +5,10 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.44 - 2026-08-17
+
+- Added an administrator-only supervision dashboard for task assignments and completion metrics, plus an in-app history view for installed and prior release versions.
+
 ## 0.17.43 - 2026-08-17
 
 - Updated browser regression flows to select the renamed “登录工作区” entry and assert that the retired offline entry stays unavailable, restoring CI coverage after unified login became mandatory.

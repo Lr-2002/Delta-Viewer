@@ -3,6 +3,62 @@ export type TaskName = "scan" | "import" | "validate" | "export" | "update";
 export interface UserIdentity {
   username: string;
   displayName: string;
+  role?: "admin" | "operator";
+}
+
+export interface SupervisionUserSummary {
+  username: string;
+  displayName: string;
+  role: "admin" | "operator";
+  assignedTasks: number;
+  completedToday: number;
+  totalCompleted: number;
+  averageCompletionMs: number | null;
+}
+
+export interface SupervisionEvent {
+  eventId: string;
+  username: string;
+  displayName: string;
+  taskId: string;
+  trajectoryCode: string;
+  action: AnnotationAuditAction;
+  occurredAtMs: number;
+  receivedAtMs: number;
+}
+
+export interface SupervisionAccount {
+  username: string;
+  displayName: string;
+  role: "admin" | "operator";
+  assignedTasks: number;
+  createdAtMs: number;
+}
+
+export interface SupervisionDashboardData {
+  users: SupervisionUserSummary[];
+  events: SupervisionEvent[];
+  accounts: SupervisionAccount[];
+  taskDetails: SupervisionTaskDetail[];
+}
+
+export interface SupervisionTaskDetail {
+  task: string;
+  detail: string;
+  source: "imported" | "admin";
+  updatedAtMs: number;
+  updatedBy: string;
+}
+
+export interface SupervisionTaskSummary {
+  task: string;
+  completed: number;
+  total: number;
+}
+
+export interface SupervisionTaskCatalog {
+  sourcePath: string;
+  tasks: SupervisionTaskSummary[];
 }
 
 export type WorkspaceMode = "managed" | "offline";
@@ -71,6 +127,19 @@ export interface SaveAnnotationRequest {
   clipStartFrame: number | null;
   clipEndFrame: number | null;
   segments: SegmentAnnotation[];
+}
+
+export type AnnotationAuditAction =
+  | "annotation_started" | "task_changed" | "description_changed" | "clip_changed"
+  | "segment_split" | "segment_template_selected" | "segment_note_changed"
+  | "segment_deleted" | "annotation_saved" | "export_started" | "export_finished"
+  | "annotation_ended";
+
+export interface AnnotationAuditRequest {
+  taskId: string;
+  trajectoryCode: string;
+  action: AnnotationAuditAction;
+  occurredAtMs: number;
 }
 
 export interface StreamSummary {

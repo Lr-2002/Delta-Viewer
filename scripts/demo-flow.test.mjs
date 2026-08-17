@@ -373,6 +373,10 @@ if (!browserExecutable) {
     await page.getByText("已保存 · r1", { exact: true }).waitFor();
     assert.deepEqual(await page.locator(".segment-list strong").allTextContents(), ["片段 1"]);
     await page.locator(".segment-list button").click();
+    assert.equal(await page.getByLabel("片段模板", { exact: true }).count(), 1);
+    assert.equal(await page.getByLabel("片段名称", { exact: true }).count(), 0);
+    assert.equal(await page.getByLabel("片段注解", { exact: true }).count(), 1);
+    assert.deepEqual(await page.locator(".segment-list strong").allTextContents(), ["片段 1"]);
     await page.getByLabel("片段模板", { exact: true }).selectOption("拿起靠枕");
     assert.deepEqual(await page.locator(".segment-list strong").allTextContents(), ["拿起靠枕"]);
     assert.equal(
@@ -483,10 +487,9 @@ if (!browserExecutable) {
         assert.ok(trackBox);
         await segmentTrack.click({ position: { x: trackBox.width * (20 / 195), y: trackBox.height / 2 } });
         await page.getByRole("button", { name: "在当前帧分割" }).click();
-        await page.getByLabel("片段名称").fill("拿取工具");
         await page.getByLabel("片段注解").fill("右手拿起桌面上的工具并移动到操作区");
 
-        assert.match(await page.locator(".segment-list").innerText(), /拿取工具/);
+        assert.match(await page.locator(".segment-list").innerText(), /片段 2/);
         assert.match(await page.locator(".segment-list").innerText(), /右手拿起桌面上的工具/);
         assert.match(await page.locator(".segment-list").innerText(), /帧 21–195/);
         assert.equal(await page.locator(".segment-block").count(), 2);
@@ -495,7 +498,7 @@ if (!browserExecutable) {
         assert.equal(await page.locator(".segment-block").count(), 3);
         await page.getByRole("button", { name: "保存片段", exact: true }).click();
         await page.getByText("浏览器演示已保存 · 3 个片段 · r2", { exact: true }).waitFor();
-        assert.match(await page.locator(".segment-list").innerText(), /拿取工具/);
+        assert.match(await page.locator(".segment-list").innerText(), /片段 2/);
         await page.getByLabel("裁剪结束帧").fill("40");
         await page.getByText("保留范围 · 帧 0–40 · 2 个片段", { exact: true }).waitFor();
         await page.getByRole("button", { name: "保存片段", exact: true }).click();

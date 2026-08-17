@@ -213,6 +213,7 @@ mod tests {
         let user = UserIdentity {
             username: "operator".into(),
             display_name: "Operator".into(),
+            role: None,
         };
         let recorded = record_error(
             &root,

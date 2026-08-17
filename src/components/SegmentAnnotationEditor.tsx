@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { RotateCcw, Save, Scissors, Trash2 } from "lucide-react";
 import { isTauriRuntime, saveEpisodeAnnotation } from "../lib/backend";
 import { descriptionMetadataPath } from "../lib/format";
-import type { EpisodeAnnotation, EpisodeData } from "../types";
+import type { AnnotationAuditAction, EpisodeAnnotation, EpisodeData } from "../types";
 
 interface Segment {
   id: string;
@@ -32,12 +32,14 @@ interface Props {
   onSaved: (annotation: EpisodeAnnotation) => void;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
+  onActivity: (action: AnnotationAuditAction, taskId: string, trajectoryCode: string) => void;
 }
 
 export function SegmentAnnotationEditor({
   data, currentFrame, minFrame, maxFrame, clipStartFrame, clipEndFrame, busy,
   annotation, templateTaskId, templateSegments, playbackControls, onFrameChange, onClipStartChange, onClipEndChange, onClipReset,
   onSaved, onError, onNotice,
+  onActivity,
 }: Props) {
   const [segments, setSegments] = useState<Segment[]>(() => [createSegment(minFrame, maxFrame, 0)]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -100,6 +102,7 @@ export function SegmentAnnotationEditor({
         segments: visibleSegments.map(({ startFrame, endFrame, title, note }) => ({ startFrame, endFrame, title, note })),
       });
       onSaved(saved);
+      onActivity("annotation_saved", saved.taskId, saved.trajectoryCode);
       const persistenceNotice = isTauriRuntime()
         ? `片段已保存到 ${descriptionMetadataPath(saved.episodeRoot)}`
         : "浏览器演示已保存";
@@ -126,6 +129,7 @@ export function SegmentAnnotationEditor({
       )));
     });
     setSelectedId(rightId);
+    onActivity("segment_split", annotation?.taskId ?? "", annotation?.trajectoryCode ?? "");
   }
 
   function updateSelected(patch: Partial<Segment>) {
@@ -161,6 +165,7 @@ export function SegmentAnnotationEditor({
         : segment);
     setSegments(renumberSegments(next));
     setSelectedId(mergeTarget.id);
+    onActivity("segment_deleted", annotation?.taskId ?? "", annotation?.trajectoryCode ?? "");
   }
 
   return (
@@ -239,20 +244,23 @@ export function SegmentAnnotationEditor({
       {selected && <div className="segment-workbench">
         <aside className="segment-inspector">
           <header><Scissors size={16} /><strong>注解</strong></header>
-          {templateSegments.length ? <label className="segment-template">片段模板
+          <label className="segment-template">片段模板
             <select
               aria-label="片段模板"
               value={templateSegments.includes(selected.title) ? selected.title : ""}
+              disabled={!templateSegments.length}
               onChange={(event) => {
-                if (event.target.value) updateSelected({ title: event.target.value });
+                if (event.target.value) {
+                  updateSelected({ title: event.target.value });
+                  onActivity("segment_template_selected", annotation?.taskId ?? "", annotation?.trajectoryCode ?? "");
+                }
               }}
             >
-              <option value="">自定义片段名称</option>
+              <option value="">{templateSegments.length ? "选择片段模板" : "当前任务未配置片段模板"}</option>
               {templateSegments.map((title, index) => <option value={title} key={`${title}-${index}`}>{title}</option>)}
             </select>
-          </label> : null}
-          <label className="segment-title">片段名称<input aria-label="片段名称" maxLength={100} value={selected.title} onChange={(event) => updateSelected({ title: event.target.value })} /></label>
-          <label className="segment-note"><textarea aria-label="片段注解" rows={2} maxLength={500} value={selected.note} placeholder="描述这个片段中的动作、事件或质量问题……" onChange={(event) => updateSelected({ note: event.target.value })} /><small>{selected.note.length}/500</small></label>
+          </label>
+          <label className="segment-note"><textarea aria-label="片段注解" rows={2} maxLength={500} value={selected.note} placeholder="描述这个片段中的动作、事件或质量问题……" onChange={(event) => updateSelected({ note: event.target.value })} onBlur={() => onActivity("segment_note_changed", annotation?.taskId ?? "", annotation?.trajectoryCode ?? "")} /><small>{selected.note.length}/500</small></label>
           <div className="segment-edit-actions">
             <button className="button button-secondary segment-delete" type="button" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={15} />合并删除片段</button>
           </div>

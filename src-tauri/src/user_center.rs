@@ -1,9 +1,13 @@
 use crate::error::{AppError, AppResult};
 use crate::identity::AuthState;
-use crate::model::{AuthStatus, LoginRequest, UserCenterStatus, UserIdentity};
+use crate::model::{
+    AuthStatus, LoginRequest, SupervisionAccount, SupervisionDashboardData, SupervisionEvent,
+    SupervisionTaskDetail, SupervisionUserSummary, UserCenterStatus, UserIdentity,
+};
 use crate::storage;
 use reqwest::{Certificate, Client, Url};
 use serde::{Deserialize, Serialize};
+use std::error::Error as StdError;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::net::Ipv4Addr;
@@ -38,17 +42,19 @@ struct LoginResponse {
     user: UserIdentity,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AnnotationAuditEvent<'a> {
-    pub event_id: &'a str,
-    pub operation: &'a str,
-    pub task_id: &'a str,
-    pub trajectory_code: &'a str,
-    pub revision: u64,
-    pub started_at_ms: u64,
-    pub ended_at_ms: u64,
-    pub occurred_at_ms: u64,
+struct SupervisionAuditResponse {
+    users: Vec<SupervisionUserSummary>,
+    events: Vec<SupervisionEvent>,
+    #[serde(default)]
+    task_details: Vec<SupervisionTaskDetail>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisionAccountsResponse {
+    users: Vec<SupervisionAccount>,
 }
 
 #[derive(Deserialize)]
@@ -125,11 +131,7 @@ pub async fn login(
         }))
         .send()
         .await
-        .map_err(|error| {
-            AppError::Message(format!(
-                "USER_CENTER_UNAVAILABLE: 无法连接用户中心: {error}"
-            ))
-        })?;
+        .map_err(user_center_request_error)?;
     if !response.status().is_success() {
         return Err(AppError::Message(remote_error(response).await));
     }
@@ -138,38 +140,252 @@ pub async fn login(
         .await
         .map_err(|error| AppError::Message(format!("用户中心登录响应无效: {error}")))?;
     crate::identity::validate_user_identity(&result.user)?;
-    if result.token.len() < 32 || result.token.len() > 256 {
+    if result.token.len() < 32 {
         return Err(AppError::Message("用户中心登录令牌无效".into()));
     }
-    state.set_authenticated_user(result.user.clone(), result.token)?;
+    state.set_managed_session(result.user.clone(), result.token)?;
     Ok(result.user)
 }
 
-pub async fn upload_annotation_audit(
+pub async fn record_annotation_audit(
     data_root: &Path,
     state: &AuthState,
-    event: &AnnotationAuditEvent<'_>,
+    request: crate::model::AnnotationAuditRequest,
 ) -> AppResult<()> {
+    let token = state.managed_token()?;
     let config = load_config(data_root)?;
-    let token = state.access_token()?;
     let response = client_for(&config)?
         .post(endpoint(&config, "api/v1/audit/events")?)
         .bearer_auth(token)
-        .json(event)
+        .json(&serde_json::json!({
+            "taskId": request.task_id,
+            "trajectoryCode": request.trajectory_code,
+            "action": request.action,
+            "occurredAtMs": request.occurred_at_ms,
+        }))
         .send()
         .await
-        .map_err(|error| {
-            AppError::Message(format!(
-                "AUDIT_UPLOAD_FAILED: 标注已保存在本机，但审计上传失败: {error}"
-            ))
-        })?;
+        .map_err(user_center_request_error)?;
     if !response.status().is_success() {
-        return Err(AppError::Message(format!(
-            "AUDIT_UPLOAD_FAILED: 标注已保存在本机，但审计上传失败: {}",
-            remote_error(response).await
-        )));
+        return Err(AppError::Message(remote_error(response).await));
     }
     Ok(())
+}
+
+pub async fn supervision_dashboard(
+    data_root: &Path,
+    state: &AuthState,
+) -> AppResult<SupervisionDashboardData> {
+    let user = state.require_managed_user()?;
+    if user.role.as_deref() != Some("admin") {
+        return Err(AppError::Message(
+            "SUPERVISOR_REQUIRED: 当前账号不是监管账户".into(),
+        ));
+    }
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let client = client_for(&config)?;
+    let audit_response = client
+        .get(endpoint(&config, "api/v1/admin/audit")?)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !audit_response.status().is_success() {
+        return Err(AppError::Message(remote_error(audit_response).await));
+    }
+    let audit: SupervisionAuditResponse = audit_response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(format!("监管数据响应无效: {error}")))?;
+    let accounts_response = client
+        .get(endpoint(&config, "api/v1/admin/users")?)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !accounts_response.status().is_success() {
+        return Err(AppError::Message(remote_error(accounts_response).await));
+    }
+    let accounts: SupervisionAccountsResponse = accounts_response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(format!("监管账号响应无效: {error}")))?;
+    Ok(SupervisionDashboardData {
+        users: audit.users,
+        events: audit.events,
+        accounts: accounts.users,
+        task_details: audit.task_details,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskDetailsResponse {
+    task_details: Vec<SupervisionTaskDetail>,
+}
+
+pub async fn update_task_detail(
+    data_root: &Path,
+    state: &AuthState,
+    task: &str,
+    detail: &str,
+) -> AppResult<Vec<SupervisionTaskDetail>> {
+    require_supervisor(state)?;
+    send_task_details(
+        data_root,
+        state,
+        "api/v1/admin/task-details",
+        reqwest::Method::PUT,
+        vec![serde_json::json!({ "task": task, "detail": detail })],
+    )
+    .await
+}
+
+pub async fn import_task_details(
+    data_root: &Path,
+    state: &AuthState,
+    source_path: &Path,
+) -> AppResult<Vec<SupervisionTaskDetail>> {
+    require_supervisor(state)?;
+    let metadata = fs::symlink_metadata(source_path)?;
+    if !metadata.file_type().is_file() || metadata.len() > 16 * 1024 {
+        return Err(AppError::Message(
+            "TASK_DETAIL_IMPORT_INVALID: 任务详情文件必须是小于 16 KiB 的普通 JSON 文件".into(),
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_reader(File::open(source_path)?)
+        .map_err(|error| AppError::Message(format!("TASK_DETAIL_IMPORT_INVALID: {error}")))?;
+    let tasks = value
+        .get("tasks")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| AppError::Message("TASK_DETAIL_IMPORT_INVALID: 缺少 tasks 数组".into()))?;
+    let mut entries = Vec::with_capacity(tasks.len());
+    for item in tasks {
+        let task = item
+            .get("task")
+            .or_else(|| item.get("label"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let detail = item
+            .get("detail")
+            .or_else(|| item.get("description"))
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                item.get("descriptions")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|values| values.first())
+                    .and_then(serde_json::Value::as_str)
+            })
+            .unwrap_or("");
+        entries.push(serde_json::json!({ "task": task, "detail": detail }));
+    }
+    if entries.is_empty() || entries.len() > 500 {
+        return Err(AppError::Message(
+            "TASK_DETAIL_IMPORT_INVALID: 任务详情数量必须是 1-500".into(),
+        ));
+    }
+    send_task_details(
+        data_root,
+        state,
+        "api/v1/admin/task-details/import",
+        reqwest::Method::POST,
+        entries,
+    )
+    .await
+}
+
+fn require_supervisor(state: &AuthState) -> AppResult<()> {
+    let user = state.require_managed_user()?;
+    if user.role.as_deref() != Some("admin") {
+        return Err(AppError::Message(
+            "SUPERVISOR_REQUIRED: 当前账号不是监管账户".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn send_task_details(
+    data_root: &Path,
+    state: &AuthState,
+    endpoint_suffix: &str,
+    method: reqwest::Method,
+    entries: Vec<serde_json::Value>,
+) -> AppResult<Vec<SupervisionTaskDetail>> {
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let body = if entries.len() == 1 && method == reqwest::Method::PUT {
+        entries
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::Message("任务详情内容为空".into()))?
+    } else {
+        serde_json::json!({ "tasks": entries })
+    };
+    let response = client_for(&config)?
+        .request(method, endpoint(&config, endpoint_suffix)?)
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    response
+        .json::<TaskDetailsResponse>()
+        .await
+        .map(|result| result.task_details)
+        .map_err(|error| AppError::Message(format!("任务详情响应无效: {error}")))
+}
+
+pub async fn set_assigned_tasks(
+    data_root: &Path,
+    state: &AuthState,
+    username: &str,
+    assigned_tasks: u64,
+) -> AppResult<SupervisionAccount> {
+    let user = state.require_managed_user()?;
+    if user.role.as_deref() != Some("admin") {
+        return Err(AppError::Message(
+            "SUPERVISOR_REQUIRED: 当前账号不是监管账户".into(),
+        ));
+    }
+    let valid_username = (3..=32).contains(&username.len())
+        && username.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '_' | '-')
+        });
+    if !valid_username || assigned_tasks > 1_000_000 {
+        return Err(AppError::Message(
+            "ASSIGNED_TASKS_INVALID: 任务分配参数无效".into(),
+        ));
+    }
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let response = client_for(&config)?
+        .put(endpoint(
+            &config,
+            &format!("api/v1/admin/users/{username}/assignment"),
+        )?)
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "assignedTasks": assigned_tasks }))
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    #[derive(Deserialize)]
+    struct AssignmentResponse {
+        user: SupervisionAccount,
+    }
+    response
+        .json::<AssignmentResponse>()
+        .await
+        .map(|result| result.user)
+        .map_err(|error| AppError::Message(format!("任务分配响应无效: {error}")))
 }
 
 async fn request_health(
@@ -180,11 +396,7 @@ async fn request_health(
         .get(endpoint(config, "healthz")?)
         .send()
         .await
-        .map_err(|error| {
-            AppError::Message(format!(
-                "USER_CENTER_UNAVAILABLE: 无法连接用户中心: {error}"
-            ))
-        })?;
+        .map_err(user_center_request_error)?;
     if !response.status().is_success() {
         return Err(AppError::Message(remote_error(response).await));
     }
@@ -200,6 +412,19 @@ async fn request_health(
     Ok(health)
 }
 
+fn user_center_request_error(error: reqwest::Error) -> AppError {
+    let mut details = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        details.push_str(": ");
+        details.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    AppError::Message(format!(
+        "USER_CENTER_UNAVAILABLE: 无法连接用户中心: {details}"
+    ))
+}
+
 async fn remote_error(response: reqwest::Response) -> String {
     let status = response.status();
     let body = response.json::<ErrorResponse>().await.ok();
@@ -210,8 +435,12 @@ async fn remote_error(response: reqwest::Response) -> String {
 fn client_for(config: &UserCenterClientConfig) -> AppResult<Client> {
     let certificate = Certificate::from_pem(config.certificate_pem.as_bytes())
         .map_err(|error| AppError::Message(format!("用户中心证书无效: {error}")))?;
-    Client::builder()
-        .add_root_certificate(certificate)
+    let builder = Client::builder();
+    #[cfg(not(target_os = "windows"))]
+    let builder = builder.tls_certs_only([certificate]);
+    #[cfg(target_os = "windows")]
+    let builder = builder.add_root_certificate(certificate);
+    builder
         .https_only(true)
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(12))

@@ -10,6 +10,77 @@ pub const STATE_FRAME_RATE_TOLERANCE_PERCENT: u8 = 5;
 pub struct UserIdentity {
     pub username: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionUserSummary {
+    pub username: String,
+    pub display_name: String,
+    pub role: String,
+    pub assigned_tasks: u64,
+    pub completed_today: u64,
+    pub total_completed: u64,
+    pub average_completion_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionEvent {
+    pub event_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub task_id: String,
+    pub trajectory_code: String,
+    pub action: String,
+    pub occurred_at_ms: u64,
+    pub received_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionAccount {
+    pub username: String,
+    pub display_name: String,
+    pub role: String,
+    pub assigned_tasks: u64,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionDashboardData {
+    pub users: Vec<SupervisionUserSummary>,
+    pub events: Vec<SupervisionEvent>,
+    pub accounts: Vec<SupervisionAccount>,
+    pub task_details: Vec<SupervisionTaskDetail>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionTaskDetail {
+    pub task: String,
+    pub detail: String,
+    pub source: String,
+    pub updated_at_ms: u64,
+    pub updated_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionTaskSummary {
+    pub task: String,
+    pub completed: u64,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionTaskCatalog {
+    pub source_path: String,
+    pub tasks: Vec<SupervisionTaskSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,6 +111,15 @@ pub struct UserCenterStatus {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnnotationAuditRequest {
+    pub task_id: String,
+    pub trajectory_code: String,
+    pub action: String,
+    pub occurred_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

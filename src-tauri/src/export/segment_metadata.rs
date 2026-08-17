@@ -274,6 +274,7 @@ mod tests {
         UserIdentity {
             username: username.into(),
             display_name: username.into(),
+            role: None,
         }
     }
 }

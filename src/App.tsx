@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  BookOpenText,
   Check,
   ChevronRight,
   CircleAlert,
@@ -37,6 +38,7 @@ import { FramePanel } from "./components/FramePanel";
 import { ProgressStrip } from "./components/ProgressStrip";
 import { SegmentAnnotationEditor } from "./components/SegmentAnnotationEditor";
 import { SkeletonViewer } from "./components/SkeletonViewer";
+import { SupervisionDashboard } from "./components/SupervisionDashboard";
 import { TelemetryChart } from "./components/TelemetryChart";
 import {
   APP_VERSION,
@@ -59,6 +61,7 @@ import {
   loadEpisode,
   logoutLocalAccount,
   recordOperationError,
+  recordAnnotationAudit,
   onTaskProgress,
   revealOutput,
   scanSource,
@@ -67,10 +70,11 @@ import {
 } from "./lib/backend";
 import { formatBytes, shortPath } from "./lib/format";
 import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate";
-import { nextPlaybackFrame } from "./lib/playback-clock";
 import { OperationScope, type OperationToken } from "./lib/operationScope";
+import { nextPlaybackFrame } from "./lib/playback-clock";
 import type {
   AnnotatedEpisodeSummary,
+  AnnotationAuditAction,
   AppUpdateInfo,
   AuthStatus,
   BatchExportResult,
@@ -122,6 +126,91 @@ const METRICS: { key: MetricKey; label: string }[] = [
   { key: "omega", label: "角速度" },
 ];
 
+interface ReleaseHistoryEntry {
+  version: string;
+  date: string;
+  notes: string[];
+}
+
+const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
+
+const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.42": "修复用户中心管理页、Rustls 初始化和固定证书链，新增只读历史版本入口，并恢复仅编辑注解的片段界面。",
+  "0.17.41": "新增本地任务模板 JSON 导入、手动分段标题复用及轨迹位置缺失检查。",
+  "0.17.40": "完善标注警告确认流程，并修复确认结束后的 session 焦点恢复。",
+  "0.17.39": "健康检查进行期间即可只读预览 episode，检查失败或取消时清除临时预览。",
+  "0.17.38": "修正当前帧不可用时的回放回归测试，直接验证 FRAME_UNAVAILABLE 阻断。",
+  "0.17.37": "补充运行时帧不可用时停止 session 并记录错误的回归覆盖。",
+  "0.17.36": "更新浏览器回放测试，使其先通过新的警告门禁再验证同步回放。",
+  "0.17.35": "将裁剪和分段写入 description.json，并增加不可用帧、静止轨迹和警告决策门禁。",
+  "0.17.34": "将局域网更新镜像与用户中心固定地址迁移到 10.1.11.200。",
+  "0.17.33": "以跨平台原子替换保存 description.json，并保持采集指纹和源写入边界。",
+  "0.17.32": "采用浅层 session 目录扫描、快速标注预览和可复用深层索引。",
+  "0.17.31": "增加有界内存源索引，健康检查后台运行时提前展示只读 episode 预览。",
+  "0.17.30": "统一 SMPL 与 COCO 骨架坐标为稳定 Y-up 视图并补充交互回归测试。",
+  "0.17.29": "支持安全删除未使用任务、导入前完整校验及三种格式的分段标注 metadata。",
+  "0.17.28": "修复 episode 加载后的焦点恢复竞态，并在工作区重置时取消旧焦点任务。",
+  "0.17.27": "追加保存连续分段修订，并为三种导出生成原子发布的 Metadata JSON。",
+  "0.17.26": "引入感知五路画面加载状态的回放时钟，保持视频与骨架同步。",
+  "0.17.25": "允许只读访问系统挂载的映射盘及 SMB/NFS 网络卷，同时保持导入导出在本地文件系统。",
+  "0.17.24": "新增统一管理与离线工作模式，并在切换模式时清空当前工作区状态。",
+  "0.17.20": "新增有界解析的本地 SMPL/骨架 NPZ，以及桌面端 Three.js 同步骨架视图。",
+  "0.17.19": "恢复单轨连续时间裁剪控件，并明确分段注解不替代回放和导出闭区间。",
+  "0.17.18": "将分段草稿整合到同步回放页，支持定位、连续分段、注解和紧凑标注布局。",
+  "0.17.17": "新增 30 FPS 状态时间轴门禁、±5% 容差和 FRAME_RATE_MISMATCH 报告。",
+  "0.17.16": "修复 GitHub latest.json 返回 404 时的镜像同步，同时保留三平台完整性与签名门禁。",
+  "0.17.15": "新增局域网 HTTPS 用户中心及三种导出的处理人、编辑时长等 provenance 元数据。",
+  "0.17.14": "并行测速公网与局域网更新镜像，以受限 Range 样本选择更快下载路径。",
+  "0.17.13": "统一桌面与窄屏下时间裁剪轨道和范围滑块的像素边界。",
+  "0.17.12": "自动更新迁移到固定公网镜像并增加局域网 fallback，继续执行大小与签名验证。",
+  "0.17.11": "修复 Linux 对固定本地 HTTP 更新镜像的启动许可配置。",
+  "0.17.10": "新增登录后的自动检查、下载、验签、安装和重启更新流程，覆盖三平台。",
+  "0.17.8": "修复 Windows 打包时 WebView2 离线安装器缓存与审核载荷不一致的问题。",
+  "0.17.7": "批量导出新增逐条失败日志、应用内错误查看及文件管理器定位。",
+  "0.17.6": "停止发布 macOS Intel，发布集合调整为 Windows x64、macOS arm64 和 Ubuntu x64。",
+  "0.17.5": "要求每个 Release 具有唯一、带日期且非空的 Changelog，并直接用于发布说明。",
+  "0.17.4": "正常 UI 改为直接只读加载挂载源，不再自动创建应用本地 episode 副本。",
+  "0.17.3": "更新经审核的 Windows WebView2 x64 离线安装器地址与 SHA-256。",
+  "0.17.2": "简化 Release CD，使用 GITHUB_TOKEN 自动创建 annotated tag 并发布完整安装集合。",
+  "0.17.1": "保持 Ubuntu 22.04 deb 构建安装验证，并调整历史 Flatpak 的构建宿主。",
+  "0.17.0": "新增 Ubuntu 22.04+ x86_64 原生 deb 安装包。",
+  "0.16.1": "同步播放时隐藏逐帧加载遮罩，暂停反馈和不可用帧错误仍保持可见。",
+  "0.16.0": "新增基于 GNOME 50 runtime 的 Ubuntu Flatpak 发布路径。",
+  "0.15.3": "选卡后自动创建应用管理工作区并导入全部 session，取消第二次目标目录选择。",
+  "0.15.2": "保持 macOS 嵌套签名和资源封印验证，并适配 GitHub macOS 15 runner。",
+  "0.15.1": "修复 macOS DMG 的无效资源 seal，避免 Gatekeeper 误报应用已损坏。",
+  "0.15.0": "新增 Windows NSIS 与 macOS DMG 的 unsigned CD、安装启动 smoke 和完整集合门禁。",
+  "0.14.0": "新增离线本地账号创建、登录和退出，并将处理人写入标注修订。",
+  "0.13.0": "warning/error 健康检查结果自动写入本地后台报告，通过结果不生成报告。",
+  "0.12.0": "选卡后自动扫描、导入、检查并加载首条 session，移除手动导入按钮。",
+  "0.11.0": "将应用导航、控件、状态和导出反馈统一为黑白与中性灰视觉系统。",
+  "0.10.0": "左侧列表改为 session 选择器：单击选择，双击进入回放。",
+  "0.9.0": "新增单条轨迹连续闭区间裁剪、范围回放和三格式共用导出范围。",
+  "0.8.0": "新增 macOS 宿主上的 Windows x64 MSVC 全目标条件编译预检。",
+  "0.7.0": "新增跨平台 stress-check，串联扫描、导入、全量检查、三格式回读与源端 BLAKE3。",
+  "0.6.0": "HDF5 JPEG 改为可取消的固定 1 MiB 分块流式写入。",
+  "0.5.0": "新增跨平台 quick、full 和 debug bundle 检查及原子 JSON 证据报告。",
+  "0.4.0": "源遍历支持取消、只读和 no-follow，并增加稀疏帧有界报告与 macOS 卷信息。",
+  "0.3.0": "新增绑定源目录指纹的进程内可信检查记录，过期或缺失时阻止导出。",
+  "0.2.0": "新增导入容量与文件系统预检，以及 Windows 卷识别。",
+  "0.1.0": "建立 Tauri 2、Rust、React 与 TypeScript 桌面应用基础架构。",
+};
+
+function parseReleaseHistory(markdown: string): ReleaseHistoryEntry[] {
+  const entries: ReleaseHistoryEntry[] = [];
+  const headings = Array.from(markdown.matchAll(/^## (\d+\.\d+\.\d+) - (\d{4}-\d{2}-\d{2})$/gm));
+  for (const [index, heading] of headings.entries()) {
+    const bodyStart = (heading.index ?? 0) + heading[0].length;
+    const bodyEnd = headings[index + 1]?.index ?? markdown.length;
+    const body = markdown.slice(bodyStart, bodyEnd).trim();
+    const notes = Array.from(body.matchAll(/(?:^|\n)- ([\s\S]*?)(?=\n- |$)/g), (note) => (
+      note[1].replace(/\s*\n\s*/g, " ").trim()
+    ));
+    entries.push({ version: heading[1], date: heading[2], notes });
+  }
+  return entries;
+}
+
 function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [authStartupError, setAuthStartupError] = useState("");
@@ -165,10 +254,21 @@ function App() {
   const isManagedWorkspace = workspaceMode === "managed";
   const isOfflineWorkspace = workspaceMode === "offline";
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [releaseHistoryOpen, setReleaseHistoryOpen] = useState(false);
+  const [releaseHistory, setReleaseHistory] = useState<ReleaseHistoryEntry[]>([]);
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("idle");
   const [updateError, setUpdateError] = useState("");
   const [updateErrorVisible, setUpdateErrorVisible] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void fetch(CHANGELOG_URL)
+      .then((response) => response.ok ? response.text() : Promise.reject(new Error(`Changelog HTTP ${response.status}`)))
+      .then((markdown) => { if (active) setReleaseHistory(parseReleaseHistory(markdown)); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
   const [frameRenderProgress, setFrameRenderProgress] = useState({
     root: null as string | null,
     frameId: 0,
@@ -384,6 +484,17 @@ function App() {
       void loadEpisodeForReview(episode, true);
     }
   }, [busy, queuedEpisodeRoot, scan, skippedEpisodeRoots]);
+
+  useEffect(() => {
+    if (!data || authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
+    const taskId = selectedTaskId ?? annotation?.taskId ?? "";
+    const trajectoryCode = annotation?.trajectoryCode ?? "";
+    void recordAnnotationAudit({ taskId, trajectoryCode, action: "annotation_started", occurredAtMs: Date.now() })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    return () => {
+      void recordAnnotationAudit({ taskId, trajectoryCode, action: "annotation_ended", occurredAtMs: Date.now() });
+    };
+  }, [data?.summary.root, authStatus?.workspaceMode, authStatus?.currentUser?.username]);
 
   useEffect(() => {
     if (!playing || !data) return;
@@ -851,6 +962,7 @@ function App() {
     }
     setPlaying(false);
     setExportResult(null);
+    auditActivity("clip_changed");
   }
 
   function updateClipEnd(value: number) {
@@ -863,6 +975,17 @@ function App() {
     }
     setPlaying(false);
     setExportResult(null);
+    auditActivity("clip_changed");
+  }
+
+  function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "") {
+    if (!data || authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
+    void recordAnnotationAudit({
+      taskId,
+      trajectoryCode,
+      action,
+      occurredAtMs: Date.now(),
+    }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
   }
 
   function resetClipRange() {
@@ -903,6 +1026,7 @@ function App() {
     if (!owner) return;
     resetOperationFeedback(owner);
     setExportResult(null);
+    auditActivity("export_started");
     try {
       const result = await exportEpisode(
         data.summary.root,
@@ -914,6 +1038,7 @@ function App() {
       );
       ensureOperationActive(owner);
       setExportResult(result);
+      auditActivity("export_finished");
       setNotice(`已导出 ${exportFormatLabel(exportFormat)}（帧 ${range.startFrame}–${range.endFrame}）：${shortPath(result.outputPath, 72)}`);
     } catch (reason) {
       await reportFailure("export_episode", reason, data.summary.root, owner);
@@ -1200,6 +1325,9 @@ function App() {
   }
 
   const currentUser = authStatus.currentUser;
+  if (isManagedWorkspace && currentUser?.role === "admin") {
+    return <SupervisionDashboard currentUser={currentUser} onLogout={logout} />;
+  }
   const updateButtonTitle = updatePhase === "checking"
     ? "正在检查最新版本"
     : updatePhase === "downloading"
@@ -1219,6 +1347,16 @@ function App() {
             <strong>DOHC Viewer</strong>
             <span>v{updateInfo?.currentVersion ?? APP_VERSION}</span>
           </div>
+          <button
+            className="version-history-trigger"
+            type="button"
+            onClick={() => setReleaseHistoryOpen(true)}
+            title="查看历史版本"
+            aria-label="查看历史版本"
+          >
+            <BookOpenText size={14} />
+            <span>历史版本</span>
+          </button>
         </div>
         <div className="source-display">
           <HardDrive size={16} />
@@ -1279,6 +1417,14 @@ function App() {
           </button>
         </div>
       </header>
+
+      {releaseHistoryOpen ? (
+        <ReleaseHistoryDialog
+          currentVersion={updateInfo?.currentVersion ?? APP_VERSION}
+          releases={releaseHistory}
+          onClose={() => setReleaseHistoryOpen(false)}
+        />
+      ) : null}
 
       {historyOpen ? (
         <OperationHistoryPanel
@@ -1559,6 +1705,7 @@ function App() {
                       onSaved={handleAnnotationSaved}
                       onError={setError}
                       onNotice={setNotice}
+                      onActivity={auditActivity}
                     />
                     <SegmentAnnotationEditor
                       data={data}
@@ -1600,6 +1747,7 @@ function App() {
                       onSaved={handleAnnotationSaved}
                       onError={setError}
                       onNotice={setNotice}
+                      onActivity={auditActivity}
                       onFrameChange={(frame) => {
                         const next = Math.max(minFrame, Math.min(maxFrame, frame));
                         frameRef.current = next;
@@ -1924,6 +2072,65 @@ function operationLabel(operation: string): string {
     logout: "退出登录",
   };
   return labels[operation] ?? operation;
+}
+
+function ReleaseHistoryDialog({
+  currentVersion,
+  releases,
+  onClose,
+}: {
+  currentVersion: string;
+  releases: ReleaseHistoryEntry[];
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <div className="version-history-overlay" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="version-history-dialog" role="dialog" aria-modal="true" aria-labelledby="version-history-title">
+        <header>
+          <div>
+            <span className="section-kicker">发布记录</span>
+            <h2 id="version-history-title">历史版本</h2>
+            <p>只读展示发布记录，不会切换或降级当前应用。</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="关闭历史版本" aria-label="关闭历史版本" autoFocus>
+            <X size={16} />
+          </button>
+        </header>
+        <div className="version-history-list">
+          {releases.map((release) => (
+            <article className="version-history-entry" key={release.version}>
+              <div className="version-history-meta">
+                <strong>v{release.version}</strong>
+                {release.version === currentVersion ? <span>当前版本</span> : null}
+                <time dateTime={release.date}>{release.date}</time>
+              </div>
+              <p className="version-history-summary">
+                {RELEASE_SUMMARIES_ZH[release.version] ?? "此版本没有中文更新摘要。"}
+              </p>
+              {release.notes.length ? (
+                <details className="version-history-details">
+                  <summary>展开完整更新记录（{release.notes.length} 项）</summary>
+                  <ul>
+                    {release.notes.map((note, index) => <li key={`${release.version}-${index}`}>{note}</li>)}
+                  </ul>
+                </details>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function hasUnavailableFrame(report: ValidationReport): boolean {
