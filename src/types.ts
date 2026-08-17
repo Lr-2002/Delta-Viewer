@@ -136,7 +136,6 @@ export type AnnotationAuditAction =
   | "annotation_ended";
 
 export interface AnnotationAuditRequest {
-  sourcePath: string;
   taskId: string;
   trajectoryCode: string;
   action: AnnotationAuditAction;

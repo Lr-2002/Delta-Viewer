@@ -487,13 +487,12 @@ function App() {
 
   useEffect(() => {
     if (!data || authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
-    const sourcePath = data.summary.root;
     const taskId = selectedTaskId ?? annotation?.taskId ?? "";
     const trajectoryCode = annotation?.trajectoryCode ?? "";
-    void recordAnnotationAudit({ sourcePath, taskId, trajectoryCode, action: "annotation_started", occurredAtMs: Date.now() })
+    void recordAnnotationAudit({ taskId, trajectoryCode, action: "annotation_started", occurredAtMs: Date.now() })
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
     return () => {
-      void recordAnnotationAudit({ sourcePath, taskId, trajectoryCode, action: "annotation_ended", occurredAtMs: Date.now() });
+      void recordAnnotationAudit({ taskId, trajectoryCode, action: "annotation_ended", occurredAtMs: Date.now() });
     };
   }, [data?.summary.root, authStatus?.workspaceMode, authStatus?.currentUser?.username]);
 
@@ -982,7 +981,6 @@ function App() {
   function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "") {
     if (!data || authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
     void recordAnnotationAudit({
-      sourcePath: data.summary.root,
       taskId,
       trajectoryCode,
       action,

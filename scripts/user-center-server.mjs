@@ -430,11 +430,9 @@ function publicUser(user) {
 function auditEvent(body, user) {
   const action = String(body.action ?? "");
   if (!AUDIT_ACTIONS.has(action)) throw new Error("AUDIT_ACTION_INVALID: 行为类型无效");
-  const episodeId = String(body.episodeId ?? "");
   const taskId = String(body.taskId ?? "");
   const trajectoryCode = String(body.trajectoryCode ?? "");
-  if (!/^[a-f0-9-]{8,128}$/i.test(episodeId)) throw new Error("AUDIT_EPISODE_INVALID: episode 标识无效");
-  if (taskId.length > 100 || trajectoryCode.length > 100) throw new Error("AUDIT_FIELD_INVALID: 监管字段过长");
+  if (taskId.length > 100 || trajectoryCode.length > 100) throw new Error("AUDIT_FIELD_INVALID: 监管字段无效");
   const occurredAtMs = Number(body.occurredAtMs);
   if (!Number.isSafeInteger(occurredAtMs) || Math.abs(nowMs() - occurredAtMs) > 86_400_000) {
     throw new Error("AUDIT_TIME_INVALID: 行为时间无效");
@@ -444,7 +442,6 @@ function auditEvent(body, user) {
     eventId: randomUUID(),
     username: user.username,
     displayName: user.displayName,
-    episodeId,
     taskId,
     trajectoryCode,
     action,
@@ -473,11 +470,12 @@ function auditSummary(events, accounts, currentTimeMs = nowMs()) {
   for (const event of events) {
     const row = users.get(event.username);
     if (!row) continue;
-    if (event.action === "annotation_started") row.starts.set(event.episodeId, event.occurredAtMs);
-    if (event.action === "annotation_saved" && !row.totalCompleted.has(event.episodeId)) {
-      row.totalCompleted.add(event.episodeId);
-      if (localDay(event.receivedAtMs) === currentDay) row.completedToday.add(event.episodeId);
-      const startedAt = row.starts.get(event.episodeId);
+    const completionKey = event.trajectoryCode;
+    if (event.action === "annotation_started") row.starts.set(completionKey, event.occurredAtMs);
+    if (event.action === "annotation_saved" && !row.totalCompleted.has(completionKey)) {
+      row.totalCompleted.add(completionKey);
+      if (localDay(event.receivedAtMs) === currentDay) row.completedToday.add(completionKey);
+      const startedAt = row.starts.get(completionKey);
       if (startedAt !== undefined && event.occurredAtMs >= startedAt) {
         row.completionDurationsMs.push(event.occurredAtMs - startedAt);
       }

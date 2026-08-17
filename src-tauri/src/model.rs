@@ -116,7 +116,6 @@ pub struct LoginRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnnotationAuditRequest {
-    pub source_path: String,
     pub task_id: String,
     pub trajectory_code: String,
     pub action: String,

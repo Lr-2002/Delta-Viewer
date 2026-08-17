@@ -31,12 +31,14 @@ impl AuthState {
 
     pub fn require_user(&self) -> AppResult<UserIdentity> {
         match self.workspace_mode()? {
-            Some(WorkspaceMode::Offline) => Ok(offline_identity()),
+            Some(WorkspaceMode::Offline) => Err(AppError::Message(
+                "AUTH_REQUIRED: 离线模式已停用，请登录用户中心账号".into(),
+            )),
             Some(WorkspaceMode::Managed) => self
                 .current_user()?
                 .ok_or_else(|| AppError::Message("AUTH_REQUIRED: 请先登录用户中心账号".into())),
             None => Err(AppError::Message(
-                "WORKSPACE_MODE_REQUIRED: 请选择统一管理模式或离线模式".into(),
+                "WORKSPACE_MODE_REQUIRED: 请登录用户中心账号".into(),
             )),
         }
     }
@@ -107,14 +109,6 @@ pub fn logout_account(state: &AuthState) -> AppResult<()> {
     state.set_user(None)
 }
 
-pub fn offline_identity() -> UserIdentity {
-    UserIdentity {
-        username: "offline".into(),
-        display_name: "离线本机".into(),
-        role: None,
-    }
-}
-
 pub fn validate_user_identity(user: &UserIdentity) -> AppResult<()> {
     if normalize_username(&user.username)? != user.username
         || validate_display_name(&user.display_name)? != user.display_name
@@ -181,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn offline_mode_allows_local_operations_without_a_user_account() {
+    fn offline_mode_cannot_bypass_login() {
         let state = AuthState::default();
         state
             .set_workspace_mode(Some(WorkspaceMode::Managed))
@@ -197,7 +191,7 @@ mod tests {
             .set_workspace_mode(Some(WorkspaceMode::Offline))
             .unwrap();
         assert_eq!(state.current_user().unwrap(), None);
-        assert_eq!(state.require_user().unwrap().username, "offline");
+        assert!(state.require_user().is_err());
         assert!(state.require_managed_user().is_err());
     }
 
