@@ -237,6 +237,8 @@ async function verify(options) {
     "libgtk-3-0",
     "libayatana-appindicator3-1",
     "librsvg2-2",
+    "gstreamer1.0-libav",
+    "gstreamer1.0-vaapi",
   ]) {
     if (!linuxDeb.depends?.includes(dependency)) {
       throw new Error(`Linux deb dependency is missing: ${dependency}`);

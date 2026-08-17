@@ -6,3 +6,19 @@ export function nextPlaybackFrame(
   if (!allStreamsSettled) return currentFrame;
   return Math.min(endFrame, currentFrame + 1);
 }
+
+export function playbackStartFrame(
+  liveFrame: number,
+  startFrame: number,
+  endFrame: number,
+): number {
+  return liveFrame >= endFrame ? startFrame : liveFrame;
+}
+
+export function clampPlaybackFrame(
+  liveFrame: number,
+  startFrame: number,
+  endFrame: number,
+): number {
+  return Math.max(startFrame, Math.min(endFrame, liveFrame));
+}

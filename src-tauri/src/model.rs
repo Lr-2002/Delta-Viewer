@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const STREAM_NAMES: [&str; 5] = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
-pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 6;
+pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 7;
 pub const EXPECTED_STATE_FRAME_RATE_FPS: u32 = 30;
 pub const STATE_FRAME_RATE_TOLERANCE_PERCENT: u8 = 5;
 
@@ -283,17 +283,84 @@ pub struct ImportPreflight {
     pub partials: Vec<PartialImport>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct RawStateRecord {
     pub frame_id: i64,
     pub capture_time_ns: i64,
-    #[serde(default)]
     pub position: Option<[Option<f64>; 3]>,
     pub velocity: [f64; 3],
     pub quaternion: [f64; 4],
     pub euler: [f64; 3],
     pub omega: [f64; 3],
     pub confidence: f64,
+}
+
+impl<'de> Deserialize<'de> for RawStateRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PoseRecord {
+            #[serde(default)]
+            position: Option<[Option<f64>; 3]>,
+            #[serde(default)]
+            velocity: [f64; 3],
+            #[serde(default)]
+            quaternion: [f64; 4],
+            #[serde(default)]
+            euler: [f64; 3],
+            #[serde(default)]
+            omega: [f64; 3],
+            #[serde(default)]
+            confidence: f64,
+        }
+
+        #[derive(Deserialize)]
+        struct CompatibleStateRecord {
+            #[serde(default)]
+            frame_id: Option<i64>,
+            #[serde(default)]
+            batch_id: Option<i64>,
+            capture_time_ns: i64,
+            #[serde(default)]
+            position: Option<[Option<f64>; 3]>,
+            #[serde(default)]
+            velocity: [f64; 3],
+            #[serde(default)]
+            quaternion: [f64; 4],
+            #[serde(default)]
+            euler: [f64; 3],
+            #[serde(default)]
+            omega: [f64; 3],
+            #[serde(default)]
+            confidence: f64,
+            #[serde(default)]
+            pose: Option<PoseRecord>,
+        }
+
+        let value = CompatibleStateRecord::deserialize(deserializer)?;
+        let frame_id = value
+            .frame_id
+            .or(value.batch_id)
+            .ok_or_else(|| serde::de::Error::missing_field("frame_id or batch_id"))?;
+        let pose = value.pose;
+        Ok(Self {
+            frame_id,
+            capture_time_ns: value.capture_time_ns,
+            position: pose
+                .as_ref()
+                .and_then(|item| item.position)
+                .or(value.position),
+            velocity: pose.as_ref().map_or(value.velocity, |item| item.velocity),
+            quaternion: pose
+                .as_ref()
+                .map_or(value.quaternion, |item| item.quaternion),
+            euler: pose.as_ref().map_or(value.euler, |item| item.euler),
+            omega: pose.as_ref().map_or(value.omega, |item| item.omega),
+            confidence: pose.map_or(value.confidence, |item| item.confidence),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -509,6 +576,14 @@ pub struct OperationErrorRecord {
 pub struct FramePayload {
     pub mime_type: String,
     pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoSource {
+    pub fps: f64,
+    pub segment_seconds: f64,
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

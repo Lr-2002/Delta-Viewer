@@ -173,6 +173,8 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
             "libgtk-3-0",
             "libayatana-appindicator3-1",
             "librsvg2-2",
+            "gstreamer1.0-libav",
+            "gstreamer1.0-vaapi",
           ],
           files: {
             "/usr/share/metainfo/com.dohc.viewer.metainfo.xml":
@@ -598,6 +600,8 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
                   "libgtk-3-0",
                   "libayatana-appindicator3-1",
                   "librsvg2-2",
+                  "gstreamer1.0-libav",
+                  "gstreamer1.0-vaapi",
                 ],
                 installationMethod: "apt-local-deb",
                 sandboxed: false,

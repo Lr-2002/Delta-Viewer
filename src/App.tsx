@@ -71,7 +71,7 @@ import {
 import { formatBytes, shortPath } from "./lib/format";
 import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate";
 import { OperationScope, type OperationToken } from "./lib/operationScope";
-import { nextPlaybackFrame } from "./lib/playback-clock";
+import { clampPlaybackFrame, nextPlaybackFrame, playbackStartFrame } from "./lib/playback-clock";
 import type {
   AnnotatedEpisodeSummary,
   AnnotationAuditAction,
@@ -135,6 +135,9 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.45": "新增挂载源 h264-split-mp4-v1 五路同步回放，并补齐 Linux H.264 解码依赖与发布校验。",
+  "0.17.44": "新增管理员监管工作台、任务分配与完成汇总，以及应用内只读历史版本查看。",
+  "0.17.43": "修复登录入口浏览器回归检查，使正式发布安装包恢复自动构建。",
   "0.17.42": "修复用户中心管理页、Rustls 初始化和固定证书链，新增只读历史版本入口，并恢复仅编辑注解的片段界面。",
   "0.17.41": "新增本地任务模板 JSON 导入、手动分段标题复用及轨迹位置缺失检查。",
   "0.17.40": "完善标注警告确认流程，并修复确认结束后的 session 焦点恢复。",
@@ -759,8 +762,12 @@ function App() {
       : candidate.maxFrame;
     setClipStartFrame(restoredStart);
     setClipEndFrame(restoredEnd);
-    setCurrentFrame(restoredStart);
-    frameRef.current = restoredStart;
+    // The preview is interactive while validation runs. Preserve the live
+    // playback position when validation finishes instead of snapping an
+    // operator who already started reviewing back to the annotation start.
+    const restoredFrame = clampPlaybackFrame(frameRef.current, restoredStart, restoredEnd);
+    setCurrentFrame(restoredFrame);
+    frameRef.current = restoredFrame;
     setView("review");
   }
 
@@ -945,9 +952,16 @@ function App() {
 
   function togglePlayback() {
     if (!data) return;
-    if (!playing && currentFrame >= clipEndFrame) {
-      frameRef.current = clipStartFrame;
-      setCurrentFrame(clipStartFrame);
+    // Timeline seeks update frameRef synchronously while React may not have
+    // committed currentFrame yet. Reading currentFrame here can therefore
+    // mistake a fresh middle seek for the previous end frame and restart the
+    // first play attempt from the clip beginning.
+    if (!playing) {
+      const startFrame = playbackStartFrame(frameRef.current, clipStartFrame, clipEndFrame);
+      if (startFrame !== frameRef.current) {
+        frameRef.current = startFrame;
+        setCurrentFrame(startFrame);
+      }
     }
     setPlaying((value) => !value);
   }
@@ -1654,6 +1668,8 @@ function App() {
                             frameId={currentFrame}
                             playing={playing}
                             playbackEndFrame={clipEndFrame}
+                            playbackFps={playbackFps}
+                            speed={speed}
                             className={`camera-${index}`}
                             onFrameSettled={(streamName, frameId) => {
                               settledFrameByStreamRef.current.set(streamName, frameId);

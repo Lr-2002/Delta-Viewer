@@ -5,6 +5,37 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.45 - 2026-08-17
+
+- Added read-only discovery and synchronized preview-frame decoding for recorder
+  sessions using `h264-split-mp4-v1`, including nested `pose` state records and
+  the five different per-stream frame rates found on the `DOHC1TB` exFAT sample.
+- Excluded hidden recorder benchmark/QC directories from source-root discovery
+  and explicitly blocked the still-JPEG-only export adapters for MP4 sources.
+- Stopped treating the expected 60 Hz state-axis versus per-stream MP4 frame-rate
+  ratios as JPEG-style `COUNT_MISMATCH` warnings.
+- Made MP4 preview try each available FFmpeg decoder and fall back from the
+  bundled JPEG-focused binary when it cannot open H.264 MP4 input.
+- Replaced per-frame FFmpeg process spawning during MP4 playback with five
+  persistent native video elements synchronized to the shared state timeline;
+  only manifest-listed canonical segment files enter the runtime media scope.
+- Advanced health reports to format v7 after MP4 validation semantics changed,
+  preventing stale v6 reports from failing atomic readback, and added a bounded
+  10 FPS FFmpeg preview fallback for Linux WebKit installations without H.264.
+- Added Ubuntu deb dependency and release gates for `gstreamer1.0-libav`, so apt
+  installs WebKitGTK's H.264 decoder together with DOHC Viewer.
+- Added `gstreamer1.0-vaapi` to Ubuntu installs while retaining libav fallback;
+  decoder choice remains with WebKitGTK because globally forcing VA-API can break its renderer.
+- Fixed native MP4 playback being immediately paused by an inverted condition,
+  stopped background JPEG extraction while native video is active, and limited
+  native seeking to paused timeline changes.
+- Decoupled continuous MP4 decoding from React's state timeline by refreshing
+  the surrounding review UI at 10 Hz while each native video retains its source FPS.
+- Exposed each MP4 tile's actual native/buffering/fallback state and stopped a
+  transient WebKit `play()` rejection from silently enabling frame extraction.
+- Restored the original per-frame clock for JPEG recordings and made native MP4
+  playback apply the selected timeline position both at play start and after metadata loads.
+
 ## 0.17.44 - 2026-08-17
 
 - Added an administrator-only supervision dashboard for task assignments and completion metrics, plus an in-app history view for installed and prior release versions.

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -33,6 +33,7 @@ import type {
   ReportExportResult,
   SaveAnnotationRequest,
   ScanResult,
+  VideoSource,
   SupervisionDashboardData,
   SupervisionAccount,
   SupervisionTaskCatalog,
@@ -903,6 +904,16 @@ export async function frameUrl(root: string, stream: string, frameId: number): P
     frameId,
   });
   return `data:${payload.mimeType};base64,${payload.data}`;
+}
+
+export async function videoSource(root: string, stream: string): Promise<VideoSource | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const source = await invoke<VideoSource>("get_video_source", { root, stream });
+    return { ...source, paths: source.paths.map((path) => convertFileSrc(path)) };
+  } catch {
+    return null;
+  }
 }
 
 export async function cancelTask(operationId: number): Promise<boolean> {

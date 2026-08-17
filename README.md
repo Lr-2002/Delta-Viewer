@@ -37,7 +37,9 @@ Ubuntu 22.04+ users should use the unsigned native deb. A release is made
 public only after all three installers pass dependency, resource, install or
 mount, startup, and checksum gates. Verify
 `SHA256SUMS.txt` before use; detailed installation and usage instructions live
-in the Wiki.
+in the Wiki. Installing the deb through `apt` also installs
+`gstreamer1.0-libav` and `gstreamer1.0-vaapi`, providing WebKitGTK with H.264
+software decoding and hardware acceleration when the machine exposes VA-API.
 
 Starting with `0.17.12`, unified management mode checks the fixed public update mirror at
 `http://39.155.172.162:17879` after local login, then falls back only to
@@ -92,7 +94,7 @@ prompt while installing the replacement deb.
     an append-only local operation history. Permission failures retain the raw
     platform message and are classified as `PERMISSION_DENIED`.
 
-Interactive health reports use format v6 and explicitly identify sampled image
+Interactive health reports use format v7 and explicitly identify sampled image
 validation, the five percentages, median FPS, interval stability, black-screen
 warnings, and `autoReportPath`. Automatic reporting is
 strictly local and never writes to the SD card or source episode; repeated

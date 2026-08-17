@@ -1,6 +1,6 @@
 mod batch;
 mod hdf5;
-mod lerobot;
+pub(crate) mod lerobot;
 mod mcap;
 mod segment_metadata;
 
@@ -83,6 +83,11 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         app,
         cancelled,
     } = job;
+    if source::is_mp4_episode(source_path) {
+        return Err(AppError::Message(
+            "MP4 记录当前支持只读扫描与回放；MCAP、HDF5 和 LeRobot 导出尚未适配该源格式".into(),
+        ));
+    }
     let started = Instant::now();
     let source_data = source::load_episode(source_path, app, cancelled)?;
     let full_range = episode_range(&source_data)?;

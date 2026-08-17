@@ -553,7 +553,25 @@ enum EncodeEvent {
     Done,
 }
 
-fn find_ffmpeg(app: Option<&AppHandle>) -> AppResult<PathBuf> {
+pub(crate) fn find_ffmpeg(app: Option<&AppHandle>) -> AppResult<PathBuf> {
+    let candidates = ffmpeg_candidates(app);
+    for candidate in candidates {
+        let works = Command::new(&candidate)
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if works {
+            return Ok(candidate);
+        }
+    }
+    Err(AppError::Message(
+        "未找到 FFmpeg；LeRobot v2 视频导出需要随应用分发的 FFmpeg sidecar".into(),
+    ))
+}
+
+pub(crate) fn ffmpeg_candidates(app: Option<&AppHandle>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os("DOHC_FFMPEG") {
         candidates.push(PathBuf::from(path));
@@ -571,20 +589,7 @@ fn find_ffmpeg(app: Option<&AppHandle>) -> AppResult<PathBuf> {
     } else {
         "ffmpeg"
     }));
-    for candidate in candidates {
-        let works = Command::new(&candidate)
-            .arg("-version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        if works {
-            return Ok(candidate);
-        }
-    }
-    Err(AppError::Message(
-        "未找到 FFmpeg；LeRobot v2 视频导出需要随应用分发的 FFmpeg sidecar".into(),
-    ))
+    candidates
 }
 
 fn build_features(context: &ExportContext<'_>, fps: u32) -> Value {

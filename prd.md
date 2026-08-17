@@ -4,7 +4,7 @@
 | --- | --- |
 | 产品名称 | DOHC Viewer |
 | 文档版本 | 0.28 |
-| 应用版本基线 | 0.17.44 |
+| 应用版本基线 | 0.17.45 |
 | 文档状态 | 安全 Alpha，三安装器 unsigned CD、固定 IP 更新镜像与平台完整性门禁已定义，等待可信签名与目标机验收 |
 | 发布平台 | Windows 10/11 x64；macOS 12+ arm64；Ubuntu 22.04+ x86_64 deb |
 | 文档日期 | 2026-08-17 |
@@ -71,6 +71,7 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-033 | 登录会话是数据 IPC 的安全边界。未选择登录模式时返回 `WORKSPACE_MODE_REQUIRED`，无会话时返回 `AUTH_REQUIRED`；旧版持久化的离线选择升级后转换为登录模式，任何显式离线选择均返回 `OFFLINE_MODE_DISABLED`。退出必须清空当前工作区状态。 |
 | D-034 | 顶部当前版本旁提供只读历史版本入口，按 Changelog 展示带日期的发布记录；历史列表不提供任意降级或安装能力。 |
 | D-035 | 管理员登录后进入应用内监管工作台，可查看账号任务分配、当天及累计完成数量和平均完成时间，并维护任务说明；普通账号不得访问监管 API。 |
+| D-036 | 读取流程同时识别 `h264-split-mp4-v1` 记录：根级 `manifest.json` 声明五路固定流的分段 MP4、帧率、帧数和分辨率，`states.jsonl` 使用 60 Hz `batch_id` 主时间轴并允许位姿位于可空的 `pose` 对象中。界面按主时间轴和各流清单帧率只读同步解码预览，不修改或复制 MP4；连续播放必须复用每路持续的视频解码上下文，不得逐帧启动 FFmpeg，运行时本地媒体权限只允许清单列出的、规范化后仍位于当前 episode 内的普通 MP4 文件。隐藏的 recorder benchmark/QC 目录不作为 episode。首版 MP4 兼容范围仅为扫描、状态读取和回放；仍依赖逐帧 JPEG 语义的 MCAP/HDF5/LeRobot adapter 必须后端明确阻断，直至各格式完成 MP4 原生适配与回读验收。 |
 
 ### 3.1 分段标注首版边界
 
@@ -215,6 +216,22 @@ episode/
 - `v1.0` 不递归发现多层嵌套 episode。
 - 扫描时不得跟随符号链接。
 - 记录器应使用 `YYYY-MM-DD_HH-MM-SS` 目录名，不能使用 Windows 保留字符。
+
+MP4 记录可使用以下只读预览结构：
+
+```text
+episode/
+  manifest.json                 storage_format 为 h264-split-mp4-v1
+  cam0/cam0-00000.mp4
+  cam1/cam1-00000.mp4
+  cam2/cam2-00000.mp4
+  t265_left/t265_left-00000.mp4
+  t265_right/t265_right-00000.mp4
+  states.jsonl                  60 Hz batch_id 主时间轴，pose 可空
+```
+
+后续分段按清单中的 `segments[].path` 顺序读取；每一路以清单 `fps` 将主时间轴
+映射到本路帧序号。源 MP4 和清单保持只读，当前不进入三种 JPEG 导出 adapter。
 
 ### 7.2 状态记录
 
@@ -600,7 +617,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 ### 12.3 Ubuntu deb 包要求
 
 - 原生 deb 正式支持 x86_64 Ubuntu 22.04 及以上，文件名固定为 `DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`。
-- deb job 固定在 Ubuntu 22.04 runner 构建。deb 必须声明 `libwebkit2gtk-4.1-0`、`libgtk-3-0`、`libayatana-appindicator3-1` 和 `librsvg2-2`，并用 `apt` 安装后检查 `amd64` 元数据、动态库、应用资源和启动；不得把只解包或只构建当作安装通过。
+- deb job 固定在 Ubuntu 22.04 runner 构建。deb 必须声明 `libwebkit2gtk-4.1-0`、`libgtk-3-0`、`libayatana-appindicator3-1`、`librsvg2-2`、提供 H.264 软件解码的 `gstreamer1.0-libav` 和可用时提供硬件解码的 `gstreamer1.0-vaapi`，并用 `apt` 安装后检查 `amd64` 元数据、动态库、媒体解码插件、应用资源和启动；不得把只解包或只构建当作安装通过。
 - Ubuntu 的扫描、检查、回放和导出不联网且不写源 SD 卡；保存标注需要 episode 可写并只更新根级 `description.json`。自动更新仍只使用 D-031 的固定 IP 镜像。
 
 ### 12.4 正式 CD 与 GitHub Release
@@ -1110,6 +1127,12 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 
 - 管理员登录后进入监管工作台查看并维护任务分配与完成汇总；普通账号继续进入数据工作区。
 - 应用顶部显示当前版本，并提供只读历史版本窗口。
+
+### 14.60 `0.17.45` 挂载源 MP4 同步回放
+
+- 只读识别 `h264-split-mp4-v1` 记录并按 60 Hz 状态主时间轴同步五路分段 MP4。
+- 连续播放复用原生视频解码上下文；Linux 安装包声明 H.264 解码依赖，JPEG 回放路径保持不变。
+- 当前 MP4 支持范围仅为扫描、检查与回放，依赖逐帧 JPEG 的导出格式继续由后端明确阻断。
 
 ## 15. 里程碑
 
