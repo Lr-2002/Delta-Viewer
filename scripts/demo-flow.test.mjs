@@ -130,43 +130,14 @@ if (!browserExecutable) {
     await context.close();
   });
 
-  test("offline mode enters the local workspace without an account or user-center request", async () => {
+  test("offline mode is unavailable and managed login is required", async () => {
     const context = await browser.newContext({ viewport: cleanViewport });
     const page = await context.newPage();
-    const requests = [];
-    page.on("request", (request) => requests.push(request.url()));
     await page.goto(baseUrl, { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "离线模式" }).click();
-    await page.getByRole("button", { name: "仍要标注" }).click();
-    await page.getByText("多路回放", { exact: true }).waitFor();
-    assert.equal(await page.locator('input[autocomplete="username"]').count(), 0);
-    assert.equal(await page.getByLabel("退出登录").count(), 0);
-    assert.equal(await page.locator(".account-summary").count(), 0);
-    assert.equal(await page.locator(".annotation-processor").count(), 0);
-    assert.equal(requests.some((url) => url.includes("user-center")), false);
-
-    await page.getByRole("button", { name: "创建任务" }).click();
-    await page.getByLabel("新任务名称").fill("离线整理");
-    await page.locator(".task-create-form button[type=submit]").click();
-    await page.getByLabel("轨迹编码").waitFor();
-    page.once("dialog", (dialog) => dialog.accept());
-    await page.getByRole("button", { name: "删除当前自定义任务" }).click();
-    await page.getByText("任务已删除：离线整理", { exact: true }).waitFor();
-    assert.equal(await page.getByLabel("任务").locator('option[value="离线整理"]').count(), 0);
-    await page.getByRole("button", { name: "创建任务" }).click();
-    await page.getByLabel("新任务名称").fill("离线整理");
-    await page.locator(".task-create-form button[type=submit]").click();
-    await page.waitForFunction(() => document.querySelector('input[aria-label="轨迹编码"]')?.value === "离线整理-001");
-    await page.locator(".annotation-description textarea").fill("离线任务描述");
-    await page.getByRole("button", { name: "保存标注" }).click();
-    await page.getByText("已保存 · r1", { exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
-    if (process.env.DEMO_FLOW_OFFLINE_SCREENSHOT) {
-      await page.screenshot({ path: resolve(root, process.env.DEMO_FLOW_OFFLINE_SCREENSHOT), fullPage: true });
-    }
-
-    await page.getByLabel("切换工作模式").click();
-    await page.getByText("选择工作模式", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "离线模式" }).count(), 0);
+    await page.getByRole("button", { name: "登录工作区" }).click();
+    await page.locator('input[autocomplete="username"]').waitFor();
+    assert.equal(await page.getByText("多路回放", { exact: true }).count(), 0);
     await context.close();
   });
 
@@ -605,8 +576,8 @@ if (!browserExecutable) {
 
 async function registerDemoAccount(page, url, suffix) {
   await page.goto(url, { waitUntil: "networkidle" });
-  if (await page.getByRole("button", { name: "统一管理模式" }).count()) {
-    await page.getByRole("button", { name: "统一管理模式" }).click();
+  if (await page.getByRole("button", { name: "登录工作区" }).count()) {
+    await page.getByRole("button", { name: "登录工作区" }).click();
   }
   await page.getByLabel("显示名称").fill("Demo Test");
   await page.locator('input[autocomplete="username"]').fill(`demo-${suffix}`);

@@ -154,14 +154,10 @@ pub async fn record_annotation_audit(
 ) -> AppResult<()> {
     let token = state.managed_token()?;
     let config = load_config(data_root)?;
-    let episode_id = blake3::hash(request.source_path.as_bytes())
-        .to_hex()
-        .to_string();
     let response = client_for(&config)?
         .post(endpoint(&config, "api/v1/audit/events")?)
         .bearer_auth(token)
         .json(&serde_json::json!({
-            "episodeId": episode_id,
             "taskId": request.task_id,
             "trajectoryCode": request.trajectory_code,
             "action": request.action,

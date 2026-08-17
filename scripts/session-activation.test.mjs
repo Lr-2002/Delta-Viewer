@@ -136,8 +136,8 @@ async function openActivationScenario() {
   page.on("requestfailed", (request) => failedRequests.push(request.url()));
 
   await page.goto(`${baseUrl}/?demoScenario=session-activation`, { waitUntil: "networkidle" });
-  if (await page.getByRole("button", { name: "统一管理模式" }).count()) {
-    await page.getByRole("button", { name: "统一管理模式" }).click();
+  if (await page.getByRole("button", { name: "登录工作区" }).count()) {
+    await page.getByRole("button", { name: "登录工作区" }).click();
   }
   const inputs = page.locator("input");
   await inputs.nth(0).fill("Session QA");

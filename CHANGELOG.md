@@ -5,7 +5,7 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
-## 0.17.43 - 2026-08-14
+## 0.17.45 - 2026-08-17
 
 - Added read-only discovery and synchronized preview-frame decoding for recorder
   sessions using `h264-split-mp4-v1`, including nested `pose` state records and
@@ -36,36 +36,17 @@ after `main` CI succeeds for a coordinated version change.
 - Restored the original per-frame clock for JPEG recordings and made native MP4
   playback apply the selected timeline position both at play start and after metadata loads.
 
-## 0.17.42 - 2026-08-13
+## 0.17.44 - 2026-08-17
 
-- Added authenticated managed-mode annotation activity auditing and a role-gated administrator dashboard with operation timelines, saved-task counts and a reserved quality-score field; offline work remains local and sends no audit events.
-- Reused the desktop application's unified login window for both account types: operators enter the data workspace, while administrators are routed directly to the in-app supervision dashboard.
-- Reworked supervision around per-account assignments, completions today, unique lifetime video completions and average first-save duration while retaining detailed audit events without displaying them.
-- Added a second supervision module that read-only scans a user-selected mounted NAS task root, merges dated task folders and shows completed `description.json` episodes against total `states.jsonl` episodes.
-- Accepted flat `seed_deliver` episode directories as a task source by deriving task names from their optional date prefix and trailing sequence number.
-- Made task names expandable with centrally persisted details, supporting external JSON import and administrator-authored fallback text without writing to the NAS source.
-- Split supervision into a dedicated `/supervision` page so KPI and activity review no longer shares the account-creation interface.
-- Removed free-form segment-name editing while retaining annotation, merge-delete and imported-template selection for manually split intervals.
-- Preserved the imported task-template segment selector for manually split intervals without restoring the free-form segment-name field or inventing frame boundaries absent from the template JSON.
-- Allowed the user-center administration page to call its same-origin HTTPS API,
-  restoring browser-based administrator initialization, login and account creation.
-- Installed the Rustls cryptography provider before constructing HTTPS clients on
-  macOS and Linux, preventing managed-mode startup from closing the application.
-- Restricted Rustls user-center verification to the certificate embedded in the
-  imported configuration, allowing pinned self-signed LAN certificates to connect.
-- Separated the user-center local CA from its server leaf certificate and migrated
-  existing self-signed deployments, avoiding `CaUsedAsEndEntity` TLS rejection.
-- Added a compact, read-only release-history button beside the current version;
-  it lists every dated Changelog entry without allowing arbitrary installs or downgrades.
-- Kept the release-history interface fully Chinese while preserving the repository
-  Changelog as the complete technical source of truth.
-- Added distinct Chinese summaries for all 59 dated releases instead of repeating
-  only each version's update-item count.
-- Preserved every original Changelog item behind an expandable full-record control
-  for each release, so the Chinese summaries no longer hide technical detail.
-- Kept the segment-template control visible for tasks without configured segments,
-  with a disabled state and an actionable JSON-import hint instead of silently
-  falling back to the legacy-looking name and note fields.
+- Added an administrator-only supervision dashboard for task assignments and completion metrics, plus an in-app history view for installed and prior release versions.
+
+## 0.17.43 - 2026-08-17
+
+- Updated browser regression flows to select the renamed “登录工作区” entry and assert that the retired offline entry stays unavailable, restoring CI coverage after unified login became mandatory.
+
+## 0.17.42 - 2026-08-12
+
+- Require every data user to sign in through the pinned-certificate LAN user center, upload an idempotent annotation audit event after each save, and expose administrator-only per-user task-count, operation-count, and annotation-duration totals for later KPI quality scoring.
 
 ## 0.17.41 - 2026-08-11
 

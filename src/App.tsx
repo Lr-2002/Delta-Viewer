@@ -135,6 +135,9 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.45": "新增挂载源 h264-split-mp4-v1 五路同步回放，并补齐 Linux H.264 解码依赖与发布校验。",
+  "0.17.44": "新增管理员监管工作台、任务分配与完成汇总，以及应用内只读历史版本查看。",
+  "0.17.43": "修复登录入口浏览器回归检查，使正式发布安装包恢复自动构建。",
   "0.17.42": "修复用户中心管理页、Rustls 初始化和固定证书链，新增只读历史版本入口，并恢复仅编辑注解的片段界面。",
   "0.17.41": "新增本地任务模板 JSON 导入、手动分段标题复用及轨迹位置缺失检查。",
   "0.17.40": "完善标注警告确认流程，并修复确认结束后的 session 焦点恢复。",
@@ -487,13 +490,12 @@ function App() {
 
   useEffect(() => {
     if (!data || authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
-    const sourcePath = data.summary.root;
     const taskId = selectedTaskId ?? annotation?.taskId ?? "";
     const trajectoryCode = annotation?.trajectoryCode ?? "";
-    void recordAnnotationAudit({ sourcePath, taskId, trajectoryCode, action: "annotation_started", occurredAtMs: Date.now() })
+    void recordAnnotationAudit({ taskId, trajectoryCode, action: "annotation_started", occurredAtMs: Date.now() })
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
     return () => {
-      void recordAnnotationAudit({ sourcePath, taskId, trajectoryCode, action: "annotation_ended", occurredAtMs: Date.now() });
+      void recordAnnotationAudit({ taskId, trajectoryCode, action: "annotation_ended", occurredAtMs: Date.now() });
     };
   }, [data?.summary.root, authStatus?.workspaceMode, authStatus?.currentUser?.username]);
 
@@ -993,7 +995,6 @@ function App() {
   function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "") {
     if (!data || authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
     void recordAnnotationAudit({
-      sourcePath: data.summary.root,
       taskId,
       trajectoryCode,
       action,

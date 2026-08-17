@@ -51,7 +51,11 @@ pub fn restore(data_root: &Path, state: &AuthState) -> AppResult<()> {
             latest = Some((path, record));
         }
     }
-    state.set_workspace_mode(latest.and_then(|(_, record)| record.selection))
+    let restored = latest.and_then(|(_, record)| record.selection);
+    state.set_workspace_mode(match restored {
+        Some(WorkspaceMode::Offline) => Some(WorkspaceMode::Managed),
+        other => other,
+    })
 }
 
 pub fn select(
@@ -59,6 +63,11 @@ pub fn select(
     state: &AuthState,
     selection: Option<WorkspaceMode>,
 ) -> AppResult<()> {
+    if selection == Some(WorkspaceMode::Offline) {
+        return Err(AppError::Message(
+            "OFFLINE_MODE_DISABLED: 所有用户必须登录用户中心".into(),
+        ));
+    }
     let record = WorkspaceModeRecord {
         format_version: MODE_RECORD_FORMAT_VERSION,
         selection,
@@ -149,7 +158,7 @@ mod tests {
                 .as_nanos()
         ));
         let state = AuthState::default();
-        select(&root, &state, Some(WorkspaceMode::Offline)).unwrap();
+        assert!(select(&root, &state, Some(WorkspaceMode::Offline)).is_err());
         select(&root, &state, Some(WorkspaceMode::Managed)).unwrap();
         let restored = AuthState::default();
         restore(&root, &restored).unwrap();
