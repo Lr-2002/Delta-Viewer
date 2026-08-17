@@ -5,6 +5,10 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.43 - 2026-08-17
+
+- Updated browser regression flows to select the renamed “登录工作区” entry and assert that the retired offline entry stays unavailable, restoring CI coverage after unified login became mandatory.
+
 ## 0.17.42 - 2026-08-12
 
 - Require every data user to sign in through the pinned-certificate LAN user center, upload an idempotent annotation audit event after each save, and expose administrator-only per-user task-count, operation-count, and annotation-duration totals for later KPI quality scoring.
