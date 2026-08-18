@@ -48,17 +48,48 @@ function bodyUp(frame: SkeletonFrame, jointCount: number): THREE.Vector3 | null 
   return null;
 }
 
+function bodyRight(frame: SkeletonFrame, jointCount: number): THREE.Vector3 | null {
+  const pairs: [number, number][] = jointCount >= 24
+    ? [[2, 1], [14, 13], [17, 16], [8, 7]]
+    : jointCount >= 17
+      ? [[12, 11], [6, 5]]
+      : [];
+  for (const [rightIndex, leftIndex] of pairs) {
+    const right = pointAt(frame, rightIndex);
+    const left = pointAt(frame, leftIndex);
+    if (!right || !left) continue;
+    const direction = right.sub(left);
+    if (direction.lengthSq() > 1e-8) return direction;
+  }
+  return null;
+}
+
 export function createSkeletonAlignment(skeleton: SkeletonSeries): THREE.Quaternion {
   const { frames, jointCount } = skeleton;
   const sampleCount = Math.min(MAX_ALIGNMENT_SAMPLES, frames.length);
-  const average = new THREE.Vector3();
+  const averageUp = new THREE.Vector3();
   for (let sample = 0; sample < sampleCount; sample += 1) {
     const index = sampleCount <= 1 ? 0 : Math.round((sample * (frames.length - 1)) / (sampleCount - 1));
     const direction = bodyUp(frames[index], jointCount);
-    if (direction) average.add(direction.normalize());
+    if (direction) averageUp.add(direction.normalize());
   }
-  if (average.lengthSq() <= 1e-8) return new THREE.Quaternion();
-  return new THREE.Quaternion().setFromUnitVectors(average.normalize(), WORLD_UP);
+  const vertical = averageUp.lengthSq() <= 1e-8
+    ? new THREE.Quaternion()
+    : new THREE.Quaternion().setFromUnitVectors(averageUp.normalize(), WORLD_UP);
+
+  // Keep a stable front view after the vertical Y-up alignment. In the normalized
+  // basis, a body's right side maps to +X, so its front faces the +Z camera.
+  const averageRight = new THREE.Vector3();
+  for (let sample = 0; sample < sampleCount; sample += 1) {
+    const index = sampleCount <= 1 ? 0 : Math.round((sample * (frames.length - 1)) / (sampleCount - 1));
+    const direction = bodyRight(frames[index], jointCount);
+    if (!direction) continue;
+    direction.applyQuaternion(vertical).setY(0);
+    if (direction.lengthSq() > 1e-8) averageRight.add(direction.normalize());
+  }
+  if (averageRight.lengthSq() <= 1e-8) return vertical;
+  const yaw = -Math.atan2(averageRight.z, averageRight.x);
+  return new THREE.Quaternion().setFromAxisAngle(WORLD_UP, yaw).multiply(vertical);
 }
 
 export function transformSkeletonPoint(

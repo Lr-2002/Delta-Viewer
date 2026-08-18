@@ -30,9 +30,9 @@ use model::{
     EpisodeData, EpisodeValidationResult, ExportCommandRequest, ExportResult, FramePayload,
     ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
     ProgressPayload, RecordOperationErrorRequest, ReportExportResult, SaveAnnotationRequest,
-    ScanResult, SupervisionAccount, SupervisionDashboardData, SupervisionTaskCatalog,
-    SupervisionTaskDetail, TaskDefinition, UserCenterStatus, UserIdentity, VideoSource,
-    WorkspaceMode,
+    ScanResult, SupervisionAccount, SupervisionAnnotationCatalog, SupervisionDashboardData,
+    SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition, UserCenterStatus, UserIdentity,
+    VideoSource, WorkspaceMode,
 };
 use source_index_cache::SourceIndexCache;
 use std::path::{Path, PathBuf};
@@ -345,6 +345,25 @@ async fn import_supervision_task_details(
     user_center::import_task_details(&data_root, auth.inner(), Path::new(&config_path))
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn import_supervision_annotations(
+    auth: State<'_, AuthState>,
+    config_path: String,
+) -> Result<SupervisionAnnotationCatalog, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账户".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        supervision::import_annotation_catalog(Path::new(&config_path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1040,6 +1059,7 @@ pub fn run() {
             scan_supervision_tasks,
             update_supervision_task_detail,
             import_supervision_task_details,
+            import_supervision_annotations,
             list_task_definitions,
             list_assigned_task_definitions,
             get_assigned_tasks,

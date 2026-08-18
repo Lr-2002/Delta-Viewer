@@ -41,6 +41,20 @@ test("keeps an already Y-up skeleton unchanged", () => {
   assertClose(head.z, 0);
 });
 
+test("keeps the body front-facing after standing alignment", () => {
+  const points = Array.from({ length: 24 }, () => [0, 0, 0] as [number, number, number]);
+  points[0] = [0, 0, 0];
+  points[15] = [0, 0, 2];
+  points[1] = [-1, 0, 0];
+  points[2] = [1, 0, 0];
+  const series = skeleton(points);
+  const alignment = createSkeletonAlignment(series);
+  const leftHip = transformSkeletonPoint(points[1], skeletonOrigin(series.frames[0], 24), alignment);
+  const rightHip = transformSkeletonPoint(points[2], skeletonOrigin(series.frames[0], 24), alignment);
+  assert.ok(rightHip.x > leftHip.x);
+  assertClose(rightHip.z, leftHip.z);
+});
+
 test("uses the hip midpoint as the COCO standing origin", () => {
   const points = Array.from({ length: 17 }, () => [0, 0, 0] as [number, number, number]);
   points[5] = [-1, 0, 2];
