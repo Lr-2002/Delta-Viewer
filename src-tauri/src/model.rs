@@ -85,6 +85,45 @@ pub struct SupervisionTaskCatalog {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SupervisionAnnotationCatalog {
+    pub source_name: String,
+    pub users: Vec<SupervisionAnnotationUserSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionAnnotationUserSummary {
+    pub username: String,
+    pub display_name: String,
+    pub trajectory_count: u64,
+    pub segment_count: u64,
+    pub annotated_frame_count: u64,
+    pub tasks: Vec<SupervisionAnnotationTaskSummary>,
+    pub entries: Vec<SupervisionAnnotationEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionAnnotationTaskSummary {
+    pub task_id: String,
+    pub trajectory_count: u64,
+    pub segment_count: u64,
+    pub annotated_frame_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionAnnotationEntry {
+    pub task_id: String,
+    pub trajectory_code: String,
+    pub revision: u64,
+    pub segment_count: u64,
+    pub annotated_frame_count: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AuthStatus {
     pub workspace_mode: Option<WorkspaceMode>,
     pub user_center: UserCenterStatus,
