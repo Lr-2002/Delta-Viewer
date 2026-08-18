@@ -112,7 +112,7 @@ test("drops queued read-ahead when playback pauses", async () => {
   const current = cache.requestCurrent({ root, stream, frameId: 0 });
   cache.scheduleReadAhead({ root, stream, frameId: 0, endFrame: 8 });
   await flushScheduler();
-  assert.equal(cache.pendingWorkCountForStream(root, stream), 1 + FRAME_READ_AHEAD_FRAMES);
+  assert.equal(cache.pendingWorkCountForStream(root, stream), 1 + Math.min(FRAME_READ_AHEAD_FRAMES, 8));
 
   cache.discardReadAhead(root, stream);
   assert.equal(cache.pendingWorkCountForStream(root, stream), 1);
@@ -145,6 +145,31 @@ test("drops queued read-ahead when a cached frame becomes current", async () => 
   await current;
   await flushScheduler();
   assert.deepEqual(loads.map(({ request }) => request.frameId), [0]);
+});
+
+test("retains sequential read-ahead during continuous playback", async () => {
+  const loads = [];
+  const cache = new FrameCache((request) => {
+    const next = deferred();
+    loads.push({ next, request });
+    return next.promise;
+  });
+  const request = { root: "/episode", stream: "cam0", frameId: 0 };
+
+  const current = cache.requestCurrent(request);
+  cache.scheduleReadAhead({ ...request, endFrame: 195 });
+  await flushScheduler();
+  loads[0].next.resolve("cam0-0");
+  await current;
+  await flushScheduler();
+
+  const next = cache.requestCurrent({ ...request, frameId: 1 }, { preserveReadAhead: true });
+  cache.scheduleReadAhead({ ...request, frameId: 1, endFrame: 195 });
+  assert.equal(cache.pendingWorkCountForStream(request.root, request.stream), 1 + FRAME_READ_AHEAD_FRAMES);
+  loads[1].next.resolve("cam0-1");
+  await next;
+  await flushScheduler();
+  assert.equal(loads[2].request.frameId, 2);
 });
 
 test("never schedules read-ahead beyond the clip end", async () => {

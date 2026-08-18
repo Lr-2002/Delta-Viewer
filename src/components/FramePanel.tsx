@@ -69,6 +69,7 @@ export function FramePanel({
   const stagedSlotRef = useRef<FrameSlotIndex | null>(null);
   const visibleSlotRef = useRef<FrameSlotIndex>(0);
   const unavailableFrameRef = useRef<string | null>(null);
+  const lastRequestedFrameRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const requestedVideoTimeRef = useRef(0);
   const [nativeVideo, setNativeVideo] = useState<VideoSource | null>(null);
@@ -202,8 +203,15 @@ export function FramePanel({
     if (nativeVideoActive) return;
     let active = true;
     const effectRequestKey = requestKey;
+    const previousFrame = lastRequestedFrameRef.current;
+    const retainsSequentialReadAhead = playing
+      && (previousFrame === fallbackFrameId || previousFrame === fallbackFrameId - 1);
+    lastRequestedFrameRef.current = fallbackFrameId;
     if (requestedKeyRef.current === effectRequestKey) setStatus("loading");
-    frameCache.requestCurrent({ root, stream: stream.name, frameId: fallbackFrameId })
+    frameCache.requestCurrent(
+      { root, stream: stream.name, frameId: fallbackFrameId },
+      { preserveReadAhead: retainsSequentialReadAhead },
+    )
       .then((frame) => {
         if (
           !active

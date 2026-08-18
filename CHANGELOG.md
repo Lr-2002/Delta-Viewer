@@ -5,6 +5,16 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.46 - 2026-08-18
+
+- Made Camera 0 fill its review tile while retaining the original aspect-safe
+  layout for the other camera views.
+- Aligned SMPL/COCO skeletons upright on their actual ground plane, with a
+  stable front-facing initial view and a slightly downward camera angle.
+- Restored JPEG review playback to strictly sequential frame progression while
+  applying the selected playback speed through the frame clock instead of frame
+  skipping, and retained bounded read-ahead work during continuous playback.
+
 ## 0.17.45 - 2026-08-17
 
 - Added read-only discovery and synchronized preview-frame decoding for recorder
