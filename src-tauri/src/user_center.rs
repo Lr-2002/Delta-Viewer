@@ -1,8 +1,9 @@
 use crate::error::{AppError, AppResult};
 use crate::identity::AuthState;
 use crate::model::{
-    AuthStatus, LoginRequest, SupervisionAccount, SupervisionDashboardData, SupervisionEvent,
-    SupervisionTaskDetail, SupervisionUserSummary, UserCenterStatus, UserIdentity,
+    AssignedTask, AuthStatus, LoginRequest, SupervisionAccount, SupervisionDashboardData,
+    SupervisionEvent, SupervisionTaskDetail, SupervisionTaskImportResult, SupervisionUserSummary,
+    UserCenterStatus, UserIdentity,
 };
 use crate::storage;
 use reqwest::{Certificate, Client, Url};
@@ -172,6 +173,29 @@ pub async fn record_annotation_audit(
     Ok(())
 }
 
+pub async fn assigned_tasks(data_root: &Path, state: &AuthState) -> AppResult<Vec<AssignedTask>> {
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let response = client_for(&config)?
+        .get(endpoint(&config, "api/v1/tasks/assigned")?)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    #[derive(Deserialize)]
+    struct AssignedTasksResponse {
+        tasks: Vec<AssignedTask>,
+    }
+    response
+        .json::<AssignedTasksResponse>()
+        .await
+        .map(|result| result.tasks)
+        .map_err(|error| AppError::Message(format!("用户中心任务分配响应无效: {error}")))
+}
+
 pub async fn supervision_dashboard(
     data_root: &Path,
     state: &AuthState,
@@ -246,7 +270,7 @@ pub async fn import_task_details(
     data_root: &Path,
     state: &AuthState,
     source_path: &Path,
-) -> AppResult<Vec<SupervisionTaskDetail>> {
+) -> AppResult<SupervisionTaskImportResult> {
     require_supervisor(state)?;
     let metadata = fs::symlink_metadata(source_path)?;
     if !metadata.file_type().is_file() || metadata.len() > 16 * 1024 {
@@ -261,6 +285,7 @@ pub async fn import_task_details(
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| AppError::Message("TASK_DETAIL_IMPORT_INVALID: 缺少 tasks 数组".into()))?;
     let mut entries = Vec::with_capacity(tasks.len());
+    let mut imported_task_names = Vec::with_capacity(tasks.len());
     for item in tasks {
         let task = item
             .get("task")
@@ -278,6 +303,7 @@ pub async fn import_task_details(
                     .and_then(serde_json::Value::as_str)
             })
             .unwrap_or("");
+        imported_task_names.push(task.to_owned());
         entries.push(serde_json::json!({ "task": task, "detail": detail }));
     }
     if entries.is_empty() || entries.len() > 500 {
@@ -285,14 +311,18 @@ pub async fn import_task_details(
             "TASK_DETAIL_IMPORT_INVALID: 任务详情数量必须是 1-500".into(),
         ));
     }
-    send_task_details(
+    let task_details = send_task_details(
         data_root,
         state,
         "api/v1/admin/task-details/import",
         reqwest::Method::POST,
         entries,
     )
-    .await
+    .await?;
+    Ok(SupervisionTaskImportResult {
+        task_details,
+        imported_task_names,
+    })
 }
 
 fn require_supervisor(state: &AuthState) -> AppResult<()> {
@@ -343,7 +373,7 @@ pub async fn set_assigned_tasks(
     data_root: &Path,
     state: &AuthState,
     username: &str,
-    assigned_tasks: u64,
+    assigned_task_quantities: std::collections::BTreeMap<String, u64>,
 ) -> AppResult<SupervisionAccount> {
     let user = state.require_managed_user()?;
     if user.role.as_deref() != Some("admin") {
@@ -357,7 +387,15 @@ pub async fn set_assigned_tasks(
                 || character.is_ascii_digit()
                 || matches!(character, '.' | '_' | '-')
         });
-    if !valid_username || assigned_tasks > 1_000_000 {
+    let valid_tasks = assigned_task_quantities.len() <= 500
+        && assigned_task_quantities.iter().all(|(task, quantity)| {
+            let trimmed = task.trim();
+            !trimmed.is_empty()
+                && trimmed.chars().count() <= 100
+                && trimmed == task
+                && (1..=1_000_000).contains(quantity)
+        });
+    if !valid_username || !valid_tasks {
         return Err(AppError::Message(
             "ASSIGNED_TASKS_INVALID: 任务分配参数无效".into(),
         ));
@@ -370,7 +408,10 @@ pub async fn set_assigned_tasks(
             &format!("api/v1/admin/users/{username}/assignment"),
         )?)
         .bearer_auth(token)
-        .json(&serde_json::json!({ "assignedTasks": assigned_tasks }))
+        .json(&serde_json::json!({
+            "assignedTasks": assigned_task_quantities.values().sum::<u64>(),
+            "assignedTaskQuantities": assigned_task_quantities,
+        }))
         .send()
         .await
         .map_err(user_center_request_error)?;

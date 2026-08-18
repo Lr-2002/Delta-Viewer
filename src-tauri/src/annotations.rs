@@ -159,6 +159,57 @@ pub fn create_task(
     Ok(task)
 }
 
+pub fn ensure_assigned_tasks(
+    data_root: &Path,
+    user: &UserIdentity,
+    assigned: &[(String, String)],
+) -> AppResult<Vec<TaskDefinition>> {
+    let _guard = annotation_mutation_guard()?;
+    identity::validate_user_identity(user)?;
+    let mut tasks = task_definitions(data_root)?;
+    for (label, detail) in assigned {
+        if tasks
+            .iter()
+            .any(|task| task.label.eq_ignore_ascii_case(label))
+        {
+            continue;
+        }
+        if tasks.len() >= MAX_TASKS {
+            return Err(AppError::Message(
+                "TASK_LIMIT_EXCEEDED: 本地任务数量已达到 500".into(),
+            ));
+        }
+        let label = validate_task_label(label)?;
+        let description = validate_description(detail)?;
+        let code_prefix = task_code_prefix(&label)?;
+        if tasks
+            .iter()
+            .any(|task| task.id == code_prefix || task.code_prefix == code_prefix)
+        {
+            return Err(AppError::Message(format!(
+                "TASK_EXISTS: 任务编码 {code_prefix} 已存在"
+            )));
+        }
+        let task = TaskDefinition {
+            id: code_prefix.clone(),
+            label,
+            code_prefix,
+            default_description: description.clone(),
+            description_options: vec![description],
+            default_segments: Vec::new(),
+        };
+        let record = StoredTaskDefinition {
+            format_version: TASK_FORMAT_VERSION,
+            task: task.clone(),
+            created_by: user.clone(),
+            created_at_ms: unix_millis(),
+        };
+        write_json_noreplace(&record, &task_record_path(data_root, &task.id))?;
+        tasks.push(task);
+    }
+    Ok(tasks)
+}
+
 pub fn import_task_template_config(
     data_root: &Path,
     user: &UserIdentity,

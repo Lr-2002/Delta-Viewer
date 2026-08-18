@@ -2,6 +2,8 @@ use crate::error::{AppError, AppResult};
 use crate::model::{SupervisionTaskCatalog, SupervisionTaskSummary};
 use std::collections::BTreeMap;
 use std::fs;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -19,18 +21,21 @@ pub fn scan_task_catalog(root: &Path, cancelled: &AtomicBool) -> AppResult<Super
     }
 
     let directories = read_directories(&root)?;
-    let mut tasks: BTreeMap<String, (String, u64, u64)> = BTreeMap::new();
+    let mut tasks: BTreeMap<String, (String, u64, u64, u64, u64)> = BTreeMap::new();
     for entry in &directories {
         ensure_active(cancelled)?;
         let Some(task) = task_name(entry) else {
             continue;
         };
         let key = task.to_ascii_lowercase();
-        let row = tasks.entry(key).or_insert((task, 0, 0));
+        let row = tasks.entry(key).or_insert((task, 0, 0, 0, 0));
         for episode in episode_directories(entry, cancelled)? {
+            let frames = count_state_frames(&episode.join("states.jsonl"), cancelled)?;
             row.2 = row.2.saturating_add(1);
+            row.4 = row.4.saturating_add(frames);
             if is_regular_file(&episode.join("description.json"))? {
                 row.1 = row.1.saturating_add(1);
+                row.3 = row.3.saturating_add(frames);
             }
         }
     }
@@ -44,10 +49,13 @@ pub fn scan_task_catalog(root: &Path, cancelled: &AtomicBool) -> AppResult<Super
                 continue;
             };
             let key = task.to_ascii_lowercase();
-            let row = tasks.entry(key).or_insert((task, 0, 0));
+            let row = tasks.entry(key).or_insert((task, 0, 0, 0, 0));
+            let frames = count_state_frames(&episode.join("states.jsonl"), cancelled)?;
             row.2 = row.2.saturating_add(1);
+            row.4 = row.4.saturating_add(frames);
             if is_regular_file(&episode.join("description.json"))? {
                 row.1 = row.1.saturating_add(1);
+                row.3 = row.3.saturating_add(frames);
             }
         }
     }
@@ -56,13 +64,29 @@ pub fn scan_task_catalog(root: &Path, cancelled: &AtomicBool) -> AppResult<Super
         source_path: root.to_string_lossy().into_owned(),
         tasks: tasks
             .into_values()
-            .map(|(task, completed, total)| SupervisionTaskSummary {
-                task,
-                completed,
-                total,
+            .map(|(task, completed, total, completed_frames, total_frames)| {
+                SupervisionTaskSummary {
+                    task,
+                    completed,
+                    total,
+                    completed_frames,
+                    total_frames,
+                }
             })
             .collect(),
     })
+}
+
+fn count_state_frames(path: &Path, cancelled: &AtomicBool) -> AppResult<u64> {
+    let reader = BufReader::new(File::open(path)?);
+    let mut count = 0_u64;
+    for line in reader.lines() {
+        ensure_active(cancelled)?;
+        if !line?.trim().is_empty() {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
 }
 
 fn episode_directories(task_root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathBuf>> {
@@ -209,6 +233,7 @@ mod tests {
             .find(|task| task.task == "BedMaking")
             .unwrap();
         assert_eq!((bed.completed, bed.total), (1, 2));
+        assert_eq!((bed.completed_frames, bed.total_frames), (0, 0));
         let picking = result
             .tasks
             .iter()

@@ -38,6 +38,7 @@ import type {
   SupervisionAccount,
   SupervisionTaskCatalog,
   SupervisionTaskDetail,
+  SupervisionTaskImportResult,
   TaskProgress,
   TaskDefinition,
   UserIdentity,
@@ -163,9 +164,9 @@ export async function getSupervisionDashboard(): Promise<SupervisionDashboardDat
   throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
 }
 
-export async function setSupervisionAssignedTasks(username: string, assignedTasks: number): Promise<SupervisionAccount> {
+export async function setSupervisionAssignedTasks(username: string, assignedTaskQuantities: Record<string, number>): Promise<SupervisionAccount> {
   if (isTauriRuntime()) {
-    return invoke<SupervisionAccount>("set_supervision_assigned_tasks", { username, assignedTasks });
+    return invoke<SupervisionAccount>("set_supervision_assigned_tasks", { username, assignedTaskQuantities });
   }
   throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
 }
@@ -189,7 +190,7 @@ export async function updateSupervisionTaskDetail(task: string, detail: string):
   throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
 }
 
-export async function importSupervisionTaskDetails(): Promise<SupervisionTaskDetail[] | null> {
+export async function importSupervisionTaskDetails(): Promise<SupervisionTaskImportResult | null> {
   if (!isTauriRuntime()) throw new Error("监管任务详情只能在桌面应用中导入");
   const selection = await open({
     directory: false,
@@ -198,7 +199,7 @@ export async function importSupervisionTaskDetails(): Promise<SupervisionTaskDet
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
   if (typeof selection !== "string") return null;
-  return invoke<SupervisionTaskDetail[]>("import_supervision_task_details", { configPath: selection });
+  return invoke<SupervisionTaskImportResult>("import_supervision_task_details", { configPath: selection });
 }
 
 export async function logoutLocalAccount(): Promise<void> {
@@ -209,6 +210,11 @@ export async function logoutLocalAccount(): Promise<void> {
 export async function listTaskDefinitions(): Promise<TaskDefinition[]> {
   if (isTauriRuntime()) return invoke<TaskDefinition[]>("list_task_definitions");
   return demoTaskDefinitions.map((task) => ({ ...task }));
+}
+
+export async function listAssignedTaskDefinitions(): Promise<TaskDefinition[]> {
+  if (isTauriRuntime()) return invoke<TaskDefinition[]>("list_assigned_task_definitions");
+  return listTaskDefinitions();
 }
 
 export async function createTaskDefinition(request: CreateTaskRequest): Promise<TaskDefinition> {

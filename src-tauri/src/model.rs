@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const STREAM_NAMES: [&str; 5] = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
 pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 7;
@@ -21,6 +22,10 @@ pub struct SupervisionUserSummary {
     pub display_name: String,
     pub role: String,
     pub assigned_tasks: u64,
+    #[serde(default)]
+    pub assigned_task_names: Vec<String>,
+    #[serde(default)]
+    pub assigned_task_quantities: BTreeMap<String, u64>,
     pub completed_today: u64,
     pub total_completed: u64,
     pub average_completion_ms: Option<u64>,
@@ -46,6 +51,10 @@ pub struct SupervisionAccount {
     pub display_name: String,
     pub role: String,
     pub assigned_tasks: u64,
+    #[serde(default)]
+    pub assigned_task_names: Vec<String>,
+    #[serde(default)]
+    pub assigned_task_quantities: BTreeMap<String, u64>,
     pub created_at_ms: u64,
 }
 
@@ -68,12 +77,29 @@ pub struct SupervisionTaskDetail {
     pub updated_by: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionTaskImportResult {
+    pub task_details: Vec<SupervisionTaskDetail>,
+    pub imported_task_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignedTask {
+    pub task: String,
+    pub detail: String,
+    pub quantity: u64,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SupervisionTaskSummary {
     pub task: String,
     pub completed: u64,
     pub total: u64,
+    pub completed_frames: u64,
+    pub total_frames: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -101,10 +101,12 @@ test("user center only allows administrator-created accounts", async () => {
     assert.equal(operator.status, 200);
     assert.equal(operator.body.user.role, "operator");
     const assigned = await request(port, ca, "PUT", "/api/v1/admin/users/operator/assignment", {
-      assignedTasks: 12,
+      assignedTaskQuantities: { BedMaking: 3, Bedsheet: 2 },
     }, login.body.token);
     assert.equal(assigned.status, 200);
-    assert.equal(assigned.body.user.assignedTasks, 12);
+    assert.equal(assigned.body.user.assignedTasks, 5);
+    assert.deepEqual(assigned.body.user.assignedTaskNames, ["BedMaking", "Bedsheet"]);
+    assert.deepEqual(assigned.body.user.assignedTaskQuantities, { BedMaking: 3, Bedsheet: 2 });
     const editedDetail = await request(port, ca, "PUT", "/api/v1/admin/task-details", {
       task: "Bedsheet",
       detail: "整理床单并完成整段视频标注。",
@@ -116,6 +118,12 @@ test("user center only allows administrator-created accounts", async () => {
     }, login.body.token);
     assert.equal(importedDetail.status, 200);
     assert.equal(importedDetail.body.taskDetails.length, 2);
+    const operatorTasks = await request(port, ca, "GET", "/api/v1/tasks/assigned", null, operator.body.token);
+    assert.equal(operatorTasks.status, 200);
+    assert.deepEqual(operatorTasks.body.tasks, [
+      { task: "BedMaking", quantity: 3, detail: "BedMaking" },
+      { task: "Bedsheet", quantity: 2, detail: "整理床单并完成整段视频标注。" },
+    ]);
     const startedAtMs = Date.now() - 60_000;
     const started = await request(port, ca, "POST", "/api/v1/audit/events", {
       episodeId: "12345678abcdef00",
@@ -144,7 +152,9 @@ test("user center only allows administrator-created accounts", async () => {
     const audit = await request(port, ca, "GET", "/api/v1/admin/audit", null, login.body.token);
     assert.equal(audit.status, 200);
     const operatorSummary = audit.body.users.find((user) => user.username === "operator");
-    assert.equal(operatorSummary.assignedTasks, 12);
+    assert.equal(operatorSummary.assignedTasks, 5);
+    assert.deepEqual(operatorSummary.assignedTaskNames, ["BedMaking", "Bedsheet"]);
+    assert.deepEqual(operatorSummary.assignedTaskQuantities, { BedMaking: 3, Bedsheet: 2 });
     assert.equal(operatorSummary.completedToday, 1);
     assert.equal(operatorSummary.totalCompleted, 1);
     assert.ok(operatorSummary.averageCompletionMs >= 60_000);

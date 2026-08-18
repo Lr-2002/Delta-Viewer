@@ -90,9 +90,77 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .supervision-section td > strong, .supervision-section td > small { display: block; }
 .supervision-section td > small { margin-top: 3px; }
 .supervision-number { font-size: 15px !important; font-weight: 700; font-variant-numeric: tabular-nums; }
+.overview-heading { align-items: flex-start; }
+.overview-heading > div > small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; }
+.account-overview-table { min-width: 1080px !important; table-layout: fixed; }
+.account-overview-table .account-column { width: 16%; }
+.account-overview-table .assignment-column { width: 28%; }
+.account-overview-table .count-column { width: 9%; }
+.account-overview-table .duration-column { width: 13%; }
+.account-overview-table .frame-column { width: 12.5%; }
+.account-overview-table th:nth-child(n + 3),
+.account-overview-table td:nth-child(n + 3) { text-align: center; }
+.account-overview-table th { white-space: nowrap; }
+.account-overview-table td { height: 58px; vertical-align: middle; }
 .assignment-control { display: flex; align-items: center; gap: 7px; }
 .assignment-control input { width: 92px; height: 34px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--surface); font-size: 12px; }
 .assignment-control .button { min-height: 34px; }
+.assignment-summary-button { width: min(100%, 260px); min-height: 42px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); text-align: left; }
+.assignment-summary-button:hover, .assignment-summary-button.active { border-color: var(--ink); background: var(--surface-alt); }
+.assignment-summary-button strong { min-width: 25px; font-size: 16px; text-align: center; }
+.assignment-summary-button span { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.assignment-workbench { padding: 0; overflow: hidden; }
+.assignment-workbench > .supervision-section-heading { margin: 0; padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+.assignment-workbench > .supervision-section-heading > div > small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; }
+.assignment-layout { min-height: 390px; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+.operator-list { border-right: 1px solid var(--line); background: var(--surface-alt); }
+.operator-list > header { height: 45px; display: flex; align-items: center; gap: 7px; padding: 0 14px; border-bottom: 1px solid var(--line); font-size: 10px; }
+.operator-list > header span { margin-left: auto; min-width: 20px; padding: 2px 6px; border-radius: 10px; background: var(--ink); color: var(--surface); text-align: center; }
+.operator-list > button { width: 100%; min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 9px 14px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; }
+.operator-list > button:hover, .operator-list > button.active { background: var(--surface); }
+.operator-list > button.active { box-shadow: inset 3px 0 0 var(--ink); }
+.operator-list > button span strong, .operator-list > button span small { display: block; }
+.operator-list > button span small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.operator-list > button b { min-width: 25px; padding: 4px 6px; border: 1px solid var(--line-strong); border-radius: 12px; font-size: 9px; text-align: center; }
+.assignment-task-picker { min-width: 0; }
+.assignment-picker-header { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.assignment-picker-header > div strong, .assignment-picker-header > div span { display: block; }
+.assignment-picker-header > div strong { font-size: 12px; }
+.assignment-picker-header > div span { margin-top: 4px; color: var(--muted); font-size: 9px; }
+.assignment-toolbar { display: flex; align-items: center; gap: 7px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface-alt); }
+.assignment-toolbar label { min-width: 180px; flex: 1; display: flex; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--surface); }
+.assignment-toolbar input { width: 100%; height: 32px; border: 0; outline: 0; background: transparent; font-size: 10px; }
+.assignment-toolbar > button { height: 32px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--surface); color: var(--ink); font-size: 9px; }
+.assignment-task-grid { max-height: 460px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 14px 16px; overflow: auto; }
+.assignment-task-grid > button { min-height: 88px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 9px; padding: 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); text-align: left; }
+.assignment-task-grid > button:hover { border-color: var(--line-strong); background: var(--surface-alt); }
+.assignment-task-grid > button.selected { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.assignment-task-grid > button > span strong, .assignment-task-grid > button > span small, .assignment-task-grid > button > span em { display: block; }
+.assignment-task-grid > button > span strong { font-size: 11px; }
+.assignment-task-grid > button > span small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.assignment-task-grid > button > span em { max-height: 28px; margin-top: 7px; overflow: hidden; color: var(--muted); font-size: 9px; font-style: normal; line-height: 1.45; }
+.assignment-task-grid > button > div { min-width: 70px; text-align: right; }
+.assignment-task-grid > button > div b, .assignment-task-grid > button > div small { display: block; }
+.assignment-task-grid > button > div b { font-size: 9px; }
+.assignment-task-grid > button > div small { max-width: 120px; margin-top: 7px; color: var(--muted); font-size: 8px; line-height: 1.35; }
+.assignment-task-card { min-height: 106px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.assignment-task-card:hover { border-color: var(--line-strong); background: var(--surface-alt); }
+.assignment-task-card.selected { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.assignment-task-card > button { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px; padding: 0; border: 0; background: transparent; color: var(--ink); text-align: left; }
+.assignment-task-card > button span strong, .assignment-task-card > button span small, .assignment-task-card > button span em { display: block; }
+.assignment-task-card > button span strong { font-size: 11px; }
+.assignment-task-card > button span small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.assignment-task-card > button span em { max-height: 28px; margin-top: 7px; overflow: hidden; color: var(--muted); font-size: 9px; font-style: normal; line-height: 1.45; }
+.task-card-meta { min-width: 112px; text-align: right; }
+.task-card-meta > b, .task-card-meta > small { display: block; }
+.task-card-meta > b { font-size: 9px; }
+.task-card-meta > small { max-width: 130px; margin-top: 6px; color: var(--muted); font-size: 8px; line-height: 1.35; }
+.task-card-meta label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px; margin-top: 10px; color: var(--muted); font-size: 8px; text-align: left; }
+.task-card-meta label input { grid-row: 2; width: 72px; height: 29px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 10px; font-variant-numeric: tabular-nums; }
+.task-card-meta label span { grid-row: 2; color: var(--muted); font-size: 8px; }
+.assignment-empty { min-height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; color: var(--muted); text-align: center; }
+.assignment-empty strong { color: var(--ink); font-size: 12px; }
+.assignment-empty span { font-size: 9px; }
 .supervision-empty { padding: 22px !important; color: var(--muted); text-align: center !important; font-size: 11px; }
 .supervision-events { max-height: 300px; overflow: auto; border-top: 1px solid var(--line); }
 .supervision-events > div { min-height: 42px; display: grid; grid-template-columns: 150px minmax(110px, .8fr) minmax(100px, .7fr) minmax(120px, 1fr); align-items: center; gap: 12px; border-bottom: 1px solid var(--line); font-size: 10px; }
@@ -115,6 +183,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .task-completion > strong { font-size: 14px; font-variant-numeric: tabular-nums; }
 .task-completion > span { height: 6px; overflow: hidden; border-radius: 4px; background: var(--surface-alt); }
 .task-completion i { display: block; height: 100%; background: var(--ink); }
+.task-count-pending { color: var(--muted); font-size: 9px; }
 .task-catalog-empty { min-height: 150px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; border-top: 1px solid var(--line); color: var(--muted); text-align: center; }
 .task-catalog-empty strong { color: var(--ink); font-size: 12px; }
 .task-catalog-empty span { max-width: 520px; font-size: 10px; line-height: 1.5; }
@@ -143,6 +212,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .supervision-metrics { grid-template-columns: 1fr; }
   .supervision-events > div { grid-template-columns: 1fr 1fr; gap: 5px 10px; padding: 9px 0; }
   .task-catalog-actions { align-items: stretch; flex-direction: column; }
+  .assignment-layout { grid-template-columns: 1fr; }
+  .operator-list { display: flex; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .operator-list > header { display: none; }
+  .operator-list > button { min-width: 170px; border-right: 1px solid var(--line); }
+  .assignment-task-grid { grid-template-columns: 1fr; }
+  .assignment-toolbar { align-items: stretch; flex-wrap: wrap; }
+  .assignment-toolbar label { flex-basis: 100%; }
 }
 
 .app-shell { min-height: 100vh; display: flex; flex-direction: column; }

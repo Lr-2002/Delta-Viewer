@@ -57,6 +57,7 @@ import {
   listAnnotatedEpisodes,
   listOperationErrors,
   listTaskDefinitions,
+  listAssignedTaskDefinitions,
   loadEpisodeAnnotation,
   loadEpisode,
   logoutLocalAccount,
@@ -397,7 +398,9 @@ function App() {
       setTasks([]);
       return;
     }
-    void listTaskDefinitions()
+    void (isManagedWorkspace && authStatus?.currentUser?.role === "operator"
+      ? listAssignedTaskDefinitions()
+      : listTaskDefinitions())
       .then(setTasks)
       .catch((reason) => setError(`无法加载任务目录：${toMessage(reason)}`));
   }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
@@ -511,8 +514,8 @@ function App() {
       const allStreamsSettled = data.summary.streams.every(
         (stream) => settledFrameByStreamRef.current.get(stream.name) === current,
       );
-      const canAdvance = nowMs - lastAdvanceTimeMs >= frameDurationMs;
-      const next = nextPlaybackFrame(current, playbackEnd, canAdvance && allStreamsSettled);
+      const frameIntervalElapsed = nowMs - lastAdvanceTimeMs >= frameDurationMs;
+      const next = nextPlaybackFrame(current, playbackEnd, frameIntervalElapsed && allStreamsSettled);
       if (next !== frameRef.current) {
         lastAdvanceTimeMs = nowMs;
         frameRef.current = next;

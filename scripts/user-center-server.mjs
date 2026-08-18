@@ -271,6 +271,14 @@ function validateStoredUser(user) {
   if (!["admin", "operator"].includes(user.role)
     || (user.assignedTasks !== undefined
       && (!Number.isSafeInteger(user.assignedTasks) || user.assignedTasks < 0 || user.assignedTasks > 1_000_000))
+    || (user.assignedTaskNames !== undefined && (!Array.isArray(user.assignedTaskNames)
+      || user.assignedTaskNames.length > MAX_TASK_DETAILS
+      || user.assignedTaskNames.some((task) => typeof task !== "string" || !task.trim() || [...task].length > 100)))
+    || (user.assignedTaskQuantities !== undefined && (typeof user.assignedTaskQuantities !== "object"
+      || Array.isArray(user.assignedTaskQuantities)
+      || Object.entries(user.assignedTaskQuantities).length > MAX_TASK_DETAILS
+      || Object.entries(user.assignedTaskQuantities).some(([task, quantity]) => !task.trim() || [...task].length > 100
+        || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1_000_000)))
     || !Number.isSafeInteger(user.createdAtMs) || user.createdAtMs <= 0
     || !user.password?.salt || !user.password?.digest) {
     throw new Error("用户中心账号记录无效");
@@ -423,6 +431,8 @@ function publicUser(user) {
     displayName: user.displayName,
     role: user.role,
     assignedTasks: user.assignedTasks ?? 0,
+    assignedTaskNames: user.assignedTaskNames ?? [],
+    assignedTaskQuantities: user.assignedTaskQuantities ?? {},
     createdAtMs: user.createdAtMs,
   };
 }
@@ -461,6 +471,8 @@ function auditSummary(events, accounts, currentTimeMs = nowMs()) {
     displayName: account.displayName,
     role: account.role,
     assignedTasks: account.assignedTasks ?? 0,
+    assignedTaskNames: account.assignedTaskNames ?? [],
+    assignedTaskQuantities: account.assignedTaskQuantities ?? {},
     completedToday: new Set(),
     totalCompleted: new Set(),
     completionDurationsMs: [],
@@ -487,6 +499,8 @@ function auditSummary(events, accounts, currentTimeMs = nowMs()) {
     displayName: row.displayName,
     role: row.role,
     assignedTasks: row.assignedTasks,
+    assignedTaskNames: row.assignedTaskNames,
+    assignedTaskQuantities: row.assignedTaskQuantities,
     completedToday: row.completedToday.size,
     totalCompleted: row.totalCompleted.size,
     averageCompletionMs: row.completionDurationsMs.length
@@ -604,6 +618,20 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (token) sessions.delete(token);
         return sendJson(response, 204, {});
       }
+      if (request.method === "GET" && url.pathname === "/api/v1/tasks/assigned") {
+        const session = authorize(request);
+        if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        const state = await readState(dataRoot);
+        const user = state.users.find((candidate) => candidate.username === session.user.username);
+        if (!user) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND" });
+        const details = new Map((state.taskDetails ?? []).map((entry) => [entry.task.toLowerCase(), entry.detail]));
+        const tasks = Object.entries(user.assignedTaskQuantities ?? {}).map(([task, quantity]) => ({
+          task,
+          quantity,
+          detail: details.get(task.toLowerCase()) ?? task,
+        }));
+        return sendJson(response, 200, { tasks });
+      }
       if (request.method === "POST" && url.pathname === "/api/v1/audit/events") {
         const session = authorize(request);
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
@@ -656,15 +684,30 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const username = normalizeUsername(decodeURIComponent(assignmentMatch[1]));
         const body = await parseJsonBody(request);
-        const assignedTasks = Number(body.assignedTasks);
-        if (!Number.isSafeInteger(assignedTasks) || assignedTasks < 0 || assignedTasks > 1_000_000) {
-          return sendJson(response, 400, { error: "ASSIGNED_TASKS_INVALID: 分配任务数必须是 0-1000000 的整数" });
+        const assignedTaskQuantities = {};
+        for (const [rawTask, rawQuantity] of Object.entries(body.assignedTaskQuantities ?? {})) {
+          const task = normalizeTaskDetailText(rawTask, "任务名称", 100);
+          const quantity = Number(rawQuantity);
+          if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1_000_000) {
+            return sendJson(response, 400, { error: "ASSIGNED_TASKS_INVALID: 每项任务数量必须是正整数" });
+          }
+          assignedTaskQuantities[task] = quantity;
+        }
+        const assignedTaskNames = Object.keys(assignedTaskQuantities);
+        const assignedTasks = assignedTaskNames.length
+          ? Object.values(assignedTaskQuantities).reduce((sum, quantity) => sum + quantity, 0)
+          : Number(body.assignedTasks ?? 0);
+        if (!Number.isSafeInteger(assignedTasks) || assignedTasks < 0 || assignedTasks > 1_000_000
+          || assignedTaskNames.length > MAX_TASK_DETAILS) {
+          return sendJson(response, 400, { error: "ASSIGNED_TASKS_INVALID: 任务分配参数无效" });
         }
         const state = await readState(dataRoot);
         const user = state.users.find((candidate) => candidate.username === username);
         if (!user) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND: 账号不存在" });
         if (user.role !== "operator") return sendJson(response, 409, { error: "OPERATOR_REQUIRED: 只能给普通账户分配任务" });
         user.assignedTasks = assignedTasks;
+        user.assignedTaskNames = assignedTaskNames;
+        user.assignedTaskQuantities = assignedTaskQuantities;
         await writeState(state);
         return sendJson(response, 200, { user: publicUser(user) });
       }
