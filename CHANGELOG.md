@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.48 - 2026-08-18
+
+- Made the initial SMPL/COCO heading deterministic for mirrored and
+  mixed-orientation captures. The viewer now anchors alignment at the loaded
+  frame, uses SMPL ankle-to-foot or COCO shoulder-to-nose direction as an
+  anatomical front marker, and preserves later turns during playback.
+
 ## 0.17.47 - 2026-08-18
 
 - Added an administrator-only, local JSON import for annotation supervision.
