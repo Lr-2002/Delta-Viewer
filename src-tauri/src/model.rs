@@ -90,6 +90,7 @@ pub struct AssignedTask {
     pub task: String,
     pub detail: String,
     pub quantity: u64,
+    pub start_index: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

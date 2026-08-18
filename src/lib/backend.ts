@@ -14,6 +14,7 @@ import {
 } from "./demoFixture";
 import type {
   AnnotatedEpisodeSummary,
+  AssignedTask,
   AnnotationAuditRequest,
   AppUpdateInfo,
   AuthStatus,
@@ -215,6 +216,21 @@ export async function listTaskDefinitions(): Promise<TaskDefinition[]> {
 export async function listAssignedTaskDefinitions(): Promise<TaskDefinition[]> {
   if (isTauriRuntime()) return invoke<TaskDefinition[]>("list_assigned_task_definitions");
   return listTaskDefinitions();
+}
+
+export async function getAssignedTasks(): Promise<AssignedTask[]> {
+  if (isTauriRuntime()) return invoke<AssignedTask[]>("get_assigned_tasks");
+  return [];
+}
+
+export async function getAssignedSourceRoot(): Promise<string | null> {
+  if (isTauriRuntime()) return invoke<string | null>("get_assigned_source_root");
+  return null;
+}
+
+export async function setAssignedSourceRoot(sourcePath: string): Promise<string> {
+  if (isTauriRuntime()) return invoke<string>("set_assigned_source_root", { sourcePath });
+  return sourcePath;
 }
 
 export async function createTaskDefinition(request: CreateTaskRequest): Promise<TaskDefinition> {

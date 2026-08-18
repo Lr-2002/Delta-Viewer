@@ -52,6 +52,8 @@ import {
   exportEpisode,
   exportValidationReport,
   getAuthStatus,
+  getAssignedSourceRoot,
+  getAssignedTasks,
   installAppUpdate,
   isTauriRuntime,
   listAnnotatedEpisodes,
@@ -66,6 +68,7 @@ import {
   onTaskProgress,
   revealOutput,
   scanSource,
+  setAssignedSourceRoot,
   selectWorkspaceMode,
   validateEpisode,
 } from "./lib/backend";
@@ -75,6 +78,7 @@ import { OperationScope, type OperationToken } from "./lib/operationScope";
 import { clampPlaybackFrame, nextPlaybackFrame, playbackStartFrame } from "./lib/playback-clock";
 import type {
   AnnotatedEpisodeSummary,
+  AssignedTask,
   AnnotationAuditAction,
   AppUpdateInfo,
   AuthStatus,
@@ -106,6 +110,25 @@ interface PendingAnnotationConfirmation {
   sourceEpisodeRoot: string;
   minFrame: number;
   maxFrame: number;
+}
+
+function assignedEpisodeSelection(episodes: EpisodeSummary[], assignments: AssignedTask[]) {
+  const sorted = [...episodes].sort((left, right) => left.root.localeCompare(right.root));
+  const selected = new Map<string, EpisodeSummary>();
+  const taskByRoot: Record<string, string> = {};
+  for (const assignment of assignments) {
+    const taskKey = assignment.task.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    const matches = sorted.filter((episode) => {
+      const pathKey = episode.root.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+      return taskKey.length > 0 && pathKey.includes(taskKey);
+    });
+    for (const episode of matches.slice(assignment.startIndex, assignment.startIndex + assignment.quantity)) {
+      if (selected.has(episode.root)) continue;
+      selected.set(episode.root, episode);
+      taskByRoot[episode.root] = assignment.task;
+    }
+  }
+  return { episodes: [...selected.values()], taskByRoot };
 }
 
 const UNAVAILABLE_FRAME_ISSUE_CODES = new Set([
@@ -219,6 +242,8 @@ function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [authStartupError, setAuthStartupError] = useState("");
   const [tasks, setTasks] = useState<TaskDefinition[]>([]);
+  const [assignedTasks, setAssignedTasks] = useState<AssignedTask[]>([]);
+  const [assignedEpisodeTasks, setAssignedEpisodeTasks] = useState<Record<string, string>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [annotation, setAnnotation] = useState<EpisodeAnnotation | null>(null);
   const [sourcePath, setSourcePath] = useState("");
@@ -398,10 +423,18 @@ function App() {
       setTasks([]);
       return;
     }
-    void (isManagedWorkspace && authStatus?.currentUser?.role === "operator"
-      ? listAssignedTaskDefinitions()
-      : listTaskDefinitions())
-      .then(setTasks)
+    if (isManagedWorkspace && authStatus?.currentUser?.role === "operator") {
+      void Promise.all([listAssignedTaskDefinitions(), getAssignedTasks(), getAssignedSourceRoot()])
+        .then(async ([definitions, assignments, assignedRoot]) => {
+          setTasks(definitions);
+          setAssignedTasks(assignments);
+          if (assignedRoot && assignments.length) await openSource(assignedRoot, true, assignments);
+        })
+        .catch((reason) => setError(`无法加载已分配任务：${toMessage(reason)}`));
+      return;
+    }
+    setAssignedTasks([]);
+    void listTaskDefinitions().then(setTasks)
       .catch((reason) => setError(`无法加载任务目录：${toMessage(reason)}`));
   }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
 
@@ -532,7 +565,7 @@ function App() {
     return () => window.cancelAnimationFrame(animationFrame);
   }, [clipEndFrame, data, playbackFps, playing, speed]);
 
-  async function openSource(path: string, autoLoad = false) {
+  async function openSource(path: string, autoLoad = false, assignment = assignedTasks) {
     const owner = beginOperation();
     if (!owner) return;
     resetOperationFeedback(owner);
@@ -541,16 +574,24 @@ function App() {
     try {
       const result = await scanSource(path, owner.id);
       ensureOperationActive(owner);
-      setSourcePath(result.sourceRoot);
-      setScan(result);
+      const filtered = assignment.length ? assignedEpisodeSelection(result.episodes, assignment) : null;
+      const visibleResult = filtered ? {
+        ...result,
+        episodes: filtered.episodes,
+        totalFiles: filtered.episodes.reduce((sum, episode) => sum + episode.totalFiles, 0),
+        totalBytes: filtered.episodes.reduce((sum, episode) => sum + episode.totalBytes, 0),
+      } : result;
+      setAssignedEpisodeTasks(filtered?.taskByRoot ?? {});
+      setSourcePath(visibleResult.sourceRoot);
+      setScan(visibleResult);
       void refreshAnnotationTags();
       setSkippedEpisodeRoots({});
       setPendingAnnotationConfirmation(null);
       setQueuedEpisodeRoot(null);
       setEpisodeSourceStates(Object.fromEntries(
-        result.episodes.map((episode) => [episode.root, "available" as const]),
+        visibleResult.episodes.map((episode) => [episode.root, "available" as const]),
       ));
-      const first = result.episodes[0] ?? null;
+      const first = visibleResult.episodes[0] ?? null;
       setSelectedEpisode(first);
       resetLoadedData();
       if (autoLoad && first) {
@@ -581,7 +622,12 @@ function App() {
     sourcePickerOpenRef.current = true;
     try {
       const path = await chooseDirectory("选择 SD 卡根目录");
-      if (path) await openSource(path, true);
+      if (path) {
+        const selectedPath = isManagedWorkspace && authStatus?.currentUser?.role === "operator"
+          ? await setAssignedSourceRoot(path)
+          : path;
+        await openSource(selectedPath, true);
+      }
     } catch (reason) {
       if (!operationScopeRef.current.current()) await reportFailure("choose_source", reason);
     } finally {
@@ -1304,6 +1350,14 @@ function App() {
   const skippedEpisodeCount = (scan?.episodes.length ?? 0) - visibleEpisodes.length;
   const selectedTaskTemplate = tasks.find((task) => task.id === (selectedTaskId ?? annotation?.taskId)) ?? null;
 
+  useEffect(() => {
+    if (!selectedEpisode) return;
+    const assignedTask = assignedEpisodeTasks[selectedEpisode.root];
+    if (!assignedTask) return;
+    const definition = tasks.find((task) => task.label.toLowerCase() === assignedTask.toLowerCase());
+    if (definition) setSelectedTaskId(definition.id);
+  }, [assignedEpisodeTasks, selectedEpisode?.root, tasks]);
+
   if (!authStatus) {
     return (
       <main className="auth-shell auth-loading">
@@ -1377,7 +1431,7 @@ function App() {
         </div>
         <div className="source-display">
           <HardDrive size={16} />
-          <span title={sourcePath}>{sourcePath ? shortPath(sourcePath, 58) : "未选择 SD 卡"}</span>
+          <span title={sourcePath}>{sourcePath ? shortPath(sourcePath, 58) : isManagedWorkspace && currentUser?.role === "operator" ? "首次使用请配置本机 NAS 目录" : "未选择 SD 卡"}</span>
           {sourcePath ? <span className="source-dot" /> : null}
         </div>
         <div className="topbar-actions">
@@ -1404,7 +1458,7 @@ function App() {
           ) : null}
           <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy}>
             <FolderOpen size={16} />
-            选择 SD 卡
+            {isManagedWorkspace && currentUser?.role === "operator" ? "配置 NAS 目录" : "选择 SD 卡"}
           </button>
           <button
             className="icon-button history-trigger"

@@ -63,6 +63,7 @@ export interface AssignedTask {
   task: string;
   detail: string;
   quantity: number;
+  startIndex: number;
 }
 
 export interface SupervisionTaskSummary {

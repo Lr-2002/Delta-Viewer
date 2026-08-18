@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod annotations;
+mod assigned_source;
 mod episode_metadata;
 mod error;
 mod export;
@@ -390,6 +391,40 @@ async fn list_assigned_task_definitions(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_assigned_tasks(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Vec<crate::model::AssignedTask>, String> {
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
+    user_center::assigned_tasks(&app_data_root(&app)?, auth.inner())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_assigned_source_root(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Option<String>, String> {
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
+    assigned_source::load(&app_data_root(&app)?).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_assigned_source_root(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    source_path: String,
+) -> Result<String, String> {
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
+    assigned_source::save(&app_data_root(&app)?, Path::new(&source_path))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1007,6 +1042,9 @@ pub fn run() {
             import_supervision_task_details,
             list_task_definitions,
             list_assigned_task_definitions,
+            get_assigned_tasks,
+            get_assigned_source_root,
+            set_assigned_source_root,
             create_task_definition,
             import_task_template_config,
             delete_task_definition,

@@ -49,6 +49,18 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
 
   async function saveAssignment(username: string) {
     const quantities = assignmentDrafts[username] ?? {};
+    if (!taskCatalog) {
+      setError("请先选择并读取 NAS 任务目录，再分配具体视频数量");
+      return;
+    }
+    const unavailable = Object.entries(quantities).find(([task, quantity]) => {
+      const summary = taskCatalog.tasks.find((item) => item.task.toLowerCase() === task.toLowerCase());
+      return !summary || quantity > summary.total;
+    });
+    if (unavailable) {
+      setError(`任务 ${displayTaskName(unavailable[0])} 的分配数量超过 NAS 中可用视频数量`);
+      return;
+    }
     setSavingUser(username);
     setError("");
     setNotice("");
