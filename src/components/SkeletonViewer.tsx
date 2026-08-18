@@ -72,7 +72,7 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
     scene.add(new THREE.Points(jointsGeometry, jointsMaterial));
 
     const edges = skeletonEdges(skeleton.jointCount);
-    const alignment = createSkeletonAlignment(skeleton);
+    const alignment = createSkeletonAlignment(skeleton, frameId);
     const bonesGeometry = new THREE.BufferGeometry();
     const bonePositions = new Float32Array(edges.length * 6);
     bonesGeometry.setAttribute("position", new THREE.BufferAttribute(bonePositions, 3));
