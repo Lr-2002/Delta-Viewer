@@ -14,6 +14,7 @@ import {
 } from "./demoFixture";
 import type {
   AnnotatedEpisodeSummary,
+  AssignedTask,
   AnnotationAuditRequest,
   AppUpdateInfo,
   AuthStatus,
@@ -36,6 +37,7 @@ import type {
   VideoSource,
   SupervisionDashboardData,
   SupervisionAccount,
+  SupervisionAnnotationCatalog,
   SupervisionTaskCatalog,
   SupervisionTaskDetail,
   SupervisionTaskImportResult,
@@ -202,6 +204,18 @@ export async function importSupervisionTaskDetails(): Promise<SupervisionTaskImp
   return invoke<SupervisionTaskImportResult>("import_supervision_task_details", { configPath: selection });
 }
 
+export async function importSupervisionAnnotations(): Promise<SupervisionAnnotationCatalog | null> {
+  if (!isTauriRuntime()) throw new Error("监管标注 JSON 只能在桌面应用中导入");
+  const selection = await open({
+    directory: false,
+    multiple: false,
+    title: "导入标注汇总 JSON",
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (typeof selection !== "string") return null;
+  return invoke<SupervisionAnnotationCatalog>("import_supervision_annotations", { configPath: selection });
+}
+
 export async function logoutLocalAccount(): Promise<void> {
   if (isTauriRuntime()) await invoke("logout_account");
   demoCurrentUser = null;
@@ -215,6 +229,21 @@ export async function listTaskDefinitions(): Promise<TaskDefinition[]> {
 export async function listAssignedTaskDefinitions(): Promise<TaskDefinition[]> {
   if (isTauriRuntime()) return invoke<TaskDefinition[]>("list_assigned_task_definitions");
   return listTaskDefinitions();
+}
+
+export async function getAssignedTasks(): Promise<AssignedTask[]> {
+  if (isTauriRuntime()) return invoke<AssignedTask[]>("get_assigned_tasks");
+  return [];
+}
+
+export async function getAssignedSourceRoot(): Promise<string | null> {
+  if (isTauriRuntime()) return invoke<string | null>("get_assigned_source_root");
+  return null;
+}
+
+export async function setAssignedSourceRoot(sourcePath: string): Promise<string> {
+  if (isTauriRuntime()) return invoke<string>("set_assigned_source_root", { sourcePath });
+  return sourcePath;
 }
 
 export async function createTaskDefinition(request: CreateTaskRequest): Promise<TaskDefinition> {

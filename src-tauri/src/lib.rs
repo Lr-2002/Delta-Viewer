@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod annotations;
+mod assigned_source;
 mod episode_metadata;
 mod error;
 mod export;
@@ -29,9 +30,9 @@ use model::{
     EpisodeData, EpisodeValidationResult, ExportCommandRequest, ExportResult, FramePayload,
     ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
     ProgressPayload, RecordOperationErrorRequest, ReportExportResult, SaveAnnotationRequest,
-    ScanResult, SupervisionAccount, SupervisionDashboardData, SupervisionTaskCatalog,
-    SupervisionTaskDetail, TaskDefinition, UserCenterStatus, UserIdentity, VideoSource,
-    WorkspaceMode,
+    ScanResult, SupervisionAccount, SupervisionAnnotationCatalog, SupervisionDashboardData,
+    SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition, UserCenterStatus, UserIdentity,
+    VideoSource, WorkspaceMode,
 };
 use source_index_cache::SourceIndexCache;
 use std::path::{Path, PathBuf};
@@ -347,6 +348,25 @@ async fn import_supervision_task_details(
 }
 
 #[tauri::command]
+async fn import_supervision_annotations(
+    auth: State<'_, AuthState>,
+    config_path: String,
+) -> Result<SupervisionAnnotationCatalog, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账户".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        supervision::import_annotation_catalog(Path::new(&config_path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn list_task_definitions(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -390,6 +410,40 @@ async fn list_assigned_task_definitions(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_assigned_tasks(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Vec<crate::model::AssignedTask>, String> {
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
+    user_center::assigned_tasks(&app_data_root(&app)?, auth.inner())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_assigned_source_root(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Option<String>, String> {
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
+    assigned_source::load(&app_data_root(&app)?).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_assigned_source_root(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    source_path: String,
+) -> Result<String, String> {
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
+    assigned_source::save(&app_data_root(&app)?, Path::new(&source_path))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1005,8 +1059,12 @@ pub fn run() {
             scan_supervision_tasks,
             update_supervision_task_detail,
             import_supervision_task_details,
+            import_supervision_annotations,
             list_task_definitions,
             list_assigned_task_definitions,
+            get_assigned_tasks,
+            get_assigned_source_root,
+            set_assigned_source_root,
             create_task_definition,
             import_task_template_config,
             delete_task_definition,

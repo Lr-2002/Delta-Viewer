@@ -7,6 +7,10 @@ export function nextPlaybackFrame(
   return Math.min(endFrame, currentFrame + 1);
 }
 
+export function playbackFrameDurationMs(fps: number, speed: number): number {
+  return 1000 / (Math.max(1, fps) * Math.max(0.01, speed));
+}
+
 export function playbackStartFrame(
   liveFrame: number,
   startFrame: number,

@@ -5,6 +5,24 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.48 - 2026-08-18
+
+- Allocate non-overlapping per-task episode ordinal ranges centrally without
+  transmitting NAS paths or episode identifiers to the user center.
+- Store the mounted NAS task root only on each workstation; after its one-time
+  setup, operator login automatically scans and opens only assigned episodes.
+- Automatically select the matching assigned task when an operator moves between
+  assigned video entries, while retaining imported descriptions as annotations.
+
+## 0.17.47 - 2026-08-18
+
+- Added an administrator-only, local JSON import for annotation supervision.
+  The dashboard groups the latest annotation revision per episode by person and
+  shows each person's tasks, trajectories, segments, and inclusive frame totals.
+- Kept full annotation details out of the user-center audit API: imported JSON
+  is parsed locally, bounded to 8 MiB and 20,000 records, and returns no source
+  roots, fingerprints, descriptions, or segment text to the interface.
+
 ## 0.17.46 - 2026-08-18
 
 - Made JPEG playback lossless and sequential: all five streams finish the

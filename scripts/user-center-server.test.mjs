@@ -107,6 +107,24 @@ test("user center only allows administrator-created accounts", async () => {
     assert.equal(assigned.body.user.assignedTasks, 5);
     assert.deepEqual(assigned.body.user.assignedTaskNames, ["BedMaking", "Bedsheet"]);
     assert.deepEqual(assigned.body.user.assignedTaskQuantities, { BedMaking: 3, Bedsheet: 2 });
+    const secondCreated = await request(port, ca, "POST", "/api/v1/admin/users", {
+      username: "operator2",
+      displayName: "操作员二",
+      password: "operator2-password",
+    }, login.body.token);
+    assert.equal(secondCreated.status, 201);
+    const secondAssigned = await request(port, ca, "PUT", "/api/v1/admin/users/operator2/assignment", {
+      assignedTaskQuantities: { BedMaking: 2 },
+    }, login.body.token);
+    assert.equal(secondAssigned.status, 200);
+    const secondLogin = await request(port, ca, "POST", "/api/v1/auth/login", {
+      username: "operator2",
+      password: "operator2-password",
+    });
+    const secondTasks = await request(port, ca, "GET", "/api/v1/tasks/assigned", null, secondLogin.body.token);
+    assert.deepEqual(secondTasks.body.tasks, [
+      { task: "BedMaking", quantity: 2, startIndex: 3, detail: "BedMaking" },
+    ]);
     const editedDetail = await request(port, ca, "PUT", "/api/v1/admin/task-details", {
       task: "Bedsheet",
       detail: "整理床单并完成整段视频标注。",
@@ -121,8 +139,8 @@ test("user center only allows administrator-created accounts", async () => {
     const operatorTasks = await request(port, ca, "GET", "/api/v1/tasks/assigned", null, operator.body.token);
     assert.equal(operatorTasks.status, 200);
     assert.deepEqual(operatorTasks.body.tasks, [
-      { task: "BedMaking", quantity: 3, detail: "BedMaking" },
-      { task: "Bedsheet", quantity: 2, detail: "整理床单并完成整段视频标注。" },
+      { task: "BedMaking", quantity: 3, startIndex: 0, detail: "BedMaking" },
+      { task: "Bedsheet", quantity: 2, startIndex: 0, detail: "整理床单并完成整段视频标注。" },
     ]);
     const startedAtMs = Date.now() - 60_000;
     const started = await request(port, ca, "POST", "/api/v1/audit/events", {

@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { Check, CheckSquare, ChevronDown, ChevronRight, FileUp, FolderOpen, LoaderCircle, LogOut, Pencil, Plus, RefreshCw, Search, ShieldCheck, Square, Users, X } from "lucide-react";
-import { chooseAndScanSupervisionTasks, getSupervisionDashboard, importSupervisionTaskDetails, setSupervisionAssignedTasks, updateSupervisionTaskDetail } from "../lib/backend";
-import type { SupervisionDashboardData, SupervisionTaskCatalog, UserIdentity } from "../types";
+import { Check, CheckSquare, ChevronDown, ChevronRight, FileJson, FileUp, FolderOpen, LoaderCircle, LogOut, Pencil, Plus, RefreshCw, Search, ShieldCheck, Square, Users, X } from "lucide-react";
+import { chooseAndScanSupervisionTasks, getSupervisionDashboard, importSupervisionAnnotations, importSupervisionTaskDetails, setSupervisionAssignedTasks, updateSupervisionTaskDetail } from "../lib/backend";
+import type { SupervisionAnnotationCatalog, SupervisionDashboardData, SupervisionTaskCatalog, UserIdentity } from "../types";
 
 interface SupervisionDashboardProps {
   currentUser: UserIdentity;
@@ -15,10 +15,13 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
   const [taskSearch, setTaskSearch] = useState("");
   const [taskCatalog, setTaskCatalog] = useState<SupervisionTaskCatalog | null>(null);
   const [importedTaskNames, setImportedTaskNames] = useState<string[]>([]);
+  const [annotationCatalog, setAnnotationCatalog] = useState<SupervisionAnnotationCatalog | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingUser, setSavingUser] = useState<string | null>(null);
   const [scanningTasks, setScanningTasks] = useState(false);
   const [importingDetails, setImportingDetails] = useState(false);
+  const [importingAnnotations, setImportingAnnotations] = useState(false);
+  const [expandedAnnotator, setExpandedAnnotator] = useState<string | null>(null);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<string | null>(null);
   const [detailDrafts, setDetailDrafts] = useState<Record<string, string>>({});
@@ -49,6 +52,18 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
 
   async function saveAssignment(username: string) {
     const quantities = assignmentDrafts[username] ?? {};
+    if (!taskCatalog) {
+      setError("请先选择并读取 NAS 任务目录，再分配具体视频数量");
+      return;
+    }
+    const unavailable = Object.entries(quantities).find(([task, quantity]) => {
+      const summary = taskCatalog.tasks.find((item) => item.task.toLowerCase() === task.toLowerCase());
+      return !summary || quantity > summary.total;
+    });
+    if (unavailable) {
+      setError(`任务 ${displayTaskName(unavailable[0])} 的分配数量超过 NAS 中可用视频数量`);
+      return;
+    }
     setSavingUser(username);
     setError("");
     setNotice("");
@@ -120,6 +135,24 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setImportingDetails(false);
+    }
+  }
+
+  async function importAnnotations() {
+    setImportingAnnotations(true);
+    setError("");
+    setNotice("");
+    try {
+      const catalog = await importSupervisionAnnotations();
+      if (catalog) {
+        setAnnotationCatalog(catalog);
+        setExpandedAnnotator(null);
+        setNotice(`已读取 ${catalog.users.length} 位标注人`);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setImportingAnnotations(false);
     }
   }
 
@@ -220,6 +253,27 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
             </section>;
           })() : null}
 
+          <section className="supervision-section supervision-annotation-module">
+            <div className="supervision-section-heading task-catalog-heading">
+              <div><span className="section-kicker">ANNOTATION JSON</span><h2>标注人员明细</h2>{annotationCatalog ? <small>{annotationCatalog.sourceName}</small> : null}</div>
+              <button className="button button-secondary" type="button" onClick={() => void importAnnotations()} disabled={importingAnnotations}>
+                {importingAnnotations ? <LoaderCircle className="spin" size={16} /> : <FileJson size={16} />}{importingAnnotations ? "读取中" : "导入标注 JSON"}
+              </button>
+            </div>
+            {annotationCatalog ? <div className="supervision-table-wrap"><table className="supervision-annotation-table"><thead><tr><th>标注人</th><th>轨迹</th><th>片段</th><th>覆盖帧</th><th>标注任务</th></tr></thead><tbody>
+              {annotationCatalog.users.map((user) => {
+                const expanded = expandedAnnotator === user.username;
+                return <Fragment key={user.username}><tr>
+                  <td><button className="annotation-user-button" type="button" onClick={() => setExpandedAnnotator(expanded ? null : user.username)} aria-expanded={expanded}>{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}<span><strong>{user.displayName}</strong><small>@{user.username}</small></span></button></td>
+                  <td className="supervision-number">{formatCount(user.trajectoryCount)}</td>
+                  <td className="supervision-number">{formatCount(user.segmentCount)}</td>
+                  <td className="supervision-number">{formatCount(user.annotatedFrameCount)}</td>
+                  <td><div className="annotation-task-list">{user.tasks.map((task) => <span key={task.taskId}><strong>{displayTaskName(task.taskId)}</strong><small>{formatCount(task.trajectoryCount)} 条 · {formatCount(task.segmentCount)} 段 · {formatCount(task.annotatedFrameCount)} 帧</small></span>)}</div></td>
+                </tr>{expanded ? <tr className="annotation-entry-row"><td colSpan={5}><div className="supervision-table-wrap"><table><thead><tr><th>任务</th><th>轨迹码</th><th>片段</th><th>覆盖帧</th><th>修订</th><th>最近更新</th></tr></thead><tbody>{user.entries.map((entry) => <tr key={`${entry.trajectoryCode}-${entry.revision}`}><td>{displayTaskName(entry.taskId)}</td><td><code>{entry.trajectoryCode}</code></td><td>{formatCount(entry.segmentCount)}</td><td>{formatCount(entry.annotatedFrameCount)}</td><td>r{entry.revision}</td><td>{formatAnnotationTime(entry.updatedAtMs)}</td></tr>)}</tbody></table></div></td></tr> : null}</Fragment>;
+              })}
+            </tbody></table></div> : <div className="task-catalog-empty"><FileJson size={22} /><strong>尚未导入标注 JSON</strong></div>}
+          </section>
+
           <section className="supervision-section supervision-secondary-module">
             <div className="supervision-section-heading task-catalog-heading">
               <div><span className="section-kicker">TASK CATALOG</span><h2>任务完成概览</h2>{taskCatalog ? <small title={taskCatalog.sourcePath}>{taskCatalog.sourcePath}</small> : data.taskDetails.length ? <small>已导入 {data.taskDetails.length} 项任务详情；选择任务目录后显示完成数量</small> : null}</div>
@@ -259,6 +313,14 @@ function displayTaskName(task: string): string {
 
 function quantityTotal(quantities: Record<string, number>): number {
   return Object.values(quantities).reduce((sum, quantity) => sum + quantity, 0);
+}
+
+function formatCount(value: number): string {
+  return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function formatAnnotationTime(value: number): string {
+  return value > 0 ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
 }
 
 function taskDetail(data: SupervisionDashboardData | null, task: string) {

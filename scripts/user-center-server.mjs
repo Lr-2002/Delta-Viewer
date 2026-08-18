@@ -279,6 +279,10 @@ function validateStoredUser(user) {
       || Object.entries(user.assignedTaskQuantities).length > MAX_TASK_DETAILS
       || Object.entries(user.assignedTaskQuantities).some(([task, quantity]) => !task.trim() || [...task].length > 100
         || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1_000_000)))
+    || (user.assignedTaskStarts !== undefined && (typeof user.assignedTaskStarts !== "object"
+      || Array.isArray(user.assignedTaskStarts)
+      || Object.entries(user.assignedTaskStarts).some(([task, start]) => !task.trim()
+        || !Number.isSafeInteger(start) || start < 0 || start > 1_000_000)))
     || !Number.isSafeInteger(user.createdAtMs) || user.createdAtMs <= 0
     || !user.password?.salt || !user.password?.digest) {
     throw new Error("用户中心账号记录无效");
@@ -433,6 +437,7 @@ function publicUser(user) {
     assignedTasks: user.assignedTasks ?? 0,
     assignedTaskNames: user.assignedTaskNames ?? [],
     assignedTaskQuantities: user.assignedTaskQuantities ?? {},
+    assignedTaskStarts: user.assignedTaskStarts ?? {},
     createdAtMs: user.createdAtMs,
   };
 }
@@ -628,6 +633,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const tasks = Object.entries(user.assignedTaskQuantities ?? {}).map(([task, quantity]) => ({
           task,
           quantity,
+          startIndex: user.assignedTaskStarts?.[task] ?? 0,
           detail: details.get(task.toLowerCase()) ?? task,
         }));
         return sendJson(response, 200, { tasks });
@@ -684,6 +690,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const username = normalizeUsername(decodeURIComponent(assignmentMatch[1]));
         const body = await parseJsonBody(request);
+        const state = await readState(dataRoot);
         const assignedTaskQuantities = {};
         for (const [rawTask, rawQuantity] of Object.entries(body.assignedTaskQuantities ?? {})) {
           const task = normalizeTaskDetailText(rawTask, "任务名称", 100);
@@ -694,6 +701,24 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           assignedTaskQuantities[task] = quantity;
         }
         const assignedTaskNames = Object.keys(assignedTaskQuantities);
+        const assignedTaskStarts = {};
+        for (const task of assignedTaskNames) {
+          const occupied = state.users
+            .filter((candidate) => candidate.username !== username)
+            .flatMap((candidate) => Object.entries(candidate.assignedTaskQuantities ?? {})
+              .filter(([candidateTask]) => candidateTask.toLowerCase() === task.toLowerCase())
+              .map(([candidateTask, quantity]) => ({
+                start: candidate.assignedTaskStarts?.[candidateTask] ?? 0,
+                end: (candidate.assignedTaskStarts?.[candidateTask] ?? 0) + quantity,
+              })))
+            .sort((left, right) => left.start - right.start);
+          let start = 0;
+          for (const interval of occupied) {
+            if (start + assignedTaskQuantities[task] <= interval.start) break;
+            start = Math.max(start, interval.end);
+          }
+          assignedTaskStarts[task] = start;
+        }
         const assignedTasks = assignedTaskNames.length
           ? Object.values(assignedTaskQuantities).reduce((sum, quantity) => sum + quantity, 0)
           : Number(body.assignedTasks ?? 0);
@@ -701,13 +726,13 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           || assignedTaskNames.length > MAX_TASK_DETAILS) {
           return sendJson(response, 400, { error: "ASSIGNED_TASKS_INVALID: 任务分配参数无效" });
         }
-        const state = await readState(dataRoot);
         const user = state.users.find((candidate) => candidate.username === username);
         if (!user) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND: 账号不存在" });
         if (user.role !== "operator") return sendJson(response, 409, { error: "OPERATOR_REQUIRED: 只能给普通账户分配任务" });
         user.assignedTasks = assignedTasks;
         user.assignedTaskNames = assignedTaskNames;
         user.assignedTaskQuantities = assignedTaskQuantities;
+        user.assignedTaskStarts = assignedTaskStarts;
         await writeState(state);
         return sendJson(response, 200, { user: publicUser(user) });
       }
