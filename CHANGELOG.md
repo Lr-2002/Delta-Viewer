@@ -5,6 +5,25 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.47 - 2026-08-18
+
+- Added an administrator-only, local JSON import for annotation supervision.
+  The dashboard groups the latest annotation revision per episode by person and
+  shows each person's tasks, trajectories, segments, and inclusive frame totals.
+- Kept full annotation details out of the user-center audit API: imported JSON
+  is parsed locally, bounded to 8 MiB and 20,000 records, and returns no source
+  roots, fingerprints, descriptions, or segment text to the interface.
+
+## 0.17.46 - 2026-08-18
+
+- Made Camera 0 fill its review tile while retaining the original aspect-safe
+  layout for the other camera views.
+- Aligned SMPL/COCO skeletons upright on their actual ground plane, with a
+  stable front-facing initial view and a slightly downward camera angle.
+- Restored JPEG review playback to strictly sequential frame progression while
+  applying the selected playback speed through the frame clock instead of frame
+  skipping, and retained bounded read-ahead work during continuous playback.
+
 ## 0.17.45 - 2026-08-17
 
 - Added read-only discovery and synchronized preview-frame decoding for recorder

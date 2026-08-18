@@ -71,7 +71,7 @@ import {
 import { formatBytes, shortPath } from "./lib/format";
 import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate";
 import { OperationScope, type OperationToken } from "./lib/operationScope";
-import { clampPlaybackFrame, nextPlaybackFrame, playbackStartFrame } from "./lib/playback-clock";
+import { clampPlaybackFrame, nextPlaybackFrame, playbackFrameDurationMs, playbackStartFrame } from "./lib/playback-clock";
 import type {
   AnnotatedEpisodeSummary,
   AnnotationAuditAction,
@@ -135,6 +135,8 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.47": "监管账户可在本地导入标注 JSON，按最新修订查看每位标注人的任务、轨迹、片段与覆盖帧统计和明细。",
+  "0.17.46": "Camera 0 满填充显示，三维骨架以接地、朝前且略微俯视的初始视角展示；JPEG 回放保持逐帧推进并让倍速控制单帧时长。",
   "0.17.45": "新增挂载源 h264-split-mp4-v1 五路同步回放，并补齐 Linux H.264 解码依赖与发布校验。",
   "0.17.44": "新增管理员监管工作台、任务分配与完成汇总，以及应用内只读历史版本查看。",
   "0.17.43": "修复登录入口浏览器回归检查，使正式发布安装包恢复自动构建。",
@@ -502,7 +504,7 @@ function App() {
   useEffect(() => {
     if (!playing || !data) return;
     const playbackEnd = Math.min(clipEndFrame, getMaxFrame(data));
-    const frameDurationMs = 1000 / (playbackFps * speed);
+    const frameDurationMs = playbackFrameDurationMs(playbackFps, speed);
     let lastAdvanceTimeMs = performance.now() - frameDurationMs;
     let animationFrame = 0;
 

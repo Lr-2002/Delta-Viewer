@@ -1,6 +1,6 @@
 export const FRAME_CACHE_MAX_PER_STREAM = 12;
 export const FRAME_CACHE_MAX_ENTRIES = 60;
-export const FRAME_READ_AHEAD_FRAMES = 6;
+export const FRAME_READ_AHEAD_FRAMES = 10;
 export const FRAME_MAX_IN_FLIGHT_PER_STREAM = 1;
 export const FRAME_MAX_QUEUED_PER_STREAM = 1 + FRAME_READ_AHEAD_FRAMES;
 export const FRAME_MAX_PENDING_PER_STREAM = FRAME_MAX_IN_FLIGHT_PER_STREAM + FRAME_MAX_QUEUED_PER_STREAM;
@@ -13,6 +13,10 @@ export interface FrameRequest {
 
 export interface ReadAheadRequest extends FrameRequest {
   endFrame: number;
+}
+
+export interface CurrentFrameOptions {
+  preserveReadAhead?: boolean;
 }
 
 export interface CachedFrame extends FrameRequest {
@@ -60,11 +64,12 @@ export class FrameCache {
     this.load = load;
   }
 
-  requestCurrent(request: FrameRequest): Promise<CachedFrame> {
+  requestCurrent(request: FrameRequest, options: CurrentFrameOptions = {}): Promise<CachedFrame> {
     const key = frameRequestKey(request);
     const streamKey = frameStreamKey(request.root, request.stream);
-    // A cache hit still represents a new playback target, so it must clear stale queued reads.
-    this.discardQueuedExcept(streamKey, key);
+    // Manual seeks invalidate queued work. Continuous playback instead promotes
+    // the next prefetched frame and retains the rest of the bounded queue.
+    if (!options.preserveReadAhead) this.discardQueuedExcept(streamKey, key);
     const cached = this.ready.get(key);
     if (cached) {
       this.touch(cached);

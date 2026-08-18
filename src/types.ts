@@ -61,6 +61,37 @@ export interface SupervisionTaskCatalog {
   tasks: SupervisionTaskSummary[];
 }
 
+export interface SupervisionAnnotationCatalog {
+  sourceName: string;
+  users: SupervisionAnnotationUserSummary[];
+}
+
+export interface SupervisionAnnotationUserSummary {
+  username: string;
+  displayName: string;
+  trajectoryCount: number;
+  segmentCount: number;
+  annotatedFrameCount: number;
+  tasks: SupervisionAnnotationTaskSummary[];
+  entries: SupervisionAnnotationEntry[];
+}
+
+export interface SupervisionAnnotationTaskSummary {
+  taskId: string;
+  trajectoryCount: number;
+  segmentCount: number;
+  annotatedFrameCount: number;
+}
+
+export interface SupervisionAnnotationEntry {
+  taskId: string;
+  trajectoryCode: string;
+  revision: number;
+  segmentCount: number;
+  annotatedFrameCount: number;
+  updatedAtMs: number;
+}
+
 export type WorkspaceMode = "managed" | "offline";
 
 export interface AuthStatus {

@@ -36,6 +36,7 @@ import type {
   VideoSource,
   SupervisionDashboardData,
   SupervisionAccount,
+  SupervisionAnnotationCatalog,
   SupervisionTaskCatalog,
   SupervisionTaskDetail,
   TaskProgress,
@@ -199,6 +200,18 @@ export async function importSupervisionTaskDetails(): Promise<SupervisionTaskDet
   });
   if (typeof selection !== "string") return null;
   return invoke<SupervisionTaskDetail[]>("import_supervision_task_details", { configPath: selection });
+}
+
+export async function importSupervisionAnnotations(): Promise<SupervisionAnnotationCatalog | null> {
+  if (!isTauriRuntime()) throw new Error("监管标注 JSON 只能在桌面应用中导入");
+  const selection = await open({
+    directory: false,
+    multiple: false,
+    title: "导入标注汇总 JSON",
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (typeof selection !== "string") return null;
+  return invoke<SupervisionAnnotationCatalog>("import_supervision_annotations", { configPath: selection });
 }
 
 export async function logoutLocalAccount(): Promise<void> {

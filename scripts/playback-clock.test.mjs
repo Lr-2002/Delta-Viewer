@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { clampPlaybackFrame, nextPlaybackFrame, playbackStartFrame } from "../src/lib/playback-clock.ts";
+import { clampPlaybackFrame, nextPlaybackFrame, playbackFrameDurationMs, playbackStartFrame } from "../src/lib/playback-clock.ts";
 
 test("advances after every stream settles the current frame", () => {
   assert.equal(nextPlaybackFrame(27, 152, true), 28);
@@ -12,6 +12,12 @@ test("holds the synchronized frame while any image is still loading", () => {
 
 test("stops at the playback end", () => {
   assert.equal(nextPlaybackFrame(152, 152, true), 152);
+});
+
+test("uses the selected speed as the sequential frame duration", () => {
+  assert.equal(playbackFrameDurationMs(30, 0.25), 1000 / 7.5);
+  assert.equal(playbackFrameDurationMs(30, 2), 1000 / 60);
+  assert.equal(nextPlaybackFrame(20, 99, true), 21);
 });
 
 test("starts from a synchronous middle seek even when rendered state is stale", () => {

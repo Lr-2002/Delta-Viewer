@@ -18,6 +18,12 @@ interface RendererState {
   render: () => void;
 }
 
+interface SkeletonBounds {
+  extent: number;
+  minY: number;
+  maxY: number;
+}
+
 const SMPL_EDGES: [number, number][] = [
   [0, 1], [0, 2], [0, 3], [1, 4], [2, 5], [3, 6], [4, 7], [5, 8],
   [6, 9], [7, 10], [8, 11], [9, 12], [12, 13], [12, 14], [12, 15],
@@ -57,7 +63,6 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(42, 1, 0.001, 1000);
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0, 0.15, 0);
     camera.up.set(0, 1, 0);
 
     const jointsGeometry = new THREE.BufferGeometry();
@@ -79,26 +84,29 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
     keyLight.position.set(2, 3, 4);
     scene.add(ambient, keyLight);
 
-    let extent = 1;
     const render = () => {
       renderer.render(scene, camera);
     };
     const update = (requestedFrame: number) => {
       const frame = closestFrame(skeleton.frames, requestedFrame);
-      if (!frame) return;
-      extent = fillJointPositions(frame, jointPositions, bonePositions, edges, alignment, skeleton.jointCount);
+      if (!frame) return { extent: 1, minY: -1, maxY: 1 };
+      const bounds = fillJointPositions(frame, jointPositions, bonePositions, edges, alignment, skeleton.jointCount);
       jointsGeometry.attributes.position.needsUpdate = true;
       bonesGeometry.attributes.position.needsUpdate = true;
       render();
+      return bounds;
     };
-    update(frameId);
-    const cameraDistance = Math.max(1.5, extent * 2.6);
-    camera.position.set(cameraDistance * 0.78, cameraDistance * 0.48, cameraDistance);
-    camera.near = Math.max(0.001, extent / 1000);
-    camera.far = Math.max(100, extent * 100);
+    const initialBounds = update(frameId);
+    const bodyHeight = Math.max(0.5, initialBounds.maxY - initialBounds.minY);
+    const targetY = initialBounds.minY + bodyHeight * 0.52;
+    const cameraDistance = Math.max(1.5, initialBounds.extent * 2.6);
+    controls.target.set(0, targetY, 0);
+    camera.position.set(0, targetY + cameraDistance * 0.28, cameraDistance);
+    camera.near = Math.max(0.001, initialBounds.extent / 1000);
+    camera.far = Math.max(100, initialBounds.extent * 100);
     controls.update();
-    const grid = new THREE.GridHelper(Math.max(2, extent * 2.4), 10, 0x536061, 0x263032);
-    grid.position.y = -extent * 0.98;
+    const grid = new THREE.GridHelper(Math.max(2, initialBounds.extent * 2.4), 10, 0x536061, 0x263032);
+    grid.position.y = initialBounds.minY;
     scene.add(grid);
 
     const resize = () => {
@@ -178,9 +186,11 @@ function fillJointPositions(
   edges: [number, number][],
   alignment: THREE.Quaternion,
   jointCount: number,
-): number {
+): SkeletonBounds {
   const origin = skeletonOrigin(frame, jointCount);
   let extent = 0.5;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
   const transformed = new THREE.Vector3();
   for (let index = 0; index < jointPositions.length / 3; index += 1) {
     const point = frame.joints[index] ?? [origin.x, origin.y, origin.z] as [number, number, number];
@@ -190,6 +200,8 @@ function fillJointPositions(
     jointPositions[offset + 1] = transformed.y;
     jointPositions[offset + 2] = transformed.z;
     extent = Math.max(extent, Math.hypot(jointPositions[offset], jointPositions[offset + 1], jointPositions[offset + 2]));
+    minY = Math.min(minY, transformed.y);
+    maxY = Math.max(maxY, transformed.y);
   }
   for (const [edgeIndex, [from, to]] of edges.entries()) {
     const target = edgeIndex * 6;
@@ -198,5 +210,9 @@ function fillJointPositions(
     bonePositions.set(jointPositions.subarray(fromOffset, fromOffset + 3), target);
     bonePositions.set(jointPositions.subarray(toOffset, toOffset + 3), target + 3);
   }
-  return extent;
+  return {
+    extent,
+    minY: Number.isFinite(minY) ? minY : -extent * 0.8,
+    maxY: Number.isFinite(maxY) ? maxY : extent * 0.2,
+  };
 }
