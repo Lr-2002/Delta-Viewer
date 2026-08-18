@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { SkeletonFrame, SkeletonSeries } from "../types";
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
-const MAX_ALIGNMENT_SAMPLES = 64;
+const MAX_ALIGNMENT_SAMPLES = 24;
 
 function pointAt(frame: SkeletonFrame, index: number): THREE.Vector3 | null {
   const point = frame.joints[index];
@@ -64,31 +64,112 @@ function bodyRight(frame: SkeletonFrame, jointCount: number): THREE.Vector3 | nu
   return null;
 }
 
-export function createSkeletonAlignment(skeleton: SkeletonSeries): THREE.Quaternion {
+function bodyForward(frame: SkeletonFrame, jointCount: number): THREE.Vector3 | null {
+  if (jointCount >= 24) {
+    // SMPL foot joints sit ahead of their corresponding ankles. Unlike the
+    // left/right axis, this remains meaningful when a source has been mirrored.
+    const directions: THREE.Vector3[] = [];
+    for (const [footIndex, ankleIndex] of [[10, 7], [11, 8]]) {
+      const foot = pointAt(frame, footIndex);
+      const ankle = pointAt(frame, ankleIndex);
+      if (!foot || !ankle) continue;
+      const direction = foot.sub(ankle);
+      if (direction.lengthSq() > 1e-8) directions.push(direction.normalize());
+    }
+    if (directions.length > 0) {
+      return directions.reduce((total, direction) => total.add(direction), new THREE.Vector3());
+    }
+  } else if (jointCount >= 17) {
+    // COCO has no toe joints. The nose projects from the shoulder line toward
+    // the face, providing the available non-symmetric front direction.
+    const nose = pointAt(frame, 0);
+    const leftShoulder = pointAt(frame, 5);
+    const rightShoulder = pointAt(frame, 6);
+    if (nose && leftShoulder && rightShoulder) {
+      const direction = nose.sub(midpoint(leftShoulder, rightShoulder));
+      if (direction.lengthSq() > 1e-8) return direction;
+    }
+  }
+  return null;
+}
+
+function closestFrameIndex(frames: SkeletonFrame[], frameId: number | undefined): number {
+  if (frameId === undefined || frames.length <= 1) return 0;
+  let closest = 0;
+  let closestDistance = Math.abs(frames[0].frameId - frameId);
+  for (let index = 1; index < frames.length; index += 1) {
+    const distance = Math.abs(frames[index].frameId - frameId);
+    if (distance >= closestDistance) continue;
+    closest = index;
+    closestDistance = distance;
+  }
+  return closest;
+}
+
+function alignmentSamples(frames: SkeletonFrame[], referenceFrameId: number | undefined): SkeletonFrame[] {
+  const center = closestFrameIndex(frames, referenceFrameId);
+  const samples: SkeletonFrame[] = [];
+  for (let distance = 0; samples.length < MAX_ALIGNMENT_SAMPLES; distance += 1) {
+    const after = center + distance;
+    if (after < frames.length) samples.push(frames[after]);
+    if (distance === 0 || samples.length >= MAX_ALIGNMENT_SAMPLES) continue;
+    const before = center - distance;
+    if (before >= 0) samples.push(frames[before]);
+    if (after >= frames.length && before < 0) break;
+  }
+  return samples;
+}
+
+function averageDirection(
+  frames: SkeletonFrame[],
+  jointCount: number,
+  vertical: THREE.Quaternion | null,
+  select: (frame: SkeletonFrame, jointCount: number) => THREE.Vector3 | null,
+): THREE.Vector3 | null {
+  const directions: THREE.Vector3[] = [];
+  for (const frame of frames) {
+    const direction = select(frame, jointCount);
+    if (!direction) continue;
+    if (vertical) direction.applyQuaternion(vertical).setY(0);
+    if (direction.lengthSq() > 1e-8) directions.push(direction.normalize());
+  }
+  const reference = directions[0];
+  if (!reference) return null;
+
+  // Keep the loaded pose as the anchor. Later turns must remain visible during
+  // playback rather than cancelling out or flipping the initial orientation.
+  const average = new THREE.Vector3();
+  for (const direction of directions) {
+    if (direction.dot(reference) > 0) average.add(direction);
+  }
+  return average.lengthSq() > 1e-8 ? average.normalize() : null;
+}
+
+export function createSkeletonAlignment(
+  skeleton: SkeletonSeries,
+  referenceFrameId?: number,
+): THREE.Quaternion {
   const { frames, jointCount } = skeleton;
-  const sampleCount = Math.min(MAX_ALIGNMENT_SAMPLES, frames.length);
+  const samples = alignmentSamples(frames, referenceFrameId);
   const averageUp = new THREE.Vector3();
-  for (let sample = 0; sample < sampleCount; sample += 1) {
-    const index = sampleCount <= 1 ? 0 : Math.round((sample * (frames.length - 1)) / (sampleCount - 1));
-    const direction = bodyUp(frames[index], jointCount);
+  for (const frame of samples) {
+    const direction = bodyUp(frame, jointCount);
     if (direction) averageUp.add(direction.normalize());
   }
   const vertical = averageUp.lengthSq() <= 1e-8
     ? new THREE.Quaternion()
     : new THREE.Quaternion().setFromUnitVectors(averageUp.normalize(), WORLD_UP);
 
-  // Keep a stable front view after the vertical Y-up alignment. In the normalized
-  // basis, a body's right side maps to +X, so its front faces the +Z camera.
-  const averageRight = new THREE.Vector3();
-  for (let sample = 0; sample < sampleCount; sample += 1) {
-    const index = sampleCount <= 1 ? 0 : Math.round((sample * (frames.length - 1)) / (sampleCount - 1));
-    const direction = bodyRight(frames[index], jointCount);
-    if (!direction) continue;
-    direction.applyQuaternion(vertical).setY(0);
-    if (direction.lengthSq() > 1e-8) averageRight.add(direction.normalize());
+  let forward = averageDirection(samples, jointCount, vertical, bodyForward);
+  if (!forward) {
+    const right = averageDirection(samples, jointCount, vertical, bodyRight);
+    if (right) forward = right.cross(WORLD_UP).normalize();
   }
-  if (averageRight.lengthSq() <= 1e-8) return vertical;
-  const yaw = -Math.atan2(averageRight.z, averageRight.x);
+  if (!forward || forward.lengthSq() <= 1e-8) return vertical;
+
+  // The initial camera is on +Z. Align an anatomical front marker there, which
+  // works for both normal and mirrored source coordinate systems.
+  const yaw = -Math.atan2(forward.x, forward.z);
   return new THREE.Quaternion().setFromAxisAngle(WORLD_UP, yaw).multiply(vertical);
 }
 

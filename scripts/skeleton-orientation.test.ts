@@ -55,6 +55,79 @@ test("keeps the body front-facing after standing alignment", () => {
   assertClose(rightHip.z, leftHip.z);
 });
 
+test("uses SMPL foot direction to keep mirrored coordinates front-facing", () => {
+  const points = Array.from({ length: 24 }, () => [0, 0, 0] as [number, number, number]);
+  points[15] = [0, 2, 0];
+  points[1] = [1, 0, 0];
+  points[2] = [-1, 0, 0];
+  points[7] = [0.5, 0, 0];
+  points[8] = [-0.5, 0, 0];
+  points[10] = [0.5, 0, 0.4];
+  points[11] = [-0.5, 0, 0.4];
+  const series = skeleton(points);
+  const alignment = createSkeletonAlignment(series);
+  const origin = skeletonOrigin(series.frames[0], 24);
+  const leftAnkle = transformSkeletonPoint(points[7], origin, alignment);
+  const leftFoot = transformSkeletonPoint(points[10], origin, alignment);
+  assertClose(leftFoot.x, leftAnkle.x);
+  assert.ok(leftFoot.z > leftAnkle.z);
+});
+
+test("anchors the fixed heading to the initial reference instead of later turns", () => {
+  const first = Array.from({ length: 24 }, () => [0, 0, 0] as [number, number, number]);
+  const turned = Array.from({ length: 24 }, () => [0, 0, 0] as [number, number, number]);
+  first[15] = [0, 2, 0];
+  first[7] = [-0.5, 0, 0];
+  first[8] = [0.5, 0, 0];
+  first[10] = [-0.5, 0, 0.4];
+  first[11] = [0.5, 0, 0.4];
+  turned[15] = [0, 2, 0];
+  turned[7] = [-0.5, 0, 0];
+  turned[8] = [0.5, 0, 0];
+  turned[10] = [-0.5, 0, -0.4];
+  turned[11] = [0.5, 0, -0.4];
+  const series: SkeletonSeries = {
+    sourceName: "smpl_skeleton.npz",
+    frameCount: 2,
+    jointCount: 24,
+    frames: [{ frameId: 0, joints: first }, { frameId: 1, joints: turned }],
+  };
+  const alignment = createSkeletonAlignment(series, 0);
+  const origin = skeletonOrigin(series.frames[0], 24);
+  const ankle = transformSkeletonPoint(first[7], origin, alignment);
+  const foot = transformSkeletonPoint(first[10], origin, alignment);
+  assert.ok(foot.z > ankle.z);
+});
+
+test("uses the COCO nose direction as the front marker", () => {
+  const points = Array.from({ length: 17 }, () => [0, 0, 0] as [number, number, number]);
+  points[5] = [-1, 1, 0];
+  points[6] = [1, 1, 0];
+  points[11] = [-0.5, 0, 0];
+  points[12] = [0.5, 0, 0];
+  points[0] = [0, 1, 0.5];
+  const series = skeleton(points);
+  const alignment = createSkeletonAlignment(series);
+  const origin = skeletonOrigin(series.frames[0], 17);
+  const nose = transformSkeletonPoint(points[0], origin, alignment);
+  assert.ok(nose.z > 0);
+});
+
+test("uses the corrected horizontal-axis fallback when no front marker exists", () => {
+  const points = Array.from({ length: 17 }, () => [0, 0, 0] as [number, number, number]);
+  points[5] = [0, 2, 0];
+  points[6] = [0, 2, 1];
+  points[11] = [0, 0, 0];
+  points[12] = [0, 0, 1];
+  points[0] = [0, 1, 0.5];
+  const series = skeleton(points);
+  const alignment = createSkeletonAlignment(series);
+  const origin = skeletonOrigin(series.frames[0], 17);
+  const leftShoulder = transformSkeletonPoint(points[5], origin, alignment);
+  const rightShoulder = transformSkeletonPoint(points[6], origin, alignment);
+  assert.ok(rightShoulder.x > leftShoulder.x);
+});
+
 test("uses the hip midpoint as the COCO standing origin", () => {
   const points = Array.from({ length: 17 }, () => [0, 0, 0] as [number, number, number]);
   points[5] = [-1, 0, 2];

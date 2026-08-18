@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.49 - 2026-08-18
+
+- Anchor the three-dimensional skeleton heading to the initially displayed pose
+  so later turns remain visible instead of changing the viewer's reference frame.
+- Detect SMPL facing direction from the feet and COCO facing direction from the
+  nose, including mirrored source coordinates and a corrected axis fallback.
+
 ## 0.17.48 - 2026-08-18
 
 - Allocate non-overlapping per-task episode ordinal ranges centrally without
