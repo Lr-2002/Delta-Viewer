@@ -11,6 +11,8 @@ export interface SupervisionUserSummary {
   displayName: string;
   role: "admin" | "operator";
   assignedTasks: number;
+  assignedTaskNames: string[];
+  assignedTaskQuantities: Record<string, number>;
   completedToday: number;
   totalCompleted: number;
   averageCompletionMs: number | null;
@@ -32,6 +34,8 @@ export interface SupervisionAccount {
   displayName: string;
   role: "admin" | "operator";
   assignedTasks: number;
+  assignedTaskNames: string[];
+  assignedTaskQuantities: Record<string, number>;
   createdAtMs: number;
 }
 
@@ -50,10 +54,23 @@ export interface SupervisionTaskDetail {
   updatedBy: string;
 }
 
+export interface SupervisionTaskImportResult {
+  taskDetails: SupervisionTaskDetail[];
+  importedTaskNames: string[];
+}
+
+export interface AssignedTask {
+  task: string;
+  detail: string;
+  quantity: number;
+}
+
 export interface SupervisionTaskSummary {
   task: string;
   completed: number;
   total: number;
+  completedFrames: number;
+  totalFrames: number;
 }
 
 export interface SupervisionTaskCatalog {

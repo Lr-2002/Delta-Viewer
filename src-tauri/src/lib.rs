@@ -281,12 +281,17 @@ async fn set_supervision_assigned_tasks(
     app: AppHandle,
     auth: State<'_, AuthState>,
     username: String,
-    assigned_tasks: u64,
+    assigned_task_quantities: std::collections::BTreeMap<String, u64>,
 ) -> Result<SupervisionAccount, String> {
     let data_root = app_data_root(&app)?;
-    user_center::set_assigned_tasks(&data_root, auth.inner(), &username, assigned_tasks)
-        .await
-        .map_err(|error| error.to_string())
+    user_center::set_assigned_tasks(
+        &data_root,
+        auth.inner(),
+        &username,
+        assigned_task_quantities,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -334,7 +339,7 @@ async fn import_supervision_task_details(
     app: AppHandle,
     auth: State<'_, AuthState>,
     config_path: String,
-) -> Result<Vec<SupervisionTaskDetail>, String> {
+) -> Result<crate::model::SupervisionTaskImportResult, String> {
     let data_root = app_data_root(&app)?;
     user_center::import_task_details(&data_root, auth.inner(), Path::new(&config_path))
         .await
@@ -352,6 +357,39 @@ async fn list_task_definitions(
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_assigned_task_definitions(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Vec<TaskDefinition>, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    let assigned = user_center::assigned_tasks(&data_root, auth.inner())
+        .await
+        .map_err(|error| error.to_string())?;
+    let requested = assigned
+        .iter()
+        .map(|task| (task.task.clone(), task.detail.clone()))
+        .collect::<Vec<_>>();
+    let names = assigned
+        .iter()
+        .map(|task| task.task.to_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    tauri::async_runtime::spawn_blocking(move || {
+        annotations::ensure_assigned_tasks(&data_root, &user, &requested).map(|tasks| {
+            tasks
+                .into_iter()
+                .filter(|task| names.contains(&task.label.to_lowercase()))
+                .collect()
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -968,6 +1006,7 @@ pub fn run() {
             update_supervision_task_detail,
             import_supervision_task_details,
             list_task_definitions,
+            list_assigned_task_definitions,
             create_task_definition,
             import_task_template_config,
             delete_task_definition,

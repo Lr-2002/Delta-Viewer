@@ -5,6 +5,35 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.46 - 2026-08-18
+
+- Made JPEG playback lossless and sequential: all five streams finish the
+  current frame before the transport advances exactly one frame, allowing
+  playback to slow down under I/O pressure instead of skipping images.
+- Kept native MP4 playback continuous while retaining synchronized pause,
+  seek, speed and timeline state.
+- Replaced numeric-only supervision assignments with a detailed operator and
+  task workbench that directly assigns scanned or imported named tasks, shows
+  completion progress and overlapping assignees, and persists the exact list.
+- Kept the existing task-completion catalog unchanged and made the detailed
+  assignment workbench open only after selecting an operator, with an explicit
+  close action returning to the normal supervision overview.
+- Removed display of legacy numeric-only assignment totals and added a bounded
+  quantity field to every selected task, persisting per-task allocation counts.
+- Made task names dynamic from the selected JSON `tasks` array (`label`) or the
+  scanned directory, and treat each imported `description` as its task annotation;
+  selecting a directory remains optional and only adds completion counts.
+- Keep the current imported task list session-local and replace it on every file
+  import, so persisted annotations do not make tasks appear before a file is chosen.
+- Added assigned-task frame totals to the account overview: `states.jsonl` rows
+  provide total frames, while frames in episodes with `description.json` count
+  as completed, filtered to each operator's assigned task names.
+- Unified the account overview layout with fixed column proportions, centered
+  metric values, and the date/frame-count explanation grouped under its title.
+- Operators now load only their centrally assigned tasks on the normal work
+  screen; missing local definitions are synchronized from the assigned task name
+  and imported `description` so the tasks can be selected and saved immediately.
+
 ## 0.17.45 - 2026-08-17
 
 - Added read-only discovery and synchronized preview-frame decoding for recorder
