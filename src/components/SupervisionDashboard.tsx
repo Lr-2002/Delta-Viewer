@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { Check, CheckSquare, ChevronDown, ChevronRight, FileJson, FileUp, FolderOpen, LoaderCircle, LogOut, Pencil, Plus, RefreshCw, Search, ShieldCheck, Square, Users, X } from "lucide-react";
 import { chooseAndScanSupervisionTasks, getSupervisionDashboard, importSupervisionAnnotations, importSupervisionTaskDetails, setSupervisionAssignedTasks, updateSupervisionTaskDetail } from "../lib/backend";
+import { sameAssignmentQuantities, validateAssignmentSelection } from "../lib/supervisionAssignments";
 import type { SupervisionAnnotationCatalog, SupervisionDashboardData, SupervisionTaskCatalog, UserIdentity } from "../types";
 
 interface SupervisionDashboardProps {
@@ -28,6 +29,8 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
   const [savingDetail, setSavingDetail] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [assignmentError, setAssignmentError] = useState("");
+  const [assignmentNotice, setAssignmentNotice] = useState("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -50,23 +53,29 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  function selectOperator(username: string | null) {
+    setSelectedOperator(username);
+    setAssignmentError("");
+    setAssignmentNotice("");
+  }
+
   async function saveAssignment(username: string) {
     const quantities = assignmentDrafts[username] ?? {};
-    if (!taskCatalog) {
-      setError("请先选择并读取 NAS 任务目录，再分配具体视频数量");
-      return;
-    }
-    const unavailable = Object.entries(quantities).find(([task, quantity]) => {
-      const summary = taskCatalog.tasks.find((item) => item.task.toLowerCase() === task.toLowerCase());
-      return !summary || quantity > summary.total;
-    });
-    if (unavailable) {
-      setError(`任务 ${displayTaskName(unavailable[0])} 的分配数量超过 NAS 中可用视频数量`);
+    const validationError = validateAssignmentSelection(
+      quantities,
+      taskCatalog?.tasks ?? [],
+      importedTaskNames,
+    );
+    if (validationError) {
+      setAssignmentError(validationError);
+      setAssignmentNotice("");
       return;
     }
     setSavingUser(username);
     setError("");
     setNotice("");
+    setAssignmentError("");
+    setAssignmentNotice("");
     try {
       const saved = await setSupervisionAssignedTasks(username, quantities);
       setData((current) => current ? {
@@ -74,15 +83,21 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
         users: current.users.map((user) => user.username === username ? { ...user, assignedTasks: saved.assignedTasks, assignedTaskNames: saved.assignedTaskNames, assignedTaskQuantities: saved.assignedTaskQuantities } : user),
         accounts: current.accounts.map((account) => account.username === username ? saved : account),
       } : current);
-      setNotice(`已为 @${username} 分配 ${Object.keys(quantities).length} 类、共 ${quantityTotal(quantities)} 个任务`);
+      setAssignmentDrafts((current) => ({
+        ...current,
+        [username]: { ...saved.assignedTaskQuantities },
+      }));
+      setAssignmentNotice(`已保存：@${username} 获得 ${saved.assignedTaskNames.length} 类、共 ${saved.assignedTasks} 个任务`);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setAssignmentError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setSavingUser(null);
     }
   }
 
   function toggleTaskAssignment(username: string, task: string) {
+    setAssignmentError("");
+    setAssignmentNotice("");
     setAssignmentDrafts((current) => {
       const selected = current[username] ?? {};
       const existingKey = Object.keys(selected).find((item) => item.toLowerCase() === task.toLowerCase());
@@ -97,11 +112,23 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
   }
 
   function setTaskQuantity(username: string, task: string, quantity: number, maximum: number | null) {
+    setAssignmentError("");
+    setAssignmentNotice("");
     const bounded = Math.max(1, Math.min(maximum ?? 1_000_000, Math.round(quantity) || 1));
     setAssignmentDrafts((current) => ({
       ...current,
       [username]: { ...(current[username] ?? {}), [task]: bounded },
     }));
+  }
+
+  function selectAllFolderData(username: string, catalog: SupervisionTaskCatalog | null, imported: string[]) {
+    const quantities = Object.fromEntries([
+      ...(catalog?.tasks ?? []).map((item) => [item.task, Math.max(1, item.total)] as const),
+      ...imported.filter((task) => !(catalog?.tasks ?? []).some((item) => item.task.toLowerCase() === task.toLowerCase())).map((task) => [task, 1] as const),
+    ]);
+    setAssignmentError("");
+    setAssignmentNotice("");
+    setAssignmentDrafts((current) => ({ ...current, [username]: quantities }));
   }
 
   async function chooseTaskRoot() {
@@ -209,7 +236,7 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
             <div className="supervision-table-wrap"><table className="account-overview-table"><colgroup><col className="account-column" /><col className="assignment-column" /><col span={2} className="count-column" /><col className="duration-column" /><col span={2} className="frame-column" /></colgroup><thead><tr><th>账号</th><th>具体分配</th><th>当天完成</th><th>总计完成</th><th>平均完成时间</th><th>已完成帧数</th><th>总帧数</th></tr></thead><tbody>
               {data.users.map((user) => <tr key={user.username}>
                 <td><strong>{user.displayName}</strong><small>@{user.username} · {user.role === "admin" ? "监管账户" : "普通账户"}</small></td>
-                <td>{user.role === "operator" ? <button className={`assignment-summary-button${selectedOperator === user.username ? " active" : ""}`} type="button" onClick={() => setSelectedOperator(user.username)}><strong>{user.assignedTaskNames.length}</strong><span>{user.assignedTaskNames.length ? `${user.assignedTaskNames.slice(0, 2).map(displayTaskName).join("、")} · 共 ${quantityTotal(user.assignedTaskQuantities)} 个` : "选择具体任务与数量"}{user.assignedTaskNames.length > 2 ? ` 等 ${user.assignedTaskNames.length} 类` : ""}</span><ChevronRight size={15} /></button> : "—"}</td>
+                <td>{user.role === "operator" ? <button className={`assignment-summary-button${selectedOperator === user.username ? " active" : ""}`} type="button" onClick={() => selectOperator(user.username)}><strong>{user.assignedTaskNames.length}</strong><span>{user.assignedTaskNames.length ? `${user.assignedTaskNames.slice(0, 2).map(displayTaskName).join("、")} · 共 ${quantityTotal(user.assignedTaskQuantities)} 个` : "选择具体任务与数量"}{user.assignedTaskNames.length > 2 ? ` 等 ${user.assignedTaskNames.length} 类` : ""}</span><ChevronRight size={15} /></button> : "—"}</td>
                 <td className="supervision-number">{user.completedToday}</td>
                 <td className="supervision-number">{user.totalCompleted}</td>
                 <td>{formatDuration(user.averageCompletionMs)}</td>
@@ -228,16 +255,18 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
             const activeUser = operators.find((user) => user.username === selectedOperator) ?? operators[0];
             const selected = activeUser ? assignmentDrafts[activeUser.username] ?? {} : {};
             const persisted = activeUser?.assignedTaskQuantities ?? {};
-            const dirty = JSON.stringify(selected) !== JSON.stringify(persisted);
+            const dirty = !sameAssignmentQuantities(selected, persisted);
             const filteredTasks = availableTasks.filter((task) => `${task} ${displayTaskName(task)} ${taskDetail(data, task)?.detail ?? ""}`.toLowerCase().includes(taskSearch.trim().toLowerCase()));
             return <section className="supervision-section assignment-workbench">
-              <div className="supervision-section-heading"><div><span className="section-kicker">TASK ASSIGNMENT</span><h2>具体任务分配</h2><small>任务来自当前导入的 JSON 或读取到的任务目录</small></div><button className="icon-button" type="button" onClick={() => setSelectedOperator(null)} title="关闭任务分配" aria-label="关闭任务分配"><X size={16} /></button></div>
+              <div className="supervision-section-heading"><div><span className="section-kicker">TASK ASSIGNMENT</span><h2>具体任务分配</h2><small>任务来自当前导入的 JSON 或读取到的任务目录</small></div><button className="icon-button" type="button" onClick={() => selectOperator(null)} title="关闭任务分配" aria-label="关闭任务分配"><X size={16} /></button></div>
               <div className="assignment-layout">
-                <aside className="operator-list"><header><Users size={15} /><strong>操作员</strong><span>{operators.length}</span></header>{operators.map((user) => <button key={user.username} className={activeUser?.username === user.username ? "active" : ""} type="button" onClick={() => setSelectedOperator(user.username)}><span><strong>{user.displayName}</strong><small>@{user.username}</small></span><b>{Object.keys(assignmentDrafts[user.username] ?? {}).length}</b></button>)}</aside>
+                <aside className="operator-list"><header><Users size={15} /><strong>操作员</strong><span>{operators.length}</span></header>{operators.map((user) => <button key={user.username} className={activeUser?.username === user.username ? "active" : ""} type="button" onClick={() => selectOperator(user.username)}><span><strong>{user.displayName}</strong><small>@{user.username}</small></span><b>{Object.keys(assignmentDrafts[user.username] ?? {}).length}</b></button>)}</aside>
                 <div className="assignment-task-picker">
                   {activeUser ? <>
                     <header className="assignment-picker-header"><div><strong>为 {activeUser.displayName} 分配任务</strong><span>已选择 {Object.keys(selected).length} / {availableTasks.length} 类，共 {quantityTotal(selected)} 个</span></div><button className="button button-primary" type="button" disabled={!dirty || savingUser === activeUser.username} onClick={() => void saveAssignment(activeUser.username)}>{savingUser === activeUser.username ? "保存中" : "保存分配"}</button></header>
-                    <div className="assignment-toolbar"><label><Search size={14} /><input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="搜索任务名称或详情" /></label><button type="button" onClick={() => setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: Object.fromEntries(filteredTasks.map((task) => [task, current[activeUser.username]?.[task] ?? 1])) }))}>选择当前结果</button><button type="button" onClick={() => setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: {} }))}>清空</button></div>
+                    {assignmentError ? <div className="auth-error assignment-feedback" role="alert">{assignmentError}</div> : null}
+                    {assignmentNotice ? <div className="supervision-notice assignment-feedback" role="status"><Check size={15} />{assignmentNotice}</div> : null}
+                    <div className="assignment-toolbar"><label><Search size={14} /><input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="搜索任务名称或详情" /></label><button type="button" onClick={() => selectAllFolderData(activeUser.username, taskCatalog, importedTaskNames)} disabled={!taskCatalog?.tasks.length}>全选当前文件夹</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: Object.fromEntries(filteredTasks.map((task) => [task, current[activeUser.username]?.[task] ?? 1])) })); }}>选择当前结果</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: {} })); }}>清空</button></div>
                     {filteredTasks.length ? <div className="assignment-task-grid">{filteredTasks.map((task) => {
                       const selectedKey = Object.keys(selected).find((item) => item.toLowerCase() === task.toLowerCase());
                       const checked = selectedKey !== undefined;
@@ -245,7 +274,7 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
                       const summary = taskCatalog?.tasks.find((item) => item.task.toLowerCase() === task.toLowerCase());
                       const detail = taskDetail(data, task);
                       const others = operators.filter((user) => user.username !== activeUser.username && user.assignedTaskNames.some((item) => item.toLowerCase() === task.toLowerCase()));
-                      return <div key={task} className={`assignment-task-card${checked ? " selected" : ""}`}><button type="button" onClick={() => toggleTaskAssignment(activeUser.username, task)} aria-pressed={checked}>{checked ? <CheckSquare size={17} /> : <Square size={17} />}<span><strong>{displayTaskName(task)}</strong><small>{task}</small>{detail ? <em>{detail.detail}</em> : null}</span></button><div className="task-card-meta">{summary ? <b>{summary.completed}/{summary.total} 完成</b> : <b>已导入</b>}{others.length ? <small>另分配给 {others.map((user) => user.displayName).join("、")}</small> : null}{checked ? <label>分配数量<input type="number" min={1} max={summary?.total ?? 1_000_000} value={quantity} onClick={(event) => event.stopPropagation()} onChange={(event) => setTaskQuantity(activeUser.username, task, Number(event.target.value), summary?.total ?? null)} /><span>{summary ? `/ ${summary.total}` : "个"}</span></label> : null}</div></div>;
+                      return <div key={task} className={`assignment-task-card${checked ? " selected" : ""}`}><button type="button" onClick={() => toggleTaskAssignment(activeUser.username, task)} aria-pressed={checked}>{checked ? <CheckSquare size={17} /> : <Square size={17} />}<span><strong>{displayTaskName(task)}</strong><small>{task}</small>{detail ? <em>{detail.detail}</em> : null}</span></button><div className="task-card-meta">{summary ? <><b>{summary.completed}/{summary.total} 完成</b><small>文件夹内共 {summary.total} 条数据</small></> : <b>已导入</b>}{others.length ? <small>另分配给 {others.map((user) => user.displayName).join("、")}</small> : null}{checked ? <label>分配数量<div className="quantity-control"><input type="number" min={1} max={summary?.total ?? 1_000_000} value={quantity} onClick={(event) => event.stopPropagation()} onChange={(event) => setTaskQuantity(activeUser.username, task, Number(event.target.value), summary?.total ?? null)} /><button type="button" onClick={(event) => { event.stopPropagation(); if (summary) setTaskQuantity(activeUser.username, task, summary.total, summary.total); }}>全部</button></div><span>{summary ? `/ ${summary.total}` : "个"}</span></label> : null}</div></div>;
                     })}</div> : <div className="assignment-empty"><FolderOpen size={20} /><strong>暂无可分配任务</strong><span>请选择任务 JSON 或任务目录，读取到的任务会自动出现在这里。</span></div>}
                   </> : <div className="assignment-empty"><Users size={20} /><strong>暂无普通账户</strong><span>请先在用户中心创建操作员账户。</span></div>}
                 </div>

@@ -66,6 +66,11 @@ export interface AssignedTask {
   startIndex: number;
 }
 
+export interface AssignedTaskActivity {
+  date: string;
+  events: SupervisionEvent[];
+}
+
 export interface SupervisionTaskSummary {
   task: string;
   completed: number;

@@ -711,6 +711,12 @@ async function main() {
       commands.pnpm,
       pnpmArguments(["test:user-center"]),
     );
+    await runCommand(
+      report,
+      "supervision assignment regression tests",
+      commands.pnpm,
+      pnpmArguments(["test:supervision-assignment"]),
+    );
     await runCommand(report, "Rust format check", commands.cargo, [
       "fmt",
       "--manifest-path",

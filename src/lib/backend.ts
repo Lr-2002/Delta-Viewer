@@ -15,6 +15,7 @@ import {
 import type {
   AnnotatedEpisodeSummary,
   AssignedTask,
+  AssignedTaskActivity,
   AnnotationAuditRequest,
   AppUpdateInfo,
   AuthStatus,
@@ -234,6 +235,11 @@ export async function listAssignedTaskDefinitions(): Promise<TaskDefinition[]> {
 export async function getAssignedTasks(): Promise<AssignedTask[]> {
   if (isTauriRuntime()) return invoke<AssignedTask[]>("get_assigned_tasks");
   return [];
+}
+
+export async function getAssignedTaskActivity(date: string): Promise<AssignedTaskActivity> {
+  if (isTauriRuntime()) return invoke<AssignedTaskActivity>("get_assigned_task_activity", { date });
+  return { date, events: [] };
 }
 
 export async function getAssignedSourceRoot(): Promise<string | null> {

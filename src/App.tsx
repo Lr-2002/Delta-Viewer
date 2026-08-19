@@ -36,6 +36,7 @@ import { ChecksPanel } from "./components/ChecksPanel";
 import { ExportPanel } from "./components/ExportPanel";
 import { FramePanel } from "./components/FramePanel";
 import { ProgressStrip } from "./components/ProgressStrip";
+import { PersonalTaskPanel } from "./components/PersonalTaskPanel";
 import { SegmentAnnotationEditor } from "./components/SegmentAnnotationEditor";
 import { SkeletonViewer } from "./components/SkeletonViewer";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
@@ -52,6 +53,7 @@ import {
   exportEpisode,
   exportValidationReport,
   getAuthStatus,
+  getAssignedTaskActivity,
   getAssignedSourceRoot,
   getAssignedTasks,
   installAppUpdate,
@@ -79,6 +81,7 @@ import { clampPlaybackFrame, nextPlaybackFrame, playbackFrameDurationMs, playbac
 import type {
   AnnotatedEpisodeSummary,
   AssignedTask,
+  AssignedTaskActivity,
   AnnotationAuditAction,
   AppUpdateInfo,
   AuthStatus,
@@ -110,6 +113,12 @@ interface PendingAnnotationConfirmation {
   sourceEpisodeRoot: string;
   minFrame: number;
   maxFrame: number;
+}
+
+function localDateInput(): string {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 function assignedEpisodeSelection(episodes: EpisodeSummary[], assignments: AssignedTask[]) {
@@ -159,6 +168,9 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.52": "新增个人任务抽屉、按日期标注记录和本机任务路径配置，优化监管全量分配与紧凑任务描述输入。",
+  "0.17.51": "修复桌面端与旧用户中心版本不一致时任务分配假成功和普通账号 NOT_FOUND 的问题。",
+  "0.17.50": "修复监管模式下 JSON 任务分配无法保存的问题，并在分配区域即时显示保存结果和错误。",
   "0.17.49": "三维骨架按首次显示姿态确定固定朝向，兼容镜像 SMPL 脚部和 COCO 面部方向，同时保留播放中的真实转身。",
   "0.17.47": "监管账户可在本地导入标注 JSON，按最新修订查看每位标注人的任务、轨迹、片段与覆盖帧统计和明细。",
   "0.17.46": "Camera 0 满填充显示，三维骨架以接地、朝前且略微俯视的初始视角展示；JPEG 回放保持逐帧推进并让倍速控制单帧时长。",
@@ -246,6 +258,11 @@ function App() {
   const [authStartupError, setAuthStartupError] = useState("");
   const [tasks, setTasks] = useState<TaskDefinition[]>([]);
   const [assignedTasks, setAssignedTasks] = useState<AssignedTask[]>([]);
+  const [assignedSourceRoot, setAssignedSourceRootState] = useState<string | null>(null);
+  const [assignedActivity, setAssignedActivity] = useState<AssignedTaskActivity | null>(null);
+  const [assignedActivityDate, setAssignedActivityDate] = useState(() => localDateInput());
+  const [assignedActivityLoading, setAssignedActivityLoading] = useState(false);
+  const [personalTaskOpen, setPersonalTaskOpen] = useState(false);
   const [assignedEpisodeTasks, setAssignedEpisodeTasks] = useState<Record<string, string>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [annotation, setAnnotation] = useState<EpisodeAnnotation | null>(null);
@@ -424,22 +441,49 @@ function App() {
   useEffect(() => {
     if (!workspaceActive || (isManagedWorkspace && !authStatus?.currentUser)) {
       setTasks([]);
+      setAssignedTasks([]);
+      setAssignedSourceRootState(null);
+      setAssignedActivity(null);
+      setPersonalTaskOpen(false);
       return;
     }
     if (isManagedWorkspace && authStatus?.currentUser?.role === "operator") {
-      void Promise.all([listAssignedTaskDefinitions(), getAssignedTasks(), getAssignedSourceRoot()])
-        .then(async ([definitions, assignments, assignedRoot]) => {
+      const date = localDateInput();
+      setAssignedActivityDate(date);
+      void Promise.all([listAssignedTaskDefinitions(), getAssignedTasks(), getAssignedSourceRoot(), getAssignedTaskActivity(date)])
+        .then(async ([definitions, assignments, assignedRoot, activity]) => {
           setTasks(definitions);
           setAssignedTasks(assignments);
+          setAssignedSourceRootState(assignedRoot);
+          setAssignedActivity(activity);
           if (assignedRoot && assignments.length) await openSource(assignedRoot, true, assignments);
         })
         .catch((reason) => setError(`无法加载已分配任务：${toMessage(reason)}`));
       return;
     }
     setAssignedTasks([]);
+    setAssignedSourceRootState(null);
+    setAssignedActivity(null);
     void listTaskDefinitions().then(setTasks)
       .catch((reason) => setError(`无法加载任务目录：${toMessage(reason)}`));
   }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
+
+  async function refreshAssignedActivity(date: string) {
+    if (!isManagedWorkspace || authStatus?.currentUser?.role !== "operator") return;
+    setAssignedActivityLoading(true);
+    try {
+      setAssignedActivity(await getAssignedTaskActivity(date));
+    } catch (reason) {
+      setError(`无法加载标注记录：${toMessage(reason)}`);
+    } finally {
+      setAssignedActivityLoading(false);
+    }
+  }
+
+  function changeAssignedActivityDate(date: string) {
+    setAssignedActivityDate(date);
+    void refreshAssignedActivity(date);
+  }
 
   useEffect(() => {
     if (!workspaceActive || (isManagedWorkspace && !authStatus?.currentUser)) {
@@ -629,6 +673,7 @@ function App() {
         const selectedPath = isManagedWorkspace && authStatus?.currentUser?.role === "operator"
           ? await setAssignedSourceRoot(path)
           : path;
+        if (isManagedWorkspace && authStatus?.currentUser?.role === "operator") setAssignedSourceRootState(selectedPath);
         await openSource(selectedPath, true);
       }
     } catch (reason) {
@@ -1157,6 +1202,7 @@ function App() {
       const next = current.filter((item) => item.annotation.episodeRoot !== saved.episodeRoot);
       return [{ annotation: saved, sourceAvailable: true }, ...next];
     });
+    if (isManagedWorkspace && authStatus?.currentUser?.role === "operator") void refreshAssignedActivity(assignedActivityDate);
   }
 
   function openBatchExport() {
@@ -1357,7 +1403,11 @@ function App() {
     if (!selectedEpisode) return;
     const assignedTask = assignedEpisodeTasks[selectedEpisode.root];
     if (!assignedTask) return;
-    const definition = tasks.find((task) => task.label.toLowerCase() === assignedTask.toLowerCase());
+    const assignedTaskKey = assignedTask.toLowerCase();
+    const definition = tasks.find((task) => (
+      task.label.toLowerCase() === assignedTaskKey
+      || task.codePrefix.toLowerCase() === assignedTaskKey
+    ));
     if (definition) setSelectedTaskId(definition.id);
   }, [assignedEpisodeTasks, selectedEpisode?.root, tasks]);
 
@@ -1481,6 +1531,11 @@ function App() {
                 <UserRound size={16} />
                 <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
               </div>
+              {currentUser.role === "operator" ? (
+                <button className="icon-button personal-task-trigger" type="button" onClick={() => setPersonalTaskOpen((open) => !open)} title="查看个人任务详情" aria-label="查看个人任务详情" aria-expanded={personalTaskOpen}>
+                  <ListChecks size={16} />
+                </button>
+              ) : null}
               <button className="icon-button" type="button" onClick={() => void logout()} disabled={busy} title="退出登录" aria-label="退出登录">
                 <LogOut size={16} />
               </button>
@@ -1491,6 +1546,22 @@ function App() {
           </button>
         </div>
       </header>
+
+      {isManagedWorkspace && currentUser?.role === "operator" && personalTaskOpen ? (
+        <div className="personal-task-overlay" role="presentation" onClick={() => setPersonalTaskOpen(false)}>
+        <PersonalTaskPanel
+          sourceRoot={assignedSourceRoot}
+          tasks={assignedTasks}
+          activity={assignedActivity}
+          date={assignedActivityDate}
+          loading={assignedActivityLoading}
+          onDateChange={changeAssignedActivityDate}
+          onRefresh={() => void refreshAssignedActivity(assignedActivityDate)}
+          onChooseSource={() => void chooseSource()}
+          onClose={() => setPersonalTaskOpen(false)}
+        />
+        </div>
+      ) : null}
 
       {releaseHistoryOpen ? (
         <ReleaseHistoryDialog

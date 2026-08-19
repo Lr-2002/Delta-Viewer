@@ -5,6 +5,31 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.52 - 2026-08-19
+
+- Add an operator task drawer with local source-folder setup, assigned task
+  details and date-filtered personal annotation activity without uploading paths.
+- Reuse existing task definitions when assignment names share their generated
+  code prefix, preventing assigned tasks such as `oven` from failing at login.
+- Show scanned folder totals in supervision assignment cards and add per-folder
+  and per-task controls that safely fill the complete available quantity.
+- Keep annotation descriptions on one aligned native selector, with an optional
+  custom text field that saves on Enter or focus loss.
+
+## 0.17.51 - 2026-08-19
+
+- Advertise structured task-assignment support from the LAN user center and
+  reject legacy services before assignment reads or writes.
+- Verify that assignment save responses preserve every task name, quantity and
+  total so an old server can no longer report a misleading successful save.
+
+## 0.17.50 - 2026-08-19
+
+- Fixed supervision assignments imported from task JSON being silently blocked
+  unless the administrator also scanned a NAS task directory.
+- Show assignment save errors and confirmations beside the save control, update
+  the overview from the persisted server response, and keep NAS quantity bounds.
+
 ## 0.17.49 - 2026-08-18
 
 - Anchor the three-dimensional skeleton heading to the initially displayed pose

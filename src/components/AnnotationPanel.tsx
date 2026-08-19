@@ -29,6 +29,8 @@ interface AnnotationPanelProps {
   onActivity: (action: AnnotationAuditAction, taskId: string, trajectoryCode: string) => void;
 }
 
+const CUSTOM_DESCRIPTION_VALUE = "__custom_description__";
+
 export function AnnotationPanel({
   sourcePath,
   tasks,
@@ -49,6 +51,7 @@ export function AnnotationPanel({
   const [taskId, setTaskId] = useState("");
   const [trajectoryCode, setTrajectoryCode] = useState("");
   const [description, setDescription] = useState("");
+  const [customDescriptionOpen, setCustomDescriptionOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [taskCreatorOpen, setTaskCreatorOpen] = useState(false);
   const [newTaskLabel, setNewTaskLabel] = useState("");
@@ -69,6 +72,8 @@ export function AnnotationPanel({
       onTaskSelected(annotation.taskId);
       setTrajectoryCode(annotation.trajectoryCode);
       setDescription(annotation.taskDescription);
+      const annotationTask = tasks.find((task) => task.id === annotation.taskId);
+      setCustomDescriptionOpen(Boolean(annotationTask && !predefinedDescriptions(annotationTask).includes(annotation.taskDescription)));
       setEditStartedAtMs(Date.now());
       return () => { active = false; };
     }
@@ -78,6 +83,7 @@ export function AnnotationPanel({
       onTaskSelected(null);
       setTrajectoryCode("");
       setDescription("");
+      setCustomDescriptionOpen(false);
       return () => { active = false; };
     }
     // A newly created task reaches this component before its parent task list
@@ -89,6 +95,7 @@ export function AnnotationPanel({
     setTaskId(firstTask.id);
     onTaskSelected(firstTask.id);
     setDescription(firstTask.defaultDescription);
+    setCustomDescriptionOpen(false);
     setTrajectoryCode("");
     setEditStartedAtMs(Date.now());
     void suggestTrajectoryCode(firstTask.id)
@@ -106,7 +113,7 @@ export function AnnotationPanel({
   ]);
 
   const activeTask = tasks.find((task) => task.id === taskId) ?? null;
-  const descriptionTemplate = activeTask?.descriptionOptions.includes(description) ? description : "";
+  const descriptionOptions = activeTask ? predefinedDescriptions(activeTask) : [];
 
   const dirty = useMemo(() => {
     if (!annotation) return Boolean(taskId && description.trim());
@@ -120,6 +127,7 @@ export function AnnotationPanel({
     setTaskId(task.id);
     onTaskSelected(task.id);
     setDescription(task.defaultDescription);
+    setCustomDescriptionOpen(false);
     onActivity("task_changed", task.id, trajectoryCode);
     const requestId = ++previewRequest.current;
     if (annotation?.taskId === task.id) {
@@ -135,15 +143,16 @@ export function AnnotationPanel({
     }
   }
 
-  async function save() {
-    if (!taskId || !description.trim()) return;
+  async function save(descriptionOverride?: string) {
+    const nextDescription = (descriptionOverride ?? description).trim();
+    if (!taskId || !nextDescription) return;
     setSaving(true);
     onError("");
     try {
       const saved = await saveEpisodeAnnotation({
         sourcePath,
         taskId,
-        taskDescription: description,
+        taskDescription: nextDescription,
         editStartedAtMs,
         clipStartFrame: annotation?.clipStartFrame ?? null,
         clipEndFrame: annotation?.clipEndFrame ?? null,
@@ -175,6 +184,7 @@ export function AnnotationPanel({
       setTaskId(task.id);
       onTaskSelected(task.id);
       setDescription(task.defaultDescription);
+      setCustomDescriptionOpen(false);
       setTrajectoryCode("");
       const requestId = ++previewRequest.current;
       setNewTaskLabel("");
@@ -206,6 +216,7 @@ export function AnnotationPanel({
         setTaskId(selected.id);
         onTaskSelected(selected.id);
         setDescription(selected.defaultDescription);
+        setCustomDescriptionOpen(false);
         setTrajectoryCode("");
         const requestId = ++previewRequest.current;
         try {
@@ -318,32 +329,54 @@ export function AnnotationPanel({
             <span><Tag size={14} />轨迹编码</span>
             <input type="text" value={trajectoryCode} placeholder="保存时自动分配" readOnly aria-label="轨迹编码" />
           </label>
-          <label className="annotation-description">
+          <label className={`annotation-description${customDescriptionOpen ? " custom" : ""}`}>
             <span>任务描述</span>
             <select
-              value={descriptionTemplate}
+              value={customDescriptionOpen ? CUSTOM_DESCRIPTION_VALUE : description}
               onChange={(event) => {
-                if (event.target.value) setDescription(event.target.value);
+                if (event.target.value === CUSTOM_DESCRIPTION_VALUE) {
+                  setDescription("");
+                  setCustomDescriptionOpen(true);
+                  return;
+                }
+                setCustomDescriptionOpen(false);
+                setDescription(event.target.value);
+                onActivity("description_changed", taskId, trajectoryCode);
               }}
-              onBlur={() => onActivity("description_changed", taskId, trajectoryCode)}
               disabled={!activeTask || saving || creatingTask || importingTemplates}
-              aria-label="描述模板"
+              aria-label="任务描述"
             >
-              <option value="">自定义描述</option>
-              {(activeTask?.descriptionOptions ?? []).map((option) => (
+              {descriptionOptions.map((option) => (
                 <option value={option} key={option}>{option}</option>
               ))}
+              <option value={CUSTOM_DESCRIPTION_VALUE}>自定义描述</option>
             </select>
-            <textarea
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              onBlur={() => onActivity("description_changed", taskId, trajectoryCode)}
-              maxLength={500}
-              rows={1}
-              disabled={saving || creatingTask || importingTemplates}
-              required
-            />
-            <small>{description.length}/500 · 可编辑</small>
+            {customDescriptionOpen ? (
+              <input
+                className="annotation-custom-description"
+                type="text"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                onBlur={(event) => {
+                  const value = event.currentTarget.value.trim();
+                  onActivity("description_changed", taskId, trajectoryCode);
+                  if (value && (!annotation || taskId !== annotation.taskId || value !== annotation.taskDescription)) {
+                    void save(value);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                  }
+                }}
+                placeholder="输入自定义任务描述"
+                maxLength={500}
+                disabled={saving || creatingTask || importingTemplates}
+                autoFocus
+                required
+              />
+            ) : null}
           </label>
         </div>
       </div>
@@ -375,4 +408,11 @@ export function AnnotationPanel({
 
 function toMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
+}
+
+function predefinedDescriptions(task: TaskDefinition): string[] {
+  return Array.from(new Set([
+    ...task.descriptionOptions,
+    task.defaultDescription,
+  ].map((value) => value.trim()).filter(Boolean)));
 }
