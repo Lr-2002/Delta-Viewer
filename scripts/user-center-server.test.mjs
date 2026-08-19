@@ -72,6 +72,7 @@ test("user center only allows administrator-created accounts", async () => {
     const health = await request(port, ca, "GET", "/healthz");
     assert.equal(health.status, 200);
     assert.equal(health.body.setupRequired, true);
+    assert.deepEqual(health.body.capabilities, ["structuredTaskAssignmentsV1"]);
     const pageHeaders = await requestHeaders(port, ca, "/");
     assert.match(pageHeaders["content-security-policy"], /(?:^|;)\s*connect-src 'self'(?:;|$)/);
     const supervisionHeaders = await requestHeaders(port, ca, "/supervision");

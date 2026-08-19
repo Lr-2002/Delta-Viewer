@@ -17,6 +17,7 @@ use std::time::Duration;
 
 const CLIENT_CONFIG_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
+const STRUCTURED_ASSIGNMENTS_CAPABILITY: &str = "structuredTaskAssignmentsV1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -34,6 +35,8 @@ struct HealthResponse {
     status: String,
     service_id: String,
     setup_required: bool,
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -176,7 +179,9 @@ pub async fn record_annotation_audit(
 pub async fn assigned_tasks(data_root: &Path, state: &AuthState) -> AppResult<Vec<AssignedTask>> {
     let token = state.managed_token()?;
     let config = load_config(data_root)?;
-    let response = client_for(&config)?
+    let client = client_for(&config)?;
+    require_structured_assignments(&request_health(&client, &config).await?)?;
+    let response = client
         .get(endpoint(&config, "api/v1/tasks/assigned")?)
         .bearer_auth(token)
         .send()
@@ -402,7 +407,10 @@ pub async fn set_assigned_tasks(
     }
     let token = state.managed_token()?;
     let config = load_config(data_root)?;
-    let response = client_for(&config)?
+    let client = client_for(&config)?;
+    require_structured_assignments(&request_health(&client, &config).await?)?;
+    let requested_task_quantities = assigned_task_quantities.clone();
+    let response = client
         .put(endpoint(
             &config,
             &format!("api/v1/admin/users/{username}/assignment"),
@@ -422,11 +430,51 @@ pub async fn set_assigned_tasks(
     struct AssignmentResponse {
         user: SupervisionAccount,
     }
-    response
+    let saved = response
         .json::<AssignmentResponse>()
         .await
         .map(|result| result.user)
-        .map_err(|error| AppError::Message(format!("任务分配响应无效: {error}")))
+        .map_err(|error| AppError::Message(format!("任务分配响应无效: {error}")))?;
+    validate_assignment_response(&requested_task_quantities, &saved)?;
+    Ok(saved)
+}
+
+fn require_structured_assignments(health: &HealthResponse) -> AppResult<()> {
+    if health
+        .capabilities
+        .iter()
+        .any(|capability| capability == STRUCTURED_ASSIGNMENTS_CAPABILITY)
+    {
+        return Ok(());
+    }
+    Err(AppError::Message(
+        "USER_CENTER_UPGRADE_REQUIRED: 用户中心版本过旧，不支持具体任务分配；请升级并重启用户中心服务".into(),
+    ))
+}
+
+fn validate_assignment_response(
+    requested: &std::collections::BTreeMap<String, u64>,
+    saved: &SupervisionAccount,
+) -> AppResult<()> {
+    let requested_total = requested.values().sum::<u64>();
+    let requested_names = requested
+        .keys()
+        .map(|task| task.to_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    let saved_names = saved
+        .assigned_task_names
+        .iter()
+        .map(|task| task.to_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    if saved.assigned_tasks == requested_total
+        && saved.assigned_task_quantities == *requested
+        && saved_names == requested_names
+    {
+        return Ok(());
+    }
+    Err(AppError::Message(
+        "USER_CENTER_ASSIGNMENT_MISMATCH: 用户中心未完整保存任务名称和数量；请升级用户中心后重新分配".into(),
+    ))
 }
 
 async fn request_health(
@@ -622,8 +670,12 @@ fn unix_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_private_lan_ip, valid_service_id, validate_client_config, UserCenterClientConfig,
+        is_private_lan_ip, require_structured_assignments, valid_service_id,
+        validate_assignment_response, validate_client_config, HealthResponse,
+        UserCenterClientConfig, STRUCTURED_ASSIGNMENTS_CAPABILITY,
     };
+    use crate::model::SupervisionAccount;
+    use std::collections::BTreeMap;
 
     #[test]
     fn accepts_only_private_lan_ip_configuration() {
@@ -644,5 +696,44 @@ mod tests {
             issued_at_ms: 1,
         };
         assert!(validate_client_config(&invalid).is_err());
+    }
+
+    #[test]
+    fn requires_structured_assignment_capability() {
+        let legacy = HealthResponse {
+            status: "ready".into(),
+            service_id: "11111111-1111-4111-8111-111111111111".into(),
+            setup_required: false,
+            capabilities: Vec::new(),
+        };
+        assert!(require_structured_assignments(&legacy).is_err());
+
+        let current = HealthResponse {
+            capabilities: vec![STRUCTURED_ASSIGNMENTS_CAPABILITY.into()],
+            ..legacy
+        };
+        assert!(require_structured_assignments(&current).is_ok());
+    }
+
+    #[test]
+    fn rejects_assignment_response_that_loses_task_names() {
+        let requested = BTreeMap::from([("BedMaking".into(), 3)]);
+        let legacy_response = SupervisionAccount {
+            username: "operator".into(),
+            display_name: "Operator".into(),
+            role: "operator".into(),
+            assigned_tasks: 3,
+            assigned_task_names: Vec::new(),
+            assigned_task_quantities: BTreeMap::new(),
+            created_at_ms: 1,
+        };
+        assert!(validate_assignment_response(&requested, &legacy_response).is_err());
+
+        let current_response = SupervisionAccount {
+            assigned_task_names: vec!["BedMaking".into()],
+            assigned_task_quantities: requested.clone(),
+            ..legacy_response
+        };
+        assert!(validate_assignment_response(&requested, &current_response).is_ok());
     }
 }

@@ -159,6 +159,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.51": "修复桌面端与旧用户中心版本不一致时任务分配假成功和普通账号 NOT_FOUND 的问题。",
   "0.17.50": "修复监管模式下 JSON 任务分配无法保存的问题，并在分配区域即时显示保存结果和错误。",
   "0.17.49": "三维骨架按首次显示姿态确定固定朝向，兼容镜像 SMPL 脚部和 COCO 面部方向，同时保留播放中的真实转身。",
   "0.17.47": "监管账户可在本地导入标注 JSON，按最新修订查看每位标注人的任务、轨迹、片段与覆盖帧统计和明细。",

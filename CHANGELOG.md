@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.51 - 2026-08-19
+
+- Advertise structured task-assignment support from the LAN user center and
+  reject legacy services before assignment reads or writes.
+- Verify that assignment save responses preserve every task name, quantity and
+  total so an old server can no longer report a misleading successful save.
+
 ## 0.17.50 - 2026-08-19
 
 - Fixed supervision assignments imported from task JSON being silently blocked

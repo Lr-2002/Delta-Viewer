@@ -22,6 +22,7 @@ const DEFAULT_CONFIG_PATH = path.join(repositoryRoot, "user-center.config.json")
 const DEFAULT_DATA_ROOT = path.join(homedir(), "Library/Application Support/DOHC User Center");
 const CLIENT_CONFIG_SCHEMA_VERSION = 1;
 const DATA_SCHEMA_VERSION = 1;
+const STRUCTURED_ASSIGNMENTS_CAPABILITY = "structuredTaskAssignmentsV1";
 const MAX_JSON_BYTES = 16 * 1024;
 const MAX_USERS = 10_000;
 const MAX_AUDIT_EVENTS = 200_000;
@@ -567,7 +568,12 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       const url = new URL(request.url, configuration.publicBaseUrl);
       if (request.method === "GET" && url.pathname === "/healthz") {
         const state = await readState(dataRoot);
-        return sendJson(response, 200, { status: "ready", serviceId: state.serviceId, setupRequired: state.users.length === 0 });
+        return sendJson(response, 200, {
+          status: "ready",
+          serviceId: state.serviceId,
+          setupRequired: state.users.length === 0,
+          capabilities: [STRUCTURED_ASSIGNMENTS_CAPABILITY],
+        });
       }
       if (request.method === "GET" && url.pathname === "/client-config") {
         return createReadStream(initialized.clientConfigPath).pipe(response);
