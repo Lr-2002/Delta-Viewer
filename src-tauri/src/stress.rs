@@ -875,8 +875,10 @@ fn peak_rss_bytes() -> Option<u64> {
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-    let mut counters = PROCESS_MEMORY_COUNTERS::default();
-    counters.cb = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?,
+        ..Default::default()
+    };
     let size = counters.cb;
     // SAFETY: counters points to a correctly sized writable structure and the
     // pseudo handle returned by GetCurrentProcess is valid in this process.

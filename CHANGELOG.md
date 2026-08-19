@@ -5,6 +5,13 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.50 - 2026-08-19
+
+- Fixed supervision assignments imported from task JSON being silently blocked
+  unless the administrator also scanned a NAS task directory.
+- Show assignment save errors and confirmations beside the save control, update
+  the overview from the persisted server response, and keep NAS quantity bounds.
+
 ## 0.17.49 - 2026-08-18
 
 - Anchor the three-dimensional skeleton heading to the initially displayed pose

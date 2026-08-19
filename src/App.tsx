@@ -159,6 +159,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.50": "修复监管模式下 JSON 任务分配无法保存的问题，并在分配区域即时显示保存结果和错误。",
   "0.17.49": "三维骨架按首次显示姿态确定固定朝向，兼容镜像 SMPL 脚部和 COCO 面部方向，同时保留播放中的真实转身。",
   "0.17.47": "监管账户可在本地导入标注 JSON，按最新修订查看每位标注人的任务、轨迹、片段与覆盖帧统计和明细。",
   "0.17.46": "Camera 0 满填充显示，三维骨架以接地、朝前且略微俯视的初始视角展示；JPEG 回放保持逐帧推进并让倍速控制单帧时长。",
