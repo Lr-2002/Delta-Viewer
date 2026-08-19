@@ -292,8 +292,9 @@ if (!browserExecutable) {
     await page.locator(".task-create-form button[type=submit]").click();
     await page.getByLabel("轨迹编码").waitFor();
     await page.waitForFunction(() => document.querySelector('input[aria-label="轨迹编码"]')?.value === "整理餐具-001");
-    await page.locator(".annotation-description textarea").fill("整理餐具并核对数量");
-    await page.getByRole("button", { name: "保存标注" }).click();
+    await page.getByLabel("任务描述", { exact: true }).selectOption("__custom_description__");
+    await page.locator(".annotation-custom-description").fill("整理餐具并核对数量");
+    await page.locator(".annotation-custom-description").press("Enter");
     await page.getByText("已保存 · r1", { exact: true }).waitFor();
     await page.locator(".episode-annotation-tag").waitFor();
     assert.equal(await page.locator(".episode-annotation-tag").innerText(), "已标注");
@@ -367,7 +368,7 @@ if (!browserExecutable) {
     });
     await page.getByText("已导入 10 个任务模板", { exact: true }).waitFor();
     assert.equal(await page.getByLabel("任务", { exact: true }).inputValue(), "sofa");
-    assert.equal(await page.locator(".annotation-description textarea").inputValue(), "整理沙发靠枕");
+    assert.equal(await page.getByLabel("任务描述", { exact: true }).inputValue(), "整理沙发靠枕");
 
     await page.getByRole("button", { name: "保存标注" }).click();
     await page.getByText("已保存 · r1", { exact: true }).waitFor();
