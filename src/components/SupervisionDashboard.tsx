@@ -121,6 +121,16 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
     }));
   }
 
+  function selectAllFolderData(username: string, catalog: SupervisionTaskCatalog | null, imported: string[]) {
+    const quantities = Object.fromEntries([
+      ...(catalog?.tasks ?? []).map((item) => [item.task, Math.max(1, item.total)] as const),
+      ...imported.filter((task) => !(catalog?.tasks ?? []).some((item) => item.task.toLowerCase() === task.toLowerCase())).map((task) => [task, 1] as const),
+    ]);
+    setAssignmentError("");
+    setAssignmentNotice("");
+    setAssignmentDrafts((current) => ({ ...current, [username]: quantities }));
+  }
+
   async function chooseTaskRoot() {
     setScanningTasks(true);
     setError("");
@@ -256,7 +266,7 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
                     <header className="assignment-picker-header"><div><strong>为 {activeUser.displayName} 分配任务</strong><span>已选择 {Object.keys(selected).length} / {availableTasks.length} 类，共 {quantityTotal(selected)} 个</span></div><button className="button button-primary" type="button" disabled={!dirty || savingUser === activeUser.username} onClick={() => void saveAssignment(activeUser.username)}>{savingUser === activeUser.username ? "保存中" : "保存分配"}</button></header>
                     {assignmentError ? <div className="auth-error assignment-feedback" role="alert">{assignmentError}</div> : null}
                     {assignmentNotice ? <div className="supervision-notice assignment-feedback" role="status"><Check size={15} />{assignmentNotice}</div> : null}
-                    <div className="assignment-toolbar"><label><Search size={14} /><input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="搜索任务名称或详情" /></label><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: Object.fromEntries(filteredTasks.map((task) => [task, current[activeUser.username]?.[task] ?? 1])) })); }}>选择当前结果</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: {} })); }}>清空</button></div>
+                    <div className="assignment-toolbar"><label><Search size={14} /><input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="搜索任务名称或详情" /></label><button type="button" onClick={() => selectAllFolderData(activeUser.username, taskCatalog, importedTaskNames)} disabled={!taskCatalog?.tasks.length}>全选当前文件夹</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: Object.fromEntries(filteredTasks.map((task) => [task, current[activeUser.username]?.[task] ?? 1])) })); }}>选择当前结果</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: {} })); }}>清空</button></div>
                     {filteredTasks.length ? <div className="assignment-task-grid">{filteredTasks.map((task) => {
                       const selectedKey = Object.keys(selected).find((item) => item.toLowerCase() === task.toLowerCase());
                       const checked = selectedKey !== undefined;
@@ -264,7 +274,7 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
                       const summary = taskCatalog?.tasks.find((item) => item.task.toLowerCase() === task.toLowerCase());
                       const detail = taskDetail(data, task);
                       const others = operators.filter((user) => user.username !== activeUser.username && user.assignedTaskNames.some((item) => item.toLowerCase() === task.toLowerCase()));
-                      return <div key={task} className={`assignment-task-card${checked ? " selected" : ""}`}><button type="button" onClick={() => toggleTaskAssignment(activeUser.username, task)} aria-pressed={checked}>{checked ? <CheckSquare size={17} /> : <Square size={17} />}<span><strong>{displayTaskName(task)}</strong><small>{task}</small>{detail ? <em>{detail.detail}</em> : null}</span></button><div className="task-card-meta">{summary ? <b>{summary.completed}/{summary.total} 完成</b> : <b>已导入</b>}{others.length ? <small>另分配给 {others.map((user) => user.displayName).join("、")}</small> : null}{checked ? <label>分配数量<input type="number" min={1} max={summary?.total ?? 1_000_000} value={quantity} onClick={(event) => event.stopPropagation()} onChange={(event) => setTaskQuantity(activeUser.username, task, Number(event.target.value), summary?.total ?? null)} /><span>{summary ? `/ ${summary.total}` : "个"}</span></label> : null}</div></div>;
+                      return <div key={task} className={`assignment-task-card${checked ? " selected" : ""}`}><button type="button" onClick={() => toggleTaskAssignment(activeUser.username, task)} aria-pressed={checked}>{checked ? <CheckSquare size={17} /> : <Square size={17} />}<span><strong>{displayTaskName(task)}</strong><small>{task}</small>{detail ? <em>{detail.detail}</em> : null}</span></button><div className="task-card-meta">{summary ? <><b>{summary.completed}/{summary.total} 完成</b><small>文件夹内共 {summary.total} 条数据</small></> : <b>已导入</b>}{others.length ? <small>另分配给 {others.map((user) => user.displayName).join("、")}</small> : null}{checked ? <label>分配数量<div className="quantity-control"><input type="number" min={1} max={summary?.total ?? 1_000_000} value={quantity} onClick={(event) => event.stopPropagation()} onChange={(event) => setTaskQuantity(activeUser.username, task, Number(event.target.value), summary?.total ?? null)} /><button type="button" onClick={(event) => { event.stopPropagation(); if (summary) setTaskQuantity(activeUser.username, task, summary.total, summary.total); }}>全部</button></div><span>{summary ? `/ ${summary.total}` : "个"}</span></label> : null}</div></div>;
                     })}</div> : <div className="assignment-empty"><FolderOpen size={20} /><strong>暂无可分配任务</strong><span>请选择任务 JSON 或任务目录，读取到的任务会自动出现在这里。</span></div>}
                   </> : <div className="assignment-empty"><Users size={20} /><strong>暂无普通账户</strong><span>请先在用户中心创建操作员账户。</span></div>}
                 </div>

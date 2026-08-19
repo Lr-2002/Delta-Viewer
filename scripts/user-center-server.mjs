@@ -471,6 +471,18 @@ function localDay(ms) {
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
+function requestedLocalDay(value) {
+  const date = String(value ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("DATE_INVALID: 日期格式应为 YYYY-MM-DD");
+  const [year, month, day] = date.split("-").map(Number);
+  const start = new Date(year, month - 1, day);
+  if (start.getFullYear() !== year || start.getMonth() !== month - 1 || start.getDate() !== day) {
+    throw new Error("DATE_INVALID: 日期无效");
+  }
+  const end = new Date(year, month - 1, day + 1);
+  return { date, startMs: start.getTime(), endMs: end.getTime() };
+}
+
 function auditSummary(events, accounts, currentTimeMs = nowMs()) {
   const users = new Map(accounts.map((account) => [account.username, {
     username: account.username,
@@ -643,6 +655,16 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           detail: details.get(task.toLowerCase()) ?? task,
         }));
         return sendJson(response, 200, { tasks });
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/tasks/assigned/activity") {
+        const session = authorize(request);
+        if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        const range = requestedLocalDay(url.searchParams.get("date"));
+        const events = (await readAuditEvents(dataRoot))
+          .filter((event) => event.username === session.user.username
+            && event.occurredAtMs >= range.startMs && event.occurredAtMs < range.endMs)
+          .slice(-500).reverse();
+        return sendJson(response, 200, { date: range.date, events });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/audit/events") {
         const session = authorize(request);

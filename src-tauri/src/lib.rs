@@ -399,11 +399,21 @@ async fn list_assigned_task_definitions(
         .iter()
         .map(|task| task.task.to_lowercase())
         .collect::<std::collections::BTreeSet<_>>();
+    let prefixes = assigned
+        .iter()
+        .map(|task| {
+            annotations::task_code_prefix_for_assignment(&task.task)
+                .unwrap_or_else(|_| task.task.to_lowercase())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
     tauri::async_runtime::spawn_blocking(move || {
         annotations::ensure_assigned_tasks(&data_root, &user, &requested).map(|tasks| {
             tasks
                 .into_iter()
-                .filter(|task| names.contains(&task.label.to_lowercase()))
+                .filter(|task| {
+                    names.contains(&task.label.to_lowercase())
+                        || prefixes.contains(&task.code_prefix.to_lowercase())
+                })
                 .collect()
         })
     })
@@ -420,6 +430,19 @@ async fn get_assigned_tasks(
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
     user_center::assigned_tasks(&app_data_root(&app)?, auth.inner())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_assigned_task_activity(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    date: String,
+) -> Result<crate::model::AssignedTaskActivity, String> {
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
+    user_center::assigned_task_activity(&app_data_root(&app)?, auth.inner(), &date)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1063,6 +1086,7 @@ pub fn run() {
             list_task_definitions,
             list_assigned_task_definitions,
             get_assigned_tasks,
+            get_assigned_task_activity,
             get_assigned_source_root,
             set_assigned_source_root,
             create_task_definition,

@@ -158,6 +158,32 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .task-card-meta > small { max-width: 130px; margin-top: 6px; color: var(--muted); font-size: 8px; line-height: 1.35; }
 .task-card-meta label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px; margin-top: 10px; color: var(--muted); font-size: 8px; text-align: left; }
 .task-card-meta label input { grid-row: 2; width: 72px; height: 29px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 10px; font-variant-numeric: tabular-nums; }
+.quantity-control { grid-row: 2; display: flex; gap: 3px; align-items: center; }
+.quantity-control button { height: 29px; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface-alt); color: var(--ink); font-size: 8px; }
+.personal-task-overlay { position: fixed; z-index: 30; inset: 0; background: rgba(0, 0, 0, .08); }
+.personal-task-panel { position: absolute; top: 68px; right: 20px; width: min(780px, calc(100vw - 32px)); max-height: calc(100vh - 88px); margin: 0; padding: 16px 18px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); box-shadow: 0 16px 44px rgba(0, 0, 0, .18); overflow: auto; }
+.personal-task-heading, .personal-source-row, .personal-task-actions, .personal-subheading { display: flex; align-items: center; }
+.personal-task-heading { justify-content: space-between; gap: 16px; }
+.personal-task-heading h2 { margin: 3px 0 0; font-size: 15px; }
+.personal-task-heading small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+.personal-task-actions { gap: 7px; }
+.personal-date-picker { display: flex; align-items: center; gap: 5px; height: 30px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 5px; }
+.personal-date-picker input { border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 10px; }
+.personal-source-row { gap: 8px; margin-top: 13px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); font-size: 10px; }
+.personal-source-row > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.personal-source-row .muted, .personal-empty { color: var(--muted); }
+.personal-source-row .button { flex: none; }
+.personal-task-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 14px; }
+.personal-subheading { justify-content: space-between; gap: 10px; padding-bottom: 7px; border-bottom: 1px solid var(--line); font-size: 11px; }
+.personal-subheading span { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 9px; }
+.personal-assignment-row, .personal-activity-row { display: grid; grid-template-columns: minmax(90px, .9fr) minmax(0, 1.5fr) auto; gap: 8px; padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 10px; }
+.personal-assignment-row span, .personal-assignment-row small, .personal-activity-row span, .personal-activity-row small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.personal-assignment-row b { font-size: 10px; }
+.personal-assignment-row small { grid-column: 2 / -1; font-size: 9px; }
+.personal-activity-row { grid-template-columns: auto auto minmax(0, 1fr) auto; }
+.personal-activity-row strong { font-size: 10px; }
+.personal-empty { padding: 16px 2px; font-size: 10px; }
+@media (max-width: 900px) { .personal-task-grid { grid-template-columns: 1fr; } .personal-task-heading { align-items: flex-start; flex-direction: column; } }
 .task-card-meta label span { grid-row: 2; color: var(--muted); font-size: 8px; }
 .assignment-empty { min-height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; color: var(--muted); text-align: center; }
 .assignment-empty strong { color: var(--ink); font-size: 12px; }
@@ -480,7 +506,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .annotation-fields label, .annotation-task-field, .annotation-description { min-width: 0; display: grid; gap: 3px; color: var(--muted); font-size: 10px; font-weight: 650; }
 .annotation-fields > label { grid-template-rows: 14px 30px 11px; align-items: center; }
 .annotation-fields > .annotation-task-field { grid-template-rows: 14px 30px; align-items: center; }
-.annotation-fields > .annotation-description { grid-template-rows: 14px 30px 30px 11px; align-items: center; }
+.annotation-fields > .annotation-description { grid-template-rows: 14px 30px; align-items: center; }
+.annotation-fields > .annotation-description.custom { grid-template-rows: 14px 30px 30px; }
 .annotation-fields label > span, .annotation-field-label, .annotation-description > span { display: inline-flex; align-items: center; gap: 5px; }
 .annotation-fields input, .annotation-fields select { width: 100%; height: 30px; min-width: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 12px; }
 .annotation-fields input[readonly] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; background: var(--surface-alt); }
@@ -492,8 +519,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .annotation-processor small { color: var(--subtle); font-size: 9px; }
 .annotation-processor strong { font-size: 11px; }
 .annotation-processor code { color: var(--muted); font-size: 9px; }
-.annotation-description textarea { width: 100%; height: 30px; min-height: 30px; resize: none; overflow: hidden; padding: 5px 9px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 12px; line-height: 18px; }
-.annotation-description small { justify-self: end; color: var(--subtle); font-size: 9px; font-weight: 500; }
 .task-create-form { display: grid; grid-template-columns: minmax(180px, 1fr) auto; align-items: end; gap: 8px; margin-top: 11px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .task-create-form label { min-width: 0; display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 650; }
 .task-create-form input { width: 100%; height: 34px; min-width: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--surface); font-size: 12px; }
@@ -831,7 +856,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .annotation-layout { grid-template-columns: 1fr; gap: 10px; }
   .annotation-fields { grid-template-columns: 1fr; }
   .annotation-processor { grid-column: 1; }
-  .annotation-description textarea { height: 34px; min-height: 34px; }
   .task-create-form { grid-template-columns: 1fr; }
   .task-create-form .button { justify-self: end; }
   .replay-visual-row.with-skeleton { grid-template-columns: 1fr; }

@@ -168,10 +168,10 @@ pub fn ensure_assigned_tasks(
     identity::validate_user_identity(user)?;
     let mut tasks = task_definitions(data_root)?;
     for (label, detail) in assigned {
-        if tasks
+        let label_matches = tasks
             .iter()
-            .any(|task| task.label.eq_ignore_ascii_case(label))
-        {
+            .any(|task| task.label.eq_ignore_ascii_case(label));
+        if label_matches {
             continue;
         }
         if tasks.len() >= MAX_TASKS {
@@ -186,9 +186,12 @@ pub fn ensure_assigned_tasks(
             .iter()
             .any(|task| task.id == code_prefix || task.code_prefix == code_prefix)
         {
-            return Err(AppError::Message(format!(
-                "TASK_EXISTS: 任务编码 {code_prefix} 已存在"
-            )));
+            // A server assignment may use a storage/task-directory name whose
+            // generated prefix is already occupied by a built-in task (for
+            // example `oven` and built-in `close_oven`). Reuse the existing
+            // definition; the assignment endpoint remains the source of the
+            // operator's task name and episode selection.
+            continue;
         }
         let task = TaskDefinition {
             id: code_prefix.clone(),
@@ -739,6 +742,11 @@ fn task_code_prefix(label: &str) -> AppResult<String> {
     Ok(prefix)
 }
 
+pub fn task_code_prefix_for_assignment(label: &str) -> AppResult<String> {
+    let label = validate_task_label(label)?;
+    task_code_prefix(&label)
+}
+
 fn validate_description(value: &str) -> AppResult<String> {
     let description = value.trim();
     let count = description.chars().count();
@@ -1192,8 +1200,8 @@ fn unix_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        annotations_by_ids, create_task, delete_task, import_task_template_config,
-        list_annotations, load_annotation, save_annotation,
+        annotations_by_ids, create_task, delete_task, ensure_assigned_tasks,
+        import_task_template_config, list_annotations, load_annotation, save_annotation,
         save_annotation_with_source_description, suggest_trajectory_code, task_definitions,
         ANNOTATION_FORMAT_VERSION,
     };
@@ -1206,6 +1214,26 @@ mod tests {
         "1111111111111111111111111111111111111111111111111111111111111111";
     const FINGERPRINT_TWO: &str =
         "2222222222222222222222222222222222222222222222222222222222222222";
+
+    #[test]
+    fn assigned_task_reuses_builtin_when_code_prefix_is_occupied() {
+        let root = test_output("assigned-task-prefix-collision");
+        fs::create_dir_all(&root).unwrap();
+        let user = UserIdentity {
+            username: "operator".into(),
+            display_name: "Operator".into(),
+            role: Some("operator".into()),
+        };
+
+        let tasks =
+            ensure_assigned_tasks(&root, &user, &[("oven".into(), "关闭烤箱门".into())]).unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "close_oven");
+        assert_eq!(tasks[0].code_prefix, "oven");
+        assert!(!root.join("tasks").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn assigns_unique_codes_and_keeps_annotation_history() {

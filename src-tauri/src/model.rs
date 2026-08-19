@@ -93,6 +93,13 @@ pub struct AssignedTask {
     pub start_index: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignedTaskActivity {
+    pub date: String,
+    pub events: Vec<SupervisionEvent>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SupervisionTaskSummary {

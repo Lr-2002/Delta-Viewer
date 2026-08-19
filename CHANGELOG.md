@@ -5,6 +5,17 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.52 - 2026-08-19
+
+- Add an operator task drawer with local source-folder setup, assigned task
+  details and date-filtered personal annotation activity without uploading paths.
+- Reuse existing task definitions when assignment names share their generated
+  code prefix, preventing assigned tasks such as `oven` from failing at login.
+- Show scanned folder totals in supervision assignment cards and add per-folder
+  and per-task controls that safely fill the complete available quantity.
+- Keep annotation descriptions on one aligned native selector, with an optional
+  custom text field that saves on Enter or focus loss.
+
 ## 0.17.51 - 2026-08-19
 
 - Advertise structured task-assignment support from the LAN user center and

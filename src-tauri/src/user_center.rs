@@ -1,9 +1,9 @@
 use crate::error::{AppError, AppResult};
 use crate::identity::AuthState;
 use crate::model::{
-    AssignedTask, AuthStatus, LoginRequest, SupervisionAccount, SupervisionDashboardData,
-    SupervisionEvent, SupervisionTaskDetail, SupervisionTaskImportResult, SupervisionUserSummary,
-    UserCenterStatus, UserIdentity,
+    AssignedTask, AssignedTaskActivity, AuthStatus, LoginRequest, SupervisionAccount,
+    SupervisionDashboardData, SupervisionEvent, SupervisionTaskDetail, SupervisionTaskImportResult,
+    SupervisionUserSummary, UserCenterStatus, UserIdentity,
 };
 use crate::storage;
 use reqwest::{Certificate, Client, Url};
@@ -199,6 +199,30 @@ pub async fn assigned_tasks(data_root: &Path, state: &AuthState) -> AppResult<Ve
         .await
         .map(|result| result.tasks)
         .map_err(|error| AppError::Message(format!("用户中心任务分配响应无效: {error}")))
+}
+
+pub async fn assigned_task_activity(
+    data_root: &Path,
+    state: &AuthState,
+    date: &str,
+) -> AppResult<AssignedTaskActivity> {
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let mut url = endpoint(&config, "api/v1/tasks/assigned/activity")?;
+    url.query_pairs_mut().append_pair("date", date);
+    let response = client_for(&config)?
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(format!("用户中心任务记录响应无效: {error}")))
 }
 
 pub async fn supervision_dashboard(
