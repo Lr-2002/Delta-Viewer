@@ -96,6 +96,31 @@ if (!browserExecutable) {
     await context.close();
   });
 
+  test("operations cockpit answers progress, assignment, alert, quality and report questions", async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    const page = await context.newPage();
+    const errors = [];
+    page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${baseUrl}/?demoScenario=operations-cockpit`, { waitUntil: "networkidle" });
+    await page.getByRole("heading", { name: "任务运营驾驶舱" }).waitFor();
+    await page.getByText("今日每小时完成量").waitFor();
+    await page.getByText("可能停滞", { exact: true }).first().waitFor();
+    await page.getByRole("button", { name: "任务分配" }).click();
+    await page.getByText("批量平均 / 速度建议分配").waitFor();
+    await page.getByText("当前已分配区间").waitFor();
+    await page.getByRole("button", { name: /异常中心/ }).click();
+    await page.getByText("确认并备注").waitFor();
+    await page.getByRole("button", { name: "质量管理" }).click();
+    await page.getByText("保存复核结果").waitFor();
+    await page.getByRole("button", { name: "报表" }).click();
+    await page.getByText("导出 JSON").waitFor();
+    const layout = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth }));
+    assert.ok(layout.scrollWidth <= layout.viewportWidth, JSON.stringify(layout));
+    assert.deepEqual(errors, []);
+    await context.close();
+  });
+
   test("registration loads the packaged browser demo without /@fs requests", async () => {
     const context = await browser.newContext({ viewport: cleanViewport });
     const page = await context.newPage();

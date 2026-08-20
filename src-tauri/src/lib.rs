@@ -25,14 +25,15 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use identity::AuthState;
 use model::{
-    AnnotatedEpisodeSummary, AnnotationAuditRequest, AppUpdateInfo, AuthStatus,
-    BatchExportCommandRequest, BatchExportResult, CreateTaskRequest, EpisodeAnnotation,
-    EpisodeData, EpisodeValidationResult, ExportCommandRequest, ExportResult, FramePayload,
-    ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
-    ProgressPayload, RecordOperationErrorRequest, RegisterRequest, ReportExportResult,
-    SaveAnnotationRequest, ScanResult, SupervisionAccount, SupervisionAnnotationCatalog,
-    SupervisionDashboardData, SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition,
-    UpdateDisplayNameRequest, UserCenterStatus, UserIdentity, VideoSource, WorkspaceMode,
+    AnnotatedEpisodeSummary, AnnotationAuditRequest, AppUpdateInfo, AssignmentPlan,
+    AssignmentTransferResult, AuthStatus, BatchExportCommandRequest, BatchExportResult,
+    CreateTaskRequest, EpisodeAnnotation, EpisodeData, EpisodeValidationResult,
+    ExportCommandRequest, ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest,
+    OperationErrorRecord, PartialImport, ProgressPayload, QualityReview, QualityReviewRequest,
+    RecordOperationErrorRequest, RegisterRequest, ReportExportResult, SaveAnnotationRequest,
+    ScanResult, SupervisionAccount, SupervisionAnnotationCatalog, SupervisionDashboardData,
+    SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition, UpdateDisplayNameRequest,
+    UserCenterStatus, UserIdentity, VideoSource, WorkspaceMode,
 };
 use source_index_cache::SourceIndexCache;
 use std::path::{Path, PathBuf};
@@ -309,6 +310,7 @@ async fn set_supervision_assigned_tasks(
     auth: State<'_, AuthState>,
     username: String,
     assigned_task_quantities: std::collections::BTreeMap<String, u64>,
+    assignment_plans: Option<Vec<AssignmentPlan>>,
 ) -> Result<SupervisionAccount, String> {
     let data_root = app_data_root(&app)?;
     user_center::set_assigned_tasks(
@@ -316,9 +318,57 @@ async fn set_supervision_assigned_tasks(
         auth.inner(),
         &username,
         assigned_task_quantities,
+        assignment_plans,
     )
     .await
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn update_operations_alert(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    alert_id: String,
+    status: String,
+    note: String,
+) -> Result<(), String> {
+    let data_root = app_data_root(&app)?;
+    user_center::update_operations_alert(&data_root, auth.inner(), &alert_id, &status, &note)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn transfer_supervision_assignment(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    from_username: String,
+    to_username: String,
+    task: String,
+) -> Result<AssignmentTransferResult, String> {
+    let data_root = app_data_root(&app)?;
+    user_center::transfer_assignment(
+        &data_root,
+        auth.inner(),
+        &from_username,
+        &to_username,
+        &task,
+    )
+    .await
+    .map(|(source, target)| AssignmentTransferResult { source, target })
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_quality_review(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    request: QualityReviewRequest,
+) -> Result<QualityReview, String> {
+    let data_root = app_data_root(&app)?;
+    user_center::create_quality_review(&data_root, auth.inner(), request)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1107,6 +1157,9 @@ pub fn run() {
             record_annotation_audit,
             get_supervision_dashboard,
             set_supervision_assigned_tasks,
+            update_operations_alert,
+            transfer_supervision_assignment,
+            create_quality_review,
             scan_supervision_tasks,
             update_supervision_task_detail,
             import_supervision_task_details,

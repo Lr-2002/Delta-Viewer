@@ -6,6 +6,7 @@ import {
   sameAssignmentQuantities,
   validateAssignmentSelection,
 } from "../src/lib/supervisionAssignments.ts";
+import { distributeBySpeed, distributeEvenly } from "../src/lib/operationsCockpit.ts";
 import type { SupervisionTaskSummary } from "../src/types.ts";
 
 function task(taskName: string, total: number): SupervisionTaskSummary {
@@ -56,12 +57,55 @@ test("reports tasks already assigned to another operator", () => {
     assignedTasks: 2,
     assignedTaskNames: ["BedMaking"],
     assignedTaskQuantities: { BedMaking: 2 },
+    assignmentPlans: [],
     completedToday: 0,
     totalCompleted: 0,
+    remainingTasks: 2,
     averageCompletionMs: null,
+    completionRatePerHour: 0,
+    estimatedCompletionAtMs: null,
+    firstActivityAtMs: null,
+    lastActivityAtMs: null,
+    lastLoginAtMs: null,
+    operationCount: 0,
+    possibleStagnation: false,
   }];
   assert.deepEqual(assignmentConflicts("operator1", { bedmaking: 3 }, users), [{
     task: "bedmaking",
     assignees: ["操作员二"],
   }]);
+});
+
+test("distributes a batch evenly without losing remainder", () => {
+  assert.deepEqual(distributeEvenly(8, ["a", "b", "c"]), [
+    { username: "a", quantity: 3 },
+    { username: "b", quantity: 3 },
+    { username: "c", quantity: 2 },
+  ]);
+});
+
+test("suggests more work for the historically faster operator", () => {
+  const base = {
+    displayName: "Operator",
+    role: "operator" as const,
+    assignedTasks: 0,
+    assignedTaskNames: [],
+    assignedTaskQuantities: {},
+    assignmentPlans: [],
+    completedToday: 0,
+    totalCompleted: 0,
+    remainingTasks: 0,
+    estimatedCompletionAtMs: null,
+    firstActivityAtMs: null,
+    lastActivityAtMs: null,
+    lastLoginAtMs: null,
+    operationCount: 0,
+    possibleStagnation: false,
+  };
+  const result = distributeBySpeed(12, [
+    { ...base, username: "fast", averageCompletionMs: 60_000, completionRatePerHour: 60 },
+    { ...base, username: "slow", averageCompletionMs: 180_000, completionRatePerHour: 20 },
+  ]);
+  assert.equal(result.reduce((sum, row) => sum + row.quantity, 0), 12);
+  assert.ok(result[0].quantity > result[1].quantity);
 });

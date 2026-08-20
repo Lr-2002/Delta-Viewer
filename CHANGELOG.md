@@ -5,6 +5,24 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.54 - 2026-08-20
+
+- Add a privacy-bounded task operations cockpit with daily/cumulative/remaining
+  totals, per-task and per-operator throughput, hourly and seven-day trends,
+  completion estimates, connection freshness, and non-accusatory stagnation
+  indicators. Segment and frame totals remain local to imported annotation JSON.
+- Extend assignments with ordered, non-overlapping ranges, priority, deadline and
+  pause state; add drag ordering, even or speed-weighted batch previews, and an
+  atomic cross-account transfer operation protected by serialized state updates.
+- Add an exception center with acknowledgement, notes, reassignment entry points
+  and closure, plus administrator-only quality reviews and pass/rework history.
+- Add privacy-safe JSON, CSV and printable HTML reports; improve the operator
+  task drawer with current/next/remaining groups, continue/next actions, paused
+  task filtering, playback shortcuts, and an explicit local-not-uploaded state.
+- Cover concurrent range allocation, atomic transfer, alert lifecycle, quality
+  persistence, allocation math and the full cockpit browser flow with regression
+  tests.
+
 ## 0.17.53 - 2026-08-20
 
 - Added rate-limited operator self-registration to the managed login screen;

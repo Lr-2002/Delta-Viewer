@@ -128,7 +128,9 @@ function assignedEpisodeSelection(episodes: EpisodeSummary[], assignments: Assig
   const sorted = [...episodes].sort((left, right) => left.root.localeCompare(right.root));
   const selected = new Map<string, EpisodeSummary>();
   const taskByRoot: Record<string, string> = {};
-  for (const assignment of assignments) {
+  for (const assignment of [...assignments]
+    .filter((task) => task.status !== "paused")
+    .sort((left, right) => left.order - right.order)) {
     const taskKey = assignment.task.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
     const matches = sorted.filter((episode) => {
       const pathKey = episode.root.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
@@ -171,6 +173,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.54": "新增任务运营驾驶舱、批量与速度建议分配、异常处置、独立质量复核、隐私安全报表和标注员快捷任务队列。",
   "0.17.53": "支持标注员注册和当前姓名修改；监管分配重复任务时确认，并默认选择任务文件夹全部数量。",
   "0.17.52": "新增个人任务抽屉、按日期标注记录和本机任务路径配置，优化监管全量分配与紧凑任务描述输入。",
   "0.17.51": "修复桌面端与旧用户中心版本不一致时任务分配假成功和普通账号 NOT_FOUND 的问题。",
@@ -301,6 +304,7 @@ function App() {
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [auditUploadPending, setAuditUploadPending] = useState(false);
   const [currentOperationError, setCurrentOperationError] = useState(false);
   const [operationErrors, setOperationErrors] = useState<OperationErrorRecord[]>([]);
   const workspaceMode = authStatus?.workspaceMode ?? null;
@@ -686,6 +690,28 @@ function App() {
     } finally {
       sourcePickerOpenRef.current = false;
     }
+  }
+
+  async function continueAssignedTask() {
+    setPersonalTaskOpen(false);
+    if (selectedEpisode) {
+      await loadEpisodeForReview(selectedEpisode, true);
+    } else if (assignedSourceRoot) {
+      await openSource(assignedSourceRoot, true, assignedTasks);
+    } else {
+      await chooseSource();
+    }
+  }
+
+  async function openNextAssignedTask() {
+    setPersonalTaskOpen(false);
+    const visible = scan?.episodes ?? [];
+    const currentIndex = selectedEpisode
+      ? visible.findIndex((episode) => episode.root === selectedEpisode.root)
+      : -1;
+    const next = visible[currentIndex + 1] ?? visible[0];
+    if (next) await loadEpisodeForReview(next, true);
+    else await continueAssignedTask();
   }
 
   async function loadEpisodeForReview(
@@ -1075,6 +1101,32 @@ function App() {
     setPlaying((value) => !value);
   }
 
+  useEffect(() => {
+    if (!data) return;
+    const handleShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (event.code === "Space") {
+        event.preventDefault();
+        togglePlayback();
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        moveFrame(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        moveFrame(1);
+      } else if (event.key === "[") {
+        event.preventDefault();
+        updateClipStart(frameRef.current);
+      } else if (event.key === "]") {
+        event.preventDefault();
+        updateClipEnd(frameRef.current);
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [data, clipStartFrame, clipEndFrame, playing]);
+
   function updateClipStart(value: number) {
     if (!data) return;
     const next = Math.max(getMinFrame(data), Math.min(Math.round(value), clipEndFrame));
@@ -1108,7 +1160,10 @@ function App() {
       trajectoryCode,
       action,
       occurredAtMs: Date.now(),
-    }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    }).then(() => setAuditUploadPending(false)).catch((reason) => {
+      setAuditUploadPending(true);
+      setError(`本地操作已保留，但监管记录尚未上传：${reason instanceof Error ? reason.message : String(reason)}`);
+    });
   }
 
   function resetClipRange() {
@@ -1584,6 +1639,8 @@ function App() {
           onDateChange={changeAssignedActivityDate}
           onRefresh={() => void refreshAssignedActivity(assignedActivityDate)}
           onChooseSource={() => void chooseSource()}
+          onContinue={() => void continueAssignedTask()}
+          onNext={() => void openNextAssignedTask()}
           onClose={() => setPersonalTaskOpen(false)}
         />
         </div>
@@ -1620,6 +1677,12 @@ function App() {
             <button type="button" className="text-button" onClick={() => void runAutomaticUpdate()} disabled={busy}>重试</button>
             <button type="button" className="text-button" onClick={() => setUpdateErrorVisible(false)}>关闭</button>
           </span>
+        </div>
+      ) : null}
+      {auditUploadPending ? (
+        <div className="alert-banner alert-notice" role="status">
+          <CircleAlert size={17} />
+          <span>本地未上传：标注与草稿仍保留在当前电脑，恢复用户中心连接后的下一次操作会重新建立监管活动。</span>
         </div>
       ) : null}
       {error ? (

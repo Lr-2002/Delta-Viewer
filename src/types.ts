@@ -13,9 +13,18 @@ export interface SupervisionUserSummary {
   assignedTasks: number;
   assignedTaskNames: string[];
   assignedTaskQuantities: Record<string, number>;
+  assignmentPlans: AssignmentPlan[];
   completedToday: number;
   totalCompleted: number;
+  remainingTasks: number;
   averageCompletionMs: number | null;
+  completionRatePerHour: number;
+  estimatedCompletionAtMs: number | null;
+  firstActivityAtMs: number | null;
+  lastActivityAtMs: number | null;
+  lastLoginAtMs: number | null;
+  operationCount: number;
+  possibleStagnation: boolean;
 }
 
 export interface SupervisionEvent {
@@ -36,6 +45,9 @@ export interface SupervisionAccount {
   assignedTasks: number;
   assignedTaskNames: string[];
   assignedTaskQuantities: Record<string, number>;
+  assignmentPlans: AssignmentPlan[];
+  assignmentUpdatedAtMs: number;
+  lastLoginAtMs: number | null;
   createdAtMs: number;
 }
 
@@ -44,6 +56,95 @@ export interface SupervisionDashboardData {
   events: SupervisionEvent[];
   accounts: SupervisionAccount[];
   taskDetails: SupervisionTaskDetail[];
+  overview: OperationsOverview;
+  taskSummaries: OperationsTaskSummary[];
+  hourlyTrend: HourlyCompletion[];
+  dailyTrend: DailyCompletion[];
+  alerts: OperationsAlert[];
+  qualityReviews: QualityReview[];
+  generatedAtMs: number;
+}
+
+export type AssignmentPriority = "normal" | "urgent" | "rework";
+export type AssignmentStatus = "active" | "paused";
+
+export interface AssignmentPlan {
+  task: string;
+  quantity: number;
+  startIndex: number;
+  priority: AssignmentPriority;
+  deadlineAtMs: number | null;
+  status: AssignmentStatus;
+  order: number;
+}
+
+export interface AssignmentTransferResult {
+  source: SupervisionAccount;
+  target: SupervisionAccount;
+}
+
+export interface OperationsOverview {
+  completedToday: number;
+  totalCompleted: number;
+  assigned: number;
+  remaining: number;
+  activeOperators: number;
+  possibleStagnation: number;
+}
+
+export interface OperationsTaskSummary {
+  task: string;
+  assigned: number;
+  completedToday: number;
+  totalCompleted: number;
+  remaining: number;
+  operatorCount: number;
+  averageCompletionMs: number | null;
+}
+
+export interface HourlyCompletion {
+  hour: number;
+  completed: number;
+}
+
+export interface DailyCompletion {
+  date: string;
+  completed: number;
+}
+
+export type OperationsAlertStatus = "open" | "acknowledged" | "closed";
+
+export interface OperationsAlert {
+  alertId: string;
+  type: "possible_stagnation" | "duplicate_assignment" | string;
+  severity: "medium" | "high";
+  status: OperationsAlertStatus;
+  username: string;
+  taskId: string;
+  message: string;
+  detectedAtMs: number;
+  updatedAtMs: number;
+  note: string;
+  updatedBy: string | null;
+}
+
+export interface QualityReview {
+  reviewId: string;
+  taskId: string;
+  trajectoryCode: string;
+  outcome: "passed" | "rework";
+  errorType: string;
+  note: string;
+  reviewer: string;
+  reviewedAtMs: number;
+}
+
+export interface QualityReviewRequest {
+  taskId: string;
+  trajectoryCode: string;
+  outcome: "passed" | "rework";
+  errorType: string;
+  note: string;
 }
 
 export interface SupervisionTaskDetail {
@@ -64,6 +165,10 @@ export interface AssignedTask {
   detail: string;
   quantity: number;
   startIndex: number;
+  priority: AssignmentPriority;
+  deadlineAtMs: number | null;
+  status: AssignmentStatus;
+  order: number;
 }
 
 export interface AssignedTaskActivity {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { request as httpsRequest } from "node:https";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -76,6 +76,7 @@ test("user center supports operator self-registration and administrator account 
       "structuredTaskAssignmentsV1",
       "operatorSelfRegistrationV1",
       "operatorProfileV1",
+      "operationsCockpitV1",
     ]);
     const pageHeaders = await requestHeaders(port, ca, "/");
     assert.match(pageHeaders["content-security-policy"], /(?:^|;)\s*connect-src 'self'(?:;|$)/);
@@ -169,11 +170,17 @@ test("user center supports operator self-registration and administrator account 
     assert.equal(operator.body.user.role, "operator");
     const assigned = await request(port, ca, "PUT", "/api/v1/admin/users/operator/assignment", {
       assignedTaskQuantities: { BedMaking: 3, Bedsheet: 2 },
+      assignmentPlans: [
+        { task: "BedMaking", quantity: 3, priority: "urgent", deadlineAtMs: Date.now() + 3_600_000, status: "active" },
+        { task: "Bedsheet", quantity: 2, priority: "normal", deadlineAtMs: null, status: "paused" },
+      ],
     }, login.body.token);
     assert.equal(assigned.status, 200);
     assert.equal(assigned.body.user.assignedTasks, 5);
     assert.deepEqual(assigned.body.user.assignedTaskNames, ["BedMaking", "Bedsheet"]);
     assert.deepEqual(assigned.body.user.assignedTaskQuantities, { BedMaking: 3, Bedsheet: 2 });
+    assert.equal(assigned.body.user.assignmentPlans[0].priority, "urgent");
+    assert.equal(assigned.body.user.assignmentPlans[1].status, "paused");
     const secondCreated = await request(port, ca, "POST", "/api/v1/admin/users", {
       username: "operator2",
       displayName: "操作员二",
@@ -184,13 +191,43 @@ test("user center supports operator self-registration and administrator account 
       assignedTaskQuantities: { BedMaking: 2 },
     }, login.body.token);
     assert.equal(secondAssigned.status, 200);
+    for (const username of ["allocatora", "allocatorb"]) {
+      const result = await request(port, ca, "POST", "/api/v1/admin/users", {
+        username,
+        displayName: username,
+        password: "allocator-password",
+      }, login.body.token);
+      assert.equal(result.status, 201);
+    }
+    const concurrentAssignments = await Promise.all(["allocatora", "allocatorb"].map((username) => request(
+      port,
+      ca,
+      "PUT",
+      `/api/v1/admin/users/${username}/assignment`,
+      { assignedTaskQuantities: { ConcurrentTask: 7 } },
+      login.body.token,
+    )));
+    assert.deepEqual(concurrentAssignments.map((result) => result.status), [200, 200]);
+    const concurrentRanges = concurrentAssignments
+      .map((result) => result.body.user.assignmentPlans[0])
+      .sort((left, right) => left.startIndex - right.startIndex);
+    assert.ok(concurrentRanges[0].startIndex + concurrentRanges[0].quantity <= concurrentRanges[1].startIndex);
+    const transferred = await request(port, ca, "POST", "/api/v1/admin/assignments/transfer", {
+      fromUsername: "allocatora",
+      toUsername: "operator2",
+      task: "ConcurrentTask",
+    }, login.body.token);
+    assert.equal(transferred.status, 200);
+    assert.ok(!transferred.body.source.assignedTaskNames.includes("ConcurrentTask"));
+    assert.ok(transferred.body.target.assignedTaskNames.includes("ConcurrentTask"));
     const secondLogin = await request(port, ca, "POST", "/api/v1/auth/login", {
       username: "operator2",
       password: "operator2-password",
     });
     const secondTasks = await request(port, ca, "GET", "/api/v1/tasks/assigned", null, secondLogin.body.token);
     assert.deepEqual(secondTasks.body.tasks, [
-      { task: "BedMaking", quantity: 2, startIndex: 3, detail: "BedMaking" },
+      { task: "BedMaking", quantity: 2, startIndex: 3, priority: "normal", deadlineAtMs: null, status: "active", order: 0, detail: "BedMaking" },
+      { task: "ConcurrentTask", quantity: 7, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "active", order: 1, detail: "ConcurrentTask" },
     ]);
     const editedDetail = await request(port, ca, "PUT", "/api/v1/admin/task-details", {
       task: "Bedsheet",
@@ -206,8 +243,8 @@ test("user center supports operator self-registration and administrator account 
     const operatorTasks = await request(port, ca, "GET", "/api/v1/tasks/assigned", null, operator.body.token);
     assert.equal(operatorTasks.status, 200);
     assert.deepEqual(operatorTasks.body.tasks, [
-      { task: "BedMaking", quantity: 3, startIndex: 0, detail: "BedMaking" },
-      { task: "Bedsheet", quantity: 2, startIndex: 0, detail: "整理床单并完成整段视频标注。" },
+      { task: "BedMaking", quantity: 3, startIndex: 0, priority: "urgent", deadlineAtMs: assigned.body.user.assignmentPlans[0].deadlineAtMs, status: "active", order: 0, detail: "BedMaking" },
+      { task: "Bedsheet", quantity: 2, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "paused", order: 1, detail: "整理床单并完成整段视频标注。" },
     ]);
     const startedAtMs = Date.now() - 60_000;
     const started = await request(port, ca, "POST", "/api/v1/audit/events", {
@@ -234,6 +271,12 @@ test("user center supports operator self-registration and administrator account 
       occurredAtMs: Date.now(),
     }, operator.body.token);
     assert.equal(revision.status, 201);
+    const statePath = path.join(root, "users.json");
+    const storedState = JSON.parse(await readFile(statePath, "utf8"));
+    const idleOperator = storedState.users.find((user) => user.username === "operator2");
+    idleOperator.assignmentUpdatedAtMs = Date.now() - 2 * 60 * 60_000;
+    idleOperator.lastLoginAtMs = Date.now() - 2 * 60 * 60_000;
+    await writeFile(statePath, `${JSON.stringify(storedState, null, 2)}\n`, { mode: 0o600 });
     const audit = await request(port, ca, "GET", "/api/v1/admin/audit", null, login.body.token);
     assert.equal(audit.status, 200);
     const operatorSummary = audit.body.users.find((user) => user.username === "operator");
@@ -243,8 +286,41 @@ test("user center supports operator self-registration and administrator account 
     assert.equal(operatorSummary.completedToday, 1);
     assert.equal(operatorSummary.totalCompleted, 1);
     assert.ok(operatorSummary.averageCompletionMs >= 60_000);
+    assert.equal(audit.body.overview.completedToday, 1);
+    assert.equal(audit.body.hourlyTrend.length, 24);
+    assert.equal(audit.body.dailyTrend.length, 7);
+    assert.ok(audit.body.taskSummaries.some((task) => task.task === "BedMaking"));
+    assert.ok(Number.isSafeInteger(audit.body.generatedAtMs));
+    const stagnationAlert = audit.body.alerts.find((alert) => alert.alertId === "possible-stagnation:operator2");
+    assert.equal(stagnationAlert.status, "open");
+    const acknowledged = await request(port, ca, "PUT", `/api/v1/admin/alerts/${encodeURIComponent(stagnationAlert.alertId)}`, {
+      status: "acknowledged",
+      note: "已电话确认，稍后继续。",
+    }, login.body.token);
+    assert.equal(acknowledged.status, 200);
+    const acknowledgedAudit = await request(port, ca, "GET", "/api/v1/admin/audit", null, login.body.token);
+    assert.equal(acknowledgedAudit.body.alerts.find((alert) => alert.alertId === stagnationAlert.alertId).status, "acknowledged");
     assert.equal(audit.body.taskDetails.length, 2);
     assert.equal(audit.body.events[0].action, "annotation_saved");
+    const quality = await request(port, ca, "POST", "/api/v1/admin/quality-reviews", {
+      taskId: "sofa",
+      trajectoryCode: "sofa-001",
+      outcome: "rework",
+      errorType: "片段边界",
+      note: "请复核边界。",
+    }, login.body.token);
+    assert.equal(quality.status, 201);
+    assert.equal(quality.body.review.reviewer, "supervisor");
+    const qualityPathRejected = await request(port, ca, "POST", "/api/v1/admin/quality-reviews", {
+      taskId: "sofa",
+      trajectoryCode: "sofa-001",
+      outcome: "rework",
+      errorType: "路径泄漏",
+      note: "/mnt/source/private/frame.jpg",
+    }, login.body.token);
+    assert.equal(qualityPathRejected.status, 400);
+    const qualityAudit = await request(port, ca, "GET", "/api/v1/admin/audit", null, login.body.token);
+    assert.equal(qualityAudit.body.qualityReviews[0].trajectoryCode, "sofa-001");
     const auditDenied = await request(port, ca, "GET", "/api/v1/admin/audit", null, operator.body.token);
     assert.equal(auditDenied.status, 403);
     const denied = await request(port, ca, "GET", "/api/v1/admin/users", null, operator.body.token);

@@ -26,9 +26,23 @@ pub struct SupervisionUserSummary {
     pub assigned_task_names: Vec<String>,
     #[serde(default)]
     pub assigned_task_quantities: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub assignment_plans: Vec<AssignmentPlan>,
     pub completed_today: u64,
     pub total_completed: u64,
+    #[serde(default)]
+    pub remaining_tasks: u64,
     pub average_completion_ms: Option<u64>,
+    #[serde(default)]
+    pub completion_rate_per_hour: f64,
+    pub estimated_completion_at_ms: Option<u64>,
+    pub first_activity_at_ms: Option<u64>,
+    pub last_activity_at_ms: Option<u64>,
+    pub last_login_at_ms: Option<u64>,
+    #[serde(default)]
+    pub operation_count: u64,
+    #[serde(default)]
+    pub possible_stagnation: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +69,11 @@ pub struct SupervisionAccount {
     pub assigned_task_names: Vec<String>,
     #[serde(default)]
     pub assigned_task_quantities: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub assignment_plans: Vec<AssignmentPlan>,
+    #[serde(default)]
+    pub assignment_updated_at_ms: u64,
+    pub last_login_at_ms: Option<u64>,
     pub created_at_ms: u64,
 }
 
@@ -65,6 +84,108 @@ pub struct SupervisionDashboardData {
     pub events: Vec<SupervisionEvent>,
     pub accounts: Vec<SupervisionAccount>,
     pub task_details: Vec<SupervisionTaskDetail>,
+    pub overview: OperationsOverview,
+    pub task_summaries: Vec<OperationsTaskSummary>,
+    pub hourly_trend: Vec<HourlyCompletion>,
+    pub daily_trend: Vec<DailyCompletion>,
+    pub alerts: Vec<OperationsAlert>,
+    pub quality_reviews: Vec<QualityReview>,
+    pub generated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignmentPlan {
+    pub task: String,
+    pub quantity: u64,
+    pub start_index: u64,
+    pub priority: String,
+    pub deadline_at_ms: Option<u64>,
+    pub status: String,
+    pub order: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignmentTransferResult {
+    pub source: SupervisionAccount,
+    pub target: SupervisionAccount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationsOverview {
+    pub completed_today: u64,
+    pub total_completed: u64,
+    pub assigned: u64,
+    pub remaining: u64,
+    pub active_operators: u64,
+    pub possible_stagnation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationsTaskSummary {
+    pub task: String,
+    pub assigned: u64,
+    pub completed_today: u64,
+    pub total_completed: u64,
+    pub remaining: u64,
+    pub operator_count: u64,
+    pub average_completion_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HourlyCompletion {
+    pub hour: u8,
+    pub completed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyCompletion {
+    pub date: String,
+    pub completed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationsAlert {
+    pub alert_id: String,
+    pub r#type: String,
+    pub severity: String,
+    pub status: String,
+    pub username: String,
+    pub task_id: String,
+    pub message: String,
+    pub detected_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub note: String,
+    pub updated_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityReview {
+    pub review_id: String,
+    pub task_id: String,
+    pub trajectory_code: String,
+    pub outcome: String,
+    pub error_type: String,
+    pub note: String,
+    pub reviewer: String,
+    pub reviewed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityReviewRequest {
+    pub task_id: String,
+    pub trajectory_code: String,
+    pub outcome: String,
+    pub error_type: String,
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +212,21 @@ pub struct AssignedTask {
     pub detail: String,
     pub quantity: u64,
     pub start_index: u64,
+    #[serde(default = "default_assignment_priority")]
+    pub priority: String,
+    pub deadline_at_ms: Option<u64>,
+    #[serde(default = "default_assignment_status")]
+    pub status: String,
+    #[serde(default)]
+    pub order: u64,
+}
+
+fn default_assignment_priority() -> String {
+    "normal".into()
+}
+
+fn default_assignment_status() -> String {
+    "active".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -16,6 +16,8 @@ import type {
   AnnotatedEpisodeSummary,
   AssignedTask,
   AssignedTaskActivity,
+  AssignmentPlan,
+  AssignmentTransferResult,
   AnnotationAuditRequest,
   AppUpdateInfo,
   AuthStatus,
@@ -33,6 +35,9 @@ import type {
   OperationErrorRecord,
   RecordOperationErrorRequest,
   ReportExportResult,
+  OperationsAlertStatus,
+  QualityReview,
+  QualityReviewRequest,
   SaveAnnotationRequest,
   ScanResult,
   VideoSource,
@@ -75,6 +80,7 @@ const demoTaskDefinitions: TaskDefinition[] = [
 ];
 let demoCurrentUser: UserIdentity | null = null;
 let demoWorkspaceMode: WorkspaceMode | null = null;
+let demoOperationsData: SupervisionDashboardData | null = null;
 let sessionActivationRetryAttempts = 0;
 const DEMO_OFFLINE_IDENTITY: UserIdentity = { username: "offline", displayName: "离线本机" };
 
@@ -96,6 +102,10 @@ export async function installAppUpdate(operationId: number): Promise<boolean> {
 
 export async function getAuthStatus(): Promise<AuthStatus> {
   if (isTauriRuntime()) return invoke<AuthStatus>("get_auth_status");
+  if (isOperationsCockpitDemoScenario()) {
+    demoWorkspaceMode = "managed";
+    demoCurrentUser = { username: "demo-admin", displayName: "演示管理员", role: "admin" };
+  }
   return {
     workspaceMode: demoWorkspaceMode,
     userCenter: { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" },
@@ -186,12 +196,55 @@ export async function updateCurrentDisplayName(displayName: string): Promise<Use
 
 export async function getSupervisionDashboard(): Promise<SupervisionDashboardData> {
   if (isTauriRuntime()) return invoke<SupervisionDashboardData>("get_supervision_dashboard");
+  if (isOperationsCockpitDemoScenario()) return structuredClone(demoOperationsData ??= createDemoOperationsDashboard());
   throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
 }
 
-export async function setSupervisionAssignedTasks(username: string, assignedTaskQuantities: Record<string, number>): Promise<SupervisionAccount> {
+export async function setSupervisionAssignedTasks(
+  username: string,
+  assignedTaskQuantities: Record<string, number>,
+  assignmentPlans?: AssignmentPlan[],
+): Promise<SupervisionAccount> {
   if (isTauriRuntime()) {
-    return invoke<SupervisionAccount>("set_supervision_assigned_tasks", { username, assignedTaskQuantities });
+    return invoke<SupervisionAccount>("set_supervision_assigned_tasks", { username, assignedTaskQuantities, assignmentPlans });
+  }
+  if (isOperationsCockpitDemoScenario()) {
+    const dashboard = demoOperationsData ??= createDemoOperationsDashboard();
+    const account = dashboard.accounts.find((item) => item.username === username);
+    if (!account) throw new Error("ACCOUNT_NOT_FOUND: 账号不存在");
+    const plans = (assignmentPlans ?? Object.entries(assignedTaskQuantities).map(([task, quantity], order) => ({ task, quantity, startIndex: 0, priority: "normal" as const, deadlineAtMs: null, status: "active" as const, order }))).map((plan, order) => ({ ...plan, startIndex: order * plan.quantity, order }));
+    account.assignmentPlans = plans;
+    account.assignedTaskNames = plans.map((plan) => plan.task);
+    account.assignedTaskQuantities = Object.fromEntries(plans.map((plan) => [plan.task, plan.quantity]));
+    account.assignedTasks = plans.reduce((sum, plan) => sum + plan.quantity, 0);
+    const summary = dashboard.users.find((item) => item.username === username);
+    if (summary) Object.assign(summary, { assignmentPlans: plans, assignedTaskNames: account.assignedTaskNames, assignedTaskQuantities: account.assignedTaskQuantities, assignedTasks: account.assignedTasks });
+    return structuredClone(account);
+  }
+  throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
+}
+
+export async function updateOperationsAlert(alertId: string, status: OperationsAlertStatus, note: string): Promise<void> {
+  if (isTauriRuntime()) return invoke("update_operations_alert", { alertId, status, note });
+  if (isOperationsCockpitDemoScenario()) {
+    const alert = (demoOperationsData ??= createDemoOperationsDashboard()).alerts.find((item) => item.alertId === alertId);
+    if (alert) Object.assign(alert, { status, note, updatedAtMs: Date.now(), updatedBy: "demo-admin" });
+    return;
+  }
+  throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
+}
+
+export async function transferSupervisionAssignment(fromUsername: string, toUsername: string, task: string): Promise<AssignmentTransferResult> {
+  if (isTauriRuntime()) return invoke<AssignmentTransferResult>("transfer_supervision_assignment", { fromUsername, toUsername, task });
+  throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
+}
+
+export async function createQualityReview(request: QualityReviewRequest): Promise<QualityReview> {
+  if (isTauriRuntime()) return invoke<QualityReview>("create_quality_review", { request });
+  if (isOperationsCockpitDemoScenario()) {
+    const item: QualityReview = { reviewId: `demo-review-${Date.now()}`, ...request, reviewer: "demo-admin", reviewedAtMs: Date.now() };
+    (demoOperationsData ??= createDemoOperationsDashboard()).qualityReviews.unshift(item);
+    return item;
   }
   throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
 }
@@ -994,6 +1047,45 @@ export async function onTaskProgress(
 function isSessionActivationDemoScenario(): boolean {
   return !isTauriRuntime()
     && new URLSearchParams(window.location.search).get("demoScenario") === "session-activation";
+}
+
+function isOperationsCockpitDemoScenario(): boolean {
+  return !isTauriRuntime()
+    && new URLSearchParams(window.location.search).get("demoScenario") === "operations-cockpit";
+}
+
+function createDemoOperationsDashboard(): SupervisionDashboardData {
+  const now = Date.now();
+  const plans: AssignmentPlan[][] = [[
+    { task: "BedMaking", quantity: 20, startIndex: 0, priority: "urgent", deadlineAtMs: now + 4 * 60 * 60_000, status: "active", order: 0 },
+    { task: "Bedsheet", quantity: 12, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "active", order: 1 },
+  ], [
+    { task: "BedMaking", quantity: 18, startIndex: 20, priority: "normal", deadlineAtMs: now + 6 * 60 * 60_000, status: "active", order: 0 },
+  ]];
+  const users: SupervisionDashboardData["users"] = [
+    { username: "operator1", displayName: "标注员 1111", role: "operator", assignedTasks: 32, assignedTaskNames: ["BedMaking", "Bedsheet"], assignedTaskQuantities: { BedMaking: 20, Bedsheet: 12 }, assignmentPlans: plans[0], completedToday: 8, totalCompleted: 22, remainingTasks: 10, averageCompletionMs: 420_000, completionRatePerHour: 7.1, estimatedCompletionAtMs: now + 4_200_000, firstActivityAtMs: now - 6 * 60 * 60_000, lastActivityAtMs: now - 8 * 60_000, lastLoginAtMs: now - 7 * 60 * 60_000, operationCount: 96, possibleStagnation: false },
+    { username: "operator2", displayName: "标注员 2222", role: "operator", assignedTasks: 18, assignedTaskNames: ["BedMaking"], assignedTaskQuantities: { BedMaking: 18 }, assignmentPlans: plans[1], completedToday: 3, totalCompleted: 9, remainingTasks: 9, averageCompletionMs: 660_000, completionRatePerHour: 3.2, estimatedCompletionAtMs: now + 5_940_000, firstActivityAtMs: now - 5 * 60 * 60_000, lastActivityAtMs: now - 2 * 60 * 60_000, lastLoginAtMs: now - 6 * 60 * 60_000, operationCount: 41, possibleStagnation: true },
+  ];
+  const accounts: SupervisionDashboardData["accounts"] = users.map((user) => ({ username: user.username, displayName: user.displayName, role: user.role, assignedTasks: user.assignedTasks, assignedTaskNames: user.assignedTaskNames, assignedTaskQuantities: user.assignedTaskQuantities, assignmentPlans: user.assignmentPlans, assignmentUpdatedAtMs: now - 24 * 60 * 60_000, lastLoginAtMs: user.lastLoginAtMs, createdAtMs: now - 30 * 24 * 60 * 60_000 }));
+  return {
+    users,
+    accounts,
+    events: [],
+    taskDetails: [
+      { task: "BedMaking", detail: "整理床铺并标注完整动作片段。", source: "admin", updatedAtMs: now, updatedBy: "demo-admin" },
+      { task: "Bedsheet", detail: "整理床单并检查片段覆盖。", source: "admin", updatedAtMs: now, updatedBy: "demo-admin" },
+    ],
+    overview: { completedToday: 11, totalCompleted: 31, assigned: 50, remaining: 19, activeOperators: 1, possibleStagnation: 1 },
+    taskSummaries: [
+      { task: "BedMaking", assigned: 38, completedToday: 9, totalCompleted: 25, remaining: 13, operatorCount: 2, averageCompletionMs: 510_000 },
+      { task: "Bedsheet", assigned: 12, completedToday: 2, totalCompleted: 6, remaining: 6, operatorCount: 1, averageCompletionMs: 460_000 },
+    ],
+    hourlyTrend: Array.from({ length: 24 }, (_, hour) => ({ hour, completed: hour >= 8 && hour <= 16 ? [1, 2, 1, 0, 3, 1, 2, 1, 0][hour - 8] : 0 })),
+    dailyTrend: Array.from({ length: 7 }, (_, index) => ({ date: new Date(now - (6 - index) * 86_400_000).toLocaleDateString("sv-SE"), completed: [18, 21, 17, 24, 20, 27, 11][index] })),
+    alerts: [{ alertId: "possible-stagnation:operator2", type: "possible_stagnation", severity: "medium", status: "open", username: "operator2", taskId: "", message: "标注员 2222 长时间没有可见进展，请先确认工作状态", detectedAtMs: now - 2 * 60 * 60_000, updatedAtMs: now - 2 * 60 * 60_000, note: "", updatedBy: null }],
+    qualityReviews: [{ reviewId: "demo-quality-1", taskId: "BedMaking", trajectoryCode: "bed-007", outcome: "passed", errorType: "", note: "边界清晰。", reviewer: "demo-admin", reviewedAtMs: now - 60 * 60_000 }],
+    generatedAtMs: now,
+  };
 }
 
 function sessionActivationDemoEpisode(root: string) {

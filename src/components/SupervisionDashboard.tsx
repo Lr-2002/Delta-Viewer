@@ -1,36 +1,57 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
-import { Check, CheckSquare, ChevronDown, ChevronRight, FileJson, FileUp, FolderOpen, LoaderCircle, LogOut, Pencil, Plus, RefreshCw, Search, ShieldCheck, Square, Users, X } from "lucide-react";
-import { chooseAndScanSupervisionTasks, confirmAction, getSupervisionDashboard, importSupervisionAnnotations, importSupervisionTaskDetails, setSupervisionAssignedTasks, updateSupervisionTaskDetail } from "../lib/backend";
-import { assignmentConflicts, defaultAssignmentQuantity, sameAssignmentQuantities, validateAssignmentSelection } from "../lib/supervisionAssignments";
-import type { SupervisionAnnotationCatalog, SupervisionDashboardData, SupervisionTaskCatalog, UserIdentity } from "../types";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  AlertTriangle, BarChart3, Check, CheckCircle2, ClipboardCheck, Download,
+  FileJson, FileUp, FolderOpen, Gauge, GripVertical, LoaderCircle, LogOut,
+  PauseCircle, PlayCircle, RefreshCw, Search, ShieldCheck, Siren, TimerReset,
+  Users, X,
+} from "lucide-react";
+import {
+  chooseAndScanSupervisionTasks, confirmAction, createQualityReview,
+  getSupervisionDashboard, importSupervisionAnnotations, importSupervisionTaskDetails,
+  setSupervisionAssignedTasks, transferSupervisionAssignment, updateOperationsAlert,
+} from "../lib/backend";
+import { csvCell, distributeBySpeed, distributeEvenly } from "../lib/operationsCockpit";
+import { assignmentConflicts, defaultAssignmentQuantity, validateAssignmentSelection } from "../lib/supervisionAssignments";
+import type {
+  AssignmentPlan, AssignmentPriority, OperationsAlertStatus, QualityReviewRequest,
+  SupervisionAnnotationCatalog, SupervisionDashboardData, SupervisionTaskCatalog,
+  SupervisionUserSummary, UserIdentity,
+} from "../types";
 
-interface SupervisionDashboardProps {
-  currentUser: UserIdentity;
-  onLogout: () => Promise<void>;
-}
+interface Props { currentUser: UserIdentity; onLogout: () => Promise<void> }
+type View = "overview" | "assignment" | "alerts" | "quality" | "reports";
 
-export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashboardProps) {
+const NAVIGATION: { id: View; label: string }[] = [
+  { id: "overview", label: "监管总览" },
+  { id: "assignment", label: "任务分配" },
+  { id: "alerts", label: "异常中心" },
+  { id: "quality", label: "质量管理" },
+  { id: "reports", label: "报表" },
+];
+
+export function SupervisionDashboard({ currentUser, onLogout }: Props) {
+  const [view, setView] = useState<View>("overview");
   const [data, setData] = useState<SupervisionDashboardData | null>(null);
-  const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, Record<string, number>>>({});
+  const [drafts, setDrafts] = useState<Record<string, AssignmentPlan[]>>({});
   const [selectedOperator, setSelectedOperator] = useState<string | null>(null);
-  const [taskSearch, setTaskSearch] = useState("");
   const [taskCatalog, setTaskCatalog] = useState<SupervisionTaskCatalog | null>(null);
-  const [importedTaskNames, setImportedTaskNames] = useState<string[]>([]);
-  const [annotationCatalog, setAnnotationCatalog] = useState<SupervisionAnnotationCatalog | null>(null);
+  const [importedTasks, setImportedTasks] = useState<string[]>([]);
+  const [annotations, setAnnotations] = useState<SupervisionAnnotationCatalog | null>(null);
+  const [taskSearch, setTaskSearch] = useState("");
+  const [draggedTask, setDraggedTask] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [savingUser, setSavingUser] = useState<string | null>(null);
-  const [scanningTasks, setScanningTasks] = useState(false);
-  const [importingDetails, setImportingDetails] = useState(false);
-  const [importingAnnotations, setImportingAnnotations] = useState(false);
-  const [expandedAnnotator, setExpandedAnnotator] = useState<string | null>(null);
-  const [expandedTask, setExpandedTask] = useState<string | null>(null);
-  const [editingTask, setEditingTask] = useState<string | null>(null);
-  const [detailDrafts, setDetailDrafts] = useState<Record<string, string>>({});
-  const [savingDetail, setSavingDetail] = useState<string | null>(null);
+  const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [assignmentError, setAssignmentError] = useState("");
-  const [assignmentNotice, setAssignmentNotice] = useState("");
+  const [alertNotes, setAlertNotes] = useState<Record<string, string>>({});
+  const [transferTargets, setTransferTargets] = useState<Record<string, string>>({});
+  const [batchTask, setBatchTask] = useState("");
+  const [batchQuantity, setBatchQuantity] = useState(20);
+  const [batchPriority, setBatchPriority] = useState<AssignmentPriority>("normal");
+  const [batchDeadline, setBatchDeadline] = useState("");
+  const [batchMode, setBatchMode] = useState<"even" | "speed">("even");
+  const [batchUsers, setBatchUsers] = useState<string[]>([]);
+  const [review, setReview] = useState<QualityReviewRequest>({ taskId: "", trajectoryCode: "", outcome: "passed", errorType: "", note: "" });
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -38,14 +59,12 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
     try {
       const next = await getSupervisionDashboard();
       setData(next);
-      setAssignmentDrafts(Object.fromEntries(next.users.map((user) => [
-        user.username,
-        Object.keys(user.assignedTaskQuantities).length
-          ? user.assignedTaskQuantities
-          : Object.fromEntries(user.assignedTaskNames.map((task) => [task, 1])),
-      ])));
+      setDrafts(Object.fromEntries(next.users.map((user) => [user.username, plansFor(user)])));
+      const operators = next.users.filter((user) => user.role === "operator");
+      setSelectedOperator((current) => current && operators.some((user) => user.username === current) ? current : operators[0]?.username ?? null);
+      setBatchUsers((current) => current.length ? current.filter((name) => operators.some((user) => user.username === name)) : operators.map((user) => user.username));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(message(reason));
     } finally {
       setLoading(false);
     }
@@ -53,337 +72,254 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  function selectOperator(username: string | null) {
-    setSelectedOperator(username);
-    setAssignmentError("");
-    setAssignmentNotice("");
+  const operators = data?.users.filter((user) => user.role === "operator") ?? [];
+  const availableTasks = useMemo(() => [...new Map([
+    ...(taskCatalog?.tasks.map((task) => task.task) ?? []),
+    ...importedTasks,
+    ...(data?.users.flatMap((user) => user.assignedTaskNames) ?? []),
+  ].map((task) => [task.toLowerCase(), task])).values()], [data, importedTasks, taskCatalog]);
+  const selectedUser = operators.find((user) => user.username === selectedOperator) ?? null;
+  const selectedPlans = selectedUser ? drafts[selectedUser.username] ?? [] : [];
+  const batchSelected = operators.filter((user) => batchUsers.includes(user.username));
+  const batchPreview = batchMode === "speed"
+    ? distributeBySpeed(batchQuantity, batchSelected)
+    : distributeEvenly(batchQuantity, batchSelected.map((user) => user.username));
+
+  async function savePlans(username: string, plans: AssignmentPlan[]) {
+    const normalized = plans.map((plan, order) => ({ ...plan, order }));
+    const quantities = Object.fromEntries(normalized.map((plan) => [plan.task, plan.quantity]));
+    const validation = validateAssignmentSelection(quantities, taskCatalog?.tasks ?? [], availableTasks);
+    if (validation) throw new Error(validation);
+    const saved = await setSupervisionAssignedTasks(username, quantities, normalized);
+    setDrafts((current) => ({ ...current, [username]: saved.assignmentPlans }));
+    setData((current) => current ? {
+      ...current,
+      users: current.users.map((user) => user.username === username ? {
+        ...user, assignedTasks: saved.assignedTasks, assignedTaskNames: saved.assignedTaskNames,
+        assignedTaskQuantities: saved.assignedTaskQuantities, assignmentPlans: saved.assignmentPlans,
+      } : user),
+      accounts: current.accounts.map((account) => account.username === username ? saved : account),
+    } : current);
+    return saved;
   }
 
   async function saveAssignment(username: string) {
-    const quantities = assignmentDrafts[username] ?? {};
-    const validationError = validateAssignmentSelection(
-      quantities,
-      taskCatalog?.tasks ?? [],
-      importedTaskNames,
-    );
-    if (validationError) {
-      setAssignmentError(validationError);
-      setAssignmentNotice("");
-      return;
-    }
-    const conflicts = assignmentConflicts(username, quantities, data?.users ?? []);
-    if (conflicts.length) {
-      const details = conflicts
-        .map((conflict) => `${displayTaskName(conflict.task)}：已分配给 ${conflict.assignees.join("、")}`)
-        .join("\n");
-      const confirmed = await confirmAction(
-        `以下任务已经分配给其他标注员：\n\n${details}\n\n继续后，系统仍会为当前账号保存分配。是否继续？`,
-        "确认重复分配",
-      );
-      if (!confirmed) {
-        setAssignmentNotice("已取消重复任务分配，当前草稿未保存");
-        return;
-      }
-    }
-    setSavingUser(username);
+    const plans = drafts[username] ?? [];
+    const conflicts = assignmentConflicts(username, Object.fromEntries(plans.map((plan) => [plan.task, plan.quantity])), data?.users ?? []);
+    if (conflicts.length && !await confirmAction(
+      `以下任务也分配给其他账号，系统会重新计算不重叠区间：\n\n${conflicts.map((item) => `${item.task}：${item.assignees.join("、")}`).join("\n")}\n\n是否继续？`,
+      "确认分配区间",
+    )) return;
+    setBusy(`save:${username}`);
     setError("");
-    setNotice("");
-    setAssignmentError("");
-    setAssignmentNotice("");
     try {
-      const saved = await setSupervisionAssignedTasks(username, quantities);
-      setData((current) => current ? {
-        ...current,
-        users: current.users.map((user) => user.username === username ? { ...user, assignedTasks: saved.assignedTasks, assignedTaskNames: saved.assignedTaskNames, assignedTaskQuantities: saved.assignedTaskQuantities } : user),
-        accounts: current.accounts.map((account) => account.username === username ? saved : account),
-      } : current);
-      setAssignmentDrafts((current) => ({
-        ...current,
-        [username]: { ...saved.assignedTaskQuantities },
-      }));
-      setAssignmentNotice(`已保存：@${username} 获得 ${saved.assignedTaskNames.length} 类、共 ${saved.assignedTasks} 个任务`);
-    } catch (reason) {
-      setAssignmentError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setSavingUser(null);
-    }
+      const saved = await savePlans(username, plans);
+      setNotice(`已保存 @${username} 的 ${saved.assignmentPlans.length} 类任务，共 ${saved.assignedTasks} 条`);
+    } catch (reason) { setError(message(reason)); } finally { setBusy(""); }
   }
 
-  function toggleTaskAssignment(username: string, task: string) {
-    setAssignmentError("");
-    setAssignmentNotice("");
-    setAssignmentDrafts((current) => {
-      const selected = current[username] ?? {};
-      const existingKey = Object.keys(selected).find((item) => item.toLowerCase() === task.toLowerCase());
-      const next = { ...selected };
-      if (existingKey) delete next[existingKey];
-      else next[task] = defaultAssignmentQuantity(task, taskCatalog?.tasks ?? []);
-      return {
-        ...current,
-        [username]: next,
-      };
+  function toggleTask(username: string, task: string) {
+    setDrafts((current) => {
+      const plans = current[username] ?? [];
+      const exists = plans.some((plan) => plan.task.toLowerCase() === task.toLowerCase());
+      const next = exists ? plans.filter((plan) => plan.task.toLowerCase() !== task.toLowerCase()) : [...plans, {
+        task, quantity: defaultAssignmentQuantity(task, taskCatalog?.tasks ?? []), startIndex: 0,
+        priority: "normal" as const, deadlineAtMs: null, status: "active" as const, order: plans.length,
+      }];
+      return { ...current, [username]: next.map((plan, order) => ({ ...plan, order })) };
     });
   }
 
-  function setTaskQuantity(username: string, task: string, quantity: number, maximum: number | null) {
-    setAssignmentError("");
-    setAssignmentNotice("");
-    const bounded = Math.max(1, Math.min(maximum ?? 1_000_000, Math.round(quantity) || 1));
-    setAssignmentDrafts((current) => ({
-      ...current,
-      [username]: { ...(current[username] ?? {}), [task]: bounded },
-    }));
+  function updatePlan(username: string, task: string, changes: Partial<AssignmentPlan>) {
+    setDrafts((current) => ({ ...current, [username]: (current[username] ?? []).map((plan) => plan.task === task ? { ...plan, ...changes } : plan) }));
   }
 
-  function selectAllFolderData(username: string, catalog: SupervisionTaskCatalog | null, imported: string[]) {
-    const quantities = Object.fromEntries([
-      ...(catalog?.tasks ?? []).map((item) => [item.task, Math.max(1, item.total)] as const),
-      ...imported.filter((task) => !(catalog?.tasks ?? []).some((item) => item.task.toLowerCase() === task.toLowerCase())).map((task) => [task, 1] as const),
-    ]);
-    setAssignmentError("");
-    setAssignmentNotice("");
-    setAssignmentDrafts((current) => ({ ...current, [username]: quantities }));
+  function reorderPlan(username: string, target: string) {
+    if (!draggedTask || draggedTask === target) return;
+    setDrafts((current) => {
+      const plans = [...(current[username] ?? [])];
+      const from = plans.findIndex((plan) => plan.task === draggedTask);
+      const to = plans.findIndex((plan) => plan.task === target);
+      if (from < 0 || to < 0) return current;
+      const [moved] = plans.splice(from, 1);
+      plans.splice(to, 0, moved);
+      return { ...current, [username]: plans.map((plan, order) => ({ ...plan, order })) };
+    });
+    setDraggedTask(null);
   }
 
-  async function chooseTaskRoot() {
-    setScanningTasks(true);
+  async function applyBatch() {
+    if (!batchTask || !batchSelected.length) return setError("请选择任务和标注员");
+    const preview = batchPreview.map((share) => {
+      const old = drafts[share.username]?.find((plan) => plan.task.toLowerCase() === batchTask.toLowerCase())?.quantity ?? 0;
+      return `@${share.username}：${old} → ${share.quantity}（${signed(share.quantity - old)}）`;
+    }).join("\n");
+    if (!await confirmAction(`批量操作预览：\n\n${preview}\n\n用户中心将生成不重叠区间。是否确认？`, "确认批量分配")) return;
+    setBusy("batch");
     setError("");
-    setNotice("");
+    try {
+      const deadlineAtMs = batchDeadline ? new Date(batchDeadline).getTime() : null;
+      for (const share of batchPreview) {
+        if (!share.quantity) continue;
+        const current = drafts[share.username] ?? [];
+        const exists = current.some((plan) => plan.task.toLowerCase() === batchTask.toLowerCase());
+        const next = exists ? current.map((plan) => plan.task.toLowerCase() === batchTask.toLowerCase()
+          ? { ...plan, quantity: share.quantity, priority: batchPriority, deadlineAtMs } : plan)
+          : [...current, { task: batchTask, quantity: share.quantity, startIndex: 0, priority: batchPriority, deadlineAtMs, status: "active" as const, order: current.length }];
+        await savePlans(share.username, next);
+      }
+      await refresh();
+      setNotice(`已按${batchMode === "speed" ? "历史速度建议" : "平均"}方案分配 ${batchQuantity} 条 ${batchTask}`);
+    } catch (reason) { setError(message(reason)); } finally { setBusy(""); }
+  }
+
+  async function scanTasks() {
+    setBusy("scan"); setError("");
     try {
       const catalog = await chooseAndScanSupervisionTasks();
-      if (catalog) {
-        setTaskCatalog(catalog);
-        setNotice(`已读取 ${catalog.tasks.length} 个任务`);
-      }
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setScanningTasks(false);
-    }
+      if (catalog) { setTaskCatalog(catalog); setBatchTask((current) => current || catalog.tasks[0]?.task || ""); setNotice(`已在本机读取 ${catalog.tasks.length} 类任务`); }
+    } catch (reason) { setError(message(reason)); } finally { setBusy(""); }
   }
 
-  async function importDetails() {
-    setImportingDetails(true);
-    setError("");
+  async function importTasks() {
+    setBusy("tasks"); setError("");
     try {
       const result = await importSupervisionTaskDetails();
-      if (result) {
-        setData((current) => current ? { ...current, taskDetails: result.taskDetails } : current);
-        setImportedTaskNames(result.importedTaskNames);
-        setNotice(`已从当前文件读取 ${result.importedTaskNames.length} 个任务`);
-      }
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setImportingDetails(false);
-    }
+      if (result) { setImportedTasks(result.importedTaskNames); setData((current) => current ? { ...current, taskDetails: result.taskDetails } : current); setBatchTask((current) => current || result.importedTaskNames[0] || ""); setNotice(`已读取 ${result.importedTaskNames.length} 项任务定义`); }
+    } catch (reason) { setError(message(reason)); } finally { setBusy(""); }
   }
 
   async function importAnnotations() {
-    setImportingAnnotations(true);
-    setError("");
-    setNotice("");
+    setBusy("annotations"); setError("");
     try {
       const catalog = await importSupervisionAnnotations();
-      if (catalog) {
-        setAnnotationCatalog(catalog);
-        setExpandedAnnotator(null);
-        setNotice(`已读取 ${catalog.users.length} 位标注人`);
-      }
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setImportingAnnotations(false);
-    }
+      if (catalog) { setAnnotations(catalog); setNotice(`已在本机汇总 ${catalog.users.length} 位标注员的片段与帧`); }
+    } catch (reason) { setError(message(reason)); } finally { setBusy(""); }
   }
 
-  async function saveDetail(task: string) {
-    const detail = (detailDrafts[task] ?? taskDetail(data, task)?.detail ?? "").trim();
-    if (!detail) {
-      setError("任务详情不能为空");
-      return;
-    }
-    setSavingDetail(task);
-    setError("");
-    try {
-      const details = await updateSupervisionTaskDetail(task, detail);
-      setData((current) => current ? { ...current, taskDetails: details } : current);
-      setNotice(`已保存 ${displayTaskName(task)} 的任务详情`);
-      setEditingTask(null);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setSavingDetail(null);
-    }
+  async function handleAlert(alertId: string, status: OperationsAlertStatus) {
+    setBusy(`alert:${alertId}`); setError("");
+    try { await updateOperationsAlert(alertId, status, alertNotes[alertId] ?? ""); await refresh(); setNotice(status === "closed" ? "预警已关闭" : "预警已确认"); }
+    catch (reason) { setError(message(reason)); } finally { setBusy(""); }
   }
 
-  const catalogRows = mergedCatalogRows(taskCatalog, importedTaskNames);
-
-  return (
-    <main className="supervision-shell">
-      <header className="supervision-header">
-        <div className="brand-lockup">
-          <span className="brand-mark">D</span>
-          <div><strong>DOHC Viewer</strong><span>监管工作台</span></div>
-        </div>
-        <div className="supervision-account">
-          <ShieldCheck size={17} />
-          <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username} · 监管账户</small></span>
-          <button className="icon-button" type="button" onClick={() => void onLogout()} title="退出登录" aria-label="退出登录"><LogOut size={16} /></button>
-        </div>
-      </header>
-
-      <section className="supervision-content">
-        <div className="supervision-title">
-          <div><span className="section-kicker">SUPERVISION</span><h1>任务监管</h1><p>按账号分配任务并查看整段视频标注完成情况。</p></div>
-          <button className="button button-secondary" type="button" onClick={() => void refresh()} disabled={loading}>
-            <RefreshCw className={loading ? "spin" : undefined} size={16} />刷新
-          </button>
-        </div>
-
-        {error ? <div className="auth-error supervision-feedback" role="alert">{error}</div> : null}
-        {notice ? <div className="supervision-notice" role="status"><Check size={15} />{notice}</div> : null}
-        {loading && !data ? <div className="supervision-loading"><LoaderCircle className="spin" size={22} />正在读取监管数据</div> : null}
-        {data ? <>
-          <section className="supervision-section supervision-primary-module">
-            <div className="supervision-section-heading overview-heading"><div><span className="section-kicker">TASK OVERVIEW</span><h2>账号任务概览</h2><small>完成时间按用户中心主机的自然日统计；帧数按已分配任务汇总</small></div></div>
-            <div className="supervision-table-wrap"><table className="account-overview-table"><colgroup><col className="account-column" /><col className="assignment-column" /><col span={2} className="count-column" /><col className="duration-column" /><col span={2} className="frame-column" /></colgroup><thead><tr><th>账号</th><th>具体分配</th><th>当天完成</th><th>总计完成</th><th>平均完成时间</th><th>已完成帧数</th><th>总帧数</th></tr></thead><tbody>
-              {data.users.map((user) => <tr key={user.username}>
-                <td><strong>{user.displayName}</strong><small>@{user.username} · {user.role === "admin" ? "监管账户" : "普通账户"}</small></td>
-                <td>{user.role === "operator" ? <button className={`assignment-summary-button${selectedOperator === user.username ? " active" : ""}`} type="button" onClick={() => selectOperator(user.username)}><strong>{user.assignedTaskNames.length}</strong><span>{user.assignedTaskNames.length ? `${user.assignedTaskNames.slice(0, 2).map(displayTaskName).join("、")} · 共 ${quantityTotal(user.assignedTaskQuantities)} 个` : "选择具体任务与数量"}{user.assignedTaskNames.length > 2 ? ` 等 ${user.assignedTaskNames.length} 类` : ""}</span><ChevronRight size={15} /></button> : "—"}</td>
-                <td className="supervision-number">{user.completedToday}</td>
-                <td className="supervision-number">{user.totalCompleted}</td>
-                <td>{formatDuration(user.averageCompletionMs)}</td>
-                <td className="supervision-number">{assignedFrameTotals(user.assignedTaskNames, taskCatalog)?.completed.toLocaleString("zh-CN") ?? "—"}</td>
-                <td className="supervision-number">{assignedFrameTotals(user.assignedTaskNames, taskCatalog)?.total.toLocaleString("zh-CN") ?? "—"}</td>
-              </tr>)}
-            </tbody></table></div>
-          </section>
-
-          {selectedOperator ? (() => {
-            const operators = data.users.filter((user) => user.role === "operator");
-            const availableTasks = [...new Map([
-              ...(taskCatalog?.tasks.map((task) => task.task) ?? []),
-              ...importedTaskNames,
-            ].map((task) => [task.toLowerCase(), task])).values()];
-            const activeUser = operators.find((user) => user.username === selectedOperator) ?? operators[0];
-            const selected = activeUser ? assignmentDrafts[activeUser.username] ?? {} : {};
-            const persisted = activeUser?.assignedTaskQuantities ?? {};
-            const dirty = !sameAssignmentQuantities(selected, persisted);
-            const filteredTasks = availableTasks.filter((task) => `${task} ${displayTaskName(task)} ${taskDetail(data, task)?.detail ?? ""}`.toLowerCase().includes(taskSearch.trim().toLowerCase()));
-            return <section className="supervision-section assignment-workbench">
-              <div className="supervision-section-heading"><div><span className="section-kicker">TASK ASSIGNMENT</span><h2>具体任务分配</h2><small>任务来自当前导入的 JSON 或读取到的任务目录</small></div><button className="icon-button" type="button" onClick={() => selectOperator(null)} title="关闭任务分配" aria-label="关闭任务分配"><X size={16} /></button></div>
-              <div className="assignment-layout">
-                <aside className="operator-list"><header><Users size={15} /><strong>操作员</strong><span>{operators.length}</span></header>{operators.map((user) => <button key={user.username} className={activeUser?.username === user.username ? "active" : ""} type="button" onClick={() => selectOperator(user.username)}><span><strong>{user.displayName}</strong><small>@{user.username}</small></span><b>{Object.keys(assignmentDrafts[user.username] ?? {}).length}</b></button>)}</aside>
-                <div className="assignment-task-picker">
-                  {activeUser ? <>
-                    <header className="assignment-picker-header"><div><strong>为 {activeUser.displayName} 分配任务</strong><span>已选择 {Object.keys(selected).length} / {availableTasks.length} 类，共 {quantityTotal(selected)} 个</span></div><button className="button button-primary" type="button" disabled={!dirty || savingUser === activeUser.username} onClick={() => void saveAssignment(activeUser.username)}>{savingUser === activeUser.username ? "保存中" : "保存分配"}</button></header>
-                    {assignmentError ? <div className="auth-error assignment-feedback" role="alert">{assignmentError}</div> : null}
-                    {assignmentNotice ? <div className="supervision-notice assignment-feedback" role="status"><Check size={15} />{assignmentNotice}</div> : null}
-                    <div className="assignment-toolbar"><label><Search size={14} /><input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="搜索任务名称或详情" /></label><button type="button" onClick={() => selectAllFolderData(activeUser.username, taskCatalog, importedTaskNames)} disabled={!taskCatalog?.tasks.length}>全选当前文件夹</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: Object.fromEntries(filteredTasks.map((task) => [task, current[activeUser.username]?.[task] ?? defaultAssignmentQuantity(task, taskCatalog?.tasks ?? [])])) })); }}>选择当前结果</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: {} })); }}>清空</button></div>
-                    {filteredTasks.length ? <div className="assignment-task-grid">{filteredTasks.map((task) => {
-                      const selectedKey = Object.keys(selected).find((item) => item.toLowerCase() === task.toLowerCase());
-                      const checked = selectedKey !== undefined;
-                      const quantity = selectedKey ? selected[selectedKey] : defaultAssignmentQuantity(task, taskCatalog?.tasks ?? []);
-                      const summary = taskCatalog?.tasks.find((item) => item.task.toLowerCase() === task.toLowerCase());
-                      const detail = taskDetail(data, task);
-                      const others = operators.filter((user) => user.username !== activeUser.username && user.assignedTaskNames.some((item) => item.toLowerCase() === task.toLowerCase()));
-                      return <div key={task} className={`assignment-task-card${checked ? " selected" : ""}`}><button type="button" onClick={() => toggleTaskAssignment(activeUser.username, task)} aria-pressed={checked}>{checked ? <CheckSquare size={17} /> : <Square size={17} />}<span><strong>{displayTaskName(task)}</strong><small>{task}</small>{detail ? <em>{detail.detail}</em> : null}</span></button><div className="task-card-meta">{summary ? <><b>{summary.completed}/{summary.total} 完成</b><small>文件夹内共 {summary.total} 条数据</small></> : <b>已导入</b>}{others.length ? <small>另分配给 {others.map((user) => user.displayName).join("、")}</small> : null}{checked ? <label>分配数量<div className="quantity-control"><input type="number" min={1} max={summary?.total ?? 1_000_000} value={quantity} onClick={(event) => event.stopPropagation()} onChange={(event) => setTaskQuantity(activeUser.username, task, Number(event.target.value), summary?.total ?? null)} /><button type="button" onClick={(event) => { event.stopPropagation(); if (summary) setTaskQuantity(activeUser.username, task, summary.total, summary.total); }}>全部</button></div><span>{summary ? `/ ${summary.total}` : "个"}</span></label> : null}</div></div>;
-                    })}</div> : <div className="assignment-empty"><FolderOpen size={20} /><strong>暂无可分配任务</strong><span>请选择任务 JSON 或任务目录，读取到的任务会自动出现在这里。</span></div>}
-                  </> : <div className="assignment-empty"><Users size={20} /><strong>暂无普通账户</strong><span>请先在用户中心创建操作员账户。</span></div>}
-                </div>
-              </div>
-            </section>;
-          })() : null}
-
-          <section className="supervision-section supervision-annotation-module">
-            <div className="supervision-section-heading task-catalog-heading">
-              <div><span className="section-kicker">ANNOTATION JSON</span><h2>标注人员明细</h2>{annotationCatalog ? <small>{annotationCatalog.sourceName}</small> : null}</div>
-              <button className="button button-secondary" type="button" onClick={() => void importAnnotations()} disabled={importingAnnotations}>
-                {importingAnnotations ? <LoaderCircle className="spin" size={16} /> : <FileJson size={16} />}{importingAnnotations ? "读取中" : "导入标注 JSON"}
-              </button>
-            </div>
-            {annotationCatalog ? <div className="supervision-table-wrap"><table className="supervision-annotation-table"><thead><tr><th>标注人</th><th>轨迹</th><th>片段</th><th>覆盖帧</th><th>标注任务</th></tr></thead><tbody>
-              {annotationCatalog.users.map((user) => {
-                const expanded = expandedAnnotator === user.username;
-                return <Fragment key={user.username}><tr>
-                  <td><button className="annotation-user-button" type="button" onClick={() => setExpandedAnnotator(expanded ? null : user.username)} aria-expanded={expanded}>{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}<span><strong>{user.displayName}</strong><small>@{user.username}</small></span></button></td>
-                  <td className="supervision-number">{formatCount(user.trajectoryCount)}</td>
-                  <td className="supervision-number">{formatCount(user.segmentCount)}</td>
-                  <td className="supervision-number">{formatCount(user.annotatedFrameCount)}</td>
-                  <td><div className="annotation-task-list">{user.tasks.map((task) => <span key={task.taskId}><strong>{displayTaskName(task.taskId)}</strong><small>{formatCount(task.trajectoryCount)} 条 · {formatCount(task.segmentCount)} 段 · {formatCount(task.annotatedFrameCount)} 帧</small></span>)}</div></td>
-                </tr>{expanded ? <tr className="annotation-entry-row"><td colSpan={5}><div className="supervision-table-wrap"><table><thead><tr><th>任务</th><th>轨迹码</th><th>片段</th><th>覆盖帧</th><th>修订</th><th>最近更新</th></tr></thead><tbody>{user.entries.map((entry) => <tr key={`${entry.trajectoryCode}-${entry.revision}`}><td>{displayTaskName(entry.taskId)}</td><td><code>{entry.trajectoryCode}</code></td><td>{formatCount(entry.segmentCount)}</td><td>{formatCount(entry.annotatedFrameCount)}</td><td>r{entry.revision}</td><td>{formatAnnotationTime(entry.updatedAtMs)}</td></tr>)}</tbody></table></div></td></tr> : null}</Fragment>;
-              })}
-            </tbody></table></div> : <div className="task-catalog-empty"><FileJson size={22} /><strong>尚未导入标注 JSON</strong></div>}
-          </section>
-
-          <section className="supervision-section supervision-secondary-module">
-            <div className="supervision-section-heading task-catalog-heading">
-              <div><span className="section-kicker">TASK CATALOG</span><h2>任务完成概览</h2>{taskCatalog ? <small title={taskCatalog.sourcePath}>{taskCatalog.sourcePath}</small> : data.taskDetails.length ? <small>已导入 {data.taskDetails.length} 项任务详情；选择任务目录后显示完成数量</small> : null}</div>
-              <div className="task-catalog-actions"><button className="button button-secondary" type="button" onClick={() => void importDetails()} disabled={importingDetails}><FileUp size={16} />{importingDetails ? "导入中" : "导入任务详情"}</button><button className="button button-secondary" type="button" onClick={() => void chooseTaskRoot()} disabled={scanningTasks}>
-                {scanningTasks ? <LoaderCircle className="spin" size={16} /> : <FolderOpen size={16} />}{scanningTasks ? "读取中" : taskCatalog ? "更换任务目录" : "选择任务目录"}
-              </button></div>
-            </div>
-            {catalogRows.length ? <div className="supervision-table-wrap"><table className="task-catalog-table"><thead><tr><th>任务</th><th>现已完成 / 总计数量</th></tr></thead><tbody>
-              {catalogRows.map((task) => {
-                const detail = taskDetail(data, task.task);
-                const expanded = expandedTask === task.task;
-                const editing = editingTask === task.task;
-                return <Fragment key={task.task}><tr><td><button className="task-name-button" type="button" onClick={() => { setExpandedTask(expanded ? null : task.task); if (expanded) setEditingTask(null); }} aria-expanded={expanded}>{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}<span><strong>{displayTaskName(task.task)}</strong><small>{task.task}</small></span></button></td><td>{task.total === null ? <span className="task-count-pending">已读取任务，待选择目录统计数量</span> : <div className="task-completion"><strong>{task.completed} / {task.total}</strong><span><i style={{ width: `${task.total ? Math.min(100, (task.completed ?? 0) / task.total * 100) : 0}%` }} /></span></div>}</td></tr>{expanded ? <tr className="task-detail-row"><td colSpan={2}>{editing ? <div className="task-detail-edit"><header><div><strong>{detail ? "编辑任务注解" : "添加任务注解"}</strong><small>description 对应任务注解</small></div><button className="icon-button" type="button" onClick={() => setEditingTask(null)} title="取消编辑" aria-label="取消编辑"><X size={15} /></button></header><textarea autoFocus value={detailDrafts[task.task] ?? detail?.detail ?? ""} onChange={(event) => setDetailDrafts((current) => ({ ...current, [task.task]: event.target.value }))} maxLength={4000} placeholder="输入任务注解" /><footer><span>{(detailDrafts[task.task] ?? detail?.detail ?? "").length} / 4000</span><button className="button button-primary" type="button" onClick={() => void saveDetail(task.task)} disabled={savingDetail === task.task}>{savingDetail === task.task ? "保存中" : "保存注解"}</button></footer></div> : detail ? <div className="task-detail-read"><div><span className="section-kicker">任务注解</span><p>{detail.detail}</p><small>{detail.source === "imported" ? "外部导入" : "管理员编辑"} · {new Date(detail.updatedAtMs).toLocaleString("zh-CN", { hour12: false })}</small></div><button className="button button-secondary" type="button" onClick={() => setEditingTask(task.task)}><Pencil size={14} />编辑</button></div> : <div className="task-detail-empty"><div><strong>还没有任务注解</strong><span>可导入 JSON 的 description，或在这里补充。</span></div><button className="button button-secondary" type="button" onClick={() => setEditingTask(task.task)}><Plus size={14} />添加注解</button></div>}</td></tr> : null}</Fragment>;
-              })}
-            </tbody></table></div> : <div className="task-catalog-empty"><FolderOpen size={22} /><strong>选择 NAS 导出的任务目录</strong><span>例如 DOHC_JPEG/Seed_sample；应用只读统计 episode 和 description.json，不修改目录内容。</span></div>}
-          </section>
-        </> : null}
-      </section>
-    </main>
-  );
-}
-
-function formatDuration(value: number | null): string {
-  if (value === null) return "—";
-  const totalSeconds = Math.max(0, Math.round(value / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours) return `${hours} 小时 ${minutes} 分`;
-  if (minutes) return `${minutes} 分 ${seconds} 秒`;
-  return `${seconds} 秒`;
-}
-
-function displayTaskName(task: string): string {
-  return task.replaceAll("_", " ");
-}
-
-function quantityTotal(quantities: Record<string, number>): number {
-  return Object.values(quantities).reduce((sum, quantity) => sum + quantity, 0);
-}
-
-function formatCount(value: number): string {
-  return new Intl.NumberFormat("zh-CN").format(value);
-}
-
-function formatAnnotationTime(value: number): string {
-  return value > 0 ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
-}
-
-function taskDetail(data: SupervisionDashboardData | null, task: string) {
-  return data?.taskDetails.find((detail) => detail.task.toLowerCase() === task.toLowerCase()) ?? null;
-}
-
-function mergedCatalogRows(catalog: SupervisionTaskCatalog | null, importedTaskNames: string[]) {
-  const rows = new Map<string, { task: string; completed: number | null; total: number | null; completedFrames?: number; totalFrames?: number }>();
-  for (const task of catalog?.tasks ?? []) rows.set(task.task.toLowerCase(), task);
-  for (const task of importedTaskNames) {
-    if (!rows.has(task.toLowerCase())) rows.set(task.toLowerCase(), { task, completed: null, total: null });
+  async function transferTask(fromUsername: string, task: string) {
+    const key = `${fromUsername}:${task}`;
+    const toUsername = transferTargets[key];
+    if (!toUsername) return setError("请选择任务转入账号");
+    if (!await confirmAction(`将 ${task} 的完整分配从 @${fromUsername} 转移给 @${toUsername}。该操作会原子更新两个账号，是否继续？`, "确认转移任务")) return;
+    setBusy(`transfer:${key}`); setError("");
+    try { await transferSupervisionAssignment(fromUsername, toUsername, task); await refresh(); setNotice(`已将 ${task} 转移给 @${toUsername}`); }
+    catch (reason) { setError(message(reason)); } finally { setBusy(""); }
   }
-  return [...rows.values()];
+
+  async function saveReview() {
+    setBusy("review"); setError("");
+    try { await createQualityReview(review); await refresh(); setReview({ taskId: "", trajectoryCode: "", outcome: "passed", errorType: "", note: "" }); setNotice("独立复核结果已保存"); }
+    catch (reason) { setError(message(reason)); } finally { setBusy(""); }
+  }
+
+  function exportReport(format: "json" | "csv") {
+    if (!data) return;
+    const content = format === "json" ? `${JSON.stringify(safeReport(data, annotations), null, 2)}\n` : reportCsv(data);
+    downloadText(`dohc-operations-${dateKey(data.generatedAtMs)}.${format}`, content, format === "json" ? "application/json" : "text/csv");
+    setNotice(`已生成 ${format.toUpperCase()} 报表，不包含源路径、图像或原始数据`);
+  }
+
+  return <main className="supervision-shell operations-cockpit">
+    <header className="supervision-header"><div className="brand-lockup"><span className="brand-mark">D</span><div><strong>DOHC Viewer</strong><span>任务运营驾驶舱</span></div></div><div className="supervision-account"><ShieldCheck size={17} /><span><strong>{currentUser.displayName}</strong><small>@{currentUser.username} · 监管账户</small></span><button className="icon-button" type="button" onClick={() => void onLogout()} title="退出"><LogOut size={16} /></button></div></header>
+    <section className="supervision-content">
+      <div className="supervision-title"><div><span className="section-kicker">OPERATIONS COCKPIT</span><h1>任务运营驾驶舱</h1><p>谁在做什么、进度如何、哪里可能卡住，以及下一步如何调整。</p></div><button className="button button-secondary" type="button" onClick={() => void refresh()} disabled={loading}><RefreshCw className={loading ? "spin" : undefined} size={16} />刷新</button></div>
+      <div className="cockpit-statusbar"><span className={data ? "connected" : "disconnected"}><i />用户中心：{data ? "已连接" : "未连接"}</span><span>数据更新：{data ? formatTime(data.generatedAtMs) : "—"}</span><span>片段/帧：{annotations ? "本机标注 JSON" : "待本机导入"}</span></div>
+      <nav className="cockpit-nav">{NAVIGATION.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} type="button" onClick={() => setView(item.id)}>{item.label}{item.id === "alerts" && data?.alerts.some((alert) => alert.status !== "closed") ? <b>{data.alerts.filter((alert) => alert.status !== "closed").length}</b> : null}</button>)}</nav>
+      {error ? <div className="auth-error supervision-feedback" role="alert">{error}</div> : null}
+      {notice ? <div className="supervision-notice" role="status"><Check size={15} />{notice}<button className="icon-button" type="button" onClick={() => setNotice("")}><X size={14} /></button></div> : null}
+      {loading && !data ? <div className="supervision-loading"><LoaderCircle className="spin" size={22} />正在聚合运营数据</div> : null}
+      {data && view === "overview" ? <Overview data={data} annotations={annotations} onImport={() => void importAnnotations()} importing={busy === "annotations"} /> : null}
+      {data && view === "assignment" ? <Assignment data={data} operators={operators} availableTasks={availableTasks} selectedUser={selectedUser} selectedPlans={selectedPlans} drafts={drafts} taskCatalog={taskCatalog} taskSearch={taskSearch} setTaskSearch={setTaskSearch} setSelectedOperator={setSelectedOperator} toggleTask={toggleTask} updatePlan={updatePlan} reorderPlan={reorderPlan} setDraggedTask={setDraggedTask} saveAssignment={saveAssignment} busy={busy} batchTask={batchTask} setBatchTask={setBatchTask} batchQuantity={batchQuantity} setBatchQuantity={setBatchQuantity} batchPriority={batchPriority} setBatchPriority={setBatchPriority} batchDeadline={batchDeadline} setBatchDeadline={setBatchDeadline} batchMode={batchMode} setBatchMode={setBatchMode} batchUsers={batchUsers} setBatchUsers={setBatchUsers} batchPreview={batchPreview} applyBatch={applyBatch} scanTasks={scanTasks} importTasks={importTasks} transferTargets={transferTargets} setTransferTargets={setTransferTargets} transferTask={transferTask} /> : null}
+      {data && view === "alerts" ? <Alerts data={data} notes={alertNotes} setNotes={setAlertNotes} busy={busy} handle={handleAlert} adjust={(username) => { setSelectedOperator(username); setView("assignment"); }} /> : null}
+      {data && view === "quality" ? <Quality data={data} annotations={annotations} review={review} setReview={setReview} importAnnotations={importAnnotations} busy={busy} saveReview={saveReview} /> : null}
+      {data && view === "reports" ? <Reports data={data} annotations={annotations} json={() => exportReport("json")} csv={() => exportReport("csv")} print={() => printReport(data)} /> : null}
+    </section>
+  </main>;
 }
 
-function assignedFrameTotals(taskNames: string[], catalog: SupervisionTaskCatalog | null) {
-  if (!catalog) return null;
-  const assigned = new Set(taskNames.map((task) => task.toLowerCase()));
-  return catalog.tasks.reduce((result, task) => assigned.has(task.task.toLowerCase()) ? {
-    completed: result.completed + task.completedFrames,
-    total: result.total + task.totalFrames,
-  } : result, { completed: 0, total: 0 });
+function Overview({ data, annotations, onImport, importing }: { data: SupervisionDashboardData; annotations: SupervisionAnnotationCatalog | null; onImport: () => void; importing: boolean }) {
+  const local = annotationTotals(annotations);
+  const max = Math.max(1, ...data.hourlyTrend.map((row) => row.completed));
+  const peak = data.hourlyTrend.reduce((best, row) => row.completed > best.completed ? row : best, data.hourlyTrend[0]);
+  const active = data.hourlyTrend.filter((row) => row.completed);
+  const low = active.reduce((best, row) => row.completed < best.completed ? row : best, active[0] ?? data.hourlyTrend[0]);
+  return <>
+    <section className="cockpit-kpis"><Metric icon={<CheckCircle2 />} label="今日完成" value={data.overview.completedToday} hint="episode" /><Metric icon={<Gauge />} label="累计完成" value={data.overview.totalCompleted} hint="episode" /><Metric icon={<TimerReset />} label="当前剩余" value={data.overview.remaining} hint={`已分配 ${data.overview.assigned}`} /><Metric icon={<Users />} label="活跃标注员" value={data.overview.activeOperators} hint={`${data.overview.possibleStagnation} 人可能停滞`} /><Metric icon={<ClipboardCheck />} label="片段数" value={local.segments} hint={annotations ? "本机汇总" : "待导入"} /><Metric icon={<BarChart3 />} label="覆盖帧数" value={local.frames} hint={`${local.episodes} episodes`} /></section>
+    <div className="cockpit-grid two-columns"><section className="supervision-section trend-panel"><div className="supervision-section-heading"><div><span className="section-kicker">TODAY TREND</span><h2>今日每小时完成量</h2></div><small>峰值 {peak?.hour ?? 0}:00 · {peak?.completed ?? 0} 条<br />低效 {low?.hour ?? 0}:00 · {low?.completed ?? 0} 条</small></div><div className="hourly-chart">{data.hourlyTrend.map((row) => <div key={row.hour} title={`${row.hour}:00 · ${row.completed} 条`}><span style={{ height: `${Math.max(row.completed ? 8 : 1, row.completed / max * 100)}%` }} /><small>{row.hour % 3 === 0 ? row.hour : ""}</small></div>)}</div></section><section className="supervision-section local-metrics"><div className="supervision-section-heading"><div><span className="section-kicker">LOCAL DETAIL</span><h2>片段与帧明细</h2></div><button className="button button-secondary" type="button" onClick={onImport} disabled={importing}><FileJson size={15} />{importing ? "读取中" : "导入标注 JSON"}</button></div><p>片段与帧不上传用户中心，只从当前管理员电脑选择的 JSON 汇总。</p><div><span><strong>{formatCount(local.episodes)}</strong>episode</span><span><strong>{formatCount(local.segments)}</strong>片段</span><span><strong>{formatCount(local.frames)}</strong>帧</span></div></section></div>
+    <section className="supervision-section"><Heading kicker="TASK TYPES" title="按任务类型" note="分配、完成、未完成与平均耗时" /><div className="supervision-table-wrap"><table><thead><tr><th>任务类型</th><th>分配</th><th>今日</th><th>累计</th><th>未完成</th><th>episode / 片段 / 帧</th><th>平均耗时</th><th>人数</th></tr></thead><tbody>{data.taskSummaries.map((task) => { const detail = localTask(annotations, task.task); return <tr key={task.task}><td><strong>{task.task}</strong></td><td>{task.assigned}</td><td>{task.completedToday}</td><td>{task.totalCompleted}</td><td>{task.remaining}</td><td>{detail ? `${detail.episodes} / ${detail.segments} / ${formatCount(detail.frames)}` : "—"}</td><td>{formatDuration(task.averageCompletionMs)}</td><td>{task.operatorCount}</td></tr>; })}</tbody></table></div></section>
+    <section className="supervision-section"><Heading kicker="WHO IS DOING WHAT" title="按账号查看进度与速度" note="可能停滞仅作提醒，不直接判定异常" /><div className="supervision-table-wrap"><table><thead><tr><th>账号</th><th>当前任务</th><th>今日 / 累计</th><th>剩余</th><th>速度</th><th>平均耗时</th><th>最近活跃</th><th>预计完成</th><th>状态</th></tr></thead><tbody>{data.users.filter((user) => user.role === "operator").map((user) => <tr key={user.username}><td><strong>{user.displayName}</strong><small>@{user.username}</small></td><td>{user.assignmentPlans.filter((plan) => plan.status === "active").map((plan) => plan.task).join("、") || "—"}</td><td>{user.completedToday} / {user.totalCompleted}</td><td>{user.remainingTasks}</td><td>{user.completionRatePerHour} 条/小时</td><td>{formatDuration(user.averageCompletionMs)}</td><td>{formatTime(user.lastActivityAtMs ?? user.lastLoginAtMs)}</td><td>{formatTime(user.estimatedCompletionAtMs)}</td><td>{user.possibleStagnation ? <span className="status-pill warning"><Siren size={13} />可能停滞</span> : <span className="status-pill"><Check size={13} />正常</span>}</td></tr>)}</tbody></table></div></section>
+  </>;
 }
+
+type AssignmentProps = {
+  data: SupervisionDashboardData; operators: SupervisionUserSummary[]; availableTasks: string[];
+  selectedUser: SupervisionUserSummary | null; selectedPlans: AssignmentPlan[]; drafts: Record<string, AssignmentPlan[]>;
+  taskCatalog: SupervisionTaskCatalog | null; taskSearch: string; setTaskSearch: (value: string) => void;
+  setSelectedOperator: (value: string) => void; toggleTask: (username: string, task: string) => void;
+  updatePlan: (username: string, task: string, changes: Partial<AssignmentPlan>) => void;
+  reorderPlan: (username: string, task: string) => void; setDraggedTask: (value: string) => void;
+  saveAssignment: (username: string) => Promise<void>; busy: string;
+  batchTask: string; setBatchTask: (value: string) => void; batchQuantity: number; setBatchQuantity: (value: number) => void;
+  batchPriority: AssignmentPriority; setBatchPriority: (value: AssignmentPriority) => void;
+  batchDeadline: string; setBatchDeadline: (value: string) => void; batchMode: "even" | "speed"; setBatchMode: (value: "even" | "speed") => void;
+  batchUsers: string[]; setBatchUsers: (value: string[]) => void; batchPreview: { username: string; quantity: number }[];
+  applyBatch: () => Promise<void>; scanTasks: () => Promise<void>; importTasks: () => Promise<void>;
+  transferTargets: Record<string, string>; setTransferTargets: (value: Record<string, string>) => void;
+  transferTask: (fromUsername: string, task: string) => Promise<void>;
+};
+
+function Assignment(props: AssignmentProps) {
+  const filtered = props.availableTasks.filter((task) => task.toLowerCase().includes(props.taskSearch.toLowerCase()));
+  return <>
+    <section className="supervision-section cockpit-tools"><div><span className="section-kicker">TASK SOURCES</span><h2>任务来源与容量</h2><small>目录仅在本机只读统计，用户中心不接收 NAS 路径。</small></div><div><button className="button button-secondary" type="button" onClick={() => void props.importTasks()}><FileUp size={15} />导入任务 JSON</button><button className="button button-secondary" type="button" onClick={() => void props.scanTasks()}><FolderOpen size={15} />读取任务目录</button></div></section>
+    <section className="supervision-section batch-assignment"><Heading kicker="BATCH PREVIEW" title="批量平均 / 速度建议分配" /><div className="batch-controls"><label>任务<select value={props.batchTask} onChange={(event) => props.setBatchTask(event.target.value)}><option value="">请选择</option>{props.availableTasks.map((task) => <option key={task}>{task}</option>)}</select></label><label>总数量<input type="number" min={1} value={props.batchQuantity} onChange={(event) => props.setBatchQuantity(Math.max(1, Number(event.target.value) || 1))} /></label><label>优先级<select value={props.batchPriority} onChange={(event) => props.setBatchPriority(event.target.value as AssignmentPriority)}><option value="normal">普通</option><option value="urgent">紧急</option><option value="rework">返工</option></select></label><label>截止时间<input type="datetime-local" value={props.batchDeadline} onChange={(event) => props.setBatchDeadline(event.target.value)} /></label><label>策略<select value={props.batchMode} onChange={(event) => props.setBatchMode(event.target.value as "even" | "speed")}><option value="even">一键平均</option><option value="speed">按历史速度建议</option></select></label></div><div className="batch-user-picker">{props.operators.map((user) => <label key={user.username}><input type="checkbox" checked={props.batchUsers.includes(user.username)} onChange={() => props.setBatchUsers(props.batchUsers.includes(user.username) ? props.batchUsers.filter((name) => name !== user.username) : [...props.batchUsers, user.username])} /><span>{user.displayName}<small>@{user.username} · {user.completionRatePerHour} 条/小时</small></span></label>)}</div><div className="batch-preview"><strong>操作预览</strong>{props.batchPreview.map((share) => { const old = props.drafts[share.username]?.find((plan) => plan.task.toLowerCase() === props.batchTask.toLowerCase())?.quantity ?? 0; return <span key={share.username}>@{share.username}<b>{old} → {share.quantity}</b><small>{signed(share.quantity - old)} 条</small></span>; })}<button className="button button-primary" type="button" onClick={() => void props.applyBatch()} disabled={!props.batchTask || props.busy === "batch"}>{props.busy === "batch" ? "应用中" : "确认批量分配"}</button></div></section>
+    <section className="supervision-section assignment-workbench"><Heading kicker="ASSIGNMENT QUEUE" title="账号任务队列" note="拖拽排序；支持暂停、追加、减少、转移、优先级与截止时间" /><div className="assignment-layout"><aside className="operator-list"><header><Users size={15} /><strong>标注员</strong><span>{props.operators.length}</span></header>{props.operators.map((user) => <button key={user.username} className={props.selectedUser?.username === user.username ? "active" : ""} type="button" onClick={() => props.setSelectedOperator(user.username)}><span><strong>{user.displayName}</strong><small>@{user.username}</small></span><b>{props.drafts[user.username]?.length ?? 0}</b></button>)}</aside><div className="assignment-task-picker">{props.selectedUser ? <><header className="assignment-picker-header"><div><strong>{props.selectedUser.displayName} 的队列</strong><span>剩余 {props.selectedUser.remainingTasks} 条 · 预计 {formatTime(props.selectedUser.estimatedCompletionAtMs)}</span></div><button className="button button-primary" type="button" onClick={() => void props.saveAssignment(props.selectedUser!.username)} disabled={props.busy === `save:${props.selectedUser.username}`}>保存队列</button></header><div className="assignment-toolbar"><label><Search size={14} /><input value={props.taskSearch} onChange={(event) => props.setTaskSearch(event.target.value)} placeholder="搜索任务" /></label></div><div className="assignment-plan-list">{props.selectedPlans.map((plan) => { const transferKey = `${props.selectedUser!.username}:${plan.task}`; return <div key={plan.task} className={`assignment-plan-row priority-${plan.priority}${plan.status === "paused" ? " paused" : ""}`} draggable onDragStart={() => props.setDraggedTask(plan.task)} onDragOver={(event) => event.preventDefault()} onDrop={() => props.reorderPlan(props.selectedUser!.username, plan.task)}><GripVertical size={16} /><div><strong>{plan.task}</strong><small>区间 {plan.startIndex + 1}–{plan.startIndex + plan.quantity}</small></div><label>数量<input type="number" min={1} max={taskMaximum(plan.task, props.taskCatalog) ?? 1_000_000} value={plan.quantity} onChange={(event) => props.updatePlan(props.selectedUser!.username, plan.task, { quantity: Math.max(1, Number(event.target.value) || 1) })} /></label><label>优先级<select value={plan.priority} onChange={(event) => props.updatePlan(props.selectedUser!.username, plan.task, { priority: event.target.value as AssignmentPriority })}><option value="normal">普通</option><option value="urgent">紧急</option><option value="rework">返工</option></select></label><label>截止<input type="datetime-local" value={dateTimeInput(plan.deadlineAtMs)} onChange={(event) => props.updatePlan(props.selectedUser!.username, plan.task, { deadlineAtMs: event.target.value ? new Date(event.target.value).getTime() : null })} /></label><div className="assignment-transfer"><select value={props.transferTargets[transferKey] ?? ""} onChange={(event) => props.setTransferTargets({ ...props.transferTargets, [transferKey]: event.target.value })}><option value="">转移给…</option>{props.operators.filter((user) => user.username !== props.selectedUser!.username).map((user) => <option key={user.username} value={user.username}>{user.displayName}</option>)}</select><button type="button" onClick={() => void props.transferTask(props.selectedUser!.username, plan.task)} disabled={!props.transferTargets[transferKey] || props.busy === `transfer:${transferKey}`}>转移</button></div><button className="icon-button" type="button" onClick={() => props.updatePlan(props.selectedUser!.username, plan.task, { status: plan.status === "active" ? "paused" : "active" })}>{plan.status === "active" ? <PauseCircle size={17} /> : <PlayCircle size={17} />}</button><button className="icon-button" type="button" onClick={() => props.toggleTask(props.selectedUser!.username, plan.task)}><X size={16} /></button></div>; })}</div><div className="assignment-task-grid compact">{filtered.filter((task) => !props.selectedPlans.some((plan) => plan.task.toLowerCase() === task.toLowerCase())).map((task) => <button key={task} className="assignment-add-card" type="button" onClick={() => props.toggleTask(props.selectedUser!.username, task)}><strong>{task}</strong><small>{taskMaximum(task, props.taskCatalog) ? `可用 ${taskMaximum(task, props.taskCatalog)} 条` : "来自任务 JSON"}</small><CheckCircle2 size={16} /></button>)}</div></> : <div className="cockpit-empty">暂无标注员</div>}</div></div></section>
+    <section className="supervision-section"><Heading kicker="ASSIGNED RANGES" title="当前已分配区间" note="同一任务的区间由用户中心串行计算，避免重复分配" /><div className="supervision-table-wrap"><table><thead><tr><th>账号</th><th>任务</th><th>区间</th><th>数量</th><th>优先级</th><th>截止</th><th>状态</th></tr></thead><tbody>{props.operators.flatMap((user) => user.assignmentPlans.map((plan) => <tr key={`${user.username}-${plan.task}`}><td>@{user.username}</td><td>{plan.task}</td><td>{plan.startIndex + 1}–{plan.startIndex + plan.quantity}</td><td>{plan.quantity}</td><td>{priorityLabel(plan.priority)}</td><td>{formatTime(plan.deadlineAtMs)}</td><td>{plan.status === "paused" ? "已暂停" : "进行中"}</td></tr>))}</tbody></table></div></section>
+  </>;
+}
+
+function Alerts({ data, notes, setNotes, busy, handle, adjust }: { data: SupervisionDashboardData; notes: Record<string, string>; setNotes: (value: Record<string, string>) => void; busy: string; handle: (id: string, status: OperationsAlertStatus) => Promise<void>; adjust: (username: string) => void }) {
+  return <section className="supervision-section alert-center"><Heading kicker="EXCEPTION CENTER" title="异常与进度预警" note="支持确认、备注、转派和关闭；可能停滞不等于异常" />{data.alerts.length ? <div className="alert-list">{data.alerts.map((alert) => <article key={alert.alertId} className={`alert-card severity-${alert.severity} status-${alert.status}`}><header>{alert.type === "duplicate_assignment" ? <AlertTriangle size={18} /> : <TimerReset size={18} />}<div><strong>{alert.message}</strong><small>{formatTime(alert.detectedAtMs)} · @{alert.username || "—"}</small></div><span>{alert.status === "open" ? "待处理" : alert.status === "acknowledged" ? "已确认" : "已关闭"}</span></header><textarea value={notes[alert.alertId] ?? alert.note} onChange={(event) => setNotes({ ...notes, [alert.alertId]: event.target.value })} maxLength={500} placeholder="填写确认情况（不要填写源路径或原始数据）" /><footer><button type="button" onClick={() => adjust(alert.username)}>转派 / 调整</button><button type="button" onClick={() => void handle(alert.alertId, "acknowledged")} disabled={busy === `alert:${alert.alertId}`}>确认并备注</button><button type="button" onClick={() => void handle(alert.alertId, "closed")} disabled={busy === `alert:${alert.alertId}`}>关闭</button></footer></article>)}</div> : <div className="cockpit-empty"><CheckCircle2 size={24} /><strong>当前没有运营预警</strong></div>}</section>;
+}
+
+function Quality({ data, annotations, review, setReview, importAnnotations, busy, saveReview }: { data: SupervisionDashboardData; annotations: SupervisionAnnotationCatalog | null; review: QualityReviewRequest; setReview: (value: QualityReviewRequest) => void; importAnnotations: () => Promise<void>; busy: string; saveReview: () => Promise<void> }) {
+  const passed = data.qualityReviews.filter((item) => item.outcome === "passed").length;
+  const rework = data.qualityReviews.length - passed;
+  return <><section className="cockpit-kpis quality-kpis"><Metric icon={<CheckCircle2 />} label="复核总数" value={data.qualityReviews.length} hint="独立复核" /><Metric icon={<ClipboardCheck />} label="首次通过率" value={`${data.qualityReviews.length ? Math.round(passed / data.qualityReviews.length * 100) : 0}%`} hint={`${passed} 条通过`} /><Metric icon={<AlertTriangle />} label="返工率" value={`${data.qualityReviews.length ? Math.round(rework / data.qualityReviews.length * 100) : 0}%`} hint={`${rework} 条返工`} /></section><div className="cockpit-grid quality-layout"><section className="supervision-section"><Heading kicker="REVIEW SAMPLE" title="已完成轨迹抽检" note="候选来自本机标注 JSON" /><button className="button button-secondary" type="button" onClick={() => void importAnnotations()}><FileJson size={15} />导入标注 JSON</button><div className="quality-samples">{annotations?.users.flatMap((user) => user.entries.map((entry) => <button type="button" key={`${user.username}-${entry.trajectoryCode}`} onClick={() => setReview({ ...review, taskId: entry.taskId, trajectoryCode: entry.trajectoryCode })}><span><strong>{entry.trajectoryCode}</strong><small>{user.displayName} · {entry.taskId} · {entry.segmentCount} 段 · {entry.annotatedFrameCount} 帧</small></span><ClipboardCheck size={15} /></button>)) ?? <span>导入后可选择具体轨迹复核</span>}</div></section><section className="supervision-section review-form"><Heading kicker="INDEPENDENT REVIEW" title="保存复核结果" note="复核人固定为当前监管账号，标注员不能自评" /><label>任务<input value={review.taskId} onChange={(event) => setReview({ ...review, taskId: event.target.value })} /></label><label>轨迹码<input value={review.trajectoryCode} onChange={(event) => setReview({ ...review, trajectoryCode: event.target.value })} /></label><label>结果<select value={review.outcome} onChange={(event) => setReview({ ...review, outcome: event.target.value as "passed" | "rework" })}><option value="passed">通过</option><option value="rework">需要返工</option></select></label><label>错误类型<input value={review.errorType} onChange={(event) => setReview({ ...review, errorType: event.target.value })} placeholder="片段边界、漏标等" /></label><label>复核意见<textarea value={review.note} onChange={(event) => setReview({ ...review, note: event.target.value })} maxLength={1000} /></label><button className="button button-primary" type="button" onClick={() => void saveReview()} disabled={busy === "review" || !review.taskId || !review.trajectoryCode}>保存独立复核</button></section></div><section className="supervision-section"><Heading kicker="REVIEW HISTORY" title="复核与返工历史" /><div className="supervision-table-wrap"><table><thead><tr><th>时间</th><th>任务</th><th>轨迹码</th><th>结果</th><th>错误类型</th><th>复核人</th><th>意见</th></tr></thead><tbody>{data.qualityReviews.map((item) => <tr key={item.reviewId}><td>{formatTime(item.reviewedAtMs)}</td><td>{item.taskId}</td><td><code>{item.trajectoryCode}</code></td><td>{item.outcome === "passed" ? "通过" : "返工"}</td><td>{item.errorType || "—"}</td><td>@{item.reviewer}</td><td>{item.note || "—"}</td></tr>)}</tbody></table></div></section></>;
+}
+
+function Reports({ data, annotations, json, csv, print }: { data: SupervisionDashboardData; annotations: SupervisionAnnotationCatalog | null; json: () => void; csv: () => void; print: () => void }) {
+  const local = annotationTotals(annotations);
+  return <><section className="report-actions"><button type="button" onClick={json}><FileJson size={22} /><strong>导出 JSON</strong><span>结构化日报、周报与任务统计</span></button><button type="button" onClick={csv}><Download size={22} /><strong>导出 CSV</strong><span>账号效率与进度明细</span></button><button type="button" onClick={print}><ClipboardCheck size={22} /><strong>打印 HTML</strong><span>可打印的运营日报</span></button></section><section className="supervision-section report-preview"><Heading kicker="DAILY REPORT" title="今日日报预览" note={dateKey(data.generatedAtMs)} /><div className="report-summary"><span>今日分配<strong>{data.overview.assigned}</strong></span><span>今日完成<strong>{data.overview.completedToday}</strong></span><span>今日剩余<strong>{data.overview.remaining}</strong></span><span>异常数量<strong>{data.alerts.filter((item) => item.status !== "closed").length}</strong></span><span>episode<strong>{local.episodes || data.overview.totalCompleted}</strong></span><span>平均耗时<strong>{formatDuration(weightedAverage(data.users))}</strong></span></div><div className="weekly-preview">{data.dailyTrend.map((item) => <span key={item.date}><small>{item.date.slice(5)}</small><strong>{item.completed}</strong></span>)}</div><p>报表不包含源路径、图像、状态、片段内容、原始数据或 hash。</p></section></>;
+}
+
+function Heading({ kicker, title, note }: { kicker: string; title: string; note?: string }) { return <div className="supervision-section-heading"><div><span className="section-kicker">{kicker}</span><h2>{title}</h2></div>{note ? <small>{note}</small> : null}</div>; }
+function Metric({ icon, label, value, hint }: { icon: ReactNode; label: string; value: string | number; hint: string }) { return <div>{icon}<span>{label}</span><strong>{typeof value === "number" ? formatCount(value) : value}</strong><small>{hint}</small></div>; }
+function plansFor(user: SupervisionUserSummary): AssignmentPlan[] { return user.assignmentPlans.length ? user.assignmentPlans.map((plan, order) => ({ ...plan, order })) : Object.entries(user.assignedTaskQuantities).map(([task, quantity], order) => ({ task, quantity, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "active", order })); }
+function annotationTotals(catalog: SupervisionAnnotationCatalog | null) { return (catalog?.users ?? []).reduce((sum, user) => ({ episodes: sum.episodes + user.trajectoryCount, segments: sum.segments + user.segmentCount, frames: sum.frames + user.annotatedFrameCount }), { episodes: 0, segments: 0, frames: 0 }); }
+function localTask(catalog: SupervisionAnnotationCatalog | null, task: string) { const rows = (catalog?.users ?? []).flatMap((user) => user.tasks).filter((row) => row.taskId.toLowerCase() === task.toLowerCase()); return rows.length ? rows.reduce((sum, row) => ({ episodes: sum.episodes + row.trajectoryCount, segments: sum.segments + row.segmentCount, frames: sum.frames + row.annotatedFrameCount }), { episodes: 0, segments: 0, frames: 0 }) : null; }
+function taskMaximum(task: string, catalog: SupervisionTaskCatalog | null) { return catalog?.tasks.find((row) => row.task.toLowerCase() === task.toLowerCase())?.total ?? null; }
+function message(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
+function signed(value: number) { return `${value >= 0 ? "+" : ""}${value}`; }
+function priorityLabel(value: AssignmentPriority) { return value === "urgent" ? "紧急" : value === "rework" ? "返工" : "普通"; }
+function formatCount(value: number) { return new Intl.NumberFormat("zh-CN").format(value); }
+function formatDuration(value: number | null) { if (value === null) return "—"; const seconds = Math.max(0, Math.round(value / 1000)); const hours = Math.floor(seconds / 3600); const minutes = Math.floor((seconds % 3600) / 60); return hours ? `${hours}时${minutes}分` : minutes ? `${minutes}分${seconds % 60}秒` : `${seconds}秒`; }
+function formatTime(value: number | null) { return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—"; }
+function dateKey(value: number) { return new Date(value).toLocaleDateString("sv-SE"); }
+function dateTimeInput(value: number | null) { if (!value) return ""; return new Date(value - new Date(value).getTimezoneOffset() * 60_000).toISOString().slice(0, 16); }
+function weightedAverage(users: SupervisionUserSummary[]) { const rows = users.filter((user) => user.averageCompletionMs !== null && user.totalCompleted); const total = rows.reduce((sum, user) => sum + user.totalCompleted, 0); return total ? Math.round(rows.reduce((sum, user) => sum + (user.averageCompletionMs ?? 0) * user.totalCompleted, 0) / total) : null; }
+
+function safeReport(data: SupervisionDashboardData, annotations: SupervisionAnnotationCatalog | null) {
+  return { schemaVersion: 1, generatedAtMs: data.generatedAtMs, overview: data.overview, localAnnotationTotals: annotationTotals(annotations), hourlyTrend: data.hourlyTrend, weeklyTrend: data.dailyTrend, tasks: data.taskSummaries, users: data.users.map((user) => ({ username: user.username, displayName: user.displayName, assignedTasks: user.assignedTasks, completedToday: user.completedToday, totalCompleted: user.totalCompleted, remainingTasks: user.remainingTasks, averageCompletionMs: user.averageCompletionMs, completionRatePerHour: user.completionRatePerHour, lastActivityAtMs: user.lastActivityAtMs, possibleStagnation: user.possibleStagnation })), alertSummary: { open: data.alerts.filter((item) => item.status === "open").length, acknowledged: data.alerts.filter((item) => item.status === "acknowledged").length, closed: data.alerts.filter((item) => item.status === "closed").length }, quality: { reviews: data.qualityReviews.length, passed: data.qualityReviews.filter((item) => item.outcome === "passed").length, rework: data.qualityReviews.filter((item) => item.outcome === "rework").length }, privacy: "No source paths, images, states, segment content, raw data, reports, or hashes are included." };
+}
+function reportCsv(data: SupervisionDashboardData) { const lines: (string | number | null)[][] = [["账号", "显示名称", "已分配", "今日完成", "累计完成", "剩余", "平均耗时毫秒", "每小时完成", "最近活跃", "可能停滞"], ...data.users.filter((user) => user.role === "operator").map((user) => [user.username, user.displayName, user.assignedTasks, user.completedToday, user.totalCompleted, user.remainingTasks, user.averageCompletionMs, user.completionRatePerHour, user.lastActivityAtMs, user.possibleStagnation ? "是" : "否"])]; return `\uFEFF${lines.map((line) => line.map(csvCell).join(",")).join("\r\n")}\r\n`; }
+function downloadText(filename: string, content: string, type: string) { const url = URL.createObjectURL(new Blob([content], { type: `${type};charset=utf-8` })); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url); }
+function printReport(data: SupervisionDashboardData) { const popup = window.open("", "_blank", "noopener,noreferrer"); if (!popup) return; const rows = data.users.filter((user) => user.role === "operator").map((user) => `<tr><td>${escapeHtml(user.displayName)} (@${escapeHtml(user.username)})</td><td>${user.assignedTasks}</td><td>${user.completedToday}</td><td>${user.totalCompleted}</td><td>${user.remainingTasks}</td><td>${escapeHtml(formatDuration(user.averageCompletionMs))}</td><td>${user.possibleStagnation ? "可能停滞" : "正常"}</td></tr>`).join(""); popup.document.write(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>DOHC 运营日报</title><style>body{font:14px system-ui;padding:32px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #bbb;text-align:left}</style><h1>任务运营日报</h1><p>${escapeHtml(formatTime(data.generatedAtMs))}</p><h2>今日完成 ${data.overview.completedToday} · 累计 ${data.overview.totalCompleted} · 剩余 ${data.overview.remaining}</h2><table><thead><tr><th>账号</th><th>分配</th><th>今日</th><th>累计</th><th>剩余</th><th>平均耗时</th><th>状态</th></tr></thead><tbody>${rows}</tbody></table><p>不包含源路径、图像、状态、片段内容或原始数据。</p></html>`); popup.document.close(); popup.focus(); popup.print(); }
+function escapeHtml(value: string) { return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character); }
