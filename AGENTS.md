@@ -15,7 +15,7 @@
 9. 正式输出必须先写 partial 路径，成功后再原子 rename；不得覆盖已有输出。
 10. 私有原始数据、构建产物、FFmpeg 二进制和签名凭据不得提交到 Git。
 11. 时间裁剪只允许单条轨迹的一个连续闭区间；不得修改采集文件，保存标注时只可刷新 `description.json`，三个 adapter 必须使用同一范围。
-12. 所有数据用户必须使用统一管理登录模式；离线身份绕过已停用。账号由当前部署主机上的局域网用户中心统一管理且只能由管理员创建；客户端通过导入配置固定 HTTPS 证书和 service ID，登录成功后只在 Rust 进程内保存当前会话和短期 token。标注保存后必须上传第 2 条定义的幂等白名单审计事件，用于按用户统计任务量、操作次数和耗时；质量评分只能由后续独立检测写入，客户端不得自报。所有数据 command 必须经 `AuthState::require_user()` 门禁，用户中心和更新 command 必须要求已登录用户。
+12. 所有数据用户必须使用统一管理登录模式；离线身份绕过已停用。账号由当前部署主机上的局域网用户中心统一管理：登录页可自助注册且只能创建普通标注员，管理员只能在服务主机初始化或由现有管理员创建；已登录标注员只能修改自己当前的显示名称，稳定账号名和角色不可自助修改。客户端通过导入配置固定 HTTPS 证书和 service ID，登录成功后只在 Rust 进程内保存当前会话和短期 token。标注保存后必须上传第 2 条定义的幂等白名单审计事件，用于按用户统计任务量、操作次数和耗时；质量评分只能由后续独立检测写入，客户端不得自报。所有数据 command 必须经 `AuthState::require_user()` 门禁，用户中心和更新 command 必须要求已登录用户。
 13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 Ubuntu 22.04+ x86_64 原生 deb 三个可安装产物；不再构建或发布 macOS x64。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 14. 自 `v0.17.6` 之后，仓库实际默认分支 `main`（口头所称 `master`）不得保留没有对应版本 tag 的独立提交。每个进入 `main` 的 commit 都必须是完整的发布提交：同一 commit 包含全部代码/文档变更、四处一致且唯一的新 semver，以及带日期的 Changelog；CI 成功后必须由发布 workflow 创建精确指向该 commit 的 annotated `vX.Y.Z` tag。禁止先推功能、修复、文档、CI 或配置 commit，再另推 version/release commit；除自动 tag 尚在运行的短暂 pending 状态外，`main` 必须保持一 commit 对应一 tag。
 15. Codex 和其他自动化 agent 在没有收到开发负责人明确版本指令时，只能把当前 semver 的 patch 位连续增加 1（即 `+0.0.1`），不得跳号，也不得根据改动规模自行提升 minor 或 major。minor（例如 `0.17.x -> 0.18.0`）及 major 版本只能按开发负责人明确指定的版本更新；提升 minor 或 major 时 patch 归零。
@@ -37,7 +37,7 @@ DOHC_Viewer/
   src/                           React/TypeScript UI
     App.tsx                      顶层工作流和视图状态
     components/                  回放、检查、进度和导出组件
-      AuthScreen.tsx             工作模式选择、用户中心配置导入和登录
+      AuthScreen.tsx             工作模式选择、用户中心配置导入、标注员注册和登录
       AnnotationPanel.tsx        episode 任务、描述、轨迹码和处理人
       SkeletonViewer.tsx         可选 SMPL/骨架 Three.js 三维回放
     lib/backend.ts               所有 Tauri IPC/browser demo 适配
@@ -117,7 +117,7 @@ React component
 - macOS AppleDouble `._*` 和 `.DS_Store` 是平台元数据，不属于采集数据；扫描、统计、指纹、校验和显式导入必须统一忽略且不得删除源文件。其他无法映射为非负十进制帧号的 JPEG 仍是 `INVALID_FRAME_FILENAME` error。
 - 根级 `description.json` 是应用管理的 episode metadata，不参与采集统计、健康检查或数据指纹；其 partial 必须被扫描、指纹和导入忽略，正式文件随显式导入复制并验证。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
-- 未登录时只允许读取/选择登录模式、用户中心状态、配置导入、登录和退出 commands，账号创建只能在用户中心管理员页面完成。扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁；前端隐藏工作区不能替代后端门禁。
+- 未登录时只允许读取/选择登录模式、用户中心状态、配置导入、普通标注员注册、登录和退出 commands；自助注册不得接受角色字段或创建管理员，管理员创建仍只能在用户中心管理员页面完成。已登录标注员的个人资料接口只接受显示名称，不得修改账号名、角色、密码或其他账号。扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁；前端隐藏工作区不能替代后端门禁。
 - 内置任务和用户创建任务的校验、持久化与自动编号逻辑以 `src-tauri/src/annotations.rs` 为唯一真源。新任务只接收名称，由 Rust 生成稳定 task ID/轨迹前缀；前端不得提交或指定轨迹编号。
 - 批量导出清单只能由 `src-tauri/src/annotations.rs` 回读本机最新标注；批量 IPC 只接受 episode ID、目标目录和格式，必须在 Rust 中重新解析标注、核对规范化源路径与指纹、生成可信检查缓存后再调用 adapter。不得接受前端提交的源路径、标注对象或检查状态作为授权。
 - Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。其工作模式、账号、用户任务和标注只保存在当前页面进程内，刷新后重置；离线演示不得渲染账号/处理人或发起用户中心请求。交互抽检基线是报告 format v5、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]`、30 FPS 帧率与稳定度统计和非空 `autoReportPath`。它不能被当作账号安全、后端门禁或数据验收。

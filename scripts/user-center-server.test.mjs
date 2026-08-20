@@ -52,7 +52,7 @@ function requestHeaders(port, ca, pathname) {
   });
 }
 
-test("user center only allows administrator-created accounts", async () => {
+test("user center supports operator self-registration and administrator account management", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dohc-user-center-test-"));
   const port = 17981;
   let service;
@@ -72,7 +72,11 @@ test("user center only allows administrator-created accounts", async () => {
     const health = await request(port, ca, "GET", "/healthz");
     assert.equal(health.status, 200);
     assert.equal(health.body.setupRequired, true);
-    assert.deepEqual(health.body.capabilities, ["structuredTaskAssignmentsV1"]);
+    assert.deepEqual(health.body.capabilities, [
+      "structuredTaskAssignmentsV1",
+      "operatorSelfRegistrationV1",
+      "operatorProfileV1",
+    ]);
     const pageHeaders = await requestHeaders(port, ca, "/");
     assert.match(pageHeaders["content-security-policy"], /(?:^|;)\s*connect-src 'self'(?:;|$)/);
     const supervisionHeaders = await requestHeaders(port, ca, "/supervision");
@@ -89,6 +93,68 @@ test("user center only allows administrator-created accounts", async () => {
     });
     assert.equal(login.status, 200);
     assert.equal(login.body.user.role, "admin");
+    const selfRegistered = await request(port, ca, "POST", "/api/v1/auth/register", {
+      username: "selfoperator",
+      displayName: "自助标注员",
+      password: "self-operator-password",
+    });
+    assert.equal(selfRegistered.status, 201);
+    assert.equal(selfRegistered.body.user.role, "operator");
+    const secondSelfSession = await request(port, ca, "POST", "/api/v1/auth/login", {
+      username: "selfoperator",
+      password: "self-operator-password",
+    });
+    const updatedProfile = await request(port, ca, "PUT", "/api/v1/auth/profile", {
+      displayName: "流动员工姓名",
+    }, selfRegistered.body.token);
+    assert.equal(updatedProfile.status, 200);
+    assert.equal(updatedProfile.body.user.displayName, "流动员工姓名");
+    const synchronizedSession = await request(port, ca, "GET", "/api/v1/auth/me", null, secondSelfSession.body.token);
+    assert.equal(synchronizedSession.body.user.displayName, "流动员工姓名");
+    const profileFieldInjection = await request(port, ca, "PUT", "/api/v1/auth/profile", {
+      displayName: "禁止修改账号",
+      username: "supervisor",
+    }, selfRegistered.body.token);
+    assert.equal(profileFieldInjection.status, 400);
+    const adminProfileDenied = await request(port, ca, "PUT", "/api/v1/auth/profile", {
+      displayName: "管理员改名",
+    }, login.body.token);
+    assert.equal(adminProfileDenied.status, 403);
+    const selfAssigned = await request(port, ca, "GET", "/api/v1/tasks/assigned", null, selfRegistered.body.token);
+    assert.deepEqual(selfAssigned.body.tasks, []);
+    const roleInjection = await request(port, ca, "POST", "/api/v1/auth/register", {
+      username: "forbiddenadmin",
+      displayName: "禁止管理员",
+      password: "forbidden-admin-password",
+      role: "admin",
+    });
+    assert.equal(roleInjection.status, 400);
+    const duplicateRegistration = await request(port, ca, "POST", "/api/v1/auth/register", {
+      username: "selfoperator",
+      displayName: "重复账号",
+      password: "self-operator-password",
+    });
+    assert.equal(duplicateRegistration.status, 409);
+    const concurrentUsernames = Array.from({ length: 10 }, (_, index) => `concurrent${index}`);
+    const concurrentRegistrations = await Promise.all(concurrentUsernames.map((username) => request(
+      port,
+      ca,
+      "POST",
+      "/api/v1/auth/register",
+      { username, displayName: username, password: "concurrent-password" },
+    )));
+    assert.deepEqual(concurrentRegistrations.map((result) => result.status), Array(10).fill(201));
+    const accountsAfterRegistration = await request(port, ca, "GET", "/api/v1/admin/users", null, login.body.token);
+    assert.ok(accountsAfterRegistration.body.users.some((user) => (
+      user.username === "selfoperator" && user.displayName === "流动员工姓名"
+    )));
+    assert.deepEqual(
+      accountsAfterRegistration.body.users
+        .map((user) => user.username)
+        .filter((username) => username.startsWith("concurrent"))
+        .sort(),
+      concurrentUsernames,
+    );
     const created = await request(port, ca, "POST", "/api/v1/admin/users", {
       username: "operator",
       displayName: "操作员",

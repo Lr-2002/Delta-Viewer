@@ -29,10 +29,10 @@ use model::{
     BatchExportCommandRequest, BatchExportResult, CreateTaskRequest, EpisodeAnnotation,
     EpisodeData, EpisodeValidationResult, ExportCommandRequest, ExportResult, FramePayload,
     ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
-    ProgressPayload, RecordOperationErrorRequest, ReportExportResult, SaveAnnotationRequest,
-    ScanResult, SupervisionAccount, SupervisionAnnotationCatalog, SupervisionDashboardData,
-    SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition, UserCenterStatus, UserIdentity,
-    VideoSource, WorkspaceMode,
+    ProgressPayload, RecordOperationErrorRequest, RegisterRequest, ReportExportResult,
+    SaveAnnotationRequest, ScanResult, SupervisionAccount, SupervisionAnnotationCatalog,
+    SupervisionDashboardData, SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition,
+    UpdateDisplayNameRequest, UserCenterStatus, UserIdentity, VideoSource, WorkspaceMode,
 };
 use source_index_cache::SourceIndexCache;
 use std::path::{Path, PathBuf};
@@ -245,6 +245,32 @@ async fn login_account(
     let data_root = app_data_root(&app)?;
     let auth = auth.inner().clone();
     user_center::login(&data_root, &auth, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn register_account(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    request: RegisterRequest,
+) -> Result<UserIdentity, String> {
+    let data_root = app_data_root(&app)?;
+    let auth = auth.inner().clone();
+    user_center::register(&data_root, &auth, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn update_current_display_name(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    request: UpdateDisplayNameRequest,
+) -> Result<UserIdentity, String> {
+    let data_root = app_data_root(&app)?;
+    let auth = auth.inner().clone();
+    user_center::update_display_name(&data_root, &auth, request)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1075,6 +1101,8 @@ pub fn run() {
             install_app_update,
             configure_user_center,
             login_account,
+            register_account,
+            update_current_display_name,
             logout_account,
             record_annotation_audit,
             get_supervision_dashboard,

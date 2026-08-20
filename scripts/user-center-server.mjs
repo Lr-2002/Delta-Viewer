@@ -23,6 +23,8 @@ const DEFAULT_DATA_ROOT = path.join(homedir(), "Library/Application Support/DOHC
 const CLIENT_CONFIG_SCHEMA_VERSION = 1;
 const DATA_SCHEMA_VERSION = 1;
 const STRUCTURED_ASSIGNMENTS_CAPABILITY = "structuredTaskAssignmentsV1";
+const OPERATOR_SELF_REGISTRATION_CAPABILITY = "operatorSelfRegistrationV1";
+const OPERATOR_PROFILE_CAPABILITY = "operatorProfileV1";
 const MAX_JSON_BYTES = 16 * 1024;
 const MAX_USERS = 10_000;
 const MAX_AUDIT_EVENTS = 200_000;
@@ -550,9 +552,17 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
   const initialized = await initializeUserCenter(configuration, dataRoot);
   const sessions = new Map();
   const attempts = new Map();
+  const registrations = new Map();
+  let stateMutationTail = Promise.resolve();
 
   async function writeState(state) {
     await writePrivateAtomic(statePath(dataRoot), state);
+  }
+
+  async function serializeStateMutation(operation) {
+    const mutation = stateMutationTail.then(operation, operation);
+    stateMutationTail = mutation.then(() => undefined, () => undefined);
+    return mutation;
   }
 
   function authorize(request, requireAdmin = false) {
@@ -575,6 +585,15 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
     attempts.set(key, { count: (current?.untilMs > nowMs() ? current.count : 0) + 1, untilMs: windowStart });
   }
 
+  function recordRegistrationAttempt(request) {
+    const key = request.socket.remoteAddress ?? "unknown";
+    const current = registrations.get(key);
+    const windowEnd = current?.untilMs > nowMs() ? current.untilMs : nowMs() + 60 * 60_000;
+    const count = current?.untilMs > nowMs() ? current.count + 1 : 1;
+    registrations.set(key, { count, untilMs: windowEnd });
+    return count <= 20;
+  }
+
   async function handler(request, response) {
     try {
       const url = new URL(request.url, configuration.publicBaseUrl);
@@ -584,7 +603,11 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           status: "ready",
           serviceId: state.serviceId,
           setupRequired: state.users.length === 0,
-          capabilities: [STRUCTURED_ASSIGNMENTS_CAPABILITY],
+          capabilities: [
+            STRUCTURED_ASSIGNMENTS_CAPABILITY,
+            OPERATOR_SELF_REGISTRATION_CAPABILITY,
+            OPERATOR_PROFILE_CAPABILITY,
+          ],
         });
       }
       if (request.method === "GET" && url.pathname === "/client-config") {
@@ -603,19 +626,21 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       }
       if (request.method === "POST" && url.pathname === "/api/v1/setup") {
         if (!isLoopback(request)) return sendJson(response, 403, { error: "首次管理员初始化只能在服务主机本机完成" });
-        const state = await readState(dataRoot);
-        if (state.users.length !== 0) return sendJson(response, 409, { error: "INITIAL_ADMIN_ALREADY_EXISTS" });
         const body = await parseJsonBody(request);
-        const user = {
-          username: normalizeUsername(body.username),
-          displayName: normalizeDisplayName(body.displayName),
-          role: "admin",
-          password: passwordRecord(requirePassword(body.password)),
-          createdAtMs: nowMs(),
-        };
-        state.users.push(user);
-        await writeState(state);
-        return sendJson(response, 201, { user: publicUser(user) });
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          if (state.users.length !== 0) return sendJson(response, 409, { error: "INITIAL_ADMIN_ALREADY_EXISTS" });
+          const user = {
+            username: normalizeUsername(body.username),
+            displayName: normalizeDisplayName(body.displayName),
+            role: "admin",
+            password: passwordRecord(requirePassword(body.password)),
+            createdAtMs: nowMs(),
+          };
+          state.users.push(user);
+          await writeState(state);
+          return sendJson(response, 201, { user: publicUser(user) });
+        });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/auth/login") {
         if (!canAttempt(request)) return sendJson(response, 429, { error: "AUTH_RATE_LIMITED: 请稍后再试" });
@@ -631,6 +656,71 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const token = randomBytes(32).toString("base64url");
         sessions.set(token, { user: publicUser(user), expiresAtMs: nowMs() + configuration.sessionTtlSeconds * 1000 });
         return sendJson(response, 200, { token, user: publicUser(user), expiresAtMs: sessions.get(token).expiresAtMs });
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/auth/register") {
+        if (!recordRegistrationAttempt(request)) {
+          return sendJson(response, 429, { error: "REGISTRATION_RATE_LIMITED: 注册操作过于频繁，请稍后再试" });
+        }
+        const body = await parseJsonBody(request);
+        if (body.role !== undefined) {
+          return sendJson(response, 400, { error: "REGISTRATION_ROLE_FORBIDDEN: 自助注册只能创建标注员账号" });
+        }
+        const username = normalizeUsername(body.username);
+        const displayName = normalizeDisplayName(body.displayName);
+        const password = requirePassword(body.password);
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          if (state.users.length === 0) {
+            return sendJson(response, 409, { error: "USER_CENTER_SETUP_REQUIRED: 请先由管理员初始化用户中心" });
+          }
+          if (state.users.length >= MAX_USERS) {
+            return sendJson(response, 409, { error: "USER_LIMIT_EXCEEDED" });
+          }
+          if (state.users.some((candidate) => candidate.username === username)) {
+            return sendJson(response, 409, { error: "ACCOUNT_EXISTS: 账号已存在" });
+          }
+          const user = {
+            username,
+            displayName,
+            role: "operator",
+            password: passwordRecord(password),
+            createdAtMs: nowMs(),
+            createdBy: "self-registration",
+          };
+          state.users.push(user);
+          await writeState(state);
+          const token = randomBytes(32).toString("base64url");
+          const session = { user: publicUser(user), expiresAtMs: nowMs() + configuration.sessionTtlSeconds * 1000 };
+          sessions.set(token, session);
+          return sendJson(response, 201, { token, user: session.user, expiresAtMs: session.expiresAtMs });
+        });
+      }
+      if (request.method === "PUT" && url.pathname === "/api/v1/auth/profile") {
+        const session = authorize(request);
+        if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        if (session.user.role !== "operator") {
+          return sendJson(response, 403, { error: "OPERATOR_REQUIRED: 只有标注员可以修改自己的显示名称" });
+        }
+        const body = await parseJsonBody(request);
+        if (Object.keys(body).some((field) => field !== "displayName")) {
+          return sendJson(response, 400, { error: "PROFILE_FIELD_FORBIDDEN: 只能修改当前账号的显示名称" });
+        }
+        const displayName = normalizeDisplayName(body.displayName);
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          const user = state.users.find((candidate) => candidate.username === session.user.username);
+          if (!user) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND" });
+          if (user.role !== "operator") {
+            return sendJson(response, 409, { error: "OPERATOR_REQUIRED: 只有标注员可以修改自己的显示名称" });
+          }
+          user.displayName = displayName;
+          await writeState(state);
+          const identity = publicUser(user);
+          for (const activeSession of sessions.values()) {
+            if (activeSession.user.username === user.username) activeSession.user = identity;
+          }
+          return sendJson(response, 200, { user: identity });
+        });
       }
       if (request.method === "GET" && url.pathname === "/api/v1/auth/me") {
         const session = authorize(request);
@@ -694,23 +784,27 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const session = authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const body = await parseJsonBody(request);
-        const state = await readState(dataRoot);
-        if (state.users.length >= MAX_USERS) return sendJson(response, 409, { error: "USER_LIMIT_EXCEEDED" });
         const username = normalizeUsername(body.username);
-        if (state.users.some((candidate) => candidate.username === username)) {
-          return sendJson(response, 409, { error: "ACCOUNT_EXISTS: 账号已存在" });
-        }
-        const user = {
-          username,
-          displayName: normalizeDisplayName(body.displayName),
-          role: body.role === "admin" ? "admin" : "operator",
-          password: passwordRecord(requirePassword(body.password)),
-          createdAtMs: nowMs(),
-          createdBy: session.user.username,
-        };
-        state.users.push(user);
-        await writeState(state);
-        return sendJson(response, 201, { user: publicUser(user) });
+        const displayName = normalizeDisplayName(body.displayName);
+        const password = requirePassword(body.password);
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          if (state.users.length >= MAX_USERS) return sendJson(response, 409, { error: "USER_LIMIT_EXCEEDED" });
+          if (state.users.some((candidate) => candidate.username === username)) {
+            return sendJson(response, 409, { error: "ACCOUNT_EXISTS: 账号已存在" });
+          }
+          const user = {
+            username,
+            displayName,
+            role: body.role === "admin" ? "admin" : "operator",
+            password: passwordRecord(password),
+            createdAtMs: nowMs(),
+            createdBy: session.user.username,
+          };
+          state.users.push(user);
+          await writeState(state);
+          return sendJson(response, 201, { user: publicUser(user) });
+        });
       }
       const assignmentMatch = /^\/api\/v1\/admin\/users\/([^/]+)\/assignment$/.exec(url.pathname);
       if (request.method === "PUT" && assignmentMatch) {
@@ -718,7 +812,6 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const username = normalizeUsername(decodeURIComponent(assignmentMatch[1]));
         const body = await parseJsonBody(request);
-        const state = await readState(dataRoot);
         const assignedTaskQuantities = {};
         for (const [rawTask, rawQuantity] of Object.entries(body.assignedTaskQuantities ?? {})) {
           const task = normalizeTaskDetailText(rawTask, "任务名称", 100);
@@ -729,24 +822,6 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           assignedTaskQuantities[task] = quantity;
         }
         const assignedTaskNames = Object.keys(assignedTaskQuantities);
-        const assignedTaskStarts = {};
-        for (const task of assignedTaskNames) {
-          const occupied = state.users
-            .filter((candidate) => candidate.username !== username)
-            .flatMap((candidate) => Object.entries(candidate.assignedTaskQuantities ?? {})
-              .filter(([candidateTask]) => candidateTask.toLowerCase() === task.toLowerCase())
-              .map(([candidateTask, quantity]) => ({
-                start: candidate.assignedTaskStarts?.[candidateTask] ?? 0,
-                end: (candidate.assignedTaskStarts?.[candidateTask] ?? 0) + quantity,
-              })))
-            .sort((left, right) => left.start - right.start);
-          let start = 0;
-          for (const interval of occupied) {
-            if (start + assignedTaskQuantities[task] <= interval.start) break;
-            start = Math.max(start, interval.end);
-          }
-          assignedTaskStarts[task] = start;
-        }
         const assignedTasks = assignedTaskNames.length
           ? Object.values(assignedTaskQuantities).reduce((sum, quantity) => sum + quantity, 0)
           : Number(body.assignedTasks ?? 0);
@@ -754,24 +829,47 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           || assignedTaskNames.length > MAX_TASK_DETAILS) {
           return sendJson(response, 400, { error: "ASSIGNED_TASKS_INVALID: 任务分配参数无效" });
         }
-        const user = state.users.find((candidate) => candidate.username === username);
-        if (!user) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND: 账号不存在" });
-        if (user.role !== "operator") return sendJson(response, 409, { error: "OPERATOR_REQUIRED: 只能给普通账户分配任务" });
-        user.assignedTasks = assignedTasks;
-        user.assignedTaskNames = assignedTaskNames;
-        user.assignedTaskQuantities = assignedTaskQuantities;
-        user.assignedTaskStarts = assignedTaskStarts;
-        await writeState(state);
-        return sendJson(response, 200, { user: publicUser(user) });
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          const assignedTaskStarts = {};
+          for (const task of assignedTaskNames) {
+            const occupied = state.users
+              .filter((candidate) => candidate.username !== username)
+              .flatMap((candidate) => Object.entries(candidate.assignedTaskQuantities ?? {})
+                .filter(([candidateTask]) => candidateTask.toLowerCase() === task.toLowerCase())
+                .map(([candidateTask, quantity]) => ({
+                  start: candidate.assignedTaskStarts?.[candidateTask] ?? 0,
+                  end: (candidate.assignedTaskStarts?.[candidateTask] ?? 0) + quantity,
+                })))
+              .sort((left, right) => left.start - right.start);
+            let start = 0;
+            for (const interval of occupied) {
+              if (start + assignedTaskQuantities[task] <= interval.start) break;
+              start = Math.max(start, interval.end);
+            }
+            assignedTaskStarts[task] = start;
+          }
+          const user = state.users.find((candidate) => candidate.username === username);
+          if (!user) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND: 账号不存在" });
+          if (user.role !== "operator") return sendJson(response, 409, { error: "OPERATOR_REQUIRED: 只能给普通账户分配任务" });
+          user.assignedTasks = assignedTasks;
+          user.assignedTaskNames = assignedTaskNames;
+          user.assignedTaskQuantities = assignedTaskQuantities;
+          user.assignedTaskStarts = assignedTaskStarts;
+          await writeState(state);
+          return sendJson(response, 200, { user: publicUser(user) });
+        });
       }
       if (request.method === "PUT" && url.pathname === "/api/v1/admin/task-details") {
         const session = authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const body = await parseJsonBody(request);
-        const state = await readState(dataRoot);
-        upsertTaskDetails(state, [{ task: body.task, detail: body.detail }], "admin", session.user.username);
-        await writeState(state);
-        return sendJson(response, 200, { taskDetails: state.taskDetails });
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          upsertTaskDetails(state, [{ task: body.task, detail: body.detail }], "admin", session.user.username);
+          await writeState(state);
+          return sendJson(response, 200, { taskDetails: state.taskDetails });
+        });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/task-details/import") {
         const session = authorize(request, true);
@@ -780,10 +878,12 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (!Array.isArray(body.tasks) || !body.tasks.length || body.tasks.length > MAX_TASK_DETAILS) {
           return sendJson(response, 400, { error: "TASK_DETAIL_IMPORT_INVALID: 导入内容无效" });
         }
-        const state = await readState(dataRoot);
-        upsertTaskDetails(state, body.tasks, "imported", session.user.username);
-        await writeState(state);
-        return sendJson(response, 200, { taskDetails: state.taskDetails });
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          upsertTaskDetails(state, body.tasks, "imported", session.user.username);
+          await writeState(state);
+          return sendJson(response, 200, { taskDetails: state.taskDetails });
+        });
       }
       return sendJson(response, 404, { error: "NOT_FOUND" });
     } catch (error) {

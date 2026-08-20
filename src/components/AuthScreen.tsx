@@ -146,7 +146,7 @@ export function AuthScreen({
           <span className="auth-icon"><KeyRound size={20} /></span>
           <div>
             <span className="section-kicker">USER CENTER</span>
-            <h1 id="auth-title">{userCenter.configured ? mode === "login" ? "登录" : "演示账号" : "连接用户中心"}</h1>
+            <h1 id="auth-title">{userCenter.configured ? mode === "login" ? "登录" : "标注员注册" : "连接用户中心"}</h1>
           </div>
         </div>
         {!userCenter.configured ? (
@@ -223,9 +223,9 @@ export function AuthScreen({
             <ArrowLeft size={14} />
             选择工作模式
           </button>
-          {allowDemoRegistration && mode === "login" ? (
-            <button type="button" className="text-button" onClick={() => switchLoginMode("register")}>创建新账号</button>
-          ) : allowDemoRegistration && mode === "register" ? (
+          {userCenter.configured && mode === "login" ? (
+            <button type="button" className="text-button" onClick={() => switchLoginMode("register")}>注册标注员账号</button>
+          ) : userCenter.configured && mode === "register" ? (
             <button type="button" className="text-button" onClick={() => switchLoginMode("login")}>返回登录</button>
           ) : null}
         </div>
