@@ -1,4 +1,9 @@
-import type { SupervisionTaskSummary } from "../types";
+import type { SupervisionTaskSummary, SupervisionUserSummary } from "../types";
+
+export interface AssignmentConflict {
+  task: string;
+  assignees: string[];
+}
 
 export function validateAssignmentSelection(
   quantities: Record<string, number>,
@@ -36,6 +41,28 @@ export function sameAssignmentQuantities(
     .map(([task, quantity]) => [task.toLowerCase(), quantity] as const)
     .sort(([leftTask], [rightTask]) => leftTask.localeCompare(rightTask));
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
+
+export function defaultAssignmentQuantity(
+  task: string,
+  catalogTasks: SupervisionTaskSummary[],
+): number {
+  const summary = catalogTasks.find((item) => item.task.toLowerCase() === task.toLowerCase());
+  return summary && summary.total > 0 ? summary.total : 1;
+}
+
+export function assignmentConflicts(
+  username: string,
+  quantities: Record<string, number>,
+  users: SupervisionUserSummary[],
+): AssignmentConflict[] {
+  return Object.keys(quantities).flatMap((task) => {
+    const assignees = users
+      .filter((user) => user.username !== username
+        && user.assignedTaskNames.some((assigned) => assigned.toLowerCase() === task.toLowerCase()))
+      .map((user) => user.displayName || `@${user.username}`);
+    return assignees.length ? [{ task, assignees }] : [];
+  });
 }
 
 function displayTaskName(task: string): string {

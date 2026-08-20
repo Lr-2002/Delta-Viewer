@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { Check, CheckSquare, ChevronDown, ChevronRight, FileJson, FileUp, FolderOpen, LoaderCircle, LogOut, Pencil, Plus, RefreshCw, Search, ShieldCheck, Square, Users, X } from "lucide-react";
-import { chooseAndScanSupervisionTasks, getSupervisionDashboard, importSupervisionAnnotations, importSupervisionTaskDetails, setSupervisionAssignedTasks, updateSupervisionTaskDetail } from "../lib/backend";
-import { sameAssignmentQuantities, validateAssignmentSelection } from "../lib/supervisionAssignments";
+import { chooseAndScanSupervisionTasks, confirmAction, getSupervisionDashboard, importSupervisionAnnotations, importSupervisionTaskDetails, setSupervisionAssignedTasks, updateSupervisionTaskDetail } from "../lib/backend";
+import { assignmentConflicts, defaultAssignmentQuantity, sameAssignmentQuantities, validateAssignmentSelection } from "../lib/supervisionAssignments";
 import type { SupervisionAnnotationCatalog, SupervisionDashboardData, SupervisionTaskCatalog, UserIdentity } from "../types";
 
 interface SupervisionDashboardProps {
@@ -71,6 +71,20 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
       setAssignmentNotice("");
       return;
     }
+    const conflicts = assignmentConflicts(username, quantities, data?.users ?? []);
+    if (conflicts.length) {
+      const details = conflicts
+        .map((conflict) => `${displayTaskName(conflict.task)}：已分配给 ${conflict.assignees.join("、")}`)
+        .join("\n");
+      const confirmed = await confirmAction(
+        `以下任务已经分配给其他标注员：\n\n${details}\n\n继续后，系统仍会为当前账号保存分配。是否继续？`,
+        "确认重复分配",
+      );
+      if (!confirmed) {
+        setAssignmentNotice("已取消重复任务分配，当前草稿未保存");
+        return;
+      }
+    }
     setSavingUser(username);
     setError("");
     setNotice("");
@@ -103,7 +117,7 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
       const existingKey = Object.keys(selected).find((item) => item.toLowerCase() === task.toLowerCase());
       const next = { ...selected };
       if (existingKey) delete next[existingKey];
-      else next[task] = 1;
+      else next[task] = defaultAssignmentQuantity(task, taskCatalog?.tasks ?? []);
       return {
         ...current,
         [username]: next,
@@ -266,11 +280,11 @@ export function SupervisionDashboard({ currentUser, onLogout }: SupervisionDashb
                     <header className="assignment-picker-header"><div><strong>为 {activeUser.displayName} 分配任务</strong><span>已选择 {Object.keys(selected).length} / {availableTasks.length} 类，共 {quantityTotal(selected)} 个</span></div><button className="button button-primary" type="button" disabled={!dirty || savingUser === activeUser.username} onClick={() => void saveAssignment(activeUser.username)}>{savingUser === activeUser.username ? "保存中" : "保存分配"}</button></header>
                     {assignmentError ? <div className="auth-error assignment-feedback" role="alert">{assignmentError}</div> : null}
                     {assignmentNotice ? <div className="supervision-notice assignment-feedback" role="status"><Check size={15} />{assignmentNotice}</div> : null}
-                    <div className="assignment-toolbar"><label><Search size={14} /><input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="搜索任务名称或详情" /></label><button type="button" onClick={() => selectAllFolderData(activeUser.username, taskCatalog, importedTaskNames)} disabled={!taskCatalog?.tasks.length}>全选当前文件夹</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: Object.fromEntries(filteredTasks.map((task) => [task, current[activeUser.username]?.[task] ?? 1])) })); }}>选择当前结果</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: {} })); }}>清空</button></div>
+                    <div className="assignment-toolbar"><label><Search size={14} /><input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="搜索任务名称或详情" /></label><button type="button" onClick={() => selectAllFolderData(activeUser.username, taskCatalog, importedTaskNames)} disabled={!taskCatalog?.tasks.length}>全选当前文件夹</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: Object.fromEntries(filteredTasks.map((task) => [task, current[activeUser.username]?.[task] ?? defaultAssignmentQuantity(task, taskCatalog?.tasks ?? [])])) })); }}>选择当前结果</button><button type="button" onClick={() => { setAssignmentError(""); setAssignmentNotice(""); setAssignmentDrafts((current) => ({ ...current, [activeUser.username]: {} })); }}>清空</button></div>
                     {filteredTasks.length ? <div className="assignment-task-grid">{filteredTasks.map((task) => {
                       const selectedKey = Object.keys(selected).find((item) => item.toLowerCase() === task.toLowerCase());
                       const checked = selectedKey !== undefined;
-                      const quantity = selectedKey ? selected[selectedKey] : 1;
+                      const quantity = selectedKey ? selected[selectedKey] : defaultAssignmentQuantity(task, taskCatalog?.tasks ?? []);
                       const summary = taskCatalog?.tasks.find((item) => item.task.toLowerCase() === task.toLowerCase());
                       const detail = taskDetail(data, task);
                       const others = operators.filter((user) => user.username !== activeUser.username && user.assignedTaskNames.some((item) => item.toLowerCase() === task.toLowerCase()));

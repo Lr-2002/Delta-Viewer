@@ -137,7 +137,9 @@ export async function registerLocalAccount(
   password: string,
 ): Promise<UserIdentity> {
   if (isTauriRuntime()) {
-    throw new Error("ACCOUNT_ADMIN_MANAGED: 账号只能由用户中心管理员创建");
+    return invoke<UserIdentity>("register_account", {
+      request: { username, displayName, password },
+    });
   }
   requireDemoManagedMode();
   const normalized = username.trim().toLowerCase();
@@ -159,6 +161,26 @@ export async function loginLocalAccount(
   const account = demoAccounts.get(normalized);
   if (!account || account.password !== password) throw new Error("AUTH_INVALID: 账号或密码错误");
   demoCurrentUser = { username: normalized, displayName: account.displayName, role: "operator" };
+  return demoCurrentUser;
+}
+
+export async function updateCurrentDisplayName(displayName: string): Promise<UserIdentity> {
+  if (isTauriRuntime()) {
+    return invoke<UserIdentity>("update_current_display_name", {
+      request: { displayName },
+    });
+  }
+  requireDemoManagedMode();
+  if (!demoCurrentUser || demoCurrentUser.role !== "operator") {
+    throw new Error("OPERATOR_REQUIRED: 只有标注员可以修改自己的显示名称");
+  }
+  const normalized = displayName.trim();
+  if (!normalized || [...normalized].length > 40 || /[\x00-\x1f\x7f]/.test(normalized)) {
+    throw new Error("DISPLAY_NAME_INVALID: 显示名称必须为 1 至 40 个可见字符");
+  }
+  const account = demoAccounts.get(demoCurrentUser.username);
+  if (account) account.displayName = normalized;
+  demoCurrentUser = { ...demoCurrentUser, displayName: normalized };
   return demoCurrentUser;
 }
 

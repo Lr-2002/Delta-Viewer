@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   Activity,
   BookOpenText,
@@ -19,6 +19,7 @@ import {
   Pause,
   Play,
   PackageOpen,
+  Pencil,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
@@ -72,6 +73,7 @@ import {
   scanSource,
   setAssignedSourceRoot,
   selectWorkspaceMode,
+  updateCurrentDisplayName,
   validateEpisode,
 } from "./lib/backend";
 import { formatBytes, shortPath } from "./lib/format";
@@ -97,6 +99,7 @@ import type {
   ScanResult,
   TaskProgress,
   TaskDefinition,
+  UserIdentity,
   ValidationIssue,
   ValidationReport,
   WorkspaceMode,
@@ -168,6 +171,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.53": "支持标注员注册和当前姓名修改；监管分配重复任务时确认，并默认选择任务文件夹全部数量。",
   "0.17.52": "新增个人任务抽屉、按日期标注记录和本机任务路径配置，优化监管全量分配与紧凑任务描述输入。",
   "0.17.51": "修复桌面端与旧用户中心版本不一致时任务分配假成功和普通账号 NOT_FOUND 的问题。",
   "0.17.50": "修复监管模式下 JSON 任务分配无法保存的问题，并在分配区域即时显示保存结果和错误。",
@@ -263,6 +267,7 @@ function App() {
   const [assignedActivityDate, setAssignedActivityDate] = useState(() => localDateInput());
   const [assignedActivityLoading, setAssignedActivityLoading] = useState(false);
   const [personalTaskOpen, setPersonalTaskOpen] = useState(false);
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [assignedEpisodeTasks, setAssignedEpisodeTasks] = useState<Record<string, string>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [annotation, setAnnotation] = useState<EpisodeAnnotation | null>(null);
@@ -984,6 +989,7 @@ function App() {
     setQueuedEpisodeRoot(null);
     setOperationErrors([]);
     setHistoryOpen(false);
+    setProfileEditorOpen(false);
     setCurrentOperationError(false);
     setTasks([]);
     setSelectedTaskId(null);
@@ -1021,6 +1027,12 @@ function App() {
     } catch (reason) {
       await reportFailure("logout", reason);
     }
+  }
+
+  async function saveCurrentDisplayName(displayName: string) {
+    const user = await updateCurrentDisplayName(displayName);
+    setAuthStatus((current) => current ? { ...current, currentUser: user } : current);
+    setProfileEditorOpen(false);
   }
 
   async function chooseWorkspaceMode() {
@@ -1527,10 +1539,24 @@ function App() {
           {isOfflineWorkspace ? <span className="workspace-mode-indicator">离线模式</span> : null}
           {isManagedWorkspace && currentUser ? (
             <>
-              <div className="account-summary" title={`@${currentUser.username}`}>
-                <UserRound size={16} />
-                <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
-              </div>
+              {currentUser.role === "operator" ? (
+                <button
+                  className="account-summary account-summary-button"
+                  type="button"
+                  onClick={() => setProfileEditorOpen(true)}
+                  title="修改当前显示名称"
+                  aria-label={`修改当前显示名称，当前为 ${currentUser.displayName}`}
+                >
+                  <UserRound size={16} />
+                  <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
+                  <Pencil className="account-edit-mark" size={12} />
+                </button>
+              ) : (
+                <div className="account-summary" title={`@${currentUser.username}`}>
+                  <UserRound size={16} />
+                  <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
+                </div>
+              )}
               {currentUser.role === "operator" ? (
                 <button className="icon-button personal-task-trigger" type="button" onClick={() => setPersonalTaskOpen((open) => !open)} title="查看个人任务详情" aria-label="查看个人任务详情" aria-expanded={personalTaskOpen}>
                   <ListChecks size={16} />
@@ -1561,6 +1587,14 @@ function App() {
           onClose={() => setPersonalTaskOpen(false)}
         />
         </div>
+      ) : null}
+
+      {isManagedWorkspace && currentUser?.role === "operator" && profileEditorOpen ? (
+        <DisplayNameDialog
+          currentUser={currentUser}
+          onSave={saveCurrentDisplayName}
+          onClose={() => setProfileEditorOpen(false)}
+        />
       ) : null}
 
       {releaseHistoryOpen ? (
@@ -2219,6 +2253,81 @@ function operationLabel(operation: string): string {
     logout: "退出登录",
   };
   return labels[operation] ?? operation;
+}
+
+function DisplayNameDialog({
+  currentUser,
+  onSave,
+  onClose,
+}: {
+  currentUser: UserIdentity;
+  onSave: (displayName: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [displayName, setDisplayName] = useState(currentUser.displayName);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const normalized = displayName.trim();
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !saving) onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose, saving]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!normalized || normalized === currentUser.displayName || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(normalized);
+    } catch (reason) {
+      setError(toMessage(reason));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="profile-editor-overlay" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget && !saving) onClose();
+    }}>
+      <section className="profile-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-editor-title">
+        <header>
+          <div>
+            <span className="section-kicker">ACCOUNT PROFILE</span>
+            <h2 id="profile-editor-title">修改显示名称</h2>
+            <p>监管端以此名称识别当前标注员工，账号 @{currentUser.username} 保持不变。</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} disabled={saving} title="关闭" aria-label="关闭显示名称编辑">
+            <X size={16} />
+          </button>
+        </header>
+        <form onSubmit={(event) => void submit(event)}>
+          <label htmlFor="current-display-name">显示名称</label>
+          <input
+            id="current-display-name"
+            value={displayName}
+            onChange={(event) => setDisplayName(event.target.value)}
+            maxLength={40}
+            autoComplete="name"
+            autoFocus
+            required
+          />
+          <div className="profile-editor-meta"><span>@{currentUser.username}</span><span>{[...displayName].length} / 40</span></div>
+          {error ? <div className="auth-error" role="alert">{error}</div> : null}
+          <footer>
+            <button className="button button-secondary" type="button" onClick={onClose} disabled={saving}>取消</button>
+            <button className="button button-primary" type="submit" disabled={!normalized || normalized === currentUser.displayName || saving}>
+              {saving ? "保存中" : "保存名称"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  );
 }
 
 function ReleaseHistoryDialog({

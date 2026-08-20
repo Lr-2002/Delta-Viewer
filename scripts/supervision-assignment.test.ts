@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sameAssignmentQuantities, validateAssignmentSelection } from "../src/lib/supervisionAssignments.ts";
+import {
+  assignmentConflicts,
+  defaultAssignmentQuantity,
+  sameAssignmentQuantities,
+  validateAssignmentSelection,
+} from "../src/lib/supervisionAssignments.ts";
 import type { SupervisionTaskSummary } from "../src/types.ts";
 
 function task(taskName: string, total: number): SupervisionTaskSummary {
@@ -36,4 +41,27 @@ test("compares persisted assignments independent of key order and case", () => {
     sameAssignmentQuantities({ BedMaking: 3, Bedsheet: 2 }, { bedsheet: 2, bedmaking: 3 }),
     true,
   );
+});
+
+test("defaults a scanned task to every item in its folder", () => {
+  assert.equal(defaultAssignmentQuantity("BedMaking", [task("BedMaking", 23)]), 23);
+  assert.equal(defaultAssignmentQuantity("ImportedOnly", []), 1);
+});
+
+test("reports tasks already assigned to another operator", () => {
+  const users = [{
+    username: "operator2",
+    displayName: "操作员二",
+    role: "operator" as const,
+    assignedTasks: 2,
+    assignedTaskNames: ["BedMaking"],
+    assignedTaskQuantities: { BedMaking: 2 },
+    completedToday: 0,
+    totalCompleted: 0,
+    averageCompletionMs: null,
+  }];
+  assert.deepEqual(assignmentConflicts("operator1", { bedmaking: 3 }, users), [{
+    task: "bedmaking",
+    assignees: ["操作员二"],
+  }]);
 });

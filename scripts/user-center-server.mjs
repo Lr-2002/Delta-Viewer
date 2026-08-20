@@ -23,6 +23,8 @@ const DEFAULT_DATA_ROOT = path.join(homedir(), "Library/Application Support/DOHC
 const CLIENT_CONFIG_SCHEMA_VERSION = 1;
 const DATA_SCHEMA_VERSION = 1;
 const STRUCTURED_ASSIGNMENTS_CAPABILITY = "structuredTaskAssignmentsV1";
+const OPERATOR_SELF_REGISTRATION_CAPABILITY = "operatorSelfRegistrationV1";
+const OPERATOR_PROFILE_CAPABILITY = "operatorProfileV1";
 const MAX_JSON_BYTES = 16 * 1024;
 const MAX_USERS = 10_000;
 const MAX_AUDIT_EVENTS = 200_000;
@@ -550,6 +552,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
   const initialized = await initializeUserCenter(configuration, dataRoot);
   const sessions = new Map();
   const attempts = new Map();
+  const registrations = new Map();
 
   async function writeState(state) {
     await writePrivateAtomic(statePath(dataRoot), state);
@@ -575,6 +578,15 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
     attempts.set(key, { count: (current?.untilMs > nowMs() ? current.count : 0) + 1, untilMs: windowStart });
   }
 
+  function recordRegistrationAttempt(request) {
+    const key = request.socket.remoteAddress ?? "unknown";
+    const current = registrations.get(key);
+    const windowEnd = current?.untilMs > nowMs() ? current.untilMs : nowMs() + 60 * 60_000;
+    const count = current?.untilMs > nowMs() ? current.count + 1 : 1;
+    registrations.set(key, { count, untilMs: windowEnd });
+    return count <= 20;
+  }
+
   async function handler(request, response) {
     try {
       const url = new URL(request.url, configuration.publicBaseUrl);
@@ -584,7 +596,11 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           status: "ready",
           serviceId: state.serviceId,
           setupRequired: state.users.length === 0,
-          capabilities: [STRUCTURED_ASSIGNMENTS_CAPABILITY],
+          capabilities: [
+            STRUCTURED_ASSIGNMENTS_CAPABILITY,
+            OPERATOR_SELF_REGISTRATION_CAPABILITY,
+            OPERATOR_PROFILE_CAPABILITY,
+          ],
         });
       }
       if (request.method === "GET" && url.pathname === "/client-config") {
@@ -631,6 +647,64 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const token = randomBytes(32).toString("base64url");
         sessions.set(token, { user: publicUser(user), expiresAtMs: nowMs() + configuration.sessionTtlSeconds * 1000 });
         return sendJson(response, 200, { token, user: publicUser(user), expiresAtMs: sessions.get(token).expiresAtMs });
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/auth/register") {
+        if (!recordRegistrationAttempt(request)) {
+          return sendJson(response, 429, { error: "REGISTRATION_RATE_LIMITED: 注册操作过于频繁，请稍后再试" });
+        }
+        const body = await parseJsonBody(request);
+        if (body.role !== undefined) {
+          return sendJson(response, 400, { error: "REGISTRATION_ROLE_FORBIDDEN: 自助注册只能创建标注员账号" });
+        }
+        const state = await readState(dataRoot);
+        if (state.users.length === 0) {
+          return sendJson(response, 409, { error: "USER_CENTER_SETUP_REQUIRED: 请先由管理员初始化用户中心" });
+        }
+        if (state.users.length >= MAX_USERS) {
+          return sendJson(response, 409, { error: "USER_LIMIT_EXCEEDED" });
+        }
+        const username = normalizeUsername(body.username);
+        if (state.users.some((candidate) => candidate.username === username)) {
+          return sendJson(response, 409, { error: "ACCOUNT_EXISTS: 账号已存在" });
+        }
+        const user = {
+          username,
+          displayName: normalizeDisplayName(body.displayName),
+          role: "operator",
+          password: passwordRecord(requirePassword(body.password)),
+          createdAtMs: nowMs(),
+          createdBy: "self-registration",
+        };
+        state.users.push(user);
+        await writeState(state);
+        const token = randomBytes(32).toString("base64url");
+        const session = { user: publicUser(user), expiresAtMs: nowMs() + configuration.sessionTtlSeconds * 1000 };
+        sessions.set(token, session);
+        return sendJson(response, 201, { token, user: session.user, expiresAtMs: session.expiresAtMs });
+      }
+      if (request.method === "PUT" && url.pathname === "/api/v1/auth/profile") {
+        const session = authorize(request);
+        if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        if (session.user.role !== "operator") {
+          return sendJson(response, 403, { error: "OPERATOR_REQUIRED: 只有标注员可以修改自己的显示名称" });
+        }
+        const body = await parseJsonBody(request);
+        if (Object.keys(body).some((field) => field !== "displayName")) {
+          return sendJson(response, 400, { error: "PROFILE_FIELD_FORBIDDEN: 只能修改当前账号的显示名称" });
+        }
+        const state = await readState(dataRoot);
+        const user = state.users.find((candidate) => candidate.username === session.user.username);
+        if (!user) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND" });
+        if (user.role !== "operator") {
+          return sendJson(response, 409, { error: "OPERATOR_REQUIRED: 只有标注员可以修改自己的显示名称" });
+        }
+        user.displayName = normalizeDisplayName(body.displayName);
+        await writeState(state);
+        const identity = publicUser(user);
+        for (const activeSession of sessions.values()) {
+          if (activeSession.user.username === user.username) activeSession.user = identity;
+        }
+        return sendJson(response, 200, { user: identity });
       }
       if (request.method === "GET" && url.pathname === "/api/v1/auth/me") {
         const session = authorize(request);

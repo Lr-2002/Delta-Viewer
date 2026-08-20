@@ -186,6 +186,20 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegisterRequest {
+    pub username: String,
+    pub display_name: String,
+    pub password: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateDisplayNameRequest {
+    pub display_name: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnnotationAuditRequest {

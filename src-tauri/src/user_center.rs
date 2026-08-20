@@ -1,9 +1,10 @@
 use crate::error::{AppError, AppResult};
 use crate::identity::AuthState;
 use crate::model::{
-    AssignedTask, AssignedTaskActivity, AuthStatus, LoginRequest, SupervisionAccount,
-    SupervisionDashboardData, SupervisionEvent, SupervisionTaskDetail, SupervisionTaskImportResult,
-    SupervisionUserSummary, UserCenterStatus, UserIdentity,
+    AssignedTask, AssignedTaskActivity, AuthStatus, LoginRequest, RegisterRequest,
+    SupervisionAccount, SupervisionDashboardData, SupervisionEvent, SupervisionTaskDetail,
+    SupervisionTaskImportResult, SupervisionUserSummary, UpdateDisplayNameRequest,
+    UserCenterStatus, UserIdentity,
 };
 use crate::storage;
 use reqwest::{Certificate, Client, Url};
@@ -18,6 +19,8 @@ use std::time::Duration;
 const CLIENT_CONFIG_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 const STRUCTURED_ASSIGNMENTS_CAPABILITY: &str = "structuredTaskAssignmentsV1";
+const OPERATOR_SELF_REGISTRATION_CAPABILITY: &str = "operatorSelfRegistrationV1";
+const OPERATOR_PROFILE_CAPABILITY: &str = "operatorProfileV1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -43,6 +46,12 @@ struct HealthResponse {
 #[serde(rename_all = "camelCase")]
 struct LoginResponse {
     token: String,
+    user: UserIdentity,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserResponse {
     user: UserIdentity,
 }
 
@@ -148,6 +157,98 @@ pub async fn login(
         return Err(AppError::Message("用户中心登录令牌无效".into()));
     }
     state.set_managed_session(result.user.clone(), result.token)?;
+    Ok(result.user)
+}
+
+pub async fn register(
+    data_root: &Path,
+    state: &AuthState,
+    request: RegisterRequest,
+) -> AppResult<UserIdentity> {
+    state.require_managed_mode()?;
+    let config = load_config(data_root).map_err(|_| {
+        AppError::Message("USER_CENTER_NOT_CONFIGURED: 请先导入管理员提供的用户中心配置文件".into())
+    })?;
+    let client = client_for(&config)?;
+    let health = request_health(&client, &config).await?;
+    if !health
+        .capabilities
+        .iter()
+        .any(|capability| capability == OPERATOR_SELF_REGISTRATION_CAPABILITY)
+    {
+        return Err(AppError::Message(
+            "USER_CENTER_UPGRADE_REQUIRED: 用户中心版本过旧，不支持标注员注册；请升级并重启用户中心服务".into(),
+        ));
+    }
+    let response = client
+        .post(endpoint(&config, "api/v1/auth/register")?)
+        .json(&request)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    let result: LoginResponse = response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(format!("用户中心注册响应无效: {error}")))?;
+    crate::identity::validate_user_identity(&result.user)?;
+    if result.user.role.as_deref() != Some("operator") || result.token.len() < 32 {
+        return Err(AppError::Message(
+            "USER_CENTER_REGISTRATION_INVALID: 用户中心返回了无效的标注员会话".into(),
+        ));
+    }
+    state.set_managed_session(result.user.clone(), result.token)?;
+    Ok(result.user)
+}
+
+pub async fn update_display_name(
+    data_root: &Path,
+    state: &AuthState,
+    request: UpdateDisplayNameRequest,
+) -> AppResult<UserIdentity> {
+    let current_user = state.require_managed_user()?;
+    if current_user.role.as_deref() != Some("operator") {
+        return Err(AppError::Message(
+            "OPERATOR_REQUIRED: 只有标注员可以修改自己的显示名称".into(),
+        ));
+    }
+    let config = load_config(data_root)?;
+    let client = client_for(&config)?;
+    let health = request_health(&client, &config).await?;
+    if !health
+        .capabilities
+        .iter()
+        .any(|capability| capability == OPERATOR_PROFILE_CAPABILITY)
+    {
+        return Err(AppError::Message(
+            "USER_CENTER_UPGRADE_REQUIRED: 用户中心版本过旧，不支持修改显示名称；请升级并重启用户中心服务".into(),
+        ));
+    }
+    let response = client
+        .put(endpoint(&config, "api/v1/auth/profile")?)
+        .bearer_auth(state.managed_token()?)
+        .json(&request)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    let result: UserResponse = response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(format!("用户中心个人资料响应无效: {error}")))?;
+    crate::identity::validate_user_identity(&result.user)?;
+    if result.user.username != current_user.username
+        || result.user.role.as_deref() != Some("operator")
+    {
+        return Err(AppError::Message(
+            "USER_CENTER_PROFILE_INVALID: 用户中心返回了无效的标注员身份".into(),
+        ));
+    }
+    state.set_user(Some(result.user.clone()))?;
     Ok(result.user)
 }
 
