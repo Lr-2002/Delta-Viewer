@@ -135,10 +135,26 @@ test("user center supports operator self-registration and administrator account 
       password: "self-operator-password",
     });
     assert.equal(duplicateRegistration.status, 409);
+    const concurrentUsernames = Array.from({ length: 10 }, (_, index) => `concurrent${index}`);
+    const concurrentRegistrations = await Promise.all(concurrentUsernames.map((username) => request(
+      port,
+      ca,
+      "POST",
+      "/api/v1/auth/register",
+      { username, displayName: username, password: "concurrent-password" },
+    )));
+    assert.deepEqual(concurrentRegistrations.map((result) => result.status), Array(10).fill(201));
     const accountsAfterRegistration = await request(port, ca, "GET", "/api/v1/admin/users", null, login.body.token);
     assert.ok(accountsAfterRegistration.body.users.some((user) => (
       user.username === "selfoperator" && user.displayName === "流动员工姓名"
     )));
+    assert.deepEqual(
+      accountsAfterRegistration.body.users
+        .map((user) => user.username)
+        .filter((username) => username.startsWith("concurrent"))
+        .sort(),
+      concurrentUsernames,
+    );
     const created = await request(port, ca, "POST", "/api/v1/admin/users", {
       username: "operator",
       displayName: "操作员",

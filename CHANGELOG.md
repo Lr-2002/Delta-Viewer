@@ -8,7 +8,8 @@ after `main` CI succeeds for a coordinated version change.
 ## 0.17.53 - 2026-08-20
 
 - Added rate-limited operator self-registration to the managed login screen;
-  self-registration cannot request or create an administrator role.
+  self-registration cannot request or create an administrator role, and
+  concurrent account/state updates are serialized to prevent lost writes.
 - Warn before assigning a task already held by another operator, and default
   scanned task quantities to all episodes currently available in the folder.
 - Let a signed-in operator update their current display name while preserving
