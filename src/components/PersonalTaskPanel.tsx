@@ -1,4 +1,5 @@
 import { CalendarDays, CheckCircle2, FolderOpen, Play, RefreshCw, SkipForward, X } from "lucide-react";
+import { deadlineDateLabel, localDateInput } from "../lib/deadlines";
 import type { AssignedTask, AssignedTaskActivity } from "../types";
 
 interface PersonalTaskPanelProps {
@@ -49,7 +50,7 @@ export function PersonalTaskPanel({ sourceRoot, tasks, activity, date, loading, 
         </div>
       </div>
       <div className="personal-task-groups">
-        <article><small>当前任务</small><strong>{currentTask?.task ?? "暂无"}</strong><span>{currentTask ? `${currentTask.quantity} 条 · ${priorityLabel(currentTask.priority)} · ${deadlineLabel(currentTask.deadlineAtMs)}` : "等待监管分配"}</span></article>
+        <article><small>当前任务</small><strong>{currentTask?.task ?? "暂无"}</strong><span>{currentTask ? `${currentTask.quantity} 条 · ${priorityLabel(currentTask.priority)} · ${deadlineDateLabel(currentTask.deadlineAtMs)}` : "等待监管分配"}</span></article>
         <article><small>下一任务</small><strong>{nextTask?.task ?? "暂无"}</strong><span>{nextTask ? `${nextTask.quantity} 条 · ${priorityLabel(nextTask.priority)}` : "完成当前队列后结束"}</span></article>
         <article><small>剩余任务</small><strong>{activeTasks.reduce((sum, task) => sum + task.quantity, 0)} 条</strong><span>{activeTasks.length} 类进行中 · {tasks.filter((task) => task.status === "paused").length} 类暂停</span></article>
       </div>
@@ -61,7 +62,7 @@ export function PersonalTaskPanel({ sourceRoot, tasks, activity, date, loading, 
       <div className="personal-task-grid">
         <div>
           <div className="personal-subheading"><strong>{date === localDateInput() ? "今日任务" : `${date} 的分配任务`}</strong><span>{tasks.length} 类 · {tasks.reduce((sum, task) => sum + task.quantity, 0)} 个</span></div>
-          {tasks.length ? <div className="personal-assignment-list">{[...tasks].sort((left, right) => left.order - right.order).map((task) => <div className={`personal-assignment-row${task.status === "paused" ? " paused" : ""}`} key={`${task.task}-${task.startIndex}`}><strong>{task.task}</strong><span>{task.detail}</span><b>{task.quantity} 个</b><small>区间 {task.startIndex + 1}–{task.startIndex + task.quantity} · {priorityLabel(task.priority)} · {task.status === "paused" ? "已暂停" : deadlineLabel(task.deadlineAtMs)}</small></div>)}</div> : <div className="personal-empty">当前没有监管分配任务。</div>}
+          {tasks.length ? <div className="personal-assignment-list">{[...tasks].sort((left, right) => left.order - right.order).map((task) => <div className={`personal-assignment-row${task.status === "paused" ? " paused" : ""}`} key={`${task.task}-${task.startIndex}`}><strong>{task.task}</strong><span>{task.detail}</span><b>{task.quantity} 个</b><small>区间 {task.startIndex + 1}–{task.startIndex + task.quantity} · {priorityLabel(task.priority)} · {task.status === "paused" ? "已暂停" : deadlineDateLabel(task.deadlineAtMs)}</small></div>)}</div> : <div className="personal-empty">当前没有监管分配任务。</div>}
         </div>
         <div>
           <div className="personal-subheading"><strong>标注详情</strong><span><CheckCircle2 size={13} />已保存 {saved.size} 条 · 共 {events.length} 条操作</span></div>
@@ -74,14 +75,4 @@ export function PersonalTaskPanel({ sourceRoot, tasks, activity, date, loading, 
 
 function priorityLabel(value: AssignedTask["priority"]): string {
   return value === "urgent" ? "紧急" : value === "rework" ? "返工" : "普通";
-}
-
-function deadlineLabel(value: number | null): string {
-  return value ? `截止 ${new Date(value).toLocaleString("zh-CN", { hour12: false })}` : "无截止时间";
-}
-
-function localDateInput(): string {
-  const now = new Date();
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }

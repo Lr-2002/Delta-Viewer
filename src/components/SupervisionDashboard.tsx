@@ -10,8 +10,9 @@ import {
   getSupervisionDashboard, importSupervisionAnnotations, importSupervisionTaskDetails,
   setSupervisionAssignedTasks, transferSupervisionAssignment, updateOperationsAlert,
 } from "../lib/backend";
-import { csvCell, distributeBySpeed, distributeEvenly } from "../lib/operationsCockpit";
-import { assignmentConflicts, defaultAssignmentQuantity, validateAssignmentSelection } from "../lib/supervisionAssignments";
+import { csvCell, distributeTaskTotals, type TaskAllocationPreview } from "../lib/operationsCockpit";
+import { deadlineAtEndOfDay, deadlineDateInput, deadlineDateLabel, isTodayDate } from "../lib/deadlines";
+import { assignmentConflicts, defaultAssignmentQuantity, validateAssignmentSelection, validateBatchAssignmentTotals } from "../lib/supervisionAssignments";
 import type {
   AssignmentPlan, AssignmentPriority, OperationsAlertStatus, QualityReviewRequest,
   SupervisionAnnotationCatalog, SupervisionDashboardData, SupervisionTaskCatalog,
@@ -45,11 +46,12 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
   const [notice, setNotice] = useState("");
   const [alertNotes, setAlertNotes] = useState<Record<string, string>>({});
   const [transferTargets, setTransferTargets] = useState<Record<string, string>>({});
-  const [batchTask, setBatchTask] = useState("");
-  const [batchQuantity, setBatchQuantity] = useState(20);
+  const [batchAssignmentMode, setBatchAssignmentMode] = useState<"folder" | "quantity">("folder");
+  const [batchTasks, setBatchTasks] = useState<string[]>([]);
+  const [batchQuantities, setBatchQuantities] = useState<Record<string, number>>({});
   const [batchPriority, setBatchPriority] = useState<AssignmentPriority>("normal");
   const [batchDeadline, setBatchDeadline] = useState("");
-  const [batchMode, setBatchMode] = useState<"even" | "speed">("even");
+  const [batchStrategy, setBatchStrategy] = useState<"even" | "speed">("even");
   const [batchUsers, setBatchUsers] = useState<string[]>([]);
   const [review, setReview] = useState<QualityReviewRequest>({ taskId: "", trajectoryCode: "", outcome: "passed", errorType: "", note: "" });
 
@@ -81,9 +83,13 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
   const selectedUser = operators.find((user) => user.username === selectedOperator) ?? null;
   const selectedPlans = selectedUser ? drafts[selectedUser.username] ?? [] : [];
   const batchSelected = operators.filter((user) => batchUsers.includes(user.username));
-  const batchPreview = batchMode === "speed"
-    ? distributeBySpeed(batchQuantity, batchSelected)
-    : distributeEvenly(batchQuantity, batchSelected.map((user) => user.username));
+  const batchTaskTotals = batchTasks.map((task) => ({
+    task,
+    total: batchAssignmentMode === "folder"
+      ? taskMaximum(task, taskCatalog) ?? 0
+      : batchQuantities[task] ?? defaultAssignmentQuantity(task, taskCatalog?.tasks ?? []),
+  }));
+  const batchPreview = distributeTaskTotals(batchTaskTotals, batchSelected, batchStrategy);
 
   async function savePlans(username: string, plans: AssignmentPlan[]) {
     const normalized = plans.map((plan, order) => ({ ...plan, order }));
@@ -149,27 +155,39 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
   }
 
   async function applyBatch() {
-    if (!batchTask || !batchSelected.length) return setError("请选择任务和标注员");
-    const preview = batchPreview.map((share) => {
-      const old = drafts[share.username]?.find((plan) => plan.task.toLowerCase() === batchTask.toLowerCase())?.quantity ?? 0;
-      return `@${share.username}：${old} → ${share.quantity}（${signed(share.quantity - old)}）`;
-    }).join("\n");
-    if (!await confirmAction(`批量操作预览：\n\n${preview}\n\n用户中心将生成不重叠区间。是否确认？`, "确认批量分配")) return;
+    if (!batchTasks.length || !batchSelected.length) return setError("请选择至少一个任务和一位标注员");
+    if (batchTaskTotals.some((item) => !Number.isSafeInteger(item.total) || item.total < 1)) {
+      return setError(batchAssignmentMode === "folder" ? "整文件夹模式只能选择已读取且包含视频的任务目录" : "每个任务的分配数量必须是正整数");
+    }
+    const totals = Object.fromEntries(batchTaskTotals.map((item) => [item.task, item.total]));
+    const selectionError = validateAssignmentSelection(totals, taskCatalog?.tasks ?? [], availableTasks)
+      ?? validateBatchAssignmentTotals(batchUsers, totals, taskCatalog?.tasks ?? [], data?.users ?? []);
+    if (selectionError) return setError(selectionError);
+    const preview = batchPreview.flatMap((allocation) => [
+      `${allocation.task}（共 ${allocation.total} 条）`,
+      ...allocation.shares.map((share) => {
+        const old = drafts[share.username]?.find((plan) => plan.task.toLowerCase() === allocation.task.toLowerCase())?.quantity ?? 0;
+        return `  @${share.username}：${old} → ${share.quantity}（${signed(share.quantity - old)}）`;
+      }),
+    ]).join("\n");
+    if (!await confirmAction(`批量操作预览：\n\n${preview}\n\n用户中心将按任务生成不重叠区间。是否确认？`, "确认批量分配")) return;
     setBusy("batch");
     setError("");
     try {
-      const deadlineAtMs = batchDeadline ? new Date(batchDeadline).getTime() : null;
-      for (const share of batchPreview) {
-        if (!share.quantity) continue;
-        const current = drafts[share.username] ?? [];
-        const exists = current.some((plan) => plan.task.toLowerCase() === batchTask.toLowerCase());
-        const next = exists ? current.map((plan) => plan.task.toLowerCase() === batchTask.toLowerCase()
-          ? { ...plan, quantity: share.quantity, priority: batchPriority, deadlineAtMs } : plan)
-          : [...current, { task: batchTask, quantity: share.quantity, startIndex: 0, priority: batchPriority, deadlineAtMs, status: "active" as const, order: current.length }];
-        await savePlans(share.username, next);
+      const deadlineAtMs = deadlineAtEndOfDay(batchDeadline);
+      for (const user of batchSelected) {
+        const selectedKeys = new Set(batchTasks.map((task) => task.toLowerCase()));
+        const next = (drafts[user.username] ?? []).filter((plan) => !selectedKeys.has(plan.task.toLowerCase()));
+        for (const allocation of batchPreview) {
+          const quantity = allocation.shares.find((share) => share.username === user.username)?.quantity ?? 0;
+          if (!quantity) continue;
+          next.push({ task: allocation.task, quantity, startIndex: 0, priority: batchPriority, deadlineAtMs, status: "active" as const, order: next.length });
+        }
+        await savePlans(user.username, next);
       }
       await refresh();
-      setNotice(`已按${batchMode === "speed" ? "历史速度建议" : "平均"}方案分配 ${batchQuantity} 条 ${batchTask}`);
+      const total = batchTaskTotals.reduce((sum, item) => sum + item.total, 0);
+      setNotice(`已按${batchStrategy === "speed" ? "历史速度建议" : "平均"}方案分配 ${batchTaskTotals.length} 类任务，共 ${total} 条`);
     } catch (reason) { setError(message(reason)); } finally { setBusy(""); }
   }
 
@@ -177,7 +195,12 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
     setBusy("scan"); setError("");
     try {
       const catalog = await chooseAndScanSupervisionTasks();
-      if (catalog) { setTaskCatalog(catalog); setBatchTask((current) => current || catalog.tasks[0]?.task || ""); setNotice(`已在本机读取 ${catalog.tasks.length} 类任务`); }
+      if (catalog) {
+        setTaskCatalog(catalog);
+        setBatchTasks((current) => current.length ? current : catalog.tasks.slice(0, 1).map((task) => task.task));
+        setBatchQuantities((current) => ({ ...Object.fromEntries(catalog.tasks.map((task) => [task.task, task.total])), ...current }));
+        setNotice(`已在本机读取 ${catalog.tasks.length} 类任务`);
+      }
     } catch (reason) { setError(message(reason)); } finally { setBusy(""); }
   }
 
@@ -185,7 +208,13 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
     setBusy("tasks"); setError("");
     try {
       const result = await importSupervisionTaskDetails();
-      if (result) { setImportedTasks(result.importedTaskNames); setData((current) => current ? { ...current, taskDetails: result.taskDetails } : current); setBatchTask((current) => current || result.importedTaskNames[0] || ""); setNotice(`已读取 ${result.importedTaskNames.length} 项任务定义`); }
+      if (result) {
+        setImportedTasks(result.importedTaskNames);
+        setData((current) => current ? { ...current, taskDetails: result.taskDetails } : current);
+        setBatchTasks((current) => current.length ? current : result.importedTaskNames.slice(0, 1));
+        setBatchQuantities((current) => ({ ...Object.fromEntries(result.importedTaskNames.map((task) => [task, 1])), ...current }));
+        setNotice(`已读取 ${result.importedTaskNames.length} 项任务定义`);
+      }
     } catch (reason) { setError(message(reason)); } finally { setBusy(""); }
   }
 
@@ -236,7 +265,7 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
       {notice ? <div className="supervision-notice" role="status"><Check size={15} />{notice}<button className="icon-button" type="button" onClick={() => setNotice("")}><X size={14} /></button></div> : null}
       {loading && !data ? <div className="supervision-loading"><LoaderCircle className="spin" size={22} />正在聚合运营数据</div> : null}
       {data && view === "overview" ? <Overview data={data} annotations={annotations} onImport={() => void importAnnotations()} importing={busy === "annotations"} /> : null}
-      {data && view === "assignment" ? <Assignment data={data} operators={operators} availableTasks={availableTasks} selectedUser={selectedUser} selectedPlans={selectedPlans} drafts={drafts} taskCatalog={taskCatalog} taskSearch={taskSearch} setTaskSearch={setTaskSearch} setSelectedOperator={setSelectedOperator} toggleTask={toggleTask} updatePlan={updatePlan} reorderPlan={reorderPlan} setDraggedTask={setDraggedTask} saveAssignment={saveAssignment} busy={busy} batchTask={batchTask} setBatchTask={setBatchTask} batchQuantity={batchQuantity} setBatchQuantity={setBatchQuantity} batchPriority={batchPriority} setBatchPriority={setBatchPriority} batchDeadline={batchDeadline} setBatchDeadline={setBatchDeadline} batchMode={batchMode} setBatchMode={setBatchMode} batchUsers={batchUsers} setBatchUsers={setBatchUsers} batchPreview={batchPreview} applyBatch={applyBatch} scanTasks={scanTasks} importTasks={importTasks} transferTargets={transferTargets} setTransferTargets={setTransferTargets} transferTask={transferTask} /> : null}
+      {data && view === "assignment" ? <Assignment data={data} operators={operators} availableTasks={availableTasks} selectedUser={selectedUser} selectedPlans={selectedPlans} drafts={drafts} taskCatalog={taskCatalog} taskSearch={taskSearch} setTaskSearch={setTaskSearch} setSelectedOperator={setSelectedOperator} toggleTask={toggleTask} updatePlan={updatePlan} reorderPlan={reorderPlan} setDraggedTask={setDraggedTask} saveAssignment={saveAssignment} busy={busy} batchAssignmentMode={batchAssignmentMode} setBatchAssignmentMode={setBatchAssignmentMode} batchTasks={batchTasks} setBatchTasks={setBatchTasks} batchQuantities={batchQuantities} setBatchQuantities={setBatchQuantities} batchPriority={batchPriority} setBatchPriority={setBatchPriority} batchDeadline={batchDeadline} setBatchDeadline={setBatchDeadline} batchStrategy={batchStrategy} setBatchStrategy={setBatchStrategy} batchUsers={batchUsers} setBatchUsers={setBatchUsers} batchPreview={batchPreview} applyBatch={applyBatch} scanTasks={scanTasks} importTasks={importTasks} transferTargets={transferTargets} setTransferTargets={setTransferTargets} transferTask={transferTask} /> : null}
       {data && view === "alerts" ? <Alerts data={data} notes={alertNotes} setNotes={setAlertNotes} busy={busy} handle={handleAlert} adjust={(username) => { setSelectedOperator(username); setView("assignment"); }} /> : null}
       {data && view === "quality" ? <Quality data={data} annotations={annotations} review={review} setReview={setReview} importAnnotations={importAnnotations} busy={busy} saveReview={saveReview} /> : null}
       {data && view === "reports" ? <Reports data={data} annotations={annotations} json={() => exportReport("json")} csv={() => exportReport("csv")} print={() => printReport(data)} /> : null}
@@ -266,10 +295,12 @@ type AssignmentProps = {
   updatePlan: (username: string, task: string, changes: Partial<AssignmentPlan>) => void;
   reorderPlan: (username: string, task: string) => void; setDraggedTask: (value: string) => void;
   saveAssignment: (username: string) => Promise<void>; busy: string;
-  batchTask: string; setBatchTask: (value: string) => void; batchQuantity: number; setBatchQuantity: (value: number) => void;
+  batchAssignmentMode: "folder" | "quantity"; setBatchAssignmentMode: (value: "folder" | "quantity") => void;
+  batchTasks: string[]; setBatchTasks: (value: string[]) => void;
+  batchQuantities: Record<string, number>; setBatchQuantities: (value: Record<string, number>) => void;
   batchPriority: AssignmentPriority; setBatchPriority: (value: AssignmentPriority) => void;
-  batchDeadline: string; setBatchDeadline: (value: string) => void; batchMode: "even" | "speed"; setBatchMode: (value: "even" | "speed") => void;
-  batchUsers: string[]; setBatchUsers: (value: string[]) => void; batchPreview: { username: string; quantity: number }[];
+  batchDeadline: string; setBatchDeadline: (value: string) => void; batchStrategy: "even" | "speed"; setBatchStrategy: (value: "even" | "speed") => void;
+  batchUsers: string[]; setBatchUsers: (value: string[]) => void; batchPreview: TaskAllocationPreview[];
   applyBatch: () => Promise<void>; scanTasks: () => Promise<void>; importTasks: () => Promise<void>;
   transferTargets: Record<string, string>; setTransferTargets: (value: Record<string, string>) => void;
   transferTask: (fromUsername: string, task: string) => Promise<void>;
@@ -277,11 +308,69 @@ type AssignmentProps = {
 
 function Assignment(props: AssignmentProps) {
   const filtered = props.availableTasks.filter((task) => task.toLowerCase().includes(props.taskSearch.toLowerCase()));
+  const toggleBatchTask = (task: string) => {
+    const selected = props.batchTasks.includes(task);
+    props.setBatchTasks(selected ? props.batchTasks.filter((item) => item !== task) : [...props.batchTasks, task]);
+    if (!selected && props.batchQuantities[task] === undefined) {
+      props.setBatchQuantities({ ...props.batchQuantities, [task]: taskMaximum(task, props.taskCatalog) ?? 1 });
+    }
+  };
   return <>
     <section className="supervision-section cockpit-tools"><div><span className="section-kicker">TASK SOURCES</span><h2>任务来源与容量</h2><small>目录仅在本机只读统计，用户中心不接收 NAS 路径。</small></div><div><button className="button button-secondary" type="button" onClick={() => void props.importTasks()}><FileUp size={15} />导入任务 JSON</button><button className="button button-secondary" type="button" onClick={() => void props.scanTasks()}><FolderOpen size={15} />读取任务目录</button></div></section>
-    <section className="supervision-section batch-assignment"><Heading kicker="BATCH PREVIEW" title="批量平均 / 速度建议分配" /><div className="batch-controls"><label>任务<select value={props.batchTask} onChange={(event) => props.setBatchTask(event.target.value)}><option value="">请选择</option>{props.availableTasks.map((task) => <option key={task}>{task}</option>)}</select></label><label>总数量<input type="number" min={1} value={props.batchQuantity} onChange={(event) => props.setBatchQuantity(Math.max(1, Number(event.target.value) || 1))} /></label><label>优先级<select value={props.batchPriority} onChange={(event) => props.setBatchPriority(event.target.value as AssignmentPriority)}><option value="normal">普通</option><option value="urgent">紧急</option><option value="rework">返工</option></select></label><label>截止时间<input type="datetime-local" value={props.batchDeadline} onChange={(event) => props.setBatchDeadline(event.target.value)} /></label><label>策略<select value={props.batchMode} onChange={(event) => props.setBatchMode(event.target.value as "even" | "speed")}><option value="even">一键平均</option><option value="speed">按历史速度建议</option></select></label></div><div className="batch-user-picker">{props.operators.map((user) => <label key={user.username}><input type="checkbox" checked={props.batchUsers.includes(user.username)} onChange={() => props.setBatchUsers(props.batchUsers.includes(user.username) ? props.batchUsers.filter((name) => name !== user.username) : [...props.batchUsers, user.username])} /><span>{user.displayName}<small>@{user.username} · {user.completionRatePerHour} 条/小时</small></span></label>)}</div><div className="batch-preview"><strong>操作预览</strong>{props.batchPreview.map((share) => { const old = props.drafts[share.username]?.find((plan) => plan.task.toLowerCase() === props.batchTask.toLowerCase())?.quantity ?? 0; return <span key={share.username}>@{share.username}<b>{old} → {share.quantity}</b><small>{signed(share.quantity - old)} 条</small></span>; })}<button className="button button-primary" type="button" onClick={() => void props.applyBatch()} disabled={!props.batchTask || props.busy === "batch"}>{props.busy === "batch" ? "应用中" : "确认批量分配"}</button></div></section>
-    <section className="supervision-section assignment-workbench"><Heading kicker="ASSIGNMENT QUEUE" title="账号任务队列" note="拖拽排序；支持暂停、追加、减少、转移、优先级与截止时间" /><div className="assignment-layout"><aside className="operator-list"><header><Users size={15} /><strong>标注员</strong><span>{props.operators.length}</span></header>{props.operators.map((user) => <button key={user.username} className={props.selectedUser?.username === user.username ? "active" : ""} type="button" onClick={() => props.setSelectedOperator(user.username)}><span><strong>{user.displayName}</strong><small>@{user.username}</small></span><b>{props.drafts[user.username]?.length ?? 0}</b></button>)}</aside><div className="assignment-task-picker">{props.selectedUser ? <><header className="assignment-picker-header"><div><strong>{props.selectedUser.displayName} 的队列</strong><span>剩余 {props.selectedUser.remainingTasks} 条 · 预计 {formatTime(props.selectedUser.estimatedCompletionAtMs)}</span></div><button className="button button-primary" type="button" onClick={() => void props.saveAssignment(props.selectedUser!.username)} disabled={props.busy === `save:${props.selectedUser.username}`}>保存队列</button></header><div className="assignment-toolbar"><label><Search size={14} /><input value={props.taskSearch} onChange={(event) => props.setTaskSearch(event.target.value)} placeholder="搜索任务" /></label></div><div className="assignment-plan-list">{props.selectedPlans.map((plan) => { const transferKey = `${props.selectedUser!.username}:${plan.task}`; return <div key={plan.task} className={`assignment-plan-row priority-${plan.priority}${plan.status === "paused" ? " paused" : ""}`} draggable onDragStart={() => props.setDraggedTask(plan.task)} onDragOver={(event) => event.preventDefault()} onDrop={() => props.reorderPlan(props.selectedUser!.username, plan.task)}><GripVertical size={16} /><div><strong>{plan.task}</strong><small>区间 {plan.startIndex + 1}–{plan.startIndex + plan.quantity}</small></div><label>数量<input type="number" min={1} max={taskMaximum(plan.task, props.taskCatalog) ?? 1_000_000} value={plan.quantity} onChange={(event) => props.updatePlan(props.selectedUser!.username, plan.task, { quantity: Math.max(1, Number(event.target.value) || 1) })} /></label><label>优先级<select value={plan.priority} onChange={(event) => props.updatePlan(props.selectedUser!.username, plan.task, { priority: event.target.value as AssignmentPriority })}><option value="normal">普通</option><option value="urgent">紧急</option><option value="rework">返工</option></select></label><label>截止<input type="datetime-local" value={dateTimeInput(plan.deadlineAtMs)} onChange={(event) => props.updatePlan(props.selectedUser!.username, plan.task, { deadlineAtMs: event.target.value ? new Date(event.target.value).getTime() : null })} /></label><div className="assignment-transfer"><select value={props.transferTargets[transferKey] ?? ""} onChange={(event) => props.setTransferTargets({ ...props.transferTargets, [transferKey]: event.target.value })}><option value="">转移给…</option>{props.operators.filter((user) => user.username !== props.selectedUser!.username).map((user) => <option key={user.username} value={user.username}>{user.displayName}</option>)}</select><button type="button" onClick={() => void props.transferTask(props.selectedUser!.username, plan.task)} disabled={!props.transferTargets[transferKey] || props.busy === `transfer:${transferKey}`}>转移</button></div><button className="icon-button" type="button" onClick={() => props.updatePlan(props.selectedUser!.username, plan.task, { status: plan.status === "active" ? "paused" : "active" })}>{plan.status === "active" ? <PauseCircle size={17} /> : <PlayCircle size={17} />}</button><button className="icon-button" type="button" onClick={() => props.toggleTask(props.selectedUser!.username, plan.task)}><X size={16} /></button></div>; })}</div><div className="assignment-task-grid compact">{filtered.filter((task) => !props.selectedPlans.some((plan) => plan.task.toLowerCase() === task.toLowerCase())).map((task) => <button key={task} className="assignment-add-card" type="button" onClick={() => props.toggleTask(props.selectedUser!.username, task)}><strong>{task}</strong><small>{taskMaximum(task, props.taskCatalog) ? `可用 ${taskMaximum(task, props.taskCatalog)} 条` : "来自任务 JSON"}</small><CheckCircle2 size={16} /></button>)}</div></> : <div className="cockpit-empty">暂无标注员</div>}</div></div></section>
-    <section className="supervision-section"><Heading kicker="ASSIGNED RANGES" title="当前已分配区间" note="同一任务的区间由用户中心串行计算，避免重复分配" /><div className="supervision-table-wrap"><table><thead><tr><th>账号</th><th>任务</th><th>区间</th><th>数量</th><th>优先级</th><th>截止</th><th>状态</th></tr></thead><tbody>{props.operators.flatMap((user) => user.assignmentPlans.map((plan) => <tr key={`${user.username}-${plan.task}`}><td>@{user.username}</td><td>{plan.task}</td><td>{plan.startIndex + 1}–{plan.startIndex + plan.quantity}</td><td>{plan.quantity}</td><td>{priorityLabel(plan.priority)}</td><td>{formatTime(plan.deadlineAtMs)}</td><td>{plan.status === "paused" ? "已暂停" : "进行中"}</td></tr>))}</tbody></table></div></section>
+    <section className="supervision-section batch-assignment">
+      <Heading kicker="BATCH ASSIGNMENT" title="批量任务分配" note="多选任务与标注员；整文件夹模式自动使用目录全部视频" />
+      <div className="batch-mode-switch" role="group" aria-label="批量分配模式">
+        <button className={props.batchAssignmentMode === "folder" ? "active" : ""} type="button" onClick={() => { props.setBatchAssignmentMode("folder"); props.setBatchTasks(props.batchTasks.filter((task) => (taskMaximum(task, props.taskCatalog) ?? 0) > 0)); }}><FolderOpen size={15} /><span><strong>整文件夹一键分配</strong><small>把所选任务目录的全部视频分配完</small></span></button>
+        <button className={props.batchAssignmentMode === "quantity" ? "active" : ""} type="button" onClick={() => props.setBatchAssignmentMode("quantity")}><BarChart3 size={15} /><span><strong>按任务分配数量</strong><small>多选任务并分别填写分配总量</small></span></button>
+      </div>
+      <div className="batch-task-picker">
+        {props.availableTasks.map((task) => {
+          const maximum = taskMaximum(task, props.taskCatalog);
+          const selected = props.batchTasks.includes(task);
+          const unavailable = props.batchAssignmentMode === "folder" && (maximum === null || maximum < 1);
+          return <label key={task} className={`${selected ? "selected" : ""}${unavailable ? " disabled" : ""}`}>
+            <input type="checkbox" checked={selected} disabled={unavailable} onChange={() => toggleBatchTask(task)} />
+            <span><strong>{task}</strong><small>{maximum === null ? "来自任务 JSON，需按数量分配" : `文件夹共 ${maximum} 条`}</small></span>
+            {props.batchAssignmentMode === "quantity" && selected
+              ? <input aria-label={`${task} 分配数量`} type="number" min={1} max={maximum ?? 1_000_000} value={props.batchQuantities[task] ?? maximum ?? 1} onChange={(event) => props.setBatchQuantities({ ...props.batchQuantities, [task]: Math.max(1, Number(event.target.value) || 1) })} />
+              : <b>{selected && maximum !== null ? `${maximum} 条` : ""}</b>}
+          </label>;
+        })}
+      </div>
+      <div className="batch-controls compact">
+        <label>优先级<select value={props.batchPriority} onChange={(event) => props.setBatchPriority(event.target.value as AssignmentPriority)}><option value="normal">普通</option><option value="urgent">紧急</option><option value="rework">返工</option></select></label>
+        <label>截止日期<input type="date" value={props.batchDeadline} onChange={(event) => props.setBatchDeadline(event.target.value)} /><small>{isTodayDate(props.batchDeadline) ? "今天" : "按所选日期当天截止"}</small></label>
+        <label>分配策略<select value={props.batchStrategy} onChange={(event) => props.setBatchStrategy(event.target.value as "even" | "speed")}><option value="even">一键平均</option><option value="speed">按历史速度建议</option></select></label>
+      </div>
+      <div className="batch-user-picker">{props.operators.map((user) => <label key={user.username}><input type="checkbox" checked={props.batchUsers.includes(user.username)} onChange={() => props.setBatchUsers(props.batchUsers.includes(user.username) ? props.batchUsers.filter((name) => name !== user.username) : [...props.batchUsers, user.username])} /><span>{user.displayName}<small>@{user.username} · {user.completionRatePerHour} 条/小时</small></span></label>)}</div>
+      <div className="batch-preview"><strong>操作预览</strong><div className="batch-preview-list">{props.batchPreview.map((allocation) => <article key={allocation.task}><header><strong>{allocation.task}</strong><b>共 {allocation.total} 条</b></header><div>{allocation.shares.map((share) => { const old = props.drafts[share.username]?.find((plan) => plan.task.toLowerCase() === allocation.task.toLowerCase())?.quantity ?? 0; return <span key={share.username}>@{share.username}<b>{old} → {share.quantity}</b><small>{signed(share.quantity - old)} 条</small></span>; })}</div></article>)}</div><button className="button button-primary" type="button" onClick={() => void props.applyBatch()} disabled={!props.batchTasks.length || !props.batchUsers.length || props.busy === "batch"}>{props.busy === "batch" ? "应用中" : "确认批量分配"}</button></div>
+    </section>
+    <section className="supervision-section assignment-workbench">
+      <Heading kicker="ASSIGNMENT QUEUE" title="账号任务队列" note="拖拽排序；支持暂停、追加、减少、转移、优先级与截止日期" />
+      <div className="assignment-layout">
+        <aside className="operator-list"><header><Users size={15} /><strong>标注员</strong><span>{props.operators.length}</span></header>{props.operators.map((user) => <button key={user.username} className={props.selectedUser?.username === user.username ? "active" : ""} type="button" onClick={() => props.setSelectedOperator(user.username)}><span><strong>{user.displayName}</strong><small>@{user.username}</small></span><b>{props.drafts[user.username]?.length ?? 0}</b></button>)}</aside>
+        <div className="assignment-task-picker">{props.selectedUser ? <>
+          <header className="assignment-picker-header"><div><strong>{props.selectedUser.displayName} 的队列</strong><span>剩余 {props.selectedUser.remainingTasks} 条 · 预计 {formatTime(props.selectedUser.estimatedCompletionAtMs)}</span></div><button className="button button-primary" type="button" onClick={() => void props.saveAssignment(props.selectedUser!.username)} disabled={props.busy === `save:${props.selectedUser.username}`}>保存队列</button></header>
+          <div className="assignment-toolbar"><label><Search size={14} /><input value={props.taskSearch} onChange={(event) => props.setTaskSearch(event.target.value)} placeholder="搜索任务" /></label></div>
+          <div className="assignment-plan-list">{props.selectedPlans.map((plan) => {
+            const transferKey = `${props.selectedUser!.username}:${plan.task}`;
+            const deadlineInput = deadlineDateInput(plan.deadlineAtMs);
+            return <div key={plan.task} className={`assignment-plan-row priority-${plan.priority}${plan.status === "paused" ? " paused" : ""}`} draggable onDragStart={() => props.setDraggedTask(plan.task)} onDragOver={(event) => event.preventDefault()} onDrop={() => props.reorderPlan(props.selectedUser!.username, plan.task)}>
+              <GripVertical size={16} />
+              <div><strong>{plan.task}</strong><small>区间 {plan.startIndex + 1}–{plan.startIndex + plan.quantity}</small></div>
+              <label>数量<input type="number" min={1} max={taskMaximum(plan.task, props.taskCatalog) ?? 1_000_000} value={plan.quantity} onChange={(event) => props.updatePlan(props.selectedUser!.username, plan.task, { quantity: Math.max(1, Number(event.target.value) || 1) })} /></label>
+              <label>优先级<select value={plan.priority} onChange={(event) => props.updatePlan(props.selectedUser!.username, plan.task, { priority: event.target.value as AssignmentPriority })}><option value="normal">普通</option><option value="urgent">紧急</option><option value="rework">返工</option></select></label>
+              <label>截止日期<input type="date" value={deadlineInput} onChange={(event) => props.updatePlan(props.selectedUser!.username, plan.task, { deadlineAtMs: deadlineAtEndOfDay(event.target.value) })} /><small>{isTodayDate(deadlineInput) ? "今天" : "按日期截止"}</small></label>
+              <div className="assignment-transfer"><select value={props.transferTargets[transferKey] ?? ""} onChange={(event) => props.setTransferTargets({ ...props.transferTargets, [transferKey]: event.target.value })}><option value="">转移给…</option>{props.operators.filter((user) => user.username !== props.selectedUser!.username).map((user) => <option key={user.username} value={user.username}>{user.displayName}</option>)}</select><button type="button" onClick={() => void props.transferTask(props.selectedUser!.username, plan.task)} disabled={!props.transferTargets[transferKey] || props.busy === `transfer:${transferKey}`}>转移</button></div>
+              <button className="icon-button" type="button" onClick={() => props.updatePlan(props.selectedUser!.username, plan.task, { status: plan.status === "active" ? "paused" : "active" })}>{plan.status === "active" ? <PauseCircle size={17} /> : <PlayCircle size={17} />}</button>
+              <button className="icon-button" type="button" onClick={() => props.toggleTask(props.selectedUser!.username, plan.task)}><X size={16} /></button>
+            </div>;
+          })}</div>
+          <div className="assignment-task-grid compact">{filtered.filter((task) => !props.selectedPlans.some((plan) => plan.task.toLowerCase() === task.toLowerCase())).map((task) => <button key={task} className="assignment-add-card" type="button" onClick={() => props.toggleTask(props.selectedUser!.username, task)}><strong>{task}</strong><small>{taskMaximum(task, props.taskCatalog) ? `可用 ${taskMaximum(task, props.taskCatalog)} 条` : "来自任务 JSON"}</small><CheckCircle2 size={16} /></button>)}</div>
+        </> : <div className="cockpit-empty">暂无标注员</div>}</div>
+      </div>
+    </section>
+    <section className="supervision-section"><Heading kicker="ASSIGNED RANGES" title="当前已分配区间" note="同一任务的区间由用户中心串行计算，避免重复分配" /><div className="supervision-table-wrap"><table><thead><tr><th>账号</th><th>任务</th><th>区间</th><th>数量</th><th>优先级</th><th>截止</th><th>状态</th></tr></thead><tbody>{props.operators.flatMap((user) => user.assignmentPlans.map((plan) => <tr key={`${user.username}-${plan.task}`}><td>@{user.username}</td><td>{plan.task}</td><td>{plan.startIndex + 1}–{plan.startIndex + plan.quantity}</td><td>{plan.quantity}</td><td>{priorityLabel(plan.priority)}</td><td>{deadlineDateLabel(plan.deadlineAtMs)}</td><td>{plan.status === "paused" ? "已暂停" : "进行中"}</td></tr>))}</tbody></table></div></section>
   </>;
 }
 
@@ -313,7 +402,6 @@ function formatCount(value: number) { return new Intl.NumberFormat("zh-CN").form
 function formatDuration(value: number | null) { if (value === null) return "—"; const seconds = Math.max(0, Math.round(value / 1000)); const hours = Math.floor(seconds / 3600); const minutes = Math.floor((seconds % 3600) / 60); return hours ? `${hours}时${minutes}分` : minutes ? `${minutes}分${seconds % 60}秒` : `${seconds}秒`; }
 function formatTime(value: number | null) { return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—"; }
 function dateKey(value: number) { return new Date(value).toLocaleDateString("sv-SE"); }
-function dateTimeInput(value: number | null) { if (!value) return ""; return new Date(value - new Date(value).getTimezoneOffset() * 60_000).toISOString().slice(0, 16); }
 function weightedAverage(users: SupervisionUserSummary[]) { const rows = users.filter((user) => user.averageCompletionMs !== null && user.totalCompleted); const total = rows.reduce((sum, user) => sum + user.totalCompleted, 0); return total ? Math.round(rows.reduce((sum, user) => sum + (user.averageCompletionMs ?? 0) * user.totalCompleted, 0) / total) : null; }
 
 function safeReport(data: SupervisionDashboardData, annotations: SupervisionAnnotationCatalog | null) {

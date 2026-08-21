@@ -5,6 +5,12 @@ export interface AllocationShare {
   quantity: number;
 }
 
+export interface TaskAllocationPreview {
+  task: string;
+  total: number;
+  shares: AllocationShare[];
+}
+
 export function distributeEvenly(total: number, usernames: string[]): AllocationShare[] {
   const quantity = Math.max(0, Math.floor(total));
   if (!usernames.length || quantity === 0) return usernames.map((username) => ({ username, quantity: 0 }));
@@ -33,6 +39,20 @@ export function distributeBySpeed(total: number, users: SupervisionUserSummary[]
     .sort((left, right) => right.fraction - left.fraction || left.index - right.index);
   for (let index = 0; index < remainder; index += 1) shares[order[index].index] += 1;
   return users.map((user, index) => ({ username: user.username, quantity: shares[index] }));
+}
+
+export function distributeTaskTotals(
+  tasks: { task: string; total: number }[],
+  users: SupervisionUserSummary[],
+  mode: "even" | "speed",
+): TaskAllocationPreview[] {
+  return tasks.map(({ task, total }) => ({
+    task,
+    total,
+    shares: mode === "speed"
+      ? distributeBySpeed(total, users)
+      : distributeEvenly(total, users.map((user) => user.username)),
+  }));
 }
 
 export function csvCell(value: string | number | null): string {

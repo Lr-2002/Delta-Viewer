@@ -4,9 +4,11 @@ import {
   assignmentConflicts,
   defaultAssignmentQuantity,
   sameAssignmentQuantities,
+  validateBatchAssignmentTotals,
   validateAssignmentSelection,
 } from "../src/lib/supervisionAssignments.ts";
-import { distributeBySpeed, distributeEvenly } from "../src/lib/operationsCockpit.ts";
+import { distributeBySpeed, distributeEvenly, distributeTaskTotals } from "../src/lib/operationsCockpit.ts";
+import { deadlineAtEndOfDay, deadlineDateInput, deadlineDateLabel } from "../src/lib/deadlines.ts";
 import type { SupervisionTaskSummary } from "../src/types.ts";
 
 function task(taskName: string, total: number): SupervisionTaskSummary {
@@ -109,3 +111,62 @@ test("suggests more work for the historically faster operator", () => {
   assert.equal(result.reduce((sum, row) => sum + row.quantity, 0), 12);
   assert.ok(result[0].quantity > result[1].quantity);
 });
+
+test("distributes multiple selected tasks without losing any folder items", () => {
+  const users = [
+    operator("a", 60),
+    operator("b", 30),
+  ];
+  const result = distributeTaskTotals([
+    { task: "BedMaking", total: 5 },
+    { task: "Bedsheet", total: 4 },
+  ], users, "even");
+  assert.deepEqual(result.map((item) => ({ task: item.task, shares: item.shares.map((share) => share.quantity) })), [
+    { task: "BedMaking", shares: [3, 2] },
+    { task: "Bedsheet", shares: [2, 2] },
+  ]);
+});
+
+test("prevents a whole-folder batch from exceeding totals held by unselected operators", () => {
+  const users = [
+    { ...operator("selected", 10), assignedTaskNames: [], assignedTaskQuantities: {} },
+    { ...operator("outside", 10), assignedTaskNames: ["BedMaking"], assignedTaskQuantities: { BedMaking: 2 } },
+  ];
+  assert.equal(
+    validateBatchAssignmentTotals(["selected"], { BedMaking: 5 }, [task("BedMaking", 5)], users),
+    "任务 BedMaking 仍有 2 条分配在未选标注员，当前批量分配会超过文件夹总量；请同时选择这些标注员或先移除原分配",
+  );
+  assert.equal(validateBatchAssignmentTotals(["selected", "outside"], { BedMaking: 5 }, [task("BedMaking", 5)], users), null);
+});
+
+test("stores date-only deadlines at local end of day and labels today", () => {
+  const value = deadlineAtEndOfDay("2026-08-21");
+  assert.ok(value);
+  assert.equal(deadlineDateInput(value), "2026-08-21");
+  assert.equal(new Date(value).getHours(), 23);
+  assert.equal(deadlineDateLabel(value, new Date(2026, 7, 21, 9)), "截止 2026/8/21（今天）");
+  assert.equal(deadlineAtEndOfDay("2026-02-31"), null);
+});
+
+function operator(username: string, completionRatePerHour: number) {
+  return {
+    username,
+    displayName: username,
+    role: "operator" as const,
+    assignedTasks: 0,
+    assignedTaskNames: [],
+    assignedTaskQuantities: {},
+    assignmentPlans: [],
+    completedToday: 0,
+    totalCompleted: 0,
+    remainingTasks: 0,
+    averageCompletionMs: null,
+    completionRatePerHour,
+    estimatedCompletionAtMs: null,
+    firstActivityAtMs: null,
+    lastActivityAtMs: null,
+    lastLoginAtMs: null,
+    operationCount: 0,
+    possibleStagnation: false,
+  };
+}

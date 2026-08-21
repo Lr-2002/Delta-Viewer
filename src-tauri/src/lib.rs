@@ -9,9 +9,11 @@ mod identity;
 mod importer;
 mod model;
 mod operation_history;
+mod segment_bin;
 mod skeleton;
 mod source;
 mod source_index_cache;
+mod source_path_probe;
 mod storage;
 pub mod stress;
 mod supervision;
@@ -151,6 +153,16 @@ fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
         .map_err(|error| format!("无法定位应用本地数据目录: {error}"))
+}
+
+async fn ensure_source_directory_responsive(path: &str) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    tauri::async_runtime::spawn_blocking(move || {
+        source_path_probe::ensure_directory_responsive(&path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -385,6 +397,8 @@ async fn scan_supervision_tasks(
     if user.role.as_deref() != Some("admin") {
         return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账户".into());
     }
+    emit_task_start(&app, operation_id, "scan", "检查任务目录响应", &source_path);
+    ensure_source_directory_responsive(&source_path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     emit_task_start(&app, operation_id, "scan", "读取任务目录", &source_path);
@@ -685,6 +699,8 @@ async fn scan_source(
     operation_id: u64,
 ) -> Result<ScanResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
+    emit_task_start(&app, operation_id, "scan", "检查源目录响应", &path);
+    ensure_source_directory_responsive(&path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let index_cache = index_cache.inner().clone();
@@ -711,6 +727,8 @@ async fn load_episode(
     operation_id: u64,
 ) -> Result<EpisodeData, String> {
     auth.require_user().map_err(|error| error.to_string())?;
+    emit_task_start(&app, operation_id, "scan", "检查记录目录响应", &path);
+    ensure_source_directory_responsive(&path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let index_cache = index_cache.inner().clone();
@@ -720,7 +738,13 @@ async fn load_episode(
         let _progress = source::enter_operation_progress(operation_id);
         let root = Path::new(&path);
         match index_cache.index_for(root)? {
-            Some(index) => source::load_episode_with_summary(root, index.summary, &cancelled),
+            Some(index) => source::load_episode_with_index(root, &index, &cancelled),
+            None if source::is_segment_episode(root) => {
+                let index = source::scan_episode_index(root, Some(&app), &cancelled)?;
+                let data = source::load_episode_with_index(root, &index, &cancelled)?;
+                index_cache.store(index)?;
+                Ok(data)
+            }
             None => source::load_episode_preview(root, Some(&app), &cancelled),
         }
     })
@@ -740,6 +764,8 @@ async fn validate_episode(
     operation_id: u64,
 ) -> Result<EpisodeValidationResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
+    emit_task_start(&app, operation_id, "validate", "检查记录目录响应", &path);
+    ensure_source_directory_responsive(&path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let cache = cache.inner().clone();
@@ -1113,14 +1139,29 @@ fn get_video_source(
 async fn read_frame(
     app: AppHandle,
     auth: State<'_, AuthState>,
+    index_cache: State<'_, SourceIndexCache>,
     root: String,
     stream: String,
     frame_id: u64,
 ) -> Result<FramePayload, String> {
     auth.require_user().map_err(|error| error.to_string())?;
+    let index_cache = index_cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (mime_type, bytes) =
-            source::read_frame(Path::new(&root), &stream, frame_id, Some(&app))?;
+        let root_path = Path::new(&root);
+        let mut index = index_cache.index_for(root_path)?;
+        if index.is_none() && source::is_segment_episode(root_path) {
+            let cancelled = AtomicBool::new(false);
+            let scanned = source::scan_episode_index(root_path, Some(&app), &cancelled)?;
+            index_cache.store(scanned.clone())?;
+            index = Some(scanned);
+        }
+        let (mime_type, bytes) = source::read_frame_with_index(
+            root_path,
+            &stream,
+            frame_id,
+            index.as_ref(),
+            Some(&app),
+        )?;
         Ok::<FramePayload, error::AppError>(FramePayload {
             mime_type,
             data: BASE64.encode(bytes),

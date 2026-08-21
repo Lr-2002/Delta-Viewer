@@ -83,6 +83,11 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         app,
         cancelled,
     } = job;
+    if source::is_segment_episode(source_path) {
+        return Err(AppError::Message(
+            "segment BIN 或混合 MP4/BIN 记录当前支持只读扫描、检查与回放；MCAP、HDF5 和 LeRobot 导出尚未适配按偏移读取该源格式".into(),
+        ));
+    }
     if source::is_mp4_episode(source_path) {
         return Err(AppError::Message(
             "MP4 记录当前支持只读扫描与回放；MCAP、HDF5 和 LeRobot 导出尚未适配该源格式".into(),

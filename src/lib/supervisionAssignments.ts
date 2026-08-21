@@ -65,6 +65,28 @@ export function assignmentConflicts(
   });
 }
 
+export function validateBatchAssignmentTotals(
+  selectedUsernames: string[],
+  totals: Record<string, number>,
+  catalogTasks: SupervisionTaskSummary[],
+  users: SupervisionUserSummary[],
+): string | null {
+  const selected = new Set(selectedUsernames);
+  for (const [task, quantity] of Object.entries(totals)) {
+    const summary = catalogTasks.find((item) => item.task.toLowerCase() === task.toLowerCase());
+    if (!summary) continue;
+    const assignedOutsideSelection = users
+      .filter((user) => !selected.has(user.username))
+      .reduce((sum, user) => sum + Object.entries(user.assignedTaskQuantities)
+        .filter(([assigned]) => assigned.toLowerCase() === task.toLowerCase())
+        .reduce((taskSum, [, assignedQuantity]) => taskSum + assignedQuantity, 0), 0);
+    if (assignedOutsideSelection + quantity > summary.total) {
+      return `任务 ${displayTaskName(task)} 仍有 ${assignedOutsideSelection} 条分配在未选标注员，当前批量分配会超过文件夹总量；请同时选择这些标注员或先移除原分配`;
+    }
+  }
+  return null;
+}
+
 function displayTaskName(task: string): string {
   return task.replaceAll("_", " ");
 }

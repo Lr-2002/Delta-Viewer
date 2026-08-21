@@ -141,7 +141,12 @@ fn classify_error(message: &str) -> &'static str {
         || message.contains("空间不足")
     {
         "INSUFFICIENT_SPACE"
-    } else if normalized.contains("not found") || message.contains("路径不存在") {
+    } else if normalized.contains("source_unresponsive") {
+        "SOURCE_UNRESPONSIVE"
+    } else if normalized.contains("source_unavailable")
+        || normalized.contains("not found")
+        || message.contains("路径不存在")
+    {
         "PATH_NOT_FOUND"
     } else {
         "OPERATION_FAILED"
@@ -204,6 +209,10 @@ mod tests {
         assert_eq!(
             classify_error("Access is denied. (os error 5)"),
             "PERMISSION_DENIED"
+        );
+        assert_eq!(
+            classify_error("SOURCE_UNRESPONSIVE: source did not respond"),
+            "SOURCE_UNRESPONSIVE"
         );
     }
 

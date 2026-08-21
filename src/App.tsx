@@ -152,6 +152,7 @@ const UNAVAILABLE_FRAME_ISSUE_CODES = new Set([
   "FRAME_ID_MISMATCH",
   "DECODE_FAILED",
   "DIMENSION_MISMATCH",
+  "DUPLICATE_SEGMENT_NUMBER",
 ]);
 const FRAME_JUMP_ISSUE_CODE = "STATE_FRAME_GAP";
 const STATIC_TRAJECTORY_ISSUE_CODE = "TRAJECTORY_STATIC";
@@ -173,6 +174,10 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.58": "支持从日期顶层目录和 DOHC1TB 批量根目录直接加载混合 MP4/segment BIN 真实记录，并按 batch 时间轴同步回放。",
+  "0.17.57": "新增 segment BIN 文件夹直读：数值排序并连续加载全部分段，复用 T265 位姿与 JPEG 回放，并校验记录结构和 CRC。",
+  "0.17.56": "修复 NAS 网络挂载无响应时标注账号自动加载长期锁死界面的问题，失败后可继续退出、重新配置或导入数据。",
+  "0.17.55": "批量任务分配新增整文件夹与多任务数量双模式，截止时间改为日期并在当日显示“今天”。",
   "0.17.54": "新增任务运营驾驶舱、批量与速度建议分配、异常处置、独立质量复核、隐私安全报表和标注员快捷任务队列。",
   "0.17.53": "支持标注员注册和当前姓名修改；监管分配重复任务时确认，并默认选择任务文件夹全部数量。",
   "0.17.52": "新增个人任务抽屉、按日期标注记录和本机任务路径配置，优化监管全量分配与紧凑任务描述输入。",
@@ -348,6 +353,10 @@ function App() {
   const batchSelectionInitialized = useRef(false);
   const didAutoUpdate = useRef(false);
   const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
+  const availableStreams = useMemo(
+    () => data?.summary.streams.filter((stream) => stream.frameCount > 0) ?? [],
+    [data],
+  );
   const playbackFps = fpsOverride ?? estimatedFps;
 
   function beginOperation(): OperationToken | null {
@@ -545,9 +554,9 @@ function App() {
       root: data?.summary.root ?? null,
       frameId: currentFrame,
       settled: 0,
-      total: data?.summary.streams.length ?? 0,
+      total: availableStreams.length,
     });
-  }, [currentFrame, data?.summary.root, data?.summary.streams.length]);
+  }, [availableStreams.length, currentFrame, data?.summary.root]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -600,7 +609,7 @@ function App() {
 
     const tick = (nowMs: number) => {
       const current = frameRef.current;
-      const allStreamsSettled = data.summary.streams.every(
+      const allStreamsSettled = availableStreams.every(
         (stream) => settledFrameByStreamRef.current.get(stream.name) === current,
       );
       const frameIntervalElapsed = nowMs - lastAdvanceTimeMs >= frameDurationMs;
@@ -619,7 +628,7 @@ function App() {
 
     animationFrame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [clipEndFrame, data, playbackFps, playing, speed]);
+  }, [availableStreams, clipEndFrame, data, playbackFps, playing, speed]);
 
   async function openSource(path: string, autoLoad = false, assignment = assignedTasks) {
     const owner = beginOperation();
@@ -1887,8 +1896,8 @@ function App() {
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
                     </div>
                     <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
-                      <div className="camera-grid">
-                        {data.summary.streams.map((stream, index) => (
+                      <div className={`camera-grid stream-count-${availableStreams.length}`}>
+                        {availableStreams.map((stream, index) => (
                           <FramePanel
                             key={stream.name}
                             root={data.summary.root}
@@ -1902,13 +1911,13 @@ function App() {
                             onFrameSettled={(streamName, frameId) => {
                               settledFrameByStreamRef.current.set(streamName, frameId);
                               const root = data.summary.root;
-                              const settled = data.summary.streams.reduce(
+                              const settled = availableStreams.reduce(
                                 (count, stream) => count + (settledFrameByStreamRef.current.get(stream.name) === frameId ? 1 : 0),
                                 0,
                               );
                               setFrameRenderProgress((current) => current.root === root && current.frameId === frameId
                                 ? { ...current, settled }
-                                : { root, frameId, settled, total: data.summary.streams.length });
+                                : { root, frameId, settled, total: availableStreams.length });
                             }}
                             onFrameUnavailable={handleFrameUnavailable}
                           />
@@ -1929,7 +1938,7 @@ function App() {
                       settled={frameRenderProgress.root === data.summary.root && frameRenderProgress.frameId === currentFrame
                         ? frameRenderProgress.settled
                         : 0}
-                      total={data.summary.streams.length}
+                      total={availableStreams.length}
                     />
                     <AnnotationPanel
                       sourcePath={data.summary.root}
@@ -2292,6 +2301,7 @@ function operationErrorLabel(code: string): string {
     PERMISSION_DENIED: "权限错误",
     INSUFFICIENT_SPACE: "空间不足",
     PATH_NOT_FOUND: "路径失效",
+    SOURCE_UNRESPONSIVE: "网络目录无响应",
     FRAME_UNAVAILABLE: "帧不可用",
     OPERATION_FAILED: "操作失败",
   };

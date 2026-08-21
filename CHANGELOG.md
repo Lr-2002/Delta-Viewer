@@ -5,6 +5,59 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.58 - 2026-08-21
+
+- Load dated `hybrid-h264-jpeg-segment-v1` recording folders directly by
+  combining their top-level camera MP4 manifest with nested T265 segment BIN
+  images and poses on one batch-ID timeline.
+- Carry the hybrid timeline's first batch ID into native MP4 playback and
+  frame-extraction fallback, including 15 FPS streams on the 30 Hz pose clock,
+  while preserving the existing legacy MP4 and standalone segment loaders.
+- Validate the complete mounted `/media/descfly/DOHC1TB` batch: all 15 sealed
+  hybrid recordings scan, load and sample without format errors; the legacy MP4
+  remains discoverable, and three interrupted `jpeg-stream-v1` recordings that
+  contain only partial/zero-length outputs are reported as invalid data without
+  crashing.
+
+## 0.17.57 - 2026-08-21
+
+- Recognize folders containing any positive number of `segment-*.bin` files,
+  sort their numeric suffixes numerically, and load all records as one
+  continuous T265 episode while ignoring unrelated files.
+- Parse the observed `DHSG`/`DHSC` little-endian record container, reuse the
+  existing pose/JPEG models, and read JPEG frames on demand by indexed offset
+  with payload and whole-record CRC32 verification.
+- Report invalid names, sequence gaps, duplicate segment/frame numbers,
+  truncation, malformed pose JSON, CRC failures and JPEG decode failures
+  without crashing. Empty non-applicable camera streams no longer enter the
+  segment playback wait set.
+- Verify the loader against the mounted six-segment 1.385 GB production sample:
+  10,229 poses and 10,229 frames per T265 eye, including first/last frame reads
+  and fixed-percentile health validation.
+
+## 0.17.56 - 2026-08-21
+
+- Probe source directories in a bounded child process before scanning, loading,
+  validation or supervision task discovery. An unresponsive hard NFS/SMB mount
+  now fails after five seconds without trapping the desktop process in a
+  filesystem syscall.
+- Release the frontend operation state after source-probe failures so operator
+  logout, source reconfiguration, local imports and retries remain available.
+- Classify and display unresponsive network sources separately in local
+  operation history without changing or uploading source data.
+
+## 0.17.55 - 2026-08-21
+
+- Add two batch assignment modes: allocate every episode from multiple selected
+  task folders in one operation, or select multiple tasks and set an independent
+  total quantity for each task before even or speed-weighted distribution.
+- Validate batch totals against folder capacity and assignments held by
+  unselected operators, and submit each selected operator's complete updated
+  queue once per batch operation.
+- Replace assignment deadline time points with date-only deadlines. Store the
+  selected local date through the end of that day and label same-day deadlines
+  as `今天` in administrator and operator views.
+
 ## 0.17.54 - 2026-08-20
 
 - Add a privacy-bounded task operations cockpit with daily/cumulative/remaining

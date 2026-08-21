@@ -3,6 +3,7 @@ use crate::model::{
     EpisodeData, EpisodeSummary, ProgressPayload, RawStateRecord, ScanResult, StateRecord,
     StreamSummary, TaskProgressEvent, VideoSource, STREAM_NAMES,
 };
+use crate::segment_bin::{self, SegmentEpisodeIndex};
 use crate::storage;
 use blake3::Hasher;
 use image::ImageReader;
@@ -51,6 +52,7 @@ pub struct EpisodeIndex {
     pub summary: EpisodeSummary,
     pub fingerprint: String,
     pub stream_files: BTreeMap<String, StreamFiles>,
+    pub segment: Option<SegmentEpisodeIndex>,
 }
 
 struct IndexedFile {
@@ -121,8 +123,8 @@ pub fn load_episode(
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<EpisodeData> {
-    let summary = scan_episode(root, app, cancelled)?;
-    load_episode_with_summary(root, summary, cancelled)
+    let index = scan_episode_index(root, app, cancelled)?;
+    load_episode_with_index(root, &index, cancelled)
 }
 
 pub fn load_episode_preview(
@@ -134,6 +136,10 @@ pub fn load_episode_preview(
         return Err(AppError::MissingPath(root.display().to_string()));
     }
     storage::ensure_source_volume(&storage::volume_info(root)?)?;
+    if is_segment_episode(root) {
+        let index = scan_episode_index(root, app, cancelled)?;
+        return load_episode_with_index(root, &index, cancelled);
+    }
     let states = read_states(&root.join("states.jsonl"), cancelled)?;
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
     let mut frame_file_count = 0_u64;
@@ -187,6 +193,34 @@ pub fn load_episode_preview(
     })
 }
 
+pub fn load_episode_with_index(
+    root: &Path,
+    index: &EpisodeIndex,
+    cancelled: &AtomicBool,
+) -> AppResult<EpisodeData> {
+    if let Some(segment) = index.segment.as_ref() {
+        if !root.is_dir() {
+            return Err(AppError::MissingPath(root.display().to_string()));
+        }
+        storage::ensure_source_volume(&storage::volume_info(root)?)?;
+        let states = segment
+            .states
+            .iter()
+            .cloned()
+            .map(StateRecord::from)
+            .collect::<Vec<_>>();
+        let (skeleton, skeleton_error) =
+            crate::skeleton::load_optional_skeleton(root, &states, cancelled)?;
+        return Ok(EpisodeData {
+            summary: index.summary.clone(),
+            states,
+            skeleton,
+            skeleton_error,
+        });
+    }
+    load_episode_with_summary(root, index.summary.clone(), cancelled)
+}
+
 pub fn load_episode_with_summary(
     root: &Path,
     summary: EpisodeSummary,
@@ -208,14 +242,48 @@ pub fn load_episode_with_summary(
     })
 }
 
+#[cfg(test)]
 pub fn read_frame(
     root: &Path,
     stream: &str,
     frame_id: u64,
     app: Option<&AppHandle>,
 ) -> AppResult<(String, Vec<u8>)> {
+    read_frame_with_index(root, stream, frame_id, None, app)
+}
+
+pub fn read_frame_with_index(
+    root: &Path,
+    stream: &str,
+    frame_id: u64,
+    index: Option<&EpisodeIndex>,
+    app: Option<&AppHandle>,
+) -> AppResult<(String, Vec<u8>)> {
     if !STREAM_NAMES.contains(&stream) {
         return Err(AppError::InvalidStream(stream.to_string()));
+    }
+    if let Some(segment) = index
+        .and_then(|index| index.segment.as_ref())
+        .filter(|segment| segment.streams.contains_key(stream))
+    {
+        return Ok((
+            "image/jpeg".into(),
+            segment_bin::read_frame_payload(segment, stream, frame_id)?,
+        ));
+    }
+    if is_segment_episode(root) {
+        let cancelled = AtomicBool::new(false);
+        let index = scan_episode_index(root, None, &cancelled)?;
+        let segment = index
+            .segment
+            .as_ref()
+            .ok_or_else(|| AppError::Message("segment 索引建立失败".into()))?;
+        if segment.streams.contains_key(stream) {
+            return Ok((
+                "image/jpeg".into(),
+                segment_bin::read_frame_payload(segment, stream, frame_id)?,
+            ));
+        }
     }
     let stream_root = root.join(stream);
     if !is_regular_directory(&stream_root) {
@@ -251,7 +319,9 @@ fn read_mp4_frame(
         .get("fps")
         .and_then(|value| value.as_f64())
         .unwrap_or(60.0);
-    let target_index = ((frame_id as f64) * fps / 60.0).floor() as u64;
+    let relative_frame = frame_id.saturating_sub(manifest.timeline_start_frame);
+    let target_index =
+        ((relative_frame as f64) * fps / manifest.timeline_fps.max(1.0)).floor() as u64;
     let frame_count = stream_info
         .get("frame_count")
         .and_then(|value| value.as_u64())
@@ -314,6 +384,9 @@ fn read_mp4_frame(
 struct Mp4Manifest {
     segment_seconds: Option<f64>,
     streams: serde_json::Map<String, serde_json::Value>,
+    timeline_start_frame: u64,
+    timeline_fps: f64,
+    hybrid: bool,
 }
 
 fn read_mp4_manifest(root: &Path) -> AppResult<Option<Mp4Manifest>> {
@@ -322,7 +395,9 @@ fn read_mp4_manifest(root: &Path) -> AppResult<Option<Mp4Manifest>> {
         return Ok(None);
     }
     let value: serde_json::Value = serde_json::from_reader(BufReader::new(File::open(path)?))?;
-    if value.get("storage_format").and_then(|item| item.as_str()) != Some("h264-split-mp4-v1") {
+    let storage_format = value.get("storage_format").and_then(|item| item.as_str());
+    let hybrid = storage_format == Some("hybrid-h264-jpeg-segment-v1");
+    if storage_format != Some("h264-split-mp4-v1") && !hybrid {
         return Ok(None);
     }
     let streams = value
@@ -333,11 +408,55 @@ fn read_mp4_manifest(root: &Path) -> AppResult<Option<Mp4Manifest>> {
     Ok(Some(Mp4Manifest {
         segment_seconds: value.get("segment_seconds").and_then(|item| item.as_f64()),
         streams,
+        timeline_start_frame: if hybrid {
+            hybrid_timeline_start_frame(root).unwrap_or_default()
+        } else {
+            0
+        },
+        timeline_fps: if hybrid { 30.0 } else { 60.0 },
+        hybrid,
     }))
+}
+
+fn hybrid_timeline_start_frame(root: &Path) -> Option<u64> {
+    let path = root.join("t265/manifest.json");
+    let value: serde_json::Value =
+        serde_json::from_reader(BufReader::new(File::open(path).ok()?)).ok()?;
+    value
+        .get("segments")?
+        .as_array()?
+        .first()?
+        .get("first_batch_id")?
+        .as_u64()
+}
+
+fn segment_folder_for_episode(root: &Path) -> Option<PathBuf> {
+    if segment_bin::is_segment_folder(root) {
+        return Some(root.to_path_buf());
+    }
+    let nested = root.join("t265/segments");
+    read_mp4_manifest(root)
+        .ok()
+        .flatten()
+        .is_some_and(|manifest| manifest.hybrid && segment_bin::is_segment_folder(&nested))
+        .then_some(nested)
 }
 
 pub(crate) fn is_mp4_episode(root: &Path) -> bool {
     read_mp4_manifest(root).ok().flatten().is_some()
+}
+
+pub(crate) fn is_segment_episode(root: &Path) -> bool {
+    segment_folder_for_episode(root).is_some()
+}
+
+pub(crate) fn is_mp4_stream(root: &Path, stream: &str) -> bool {
+    read_mp4_manifest(root)
+        .ok()
+        .flatten()
+        .and_then(|manifest| manifest.streams.get(stream).cloned())
+        .and_then(|info| info.get("frame_count").and_then(|value| value.as_u64()))
+        .is_some_and(|frame_count| frame_count > 0)
 }
 
 pub(crate) fn video_source(root: &Path, stream: &str) -> AppResult<VideoSource> {
@@ -379,6 +498,7 @@ pub(crate) fn video_source(root: &Path, stream: &str) -> AppResult<VideoSource> 
     Ok(VideoSource {
         fps,
         segment_seconds: manifest.segment_seconds.unwrap_or(300.0).max(1.0),
+        start_frame: manifest.timeline_start_frame,
         paths,
     })
 }
@@ -401,13 +521,63 @@ pub fn scan_episode_index(
     }
 
     storage::ensure_source_volume(&storage::volume_info(root)?)?;
-    let indexed_files = collect_indexed_files(root, cancelled)?;
+    let segment_folder = segment_folder_for_episode(root);
+    let segment = match segment_folder.as_deref() {
+        Some(folder) => segment_bin::scan_segment_folder(folder, cancelled)?,
+        None => None,
+    };
+    let direct_segment = segment_folder.as_deref() == Some(root);
+    let indexed_files = if direct_segment {
+        collect_segment_indexed_files(root, cancelled)?
+    } else {
+        collect_indexed_files(root, cancelled)?
+    };
     let total_files = indexed_files.len() as u64;
     let total_bytes = indexed_files
         .iter()
         .map(|file| file.len)
         .fold(0_u64, u64::saturating_add);
     let fingerprint = fingerprint_indexed_files(&indexed_files);
+    if let Some(segment) = segment {
+        let mp4_manifest = read_mp4_manifest(root)?;
+        let streams = STREAM_NAMES
+            .iter()
+            .map(|stream_name| {
+                if segment.streams.contains_key(*stream_name) {
+                    segment_stream_summary(&segment, stream_name)
+                } else if let Some(manifest) = mp4_manifest.as_ref() {
+                    Ok(mp4_stream_summary(root, stream_name, manifest))
+                } else {
+                    Ok(empty_stream_summary(stream_name))
+                }
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        let state_count = segment.states.len() as u64;
+        let start_time_ns = segment
+            .states
+            .first()
+            .map(|state| state.capture_time_ns.to_string());
+        let end_time_ns = segment
+            .states
+            .last()
+            .map(|state| state.capture_time_ns.to_string());
+        return Ok(EpisodeIndex {
+            summary: EpisodeSummary {
+                root: root.display().to_string(),
+                name: episode_name(root),
+                indexed: true,
+                total_files,
+                total_bytes,
+                state_count,
+                start_time_ns,
+                end_time_ns,
+                streams,
+            },
+            fingerprint,
+            stream_files: BTreeMap::new(),
+            segment: Some(segment),
+        });
+    }
     let states_path = root.join("states.jsonl");
     let (state_count, start_time_ns, end_time_ns) = summarize_states(&states_path, cancelled)?;
 
@@ -461,11 +631,75 @@ pub fn scan_episode_index(
         },
         fingerprint,
         stream_files: stream_files_by_name,
+        segment: None,
+    })
+}
+
+fn segment_stream_summary(
+    segment: &SegmentEpisodeIndex,
+    stream_name: &str,
+) -> AppResult<StreamSummary> {
+    let Some(frames) = segment.streams.get(stream_name) else {
+        return Ok(empty_stream_summary(stream_name));
+    };
+    let frame_ids = frames
+        .iter()
+        .map(|frame| frame.frame_id)
+        .collect::<BTreeSet<_>>();
+    let first_frame = frame_ids.first().copied();
+    let last_frame = frame_ids.last().copied();
+    let missing_frame_count = match (first_frame, last_frame) {
+        (Some(first), Some(last)) => (u128::from(last) - u128::from(first) + 1)
+            .saturating_sub(frame_ids.len() as u128)
+            .min(u128::from(u64::MAX)) as u64,
+        _ => 0,
+    };
+    let missing_frames = match (first_frame, last_frame) {
+        (Some(first), Some(last)) => (first..=last)
+            .filter(|frame| !frame_ids.contains(frame))
+            .take(2048)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let dimensions = frames.first().map_or(Ok(None), |frame| {
+        let bytes = segment_bin::read_frame_at(segment, frame)?;
+        let image = image::load_from_memory(&bytes).map_err(|error| {
+            AppError::Message(format!(
+                "SEGMENT_BIN_INVALID: {stream_name} 首帧 {} 无法解码: {error}",
+                frame.frame_id
+            ))
+        })?;
+        Ok::<Option<(u32, u32, u8)>, AppError>(Some((
+            image.width(),
+            image.height(),
+            image.color().channel_count(),
+        )))
+    })?;
+    Ok(StreamSummary {
+        name: stream_name.to_string(),
+        label: stream_label(stream_name).to_string(),
+        frame_count: frame_ids.len() as u64,
+        first_frame,
+        last_frame,
+        missing_frames,
+        missing_frame_count,
+        total_bytes: frames
+            .iter()
+            .map(|frame| u64::from(frame.payload_len))
+            .sum(),
+        width: dimensions.map(|value| value.0),
+        height: dimensions.map(|value| value.1),
+        channels: dimensions.map(|value| value.2),
     })
 }
 
 fn mp4_stream_summary(root: &Path, stream_name: &str, manifest: &Mp4Manifest) -> StreamSummary {
     let info = manifest.streams.get(stream_name);
+    let fps = info
+        .and_then(|item| item.get("fps"))
+        .and_then(|item| item.as_f64())
+        .unwrap_or(manifest.timeline_fps)
+        .max(1.0);
     let frame_count = info
         .and_then(|item| item.get("frame_count"))
         .and_then(|item| item.as_u64())
@@ -483,12 +717,21 @@ fn mp4_stream_summary(root: &Path, stream_name: &str, manifest: &Mp4Manifest) ->
                 .map(|metadata| metadata.len())
                 .sum()
         });
+    let first_frame = (frame_count > 0).then_some(manifest.timeline_start_frame);
+    let last_frame = if manifest.hybrid && frame_count > 0 {
+        let timeline_span = ((frame_count as f64) * manifest.timeline_fps / fps).ceil() as u64;
+        manifest
+            .timeline_start_frame
+            .checked_add(timeline_span.saturating_sub(1))
+    } else {
+        frame_count.checked_sub(1)
+    };
     StreamSummary {
         name: stream_name.to_string(),
         label: stream_label(stream_name).to_string(),
         frame_count,
-        first_frame: (frame_count > 0).then_some(0),
-        last_frame: frame_count.checked_sub(1),
+        first_frame,
+        last_frame,
         missing_frames: Vec::new(),
         missing_frame_count: 0,
         total_bytes,
@@ -527,8 +770,43 @@ pub fn collect_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathB
 
 pub fn episode_fingerprint(root: &Path, cancelled: &AtomicBool) -> AppResult<String> {
     storage::ensure_source_volume(&storage::volume_info(root)?)?;
-    let files = collect_indexed_files(root, cancelled)?;
+    let files = if segment_bin::is_segment_folder(root) {
+        collect_segment_indexed_files(root, cancelled)?
+    } else {
+        collect_indexed_files(root, cancelled)?
+    };
     Ok(fingerprint_indexed_files(&files))
+}
+
+fn collect_segment_indexed_files(
+    root: &Path,
+    cancelled: &AtomicBool,
+) -> AppResult<Vec<IndexedFile>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(root)? {
+        check_cancelled(cancelled)?;
+        let entry = entry?;
+        if !entry.file_type()?.is_file()
+            || segment_bin::segment_number_from_name(&entry.file_name()).is_none()
+        {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        let modified_ns = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        files.push(IndexedFile {
+            path: entry.path(),
+            relative: entry.file_name().to_string_lossy().into_owned(),
+            len: metadata.len(),
+            modified_ns,
+        });
+    }
+    files.sort_by(|left, right| left.relative.cmp(&right.relative));
+    Ok(files)
 }
 
 fn collect_indexed_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<IndexedFile>> {
@@ -620,8 +898,13 @@ fn inspect_episode_directory(
                 return Ok((true, Vec::new()));
             }
             child_directories.push(entry.path());
-        } else if file_type.is_file() && entry.file_name() == OsStr::new("states.jsonl") {
-            return Ok((true, Vec::new()));
+        } else if file_type.is_file() {
+            let name = entry.file_name();
+            if name == OsStr::new("states.jsonl")
+                || segment_bin::segment_number_from_name(&name).is_some()
+            {
+                return Ok((true, Vec::new()));
+            }
         }
     }
     Ok((false, child_directories))
@@ -1004,11 +1287,12 @@ pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_files, collect_stream_files, load_episode, load_episode_preview, read_frame,
-        scan_episode, scan_source_catalog, video_source,
+        collect_files, collect_stream_files, load_episode, load_episode_preview,
+        load_episode_with_index, read_frame, read_frame_with_index, scan_episode,
+        scan_episode_index, scan_source_catalog, video_source,
     };
     use super::{episode_fingerprint, read_states};
-    use std::fs;
+    use std::fs::{self, File};
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1083,6 +1367,64 @@ mod tests {
         assert_eq!(preview.summary.streams[0].width, None);
 
         fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn loads_hybrid_mp4_and_nested_segment_fixture_from_the_record_root() {
+        let root = test_output("hybrid-record-root");
+        fs::create_dir_all(root.join("cam0")).unwrap();
+        fs::create_dir_all(root.join("t265/segments")).unwrap();
+        fs::write(root.join("cam0/cam0-00000.mp4"), b"test mp4 placeholder").unwrap();
+        fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "storage_format": "hybrid-h264-jpeg-segment-v1",
+                "batch_count": 1,
+                "streams": {
+                    "cam0": {
+                        "fps": 30,
+                        "frame_count": 1,
+                        "segments": [{"path": "cam0/cam0-00000.mp4", "size": 20}],
+                        "size": 20
+                    },
+                    "cam1": {"fps": 15, "frame_count": 0, "segments": [], "size": 0},
+                    "cam2": {"fps": 15, "frame_count": 0, "segments": [], "size": 0}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("t265/manifest.json"),
+            br#"{"storage_format":"jpeg-segment-v1","segments":[{"first_batch_id":1}]}"#,
+        )
+        .unwrap();
+        crate::segment_bin::write_test_segment(&root.join("t265/segments/segment-000000.bin"), 1);
+
+        let cancelled = AtomicBool::new(false);
+        let index = scan_episode_index(&root, None, &cancelled).unwrap();
+        assert!(index.segment.is_some());
+        assert_eq!(index.summary.state_count, 1);
+        assert_eq!(index.summary.streams[0].frame_count, 1);
+        assert_eq!(index.summary.streams[0].first_frame, Some(1));
+        assert_eq!(index.summary.streams[3].frame_count, 1);
+        let data = load_episode_with_index(&root, &index, &cancelled).unwrap();
+        assert_eq!(data.states[0].frame_id, 1);
+        let video = video_source(&root, "cam0").unwrap();
+        assert_eq!(video.start_frame, 1);
+        assert_eq!(video.paths.len(), 1);
+        let (_, bytes) = read_frame_with_index(&root, "t265_left", 1, Some(&index), None).unwrap();
+        let image = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((image.width(), image.height()), (1, 1));
+        let report =
+            crate::validation::validate_episode_with_index(&root, &index, None, &cancelled)
+                .unwrap();
+        assert!(report
+            .issues
+            .iter()
+            .all(|issue| issue.severity != crate::model::Severity::Error));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1205,6 +1547,154 @@ mod tests {
             .issues
             .iter()
             .all(|issue| issue.code != "COUNT_MISMATCH"));
+    }
+
+    #[test]
+    #[ignore = "requires a private jpeg-segment-v1 folder"]
+    fn loads_private_segment_folder_as_one_continuous_episode() {
+        let root = PathBuf::from(
+            std::env::var_os("DOHC_SEGMENT_SAMPLE_ROOT")
+                .expect("DOHC_SEGMENT_SAMPLE_ROOT must point to the mounted segments folder"),
+        );
+        let cancelled = AtomicBool::new(false);
+        let catalog = scan_source_catalog(&root, None, &cancelled).unwrap();
+        assert_eq!(catalog.episodes.len(), 1);
+        assert_eq!(catalog.episodes[0].root, root.display().to_string());
+
+        let index = scan_episode_index(&root, None, &cancelled).unwrap();
+        assert_eq!(index.summary.total_files, 6);
+        assert_eq!(index.summary.total_bytes, 1_385_226_321);
+        assert_eq!(index.summary.state_count, 10_229);
+        assert_eq!(
+            index.summary.start_time_ns.as_deref(),
+            Some("1787292420820316679")
+        );
+        assert_eq!(
+            index.summary.end_time_ns.as_deref(),
+            Some("1787292761793255497")
+        );
+        assert_eq!(index.summary.streams[3].frame_count, 10_229);
+        assert_eq!(index.summary.streams[4].frame_count, 10_229);
+        assert_eq!(index.summary.streams[3].first_frame, Some(1));
+        assert_eq!(index.summary.streams[3].last_frame, Some(10_229));
+        assert_eq!(
+            (
+                index.summary.streams[3].width,
+                index.summary.streams[3].height
+            ),
+            (Some(848), Some(800))
+        );
+
+        let data = load_episode_with_index(&root, &index, &cancelled).unwrap();
+        assert_eq!(data.states.len(), 10_229);
+        assert_eq!(data.states.first().unwrap().frame_id, 1);
+        assert_eq!(data.states.last().unwrap().frame_id, 10_229);
+        for frame_id in [1, 10_229] {
+            let (_, bytes) =
+                read_frame_with_index(&root, "t265_left", frame_id, Some(&index), None).unwrap();
+            let image = image::load_from_memory(&bytes).unwrap();
+            assert_eq!((image.width(), image.height()), (848, 800));
+        }
+
+        let report =
+            crate::validation::validate_episode_with_index(&root, &index, None, &cancelled)
+                .unwrap();
+        assert_eq!(report.parsed_state_count, 10_229);
+        assert!(report.streams[..3]
+            .iter()
+            .all(|stream| stream.checked_frames == 0));
+        assert_eq!(
+            report
+                .streams
+                .iter()
+                .find(|stream| stream.name == "t265_left")
+                .unwrap()
+                .checked_frames,
+            5
+        );
+        assert!(report
+            .issues
+            .iter()
+            .all(|issue| issue.severity != crate::model::Severity::Error));
+    }
+
+    #[test]
+    #[ignore = "requires the private dated recording batch"]
+    fn loads_private_dated_hybrid_recordings_from_their_top_level_folders() {
+        let batch_root = PathBuf::from(
+            std::env::var_os("DOHC_DATED_BATCH_ROOT")
+                .expect("DOHC_DATED_BATCH_ROOT must point to the mounted recording batch"),
+        );
+        let cancelled = AtomicBool::new(false);
+        let catalog = scan_source_catalog(&batch_root, None, &cancelled).unwrap();
+        assert_eq!(catalog.episodes.len(), 19);
+        assert!(catalog
+            .episodes
+            .iter()
+            .all(|episode| episode.name.starts_with("2026")));
+
+        let mut hybrid_count = 0;
+        let mut incomplete_count = 0;
+        let mut legacy_mp4_count = 0;
+        for episode in &catalog.episodes {
+            let manifest: serde_json::Value = serde_json::from_reader(
+                File::open(PathBuf::from(&episode.root).join("manifest.json")).unwrap(),
+            )
+            .unwrap();
+            match manifest
+                .get("storage_format")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+            {
+                "hybrid-h264-jpeg-segment-v1" => {
+                    hybrid_count += 1;
+                    let root = PathBuf::from(&episode.root);
+                    let index = scan_episode_index(&root, None, &cancelled).unwrap();
+                    assert!(index.segment.is_some(), "{}", episode.name);
+                    assert!(index.summary.state_count > 0, "{}", episode.name);
+                    assert!(index.summary.streams[0].frame_count > 0, "{}", episode.name);
+                    assert!(index.summary.streams[3].frame_count > 0, "{}", episode.name);
+                    assert!(index.summary.streams[4].frame_count > 0, "{}", episode.name);
+                    let first_frame = index.summary.streams[3].first_frame.unwrap();
+                    let last_frame = index.summary.streams[3].last_frame.unwrap();
+                    assert_eq!(index.summary.streams[0].first_frame, Some(first_frame));
+                    let video = video_source(&root, "cam0").unwrap();
+                    assert_eq!(video.start_frame, first_frame);
+                    assert!(!video.paths.is_empty());
+                    for frame_id in [first_frame, last_frame] {
+                        let (_, bytes) =
+                            read_frame_with_index(&root, "t265_left", frame_id, Some(&index), None)
+                                .unwrap();
+                        image::load_from_memory(&bytes).unwrap();
+                    }
+                    let report = crate::validation::validate_episode_with_index(
+                        &root, &index, None, &cancelled,
+                    )
+                    .unwrap();
+                    assert!(
+                        report
+                            .issues
+                            .iter()
+                            .all(|issue| issue.severity != crate::model::Severity::Error),
+                        "{}: {:?}",
+                        episode.name,
+                        report.issues
+                    );
+                }
+                "jpeg-stream-v1" => {
+                    incomplete_count += 1;
+                    let root = PathBuf::from(&episode.root);
+                    let report =
+                        crate::validation::validate_episode(&root, None, &cancelled).unwrap();
+                    assert_eq!(report.status, "error");
+                }
+                "h264-split-mp4-v1" => legacy_mp4_count += 1,
+                format => panic!("unexpected storage format {format}"),
+            }
+        }
+        assert_eq!(hybrid_count, 15);
+        assert_eq!(incomplete_count, 3);
+        assert_eq!(legacy_mp4_count, 1);
     }
 
     fn test_output(label: &str) -> PathBuf {

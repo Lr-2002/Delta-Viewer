@@ -94,7 +94,8 @@ export function FramePanel({
     : frameId;
   const requestKey = frameRequestKey({ root, stream: stream.name, frameId: fallbackFrameId });
   const requestedKeyRef = useRef(requestKey);
-  const timelineSeconds = frameId / Math.max(playbackFps, 1);
+  const timelineSeconds = Math.max(0, frameId - (nativeVideo?.startFrame ?? 0))
+    / Math.max(playbackFps, 1);
   const videoSegmentIndex = nativeVideo
     ? Math.min(nativeVideo.paths.length - 1, Math.floor(timelineSeconds / nativeVideo.segmentSeconds))
     : 0;

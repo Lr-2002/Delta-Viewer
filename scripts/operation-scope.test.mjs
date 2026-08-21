@@ -98,3 +98,29 @@ test("a delayed cancellation cannot transfer to a later operation id", () => {
   assert.equal(scope.requestCancellation(first), false);
   assert.equal(scope.isCancellationRequested(second), false);
 });
+
+test("a failed source preflight releases the interface for the next action", async () => {
+  const scope = new OperationScope();
+  const sourceLoad = scope.begin();
+  const state = { busy: true, progress: "checking source", error: "" };
+
+  assert.ok(sourceLoad);
+  try {
+    await Promise.reject(new Error("SOURCE_UNRESPONSIVE: source did not respond"));
+  } catch (error) {
+    state.error = error.message;
+  } finally {
+    if (scope.finish(sourceLoad)) {
+      state.busy = false;
+      state.progress = "";
+    }
+  }
+
+  assert.deepEqual(state, {
+    busy: false,
+    progress: "",
+    error: "SOURCE_UNRESPONSIVE: source did not respond",
+  });
+  const retry = scope.begin();
+  assert.ok(retry, "logout, source selection, or import must be able to start after failure");
+});

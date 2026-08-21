@@ -1044,12 +1044,13 @@ dependencies = [
 
 [[package]]
 name = "dohc-viewer"
-version = "0.17.54"
+version = "0.17.58"
 dependencies = [
  "arrow-array",
  "base64 0.22.1",
  "blake3",
  "bytes",
+ "crc32fast",
  "foxglove",
  "fs2",
  "futures-util",

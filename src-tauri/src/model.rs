@@ -806,6 +806,7 @@ pub struct FramePayload {
 pub struct VideoSource {
     pub fps: f64,
     pub segment_seconds: f64,
+    pub start_frame: u64,
     pub paths: Vec<String>,
 }
 
