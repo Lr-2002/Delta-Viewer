@@ -9,9 +9,11 @@ mod identity;
 mod importer;
 mod model;
 mod operation_history;
+mod segment_bin;
 mod skeleton;
 mod source;
 mod source_index_cache;
+mod source_path_probe;
 mod storage;
 pub mod stress;
 mod supervision;
@@ -25,14 +27,15 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use identity::AuthState;
 use model::{
-    AnnotatedEpisodeSummary, AnnotationAuditRequest, AppUpdateInfo, AuthStatus,
-    BatchExportCommandRequest, BatchExportResult, CreateTaskRequest, EpisodeAnnotation,
-    EpisodeData, EpisodeValidationResult, ExportCommandRequest, ExportResult, FramePayload,
-    ImportPreflight, ImportResult, LoginRequest, OperationErrorRecord, PartialImport,
-    ProgressPayload, RecordOperationErrorRequest, RegisterRequest, ReportExportResult,
-    SaveAnnotationRequest, ScanResult, SupervisionAccount, SupervisionAnnotationCatalog,
-    SupervisionDashboardData, SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition,
-    UpdateDisplayNameRequest, UserCenterStatus, UserIdentity, VideoSource, WorkspaceMode,
+    AnnotatedEpisodeSummary, AnnotationAuditRequest, AppUpdateInfo, AssignmentPlan,
+    AssignmentTransferResult, AuthStatus, BatchExportCommandRequest, BatchExportResult,
+    CreateTaskRequest, EpisodeAnnotation, EpisodeData, EpisodeValidationResult,
+    ExportCommandRequest, ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest,
+    OperationErrorRecord, PartialImport, ProgressPayload, QualityReview, QualityReviewRequest,
+    RecordOperationErrorRequest, RegisterRequest, ReportExportResult, SaveAnnotationRequest,
+    ScanResult, SupervisionAccount, SupervisionAnnotationCatalog, SupervisionDashboardData,
+    SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition, UpdateDisplayNameRequest,
+    UserCenterStatus, UserIdentity, VideoSource, WorkspaceMode,
 };
 use source_index_cache::SourceIndexCache;
 use std::path::{Path, PathBuf};
@@ -150,6 +153,16 @@ fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
         .map_err(|error| format!("无法定位应用本地数据目录: {error}"))
+}
+
+async fn ensure_source_directory_responsive(path: &str) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    tauri::async_runtime::spawn_blocking(move || {
+        source_path_probe::ensure_directory_responsive(&path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -309,6 +322,7 @@ async fn set_supervision_assigned_tasks(
     auth: State<'_, AuthState>,
     username: String,
     assigned_task_quantities: std::collections::BTreeMap<String, u64>,
+    assignment_plans: Option<Vec<AssignmentPlan>>,
 ) -> Result<SupervisionAccount, String> {
     let data_root = app_data_root(&app)?;
     user_center::set_assigned_tasks(
@@ -316,9 +330,57 @@ async fn set_supervision_assigned_tasks(
         auth.inner(),
         &username,
         assigned_task_quantities,
+        assignment_plans,
     )
     .await
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn update_operations_alert(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    alert_id: String,
+    status: String,
+    note: String,
+) -> Result<(), String> {
+    let data_root = app_data_root(&app)?;
+    user_center::update_operations_alert(&data_root, auth.inner(), &alert_id, &status, &note)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn transfer_supervision_assignment(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    from_username: String,
+    to_username: String,
+    task: String,
+) -> Result<AssignmentTransferResult, String> {
+    let data_root = app_data_root(&app)?;
+    user_center::transfer_assignment(
+        &data_root,
+        auth.inner(),
+        &from_username,
+        &to_username,
+        &task,
+    )
+    .await
+    .map(|(source, target)| AssignmentTransferResult { source, target })
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_quality_review(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    request: QualityReviewRequest,
+) -> Result<QualityReview, String> {
+    let data_root = app_data_root(&app)?;
+    user_center::create_quality_review(&data_root, auth.inner(), request)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -335,6 +397,8 @@ async fn scan_supervision_tasks(
     if user.role.as_deref() != Some("admin") {
         return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账户".into());
     }
+    emit_task_start(&app, operation_id, "scan", "检查任务目录响应", &source_path);
+    ensure_source_directory_responsive(&source_path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     emit_task_start(&app, operation_id, "scan", "读取任务目录", &source_path);
@@ -635,6 +699,8 @@ async fn scan_source(
     operation_id: u64,
 ) -> Result<ScanResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
+    emit_task_start(&app, operation_id, "scan", "检查源目录响应", &path);
+    ensure_source_directory_responsive(&path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let index_cache = index_cache.inner().clone();
@@ -661,6 +727,8 @@ async fn load_episode(
     operation_id: u64,
 ) -> Result<EpisodeData, String> {
     auth.require_user().map_err(|error| error.to_string())?;
+    emit_task_start(&app, operation_id, "scan", "检查记录目录响应", &path);
+    ensure_source_directory_responsive(&path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let index_cache = index_cache.inner().clone();
@@ -670,7 +738,13 @@ async fn load_episode(
         let _progress = source::enter_operation_progress(operation_id);
         let root = Path::new(&path);
         match index_cache.index_for(root)? {
-            Some(index) => source::load_episode_with_summary(root, index.summary, &cancelled),
+            Some(index) => source::load_episode_with_index(root, &index, &cancelled),
+            None if source::is_segment_episode(root) => {
+                let index = source::scan_episode_index(root, Some(&app), &cancelled)?;
+                let data = source::load_episode_with_index(root, &index, &cancelled)?;
+                index_cache.store(index)?;
+                Ok(data)
+            }
             None => source::load_episode_preview(root, Some(&app), &cancelled),
         }
     })
@@ -690,6 +764,8 @@ async fn validate_episode(
     operation_id: u64,
 ) -> Result<EpisodeValidationResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
+    emit_task_start(&app, operation_id, "validate", "检查记录目录响应", &path);
+    ensure_source_directory_responsive(&path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let cache = cache.inner().clone();
@@ -1063,14 +1139,29 @@ fn get_video_source(
 async fn read_frame(
     app: AppHandle,
     auth: State<'_, AuthState>,
+    index_cache: State<'_, SourceIndexCache>,
     root: String,
     stream: String,
     frame_id: u64,
 ) -> Result<FramePayload, String> {
     auth.require_user().map_err(|error| error.to_string())?;
+    let index_cache = index_cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (mime_type, bytes) =
-            source::read_frame(Path::new(&root), &stream, frame_id, Some(&app))?;
+        let root_path = Path::new(&root);
+        let mut index = index_cache.index_for(root_path)?;
+        if index.is_none() && source::is_segment_episode(root_path) {
+            let cancelled = AtomicBool::new(false);
+            let scanned = source::scan_episode_index(root_path, Some(&app), &cancelled)?;
+            index_cache.store(scanned.clone())?;
+            index = Some(scanned);
+        }
+        let (mime_type, bytes) = source::read_frame_with_index(
+            root_path,
+            &stream,
+            frame_id,
+            index.as_ref(),
+            Some(&app),
+        )?;
         Ok::<FramePayload, error::AppError>(FramePayload {
             mime_type,
             data: BASE64.encode(bytes),
@@ -1107,6 +1198,9 @@ pub fn run() {
             record_annotation_audit,
             get_supervision_dashboard,
             set_supervision_assigned_tasks,
+            update_operations_alert,
+            transfer_supervision_assignment,
+            create_quality_review,
             scan_supervision_tasks,
             update_supervision_task_detail,
             import_supervision_task_details,

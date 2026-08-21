@@ -6,7 +6,8 @@ use crate::model::{
     VALIDATION_REPORT_FORMAT_VERSION,
 };
 use crate::source::{
-    collect_stream_files, emit_progress, is_regular_file, scan_episode, EpisodeIndex,
+    collect_stream_files, emit_progress, is_regular_file, scan_episode, scan_episode_index,
+    EpisodeIndex,
 };
 use crate::{importer, storage};
 use image::{DynamicImage, GenericImageView, ImageReader};
@@ -95,6 +96,25 @@ fn validate_episode_with_mode(
     progress_task: &str,
     cached_index: Option<&EpisodeIndex>,
 ) -> AppResult<ValidationReport> {
+    let owned_index = if cached_index.is_none() && crate::source::is_segment_episode(root) {
+        Some(scan_episode_index(root, app, cancelled)?)
+    } else {
+        None
+    };
+    let cached_index = cached_index.or(owned_index.as_ref());
+    if cached_index
+        .and_then(|index| index.segment.as_ref())
+        .is_some()
+    {
+        return validate_segment_episode(
+            root,
+            cached_index.expect("segment index exists"),
+            app,
+            cancelled,
+            image_validation_mode,
+            progress_task,
+        );
+    }
     let started = Instant::now();
     let summary = match cached_index {
         Some(index) => index.summary.clone(),
@@ -439,6 +459,313 @@ fn validate_episode_with_mode(
         auto_report_path: None,
         status: status.into(),
         checked_files,
+        elapsed_ms: started.elapsed().as_millis(),
+        issues,
+        streams: stream_reports,
+    })
+}
+
+fn validate_segment_episode(
+    root: &Path,
+    index: &EpisodeIndex,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+    image_validation_mode: ImageValidationMode,
+    progress_task: &str,
+) -> AppResult<ValidationReport> {
+    let started = Instant::now();
+    let segment = index
+        .segment
+        .as_ref()
+        .ok_or_else(|| AppError::Message("segment 索引缺失".into()))?;
+    let summary = &index.summary;
+    let states = &segment.states;
+    let mut issues = segment.issues.clone();
+    for state in states {
+        if state.frame_id < 0 {
+            issues.push(issue(
+                Severity::Error,
+                "INVALID_FRAME_ID",
+                "states",
+                "segment pose 的 batch_id 为负数",
+            ));
+        }
+        if state.capture_time_ns < 0 {
+            issues.push(issue_at(
+                Severity::Error,
+                "INVALID_TIMESTAMP",
+                "states",
+                "segment pose 的 capture_time_ns 为负数",
+                state.frame_id,
+            ));
+        }
+        if !state_is_finite(state) {
+            issues.push(issue_at(
+                Severity::Error,
+                "NON_FINITE_STATE",
+                "states",
+                "segment pose 包含 NaN 或 Infinity",
+                state.frame_id,
+            ));
+        }
+    }
+    let state_frame_rate = check_state_sequence(states, &mut issues);
+    let state_frame_ids = states
+        .iter()
+        .filter_map(|state| u64::try_from(state.frame_id).ok())
+        .collect::<BTreeSet<_>>();
+    let total_frames = summary
+        .streams
+        .iter()
+        .filter(|stream| segment.streams.contains_key(&stream.name))
+        .map(|stream| match image_validation_mode {
+            ImageValidationMode::Sampled => stream.frame_count.min(5),
+            ImageValidationMode::Full => stream.frame_count,
+        })
+        .sum::<u64>();
+    let mut total_checked_frames = 0_u64;
+    let mut stream_reports = Vec::with_capacity(STREAM_NAMES.len());
+
+    for stream in &summary.streams {
+        check_cancelled(cancelled)?;
+        let is_expected_segment_image_stream =
+            stream.name == "t265_left" || stream.name == "t265_right";
+        if stream.frame_count == 0 {
+            if is_expected_segment_image_stream {
+                issues.push(issue(
+                    Severity::Error,
+                    "EMPTY_STREAM",
+                    &stream.name,
+                    "segment 数据中缺少该 T265 图像流",
+                ));
+            }
+            stream_reports.push(StreamValidation {
+                name: stream.name.clone(),
+                checked_frames: 0,
+                decode_failures: 0,
+                status: if is_expected_segment_image_stream {
+                    "error".into()
+                } else {
+                    "ok".into()
+                },
+            });
+            continue;
+        }
+        if !segment.streams.contains_key(&stream.name)
+            && crate::source::is_mp4_stream(root, &stream.name)
+        {
+            stream_reports.push(StreamValidation {
+                name: stream.name.clone(),
+                checked_frames: 0,
+                decode_failures: 0,
+                status: "ok".into(),
+            });
+            continue;
+        }
+        let frames = segment
+            .streams
+            .get(&stream.name)
+            .ok_or_else(|| AppError::Message(format!("segment 流索引缺失: {}", stream.name)))?;
+        let stream_frame_ids = frames
+            .iter()
+            .map(|frame| frame.frame_id)
+            .collect::<BTreeSet<_>>();
+        let mut stream_has_error = false;
+        let mut stream_has_warning = false;
+        if stream.missing_frame_count > 0 {
+            issues.push(issue_at(
+                Severity::Warning,
+                "MISSING_FRAMES",
+                &stream.name,
+                &format!("缺少 {} 个连续帧位置", stream.missing_frame_count),
+                stream
+                    .missing_frames
+                    .first()
+                    .and_then(|frame| i64::try_from(*frame).ok())
+                    .unwrap_or_default(),
+            ));
+            stream_has_warning = true;
+        }
+        if !state_frame_ids.is_empty()
+            && state_frame_ids.len() == stream_frame_ids.len()
+            && state_frame_ids != stream_frame_ids
+        {
+            if let Some(frame_id) = state_frame_ids
+                .symmetric_difference(&stream_frame_ids)
+                .next()
+                .copied()
+            {
+                issues.push(issue_at(
+                    Severity::Error,
+                    "FRAME_ID_MISMATCH",
+                    &stream.name,
+                    "segment 图像帧号集合与 pose 帧号集合不一致",
+                    i64::try_from(frame_id).unwrap_or(i64::MAX),
+                ));
+                stream_has_error = true;
+            }
+        }
+
+        let unique_frames = frames
+            .iter()
+            .enumerate()
+            .filter_map(|(position, frame)| {
+                (position == 0 || frames[position - 1].frame_id != frame.frame_id).then_some(frame)
+            })
+            .collect::<Vec<_>>();
+        let frame_indexes = match image_validation_mode {
+            ImageValidationMode::Sampled => sampled_frame_indexes(unique_frames.len()),
+            ImageValidationMode::Full => (0..unique_frames.len()).collect(),
+        };
+        let mut checked_frames = 0_u64;
+        let mut decode_failures = 0_u64;
+        let mut dimension_mismatches = 0_u64;
+        let mut black_screen_frames = 0_u64;
+        let mut first_black_screen_frame = None;
+        let mut expected_dimensions = stream.width.zip(stream.height);
+
+        for (position, frame_index) in frame_indexes.iter().enumerate() {
+            check_cancelled(cancelled)?;
+            let frame = unique_frames[*frame_index];
+            checked_frames += 1;
+            total_checked_frames += 1;
+            match crate::segment_bin::read_frame_at(segment, frame).and_then(|bytes| {
+                image::load_from_memory(&bytes)
+                    .map_err(|error| AppError::Message(error.to_string()))
+            }) {
+                Ok(image) => {
+                    let dimensions = (image.width(), image.height());
+                    if let Some(expected) = expected_dimensions {
+                        if expected != dimensions {
+                            dimension_mismatches += 1;
+                            stream_has_error = true;
+                            issues.push(issue_at(
+                                Severity::Error,
+                                "DIMENSION_MISMATCH",
+                                &stream.name,
+                                &format!(
+                                    "帧 {} 的分辨率为 {}×{}，预期 {}×{}",
+                                    frame.frame_id,
+                                    dimensions.0,
+                                    dimensions.1,
+                                    expected.0,
+                                    expected.1
+                                ),
+                                i64::try_from(frame.frame_id).unwrap_or(i64::MAX),
+                            ));
+                        }
+                    } else {
+                        expected_dimensions = Some(dimensions);
+                    }
+                    if looks_like_black_screen(&image) {
+                        black_screen_frames += 1;
+                        first_black_screen_frame.get_or_insert(frame.frame_id);
+                        stream_has_warning = true;
+                    }
+                }
+                Err(error) => {
+                    decode_failures += 1;
+                    stream_has_error = true;
+                    issues.push(issue_at(
+                        Severity::Error,
+                        "DECODE_FAILED",
+                        &stream.name,
+                        &format!("帧 {} 无法读取、校验或解码: {}", frame.frame_id, error),
+                        i64::try_from(frame.frame_id).unwrap_or(i64::MAX),
+                    ));
+                }
+            }
+            if image_validation_mode == ImageValidationMode::Sampled
+                || checked_frames.is_multiple_of(8)
+                || position + 1 == frame_indexes.len()
+            {
+                let current_path = segment.segment_paths.get(frame.segment_index).map_or_else(
+                    || root.display().to_string(),
+                    |path| path.display().to_string(),
+                );
+                emit_progress(
+                    app,
+                    ProgressPayload {
+                        task: progress_task.into(),
+                        phase: match image_validation_mode {
+                            ImageValidationMode::Sampled => "抽检 segment 图像".into(),
+                            ImageValidationMode::Full => "校验 segment 图像".into(),
+                        },
+                        current: total_checked_frames,
+                        total: total_frames,
+                        bytes_done: 0,
+                        total_bytes: summary.total_bytes,
+                        current_path,
+                        elapsed_ms: started.elapsed().as_millis(),
+                    },
+                );
+            }
+        }
+        if let Some(frame_id) = first_black_screen_frame {
+            issues.push(issue_at(
+                Severity::Warning,
+                "BLACK_SCREEN",
+                &stream.name,
+                &format!("检测到 {black_screen_frames} 个近乎全黑图像帧，建议标注该数据"),
+                i64::try_from(frame_id).unwrap_or(i64::MAX),
+            ));
+        }
+        if stream.frame_count != states.len() as u64 && !states.is_empty() {
+            issues.push(issue(
+                Severity::Warning,
+                "COUNT_MISMATCH",
+                &stream.name,
+                &format!("图像 {} 帧，pose {} 条", stream.frame_count, states.len()),
+            ));
+            stream_has_warning = true;
+        }
+        stream_reports.push(StreamValidation {
+            name: stream.name.clone(),
+            checked_frames,
+            decode_failures,
+            status: if stream_has_error || decode_failures > 0 || dimension_mismatches > 0 {
+                "error".into()
+            } else if stream_has_warning {
+                "warning".into()
+            } else {
+                "ok".into()
+            },
+        });
+    }
+
+    let status = if issues.iter().any(|item| item.severity == Severity::Error) {
+        "error"
+    } else if issues.iter().any(|item| item.severity == Severity::Warning) {
+        "warning"
+    } else {
+        "ok"
+    };
+    emit_progress(
+        app,
+        ProgressPayload {
+            task: progress_task.into(),
+            phase: "检查完成".into(),
+            current: 1,
+            total: 1,
+            bytes_done: summary.total_bytes,
+            total_bytes: summary.total_bytes,
+            current_path: root.display().to_string(),
+            elapsed_ms: started.elapsed().as_millis(),
+        },
+    );
+    Ok(ValidationReport {
+        format_version: VALIDATION_REPORT_FORMAT_VERSION,
+        episode_root: root.display().to_string(),
+        parsed_state_count: states.len() as u64,
+        image_validation_mode,
+        image_sample_percentages: match image_validation_mode {
+            ImageValidationMode::Sampled => IMAGE_SAMPLE_PERCENTAGES.to_vec(),
+            ImageValidationMode::Full => Vec::new(),
+        },
+        state_frame_rate,
+        auto_report_path: None,
+        status: status.into(),
+        checked_files: segment.segment_paths.len() as u64,
         elapsed_ms: started.elapsed().as_millis(),
         issues,
         streams: stream_reports,

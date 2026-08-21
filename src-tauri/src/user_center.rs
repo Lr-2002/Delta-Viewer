@@ -1,10 +1,11 @@
 use crate::error::{AppError, AppResult};
 use crate::identity::AuthState;
 use crate::model::{
-    AssignedTask, AssignedTaskActivity, AuthStatus, LoginRequest, RegisterRequest,
-    SupervisionAccount, SupervisionDashboardData, SupervisionEvent, SupervisionTaskDetail,
-    SupervisionTaskImportResult, SupervisionUserSummary, UpdateDisplayNameRequest,
-    UserCenterStatus, UserIdentity,
+    AssignedTask, AssignedTaskActivity, AssignmentPlan, AuthStatus, DailyCompletion,
+    HourlyCompletion, LoginRequest, OperationsAlert, OperationsOverview, OperationsTaskSummary,
+    QualityReview, QualityReviewRequest, RegisterRequest, SupervisionAccount,
+    SupervisionDashboardData, SupervisionEvent, SupervisionTaskDetail, SupervisionTaskImportResult,
+    SupervisionUserSummary, UpdateDisplayNameRequest, UserCenterStatus, UserIdentity,
 };
 use crate::storage;
 use reqwest::{Certificate, Client, Url};
@@ -21,6 +22,7 @@ const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 const STRUCTURED_ASSIGNMENTS_CAPABILITY: &str = "structuredTaskAssignmentsV1";
 const OPERATOR_SELF_REGISTRATION_CAPABILITY: &str = "operatorSelfRegistrationV1";
 const OPERATOR_PROFILE_CAPABILITY: &str = "operatorProfileV1";
+const OPERATIONS_COCKPIT_CAPABILITY: &str = "operationsCockpitV1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -62,6 +64,20 @@ struct SupervisionAuditResponse {
     events: Vec<SupervisionEvent>,
     #[serde(default)]
     task_details: Vec<SupervisionTaskDetail>,
+    #[serde(default)]
+    overview: OperationsOverview,
+    #[serde(default)]
+    task_summaries: Vec<OperationsTaskSummary>,
+    #[serde(default)]
+    hourly_trend: Vec<HourlyCompletion>,
+    #[serde(default)]
+    daily_trend: Vec<DailyCompletion>,
+    #[serde(default)]
+    alerts: Vec<OperationsAlert>,
+    #[serde(default)]
+    quality_reviews: Vec<QualityReview>,
+    #[serde(default)]
+    generated_at_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -339,6 +355,7 @@ pub async fn supervision_dashboard(
     let token = state.managed_token()?;
     let config = load_config(data_root)?;
     let client = client_for(&config)?;
+    require_operations_cockpit(&request_health(&client, &config).await?)?;
     let audit_response = client
         .get(endpoint(&config, "api/v1/admin/audit")?)
         .bearer_auth(&token)
@@ -370,6 +387,13 @@ pub async fn supervision_dashboard(
         events: audit.events,
         accounts: accounts.users,
         task_details: audit.task_details,
+        overview: audit.overview,
+        task_summaries: audit.task_summaries,
+        hourly_trend: audit.hourly_trend,
+        daily_trend: audit.daily_trend,
+        alerts: audit.alerts,
+        quality_reviews: audit.quality_reviews,
+        generated_at_ms: audit.generated_at_ms,
     })
 }
 
@@ -504,6 +528,7 @@ pub async fn set_assigned_tasks(
     state: &AuthState,
     username: &str,
     assigned_task_quantities: std::collections::BTreeMap<String, u64>,
+    assignment_plans: Option<Vec<AssignmentPlan>>,
 ) -> AppResult<SupervisionAccount> {
     let user = state.require_managed_user()?;
     if user.role.as_deref() != Some("admin") {
@@ -530,6 +555,33 @@ pub async fn set_assigned_tasks(
             "ASSIGNED_TASKS_INVALID: 任务分配参数无效".into(),
         ));
     }
+    let plans = assignment_plans.unwrap_or_else(|| {
+        assigned_task_quantities
+            .iter()
+            .enumerate()
+            .map(|(order, (task, quantity))| AssignmentPlan {
+                task: task.clone(),
+                quantity: *quantity,
+                start_index: 0,
+                priority: "normal".into(),
+                deadline_at_ms: None,
+                status: "active".into(),
+                order: order as u64,
+            })
+            .collect()
+    });
+    let valid_plans = plans.len() == assigned_task_quantities.len()
+        && plans.iter().enumerate().all(|(order, plan)| {
+            assigned_task_quantities.get(&plan.task) == Some(&plan.quantity)
+                && matches!(plan.priority.as_str(), "normal" | "urgent" | "rework")
+                && matches!(plan.status.as_str(), "active" | "paused")
+                && plan.order == order as u64
+        });
+    if !valid_plans {
+        return Err(AppError::Message(
+            "ASSIGNED_TASKS_INVALID: 任务计划参数无效".into(),
+        ));
+    }
     let token = state.managed_token()?;
     let config = load_config(data_root)?;
     let client = client_for(&config)?;
@@ -544,6 +596,7 @@ pub async fn set_assigned_tasks(
         .json(&serde_json::json!({
             "assignedTasks": assigned_task_quantities.values().sum::<u64>(),
             "assignedTaskQuantities": assigned_task_quantities,
+            "assignmentPlans": plans,
         }))
         .send()
         .await
@@ -564,6 +617,135 @@ pub async fn set_assigned_tasks(
     Ok(saved)
 }
 
+pub async fn update_operations_alert(
+    data_root: &Path,
+    state: &AuthState,
+    alert_id: &str,
+    status: &str,
+    note: &str,
+) -> AppResult<()> {
+    let user = state.require_managed_user()?;
+    if user.role.as_deref() != Some("admin")
+        || alert_id.is_empty()
+        || alert_id.chars().count() > 200
+        || !matches!(status, "open" | "acknowledged" | "closed")
+        || note.chars().count() > 500
+    {
+        return Err(AppError::Message(
+            "ALERT_ACTION_INVALID: 预警处理参数无效".into(),
+        ));
+    }
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let client = client_for(&config)?;
+    require_operations_cockpit(&request_health(&client, &config).await?)?;
+    let response = client
+        .put(endpoint(
+            &config,
+            &format!("api/v1/admin/alerts/{alert_id}"),
+        )?)
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "status": status, "note": note }))
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    Ok(())
+}
+
+pub async fn transfer_assignment(
+    data_root: &Path,
+    state: &AuthState,
+    from_username: &str,
+    to_username: &str,
+    task: &str,
+) -> AppResult<(SupervisionAccount, SupervisionAccount)> {
+    let user = state.require_managed_user()?;
+    if user.role.as_deref() != Some("admin")
+        || from_username == to_username
+        || task.trim().is_empty()
+        || task.chars().count() > 100
+    {
+        return Err(AppError::Message(
+            "ASSIGNMENT_TRANSFER_INVALID: 任务转移参数无效".into(),
+        ));
+    }
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let client = client_for(&config)?;
+    require_operations_cockpit(&request_health(&client, &config).await?)?;
+    let response = client
+        .post(endpoint(&config, "api/v1/admin/assignments/transfer")?)
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "fromUsername": from_username,
+            "toUsername": to_username,
+            "task": task,
+        }))
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    #[derive(Deserialize)]
+    struct TransferResponse {
+        source: SupervisionAccount,
+        target: SupervisionAccount,
+    }
+    response
+        .json::<TransferResponse>()
+        .await
+        .map(|value| (value.source, value.target))
+        .map_err(|error| AppError::Message(format!("任务转移响应无效: {error}")))
+}
+
+pub async fn create_quality_review(
+    data_root: &Path,
+    state: &AuthState,
+    request: QualityReviewRequest,
+) -> AppResult<QualityReview> {
+    let user = state.require_managed_user()?;
+    if user.role.as_deref() != Some("admin")
+        || request.task_id.trim().is_empty()
+        || request.task_id.chars().count() > 100
+        || request.trajectory_code.trim().is_empty()
+        || request.trajectory_code.chars().count() > 100
+        || !matches!(request.outcome.as_str(), "passed" | "rework")
+        || request.error_type.chars().count() > 100
+        || request.note.chars().count() > 1000
+    {
+        return Err(AppError::Message(
+            "QUALITY_REVIEW_INVALID: 复核参数无效".into(),
+        ));
+    }
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let client = client_for(&config)?;
+    require_operations_cockpit(&request_health(&client, &config).await?)?;
+    let response = client
+        .post(endpoint(&config, "api/v1/admin/quality-reviews")?)
+        .bearer_auth(token)
+        .json(&request)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    #[derive(Deserialize)]
+    struct QualityReviewResponse {
+        review: QualityReview,
+    }
+    response
+        .json::<QualityReviewResponse>()
+        .await
+        .map(|value| value.review)
+        .map_err(|error| AppError::Message(format!("质量复核响应无效: {error}")))
+}
+
 fn require_structured_assignments(health: &HealthResponse) -> AppResult<()> {
     if health
         .capabilities
@@ -574,6 +756,19 @@ fn require_structured_assignments(health: &HealthResponse) -> AppResult<()> {
     }
     Err(AppError::Message(
         "USER_CENTER_UPGRADE_REQUIRED: 用户中心版本过旧，不支持具体任务分配；请升级并重启用户中心服务".into(),
+    ))
+}
+
+fn require_operations_cockpit(health: &HealthResponse) -> AppResult<()> {
+    if health
+        .capabilities
+        .iter()
+        .any(|capability| capability == OPERATIONS_COCKPIT_CAPABILITY)
+    {
+        return Ok(());
+    }
+    Err(AppError::Message(
+        "USER_CENTER_UPGRADE_REQUIRED: 用户中心版本过旧，不支持任务运营驾驶舱；请升级并重启用户中心服务".into(),
     ))
 }
 
@@ -850,6 +1045,9 @@ mod tests {
             assigned_tasks: 3,
             assigned_task_names: Vec::new(),
             assigned_task_quantities: BTreeMap::new(),
+            assignment_plans: Vec::new(),
+            assignment_updated_at_ms: 1,
+            last_login_at_ms: None,
             created_at_ms: 1,
         };
         assert!(validate_assignment_response(&requested, &legacy_response).is_err());

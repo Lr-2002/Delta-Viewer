@@ -25,10 +25,14 @@ const DATA_SCHEMA_VERSION = 1;
 const STRUCTURED_ASSIGNMENTS_CAPABILITY = "structuredTaskAssignmentsV1";
 const OPERATOR_SELF_REGISTRATION_CAPABILITY = "operatorSelfRegistrationV1";
 const OPERATOR_PROFILE_CAPABILITY = "operatorProfileV1";
+const OPERATIONS_COCKPIT_CAPABILITY = "operationsCockpitV1";
 const MAX_JSON_BYTES = 16 * 1024;
 const MAX_USERS = 10_000;
 const MAX_AUDIT_EVENTS = 200_000;
 const MAX_TASK_DETAILS = 500;
+const MAX_QUALITY_REVIEWS = 50_000;
+const MAX_ALERT_ACTIONS = 10_000;
+const STAGNATION_THRESHOLD_MS = 90 * 60_000;
 const AUDIT_ACTIONS = new Set([
   "annotation_started", "task_changed", "description_changed", "clip_changed",
   "segment_split", "segment_template_selected", "segment_note_changed",
@@ -227,11 +231,17 @@ async function readState(dataRoot) {
   const raw = JSON.parse(await readFile(statePath(dataRoot), "utf8"));
   if (raw.schemaVersion !== DATA_SCHEMA_VERSION || typeof raw.serviceId !== "string"
     || !Array.isArray(raw.users) || raw.users.length > MAX_USERS
-    || (raw.taskDetails !== undefined && (!Array.isArray(raw.taskDetails) || raw.taskDetails.length > MAX_TASK_DETAILS))) {
+    || (raw.taskDetails !== undefined && (!Array.isArray(raw.taskDetails) || raw.taskDetails.length > MAX_TASK_DETAILS))
+    || (raw.qualityReviews !== undefined
+      && (!Array.isArray(raw.qualityReviews) || raw.qualityReviews.length > MAX_QUALITY_REVIEWS))
+    || (raw.alertActions !== undefined
+      && (!Array.isArray(raw.alertActions) || raw.alertActions.length > MAX_ALERT_ACTIONS))) {
     throw new Error("用户中心数据文件无效");
   }
   for (const user of raw.users) validateStoredUser(user);
   for (const detail of raw.taskDetails ?? []) validateTaskDetail(detail);
+  for (const review of raw.qualityReviews ?? []) validateQualityReview(review);
+  for (const action of raw.alertActions ?? []) validateAlertAction(action);
   return raw;
 }
 
@@ -241,6 +251,10 @@ function normalizeTaskDetailText(value, label, maximum) {
     throw new Error(`${label}不能为空且最多 ${maximum} 个字符`);
   }
   return text;
+}
+
+function containsSourceReference(value) {
+  return /(?:[a-z]:[\\/]|[\\/]|(?:file|smb|nfs|https?):)/i.test(String(value ?? ""));
 }
 
 function validateTaskDetail(detail) {
@@ -286,9 +300,54 @@ function validateStoredUser(user) {
       || Array.isArray(user.assignedTaskStarts)
       || Object.entries(user.assignedTaskStarts).some(([task, start]) => !task.trim()
         || !Number.isSafeInteger(start) || start < 0 || start > 1_000_000)))
+    || (user.assignmentPlans !== undefined && (!Array.isArray(user.assignmentPlans)
+      || user.assignmentPlans.length > MAX_TASK_DETAILS
+      || user.assignmentPlans.some((plan) => !isValidAssignmentPlan(plan))))
+    || (user.assignmentUpdatedAtMs !== undefined
+      && (!Number.isSafeInteger(user.assignmentUpdatedAtMs) || user.assignmentUpdatedAtMs <= 0))
+    || (user.lastLoginAtMs !== undefined
+      && (!Number.isSafeInteger(user.lastLoginAtMs) || user.lastLoginAtMs <= 0))
     || !Number.isSafeInteger(user.createdAtMs) || user.createdAtMs <= 0
     || !user.password?.salt || !user.password?.digest) {
     throw new Error("用户中心账号记录无效");
+  }
+}
+
+function isValidAssignmentPlan(plan) {
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) return false;
+  return typeof plan.task === "string" && Boolean(plan.task.trim()) && [...plan.task].length <= 100
+    && Number.isSafeInteger(plan.quantity) && plan.quantity >= 1 && plan.quantity <= 1_000_000
+    && Number.isSafeInteger(plan.startIndex) && plan.startIndex >= 0 && plan.startIndex <= 1_000_000
+    && ["normal", "urgent", "rework"].includes(plan.priority)
+    && ["active", "paused"].includes(plan.status)
+    && Number.isSafeInteger(plan.order) && plan.order >= 0 && plan.order < MAX_TASK_DETAILS
+    && (plan.deadlineAtMs === null || (Number.isSafeInteger(plan.deadlineAtMs) && plan.deadlineAtMs > 0));
+}
+
+function validateQualityReview(review) {
+  requirePlainObject(review, "quality review");
+  normalizeTaskDetailText(review.reviewId, "复核编号", 100);
+  normalizeTaskDetailText(review.taskId, "任务名称", 100);
+  normalizeTaskDetailText(review.trajectoryCode, "轨迹码", 100);
+  normalizeTaskDetailText(review.reviewer, "复核人", 32);
+  if (!["passed", "rework"].includes(review.outcome)
+    || typeof review.errorType !== "string" || [...review.errorType].length > 100
+    || typeof review.note !== "string" || [...review.note].length > 1000
+    || containsSourceReference(`${review.errorType}${review.note}`)
+    || !Number.isSafeInteger(review.reviewedAtMs) || review.reviewedAtMs <= 0) {
+    throw new Error("质量复核记录无效");
+  }
+}
+
+function validateAlertAction(action) {
+  requirePlainObject(action, "alert action");
+  normalizeTaskDetailText(action.alertId, "预警编号", 200);
+  normalizeTaskDetailText(action.updatedBy, "更新人", 32);
+  if (!["open", "acknowledged", "closed"].includes(action.status)
+    || typeof action.note !== "string" || [...action.note].length > 500
+    || containsSourceReference(action.note)
+    || !Number.isSafeInteger(action.updatedAtMs) || action.updatedAtMs <= 0) {
+    throw new Error("预警处理记录无效");
   }
 }
 
@@ -433,6 +492,7 @@ function sessionIdentity(sessions, request) {
 }
 
 function publicUser(user) {
+  const assignmentPlans = assignmentPlansFor(user);
   return {
     username: user.username,
     displayName: user.displayName,
@@ -441,8 +501,50 @@ function publicUser(user) {
     assignedTaskNames: user.assignedTaskNames ?? [],
     assignedTaskQuantities: user.assignedTaskQuantities ?? {},
     assignedTaskStarts: user.assignedTaskStarts ?? {},
+    assignmentPlans,
+    assignmentUpdatedAtMs: user.assignmentUpdatedAtMs ?? user.createdAtMs,
+    lastLoginAtMs: user.lastLoginAtMs ?? null,
     createdAtMs: user.createdAtMs,
   };
+}
+
+function assignmentPlansFor(user) {
+  if (Array.isArray(user.assignmentPlans)) {
+    return [...user.assignmentPlans].sort((left, right) => left.order - right.order);
+  }
+  return Object.entries(user.assignedTaskQuantities ?? {}).map(([task, quantity], order) => ({
+    task,
+    quantity,
+    startIndex: user.assignedTaskStarts?.[task] ?? 0,
+    priority: "normal",
+    deadlineAtMs: null,
+    status: "active",
+    order,
+  }));
+}
+
+function synchronizeAssignmentFields(user, plans) {
+  user.assignmentPlans = plans.map((plan, order) => ({ ...plan, order }));
+  user.assignedTaskNames = user.assignmentPlans.map((plan) => plan.task);
+  user.assignedTaskQuantities = Object.fromEntries(user.assignmentPlans.map((plan) => [plan.task, plan.quantity]));
+  user.assignedTaskStarts = Object.fromEntries(user.assignmentPlans.map((plan) => [plan.task, plan.startIndex]));
+  user.assignedTasks = user.assignmentPlans.reduce((sum, plan) => sum + plan.quantity, 0);
+  user.assignmentUpdatedAtMs = nowMs();
+}
+
+function availableAssignmentStart(users, excludedUsername, task, quantity) {
+  const occupied = users
+    .filter((candidate) => candidate.username !== excludedUsername)
+    .flatMap((candidate) => assignmentPlansFor(candidate)
+      .filter((plan) => plan.task.toLowerCase() === task.toLowerCase())
+      .map((plan) => ({ start: plan.startIndex, end: plan.startIndex + plan.quantity })))
+    .sort((left, right) => left.start - right.start);
+  let start = 0;
+  for (const interval of occupied) {
+    if (start + quantity <= interval.start) break;
+    start = Math.max(start, interval.end);
+  }
+  return start;
 }
 
 function auditEvent(body, user) {
@@ -470,7 +572,8 @@ function auditEvent(body, user) {
 
 function localDay(ms) {
   const date = new Date(ms);
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 function requestedLocalDay(value) {
@@ -485,7 +588,7 @@ function requestedLocalDay(value) {
   return { date, startMs: start.getTime(), endMs: end.getTime() };
 }
 
-function auditSummary(events, accounts, currentTimeMs = nowMs()) {
+function operationsSummary(events, accounts, alertActions = [], currentTimeMs = nowMs()) {
   const users = new Map(accounts.map((account) => [account.username, {
     username: account.username,
     displayName: account.displayName,
@@ -493,40 +596,210 @@ function auditSummary(events, accounts, currentTimeMs = nowMs()) {
     assignedTasks: account.assignedTasks ?? 0,
     assignedTaskNames: account.assignedTaskNames ?? [],
     assignedTaskQuantities: account.assignedTaskQuantities ?? {},
+    assignmentPlans: assignmentPlansFor(account),
+    assignmentUpdatedAtMs: account.assignmentUpdatedAtMs ?? account.createdAtMs,
+    lastLoginAtMs: account.lastLoginAtMs ?? null,
     completedToday: new Set(),
     totalCompleted: new Set(),
+    completedByTask: new Map(),
+    completedTodayByTask: new Map(),
     completionDurationsMs: [],
+    completionDurationsByTask: new Map(),
     starts: new Map(),
+    firstActivityAtMs: null,
+    lastActivityAtMs: null,
+    operationCount: 0,
+    todayFirstActivityAtMs: null,
+    todayLastActivityAtMs: null,
   }]));
   const currentDay = localDay(currentTimeMs);
-  for (const event of events) {
+  const hourlyTrend = Array.from({ length: 24 }, (_, hour) => ({ hour, completed: 0 }));
+  const dailyTrend = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(currentTimeMs);
+    date.setHours(12, 0, 0, 0);
+    date.setDate(date.getDate() - (6 - index));
+    return { date: localDay(date.getTime()), completed: 0 };
+  });
+  const dailyRows = new Map(dailyTrend.map((row) => [row.date, row]));
+  for (const event of [...events].sort((left, right) => left.occurredAtMs - right.occurredAtMs)) {
     const row = users.get(event.username);
     if (!row) continue;
-    const completionKey = event.trajectoryCode;
+    row.operationCount += 1;
+    row.firstActivityAtMs = row.firstActivityAtMs === null
+      ? event.occurredAtMs : Math.min(row.firstActivityAtMs, event.occurredAtMs);
+    row.lastActivityAtMs = row.lastActivityAtMs === null
+      ? event.occurredAtMs : Math.max(row.lastActivityAtMs, event.occurredAtMs);
+    if (localDay(event.receivedAtMs) === currentDay) {
+      row.todayFirstActivityAtMs = row.todayFirstActivityAtMs === null
+        ? event.receivedAtMs : Math.min(row.todayFirstActivityAtMs, event.receivedAtMs);
+      row.todayLastActivityAtMs = row.todayLastActivityAtMs === null
+        ? event.receivedAtMs : Math.max(row.todayLastActivityAtMs, event.receivedAtMs);
+    }
+    const taskKey = event.taskId.trim().toLowerCase();
+    const completionKey = `${taskKey}\u0000${event.trajectoryCode.trim().toLowerCase()}`;
     if (event.action === "annotation_started") row.starts.set(completionKey, event.occurredAtMs);
-    if (event.action === "annotation_saved" && !row.totalCompleted.has(completionKey)) {
+    if (event.action === "annotation_saved" && event.trajectoryCode && !row.totalCompleted.has(completionKey)) {
       row.totalCompleted.add(completionKey);
-      if (localDay(event.receivedAtMs) === currentDay) row.completedToday.add(completionKey);
+      const taskCompleted = row.completedByTask.get(taskKey) ?? new Set();
+      taskCompleted.add(completionKey);
+      row.completedByTask.set(taskKey, taskCompleted);
+      if (localDay(event.receivedAtMs) === currentDay) {
+        row.completedToday.add(completionKey);
+        const taskCompletedToday = row.completedTodayByTask.get(taskKey) ?? new Set();
+        taskCompletedToday.add(completionKey);
+        row.completedTodayByTask.set(taskKey, taskCompletedToday);
+        hourlyTrend[new Date(event.receivedAtMs).getHours()].completed += 1;
+      }
+      const daily = dailyRows.get(localDay(event.receivedAtMs));
+      if (daily) daily.completed += 1;
       const startedAt = row.starts.get(completionKey);
       if (startedAt !== undefined && event.occurredAtMs >= startedAt) {
-        row.completionDurationsMs.push(event.occurredAtMs - startedAt);
+        const duration = event.occurredAtMs - startedAt;
+        row.completionDurationsMs.push(duration);
+        const taskDurations = row.completionDurationsByTask.get(taskKey) ?? [];
+        taskDurations.push(duration);
+        row.completionDurationsByTask.set(taskKey, taskDurations);
       }
     }
     users.set(event.username, row);
   }
-  return [...users.values()].map((row) => ({
-    username: row.username,
-    displayName: row.displayName,
-    role: row.role,
-    assignedTasks: row.assignedTasks,
-    assignedTaskNames: row.assignedTaskNames,
-    assignedTaskQuantities: row.assignedTaskQuantities,
-    completedToday: row.completedToday.size,
-    totalCompleted: row.totalCompleted.size,
-    averageCompletionMs: row.completionDurationsMs.length
+  const summaries = [...users.values()].map((row) => {
+    const remainingTasks = row.assignmentPlans.reduce((sum, plan) => (
+      sum + Math.max(0, plan.quantity - (row.completedByTask.get(plan.task.toLowerCase())?.size ?? 0))
+    ), 0);
+    const averageCompletionMs = row.completionDurationsMs.length
       ? Math.round(row.completionDurationsMs.reduce((sum, value) => sum + value, 0) / row.completionDurationsMs.length)
+      : null;
+    const stagnationReference = row.lastActivityAtMs ?? row.lastLoginAtMs ?? row.assignmentUpdatedAtMs;
+    const possibleStagnation = row.role === "operator" && remainingTasks > 0
+      && currentTimeMs - stagnationReference >= STAGNATION_THRESHOLD_MS;
+    const activeSpanHours = row.todayFirstActivityAtMs !== null && row.todayLastActivityAtMs !== null
+      ? Math.max(1, (row.todayLastActivityAtMs - row.todayFirstActivityAtMs) / 3_600_000)
+      : 1;
+    return {
+      username: row.username,
+      displayName: row.displayName,
+      role: row.role,
+      assignedTasks: row.assignedTasks,
+      assignedTaskNames: row.assignedTaskNames,
+      assignedTaskQuantities: row.assignedTaskQuantities,
+      assignmentPlans: row.assignmentPlans,
+      completedToday: row.completedToday.size,
+      totalCompleted: row.totalCompleted.size,
+      remainingTasks,
+      averageCompletionMs,
+      completionRatePerHour: Math.round(row.completedToday.size / activeSpanHours * 10) / 10,
+      estimatedCompletionAtMs: averageCompletionMs === null || remainingTasks === 0
+        ? null : currentTimeMs + averageCompletionMs * remainingTasks,
+      firstActivityAtMs: row.firstActivityAtMs,
+      lastActivityAtMs: row.lastActivityAtMs,
+      lastLoginAtMs: row.lastLoginAtMs,
+      operationCount: row.operationCount,
+      possibleStagnation,
+    };
+  });
+  const taskRows = new Map();
+  for (const row of users.values()) {
+    for (const plan of row.assignmentPlans) {
+      const key = plan.task.toLowerCase();
+      const task = taskRows.get(key) ?? {
+        task: plan.task, assigned: 0, completedToday: 0, totalCompleted: 0,
+        operators: new Set(), durations: [],
+      };
+      task.assigned += plan.quantity;
+      task.completedToday += row.completedTodayByTask.get(key)?.size ?? 0;
+      task.totalCompleted += row.completedByTask.get(key)?.size ?? 0;
+      task.operators.add(row.username);
+      task.durations.push(...(row.completionDurationsByTask.get(key) ?? []));
+      taskRows.set(key, task);
+    }
+  }
+  const taskSummaries = [...taskRows.values()].map((task) => ({
+    task: task.task,
+    assigned: task.assigned,
+    completedToday: task.completedToday,
+    totalCompleted: task.totalCompleted,
+    remaining: Math.max(0, task.assigned - task.totalCompleted),
+    operatorCount: task.operators.size,
+    averageCompletionMs: task.durations.length
+      ? Math.round(task.durations.reduce((sum, value) => sum + value, 0) / task.durations.length)
       : null,
   }));
+  const actions = new Map(alertActions.map((action) => [action.alertId, action]));
+  const alerts = [];
+  for (const summary of summaries) {
+    if (summary.possibleStagnation) {
+      alerts.push(operationalAlert(
+        `possible-stagnation:${summary.username}`,
+        "possible_stagnation",
+        summary.username,
+        "",
+        `${summary.displayName} 长时间没有可见进展，请先确认工作状态`,
+        summary.lastActivityAtMs ?? summary.lastLoginAtMs ?? currentTimeMs,
+        actions,
+      ));
+    }
+  }
+  const intervals = new Map();
+  for (const row of users.values()) {
+    for (const plan of row.assignmentPlans.filter((item) => item.status === "active")) {
+      const key = plan.task.toLowerCase();
+      const existing = intervals.get(key) ?? [];
+      for (const interval of existing) {
+        if (plan.startIndex < interval.end && interval.start < plan.startIndex + plan.quantity) {
+          const usernames = [interval.username, row.username].sort().join("+");
+          const taskToken = Buffer.from(key).toString("base64url");
+          alerts.push(operationalAlert(
+            `duplicate-range:${taskToken}:${usernames}`,
+            "duplicate_assignment",
+            row.username,
+            plan.task,
+            `${plan.task} 的分配区间与 @${interval.username} 重叠`,
+            currentTimeMs,
+            actions,
+          ));
+        }
+      }
+      existing.push({ username: row.username, start: plan.startIndex, end: plan.startIndex + plan.quantity });
+      intervals.set(key, existing);
+    }
+  }
+  const assigned = summaries.filter((row) => row.role === "operator")
+    .reduce((sum, row) => sum + row.assignedTasks, 0);
+  const totalCompleted = summaries.reduce((sum, row) => sum + row.totalCompleted, 0);
+  return {
+    users: summaries,
+    overview: {
+      completedToday: summaries.reduce((sum, row) => sum + row.completedToday, 0),
+      totalCompleted,
+      assigned,
+      remaining: summaries.reduce((sum, row) => sum + row.remainingTasks, 0),
+      activeOperators: summaries.filter((row) => row.role === "operator" && row.lastActivityAtMs !== null
+        && currentTimeMs - row.lastActivityAtMs < STAGNATION_THRESHOLD_MS).length,
+      possibleStagnation: summaries.filter((row) => row.possibleStagnation).length,
+    },
+    taskSummaries,
+    hourlyTrend,
+    dailyTrend,
+    alerts,
+  };
+}
+
+function operationalAlert(alertId, type, username, taskId, message, detectedAtMs, actions) {
+  const action = actions.get(alertId);
+  return {
+    alertId,
+    type,
+    severity: type === "duplicate_assignment" ? "high" : "medium",
+    status: action?.status ?? "open",
+    username,
+    taskId,
+    message,
+    detectedAtMs,
+    updatedAtMs: action?.updatedAtMs ?? detectedAtMs,
+    note: action?.note ?? "",
+    updatedBy: action?.updatedBy ?? null,
+  };
 }
 
 function escapeHtml(value) {
@@ -607,6 +880,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             STRUCTURED_ASSIGNMENTS_CAPABILITY,
             OPERATOR_SELF_REGISTRATION_CAPABILITY,
             OPERATOR_PROFILE_CAPABILITY,
+            OPERATIONS_COCKPIT_CAPABILITY,
           ],
         });
       }
@@ -647,15 +921,20 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const body = await parseJsonBody(request);
         const username = normalizeUsername(body.username);
         const password = requirePassword(body.password);
-        const state = await readState(dataRoot);
-        const user = state.users.find((candidate) => candidate.username === username);
-        if (!user || !passwordMatches(password, user.password)) {
-          recordFailedAttempt(request);
-          return sendJson(response, 401, { error: "AUTH_INVALID: 账号或密码错误" });
-        }
-        const token = randomBytes(32).toString("base64url");
-        sessions.set(token, { user: publicUser(user), expiresAtMs: nowMs() + configuration.sessionTtlSeconds * 1000 });
-        return sendJson(response, 200, { token, user: publicUser(user), expiresAtMs: sessions.get(token).expiresAtMs });
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          const user = state.users.find((candidate) => candidate.username === username);
+          if (!user || !passwordMatches(password, user.password)) {
+            recordFailedAttempt(request);
+            return sendJson(response, 401, { error: "AUTH_INVALID: 账号或密码错误" });
+          }
+          user.lastLoginAtMs = nowMs();
+          await writeState(state);
+          const token = randomBytes(32).toString("base64url");
+          const identity = publicUser(user);
+          sessions.set(token, { user: identity, expiresAtMs: nowMs() + configuration.sessionTtlSeconds * 1000 });
+          return sendJson(response, 200, { token, user: identity, expiresAtMs: sessions.get(token).expiresAtMs });
+        });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/auth/register") {
         if (!recordRegistrationAttempt(request)) {
@@ -738,11 +1017,9 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const user = state.users.find((candidate) => candidate.username === session.user.username);
         if (!user) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND" });
         const details = new Map((state.taskDetails ?? []).map((entry) => [entry.task.toLowerCase(), entry.detail]));
-        const tasks = Object.entries(user.assignedTaskQuantities ?? {}).map(([task, quantity]) => ({
-          task,
-          quantity,
-          startIndex: user.assignedTaskStarts?.[task] ?? 0,
-          detail: details.get(task.toLowerCase()) ?? task,
+        const tasks = assignmentPlansFor(user).map((plan) => ({
+          ...plan,
+          detail: details.get(plan.task.toLowerCase()) ?? plan.task,
         }));
         return sendJson(response, 200, { tasks });
       }
@@ -768,10 +1045,13 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (!session) return sendJson(response, 403, { error: "SUPERVISOR_REQUIRED" });
         const events = await readAuditEvents(dataRoot);
         const state = await readState(dataRoot);
+        const operations = operationsSummary(events, state.users, state.alertActions ?? []);
         return sendJson(response, 200, {
-          users: auditSummary(events, state.users),
+          ...operations,
           events: events.slice(-500).reverse(),
           taskDetails: state.taskDetails ?? [],
+          qualityReviews: (state.qualityReviews ?? []).slice(-1000).reverse(),
+          generatedAtMs: nowMs(),
         });
       }
       if (request.method === "GET" && url.pathname === "/api/v1/admin/users") {
@@ -813,9 +1093,36 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const username = normalizeUsername(decodeURIComponent(assignmentMatch[1]));
         const body = await parseJsonBody(request);
         const assignedTaskQuantities = {};
-        for (const [rawTask, rawQuantity] of Object.entries(body.assignedTaskQuantities ?? {})) {
-          const task = normalizeTaskDetailText(rawTask, "任务名称", 100);
-          const quantity = Number(rawQuantity);
+        const requestedPlans = Array.isArray(body.assignmentPlans)
+          ? body.assignmentPlans.map((rawPlan, order) => {
+            const plan = requirePlainObject(rawPlan, "assignment plan");
+            const task = normalizeTaskDetailText(plan.task, "任务名称", 100);
+            const quantity = Number(plan.quantity);
+            const priority = String(plan.priority ?? "normal");
+            const status = String(plan.status ?? "active");
+            const deadlineAtMs = plan.deadlineAtMs == null ? null : Number(plan.deadlineAtMs);
+            const normalized = { task, quantity, startIndex: 0, priority, deadlineAtMs, status, order };
+            if (!isValidAssignmentPlan(normalized)) {
+              throw new Error("ASSIGNED_TASKS_INVALID: 任务计划参数无效");
+            }
+            return normalized;
+          })
+          : Object.entries(body.assignedTaskQuantities ?? {}).map(([task, quantity], order) => ({
+            task: normalizeTaskDetailText(task, "任务名称", 100),
+            quantity: Number(quantity),
+            startIndex: 0,
+            priority: "normal",
+            deadlineAtMs: null,
+            status: "active",
+            order,
+          }));
+        if (requestedPlans.length > MAX_TASK_DETAILS
+          || new Set(requestedPlans.map((plan) => plan.task.toLowerCase())).size !== requestedPlans.length) {
+          return sendJson(response, 400, { error: "ASSIGNED_TASKS_INVALID: 任务计划存在重复或超过上限" });
+        }
+        for (const plan of requestedPlans) {
+          const task = normalizeTaskDetailText(plan.task, "任务名称", 100);
+          const quantity = Number(plan.quantity);
           if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1_000_000) {
             return sendJson(response, 400, { error: "ASSIGNED_TASKS_INVALID: 每项任务数量必须是正整数" });
           }
@@ -835,11 +1142,11 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           for (const task of assignedTaskNames) {
             const occupied = state.users
               .filter((candidate) => candidate.username !== username)
-              .flatMap((candidate) => Object.entries(candidate.assignedTaskQuantities ?? {})
-                .filter(([candidateTask]) => candidateTask.toLowerCase() === task.toLowerCase())
-                .map(([candidateTask, quantity]) => ({
-                  start: candidate.assignedTaskStarts?.[candidateTask] ?? 0,
-                  end: (candidate.assignedTaskStarts?.[candidateTask] ?? 0) + quantity,
+              .flatMap((candidate) => assignmentPlansFor(candidate)
+                .filter((candidatePlan) => candidatePlan.task.toLowerCase() === task.toLowerCase())
+                .map((candidatePlan) => ({
+                  start: candidatePlan.startIndex,
+                  end: candidatePlan.startIndex + candidatePlan.quantity,
                 })))
               .sort((left, right) => left.start - right.start);
             let start = 0;
@@ -856,8 +1163,106 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           user.assignedTaskNames = assignedTaskNames;
           user.assignedTaskQuantities = assignedTaskQuantities;
           user.assignedTaskStarts = assignedTaskStarts;
+          user.assignmentPlans = requestedPlans.map((plan) => ({
+            ...plan,
+            startIndex: assignedTaskStarts[plan.task],
+          }));
+          user.assignmentUpdatedAtMs = nowMs();
           await writeState(state);
           return sendJson(response, 200, { user: publicUser(user) });
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/admin/assignments/transfer") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        const body = await parseJsonBody(request);
+        const fromUsername = normalizeUsername(body.fromUsername);
+        const toUsername = normalizeUsername(body.toUsername);
+        const task = normalizeTaskDetailText(body.task, "任务名称", 100);
+        if (fromUsername === toUsername) {
+          return sendJson(response, 400, { error: "ASSIGNMENT_TRANSFER_INVALID: 转出与转入账号不能相同" });
+        }
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          const source = state.users.find((candidate) => candidate.username === fromUsername);
+          const target = state.users.find((candidate) => candidate.username === toUsername);
+          if (!source || !target) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND: 账号不存在" });
+          if (source.role !== "operator" || target.role !== "operator") {
+            return sendJson(response, 409, { error: "OPERATOR_REQUIRED: 任务只能在标注员之间转移" });
+          }
+          const sourcePlans = assignmentPlansFor(source);
+          const sourcePlan = sourcePlans.find((plan) => plan.task.toLowerCase() === task.toLowerCase());
+          if (!sourcePlan) return sendJson(response, 404, { error: "ASSIGNMENT_NOT_FOUND: 转出账号没有该任务" });
+          const targetPlans = assignmentPlansFor(target);
+          if (targetPlans.some((plan) => plan.task.toLowerCase() === task.toLowerCase())) {
+            return sendJson(response, 409, { error: "ASSIGNMENT_TRANSFER_CONFLICT: 转入账号已经有该任务，请先调整现有数量" });
+          }
+          synchronizeAssignmentFields(source, sourcePlans.filter((plan) => plan !== sourcePlan));
+          const transferred = {
+            ...sourcePlan,
+            startIndex: availableAssignmentStart(state.users, toUsername, sourcePlan.task, sourcePlan.quantity),
+            order: targetPlans.length,
+          };
+          synchronizeAssignmentFields(target, [...targetPlans, transferred]);
+          await writeState(state);
+          return sendJson(response, 200, { source: publicUser(source), target: publicUser(target) });
+        });
+      }
+      const alertMatch = /^\/api\/v1\/admin\/alerts\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "PUT" && alertMatch) {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        const alertId = normalizeTaskDetailText(decodeURIComponent(alertMatch[1]), "预警编号", 200);
+        const body = await parseJsonBody(request);
+        const status = String(body.status ?? "");
+        const note = String(body.note ?? "").trim();
+        if (!["open", "acknowledged", "closed"].includes(status)
+          || [...note].length > 500 || containsSourceReference(note)
+          || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(note)) {
+          return sendJson(response, 400, { error: "ALERT_ACTION_INVALID: 预警处理参数无效" });
+        }
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          state.alertActions ??= [];
+          const action = { alertId, status, note, updatedAtMs: nowMs(), updatedBy: session.user.username };
+          const index = state.alertActions.findIndex((candidate) => candidate.alertId === alertId);
+          if (index >= 0) state.alertActions[index] = action;
+          else state.alertActions.push(action);
+          if (state.alertActions.length > MAX_ALERT_ACTIONS) {
+            return sendJson(response, 409, { error: "ALERT_ACTION_LIMIT_EXCEEDED" });
+          }
+          await writeState(state);
+          return sendJson(response, 200, { action });
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/admin/quality-reviews") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        const body = await parseJsonBody(request);
+        const taskId = normalizeTaskDetailText(body.taskId, "任务名称", 100);
+        const trajectoryCode = normalizeTaskDetailText(body.trajectoryCode, "轨迹码", 100);
+        const outcome = String(body.outcome ?? "");
+        const errorType = String(body.errorType ?? "").trim();
+        const note = String(body.note ?? "").trim();
+        if (!["passed", "rework"].includes(outcome)
+          || [...errorType].length > 100 || [...note].length > 1000
+          || containsSourceReference(`${errorType}${note}`)
+          || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(`${errorType}${note}`)) {
+          return sendJson(response, 400, { error: "QUALITY_REVIEW_INVALID: 复核参数无效" });
+        }
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          state.qualityReviews ??= [];
+          if (state.qualityReviews.length >= MAX_QUALITY_REVIEWS) {
+            return sendJson(response, 409, { error: "QUALITY_REVIEW_LIMIT_EXCEEDED" });
+          }
+          const review = {
+            reviewId: randomUUID(), taskId, trajectoryCode, outcome, errorType, note,
+            reviewer: session.user.username, reviewedAtMs: nowMs(),
+          };
+          state.qualityReviews.push(review);
+          await writeState(state);
+          return sendJson(response, 201, { review });
         });
       }
       if (request.method === "PUT" && url.pathname === "/api/v1/admin/task-details") {

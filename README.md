@@ -143,6 +143,43 @@ episode/
   smpl_skeleton.npz       # optional local SMPL/skeleton coordinates
 ```
 
+The viewer also accepts a T265 segment folder as one episode:
+
+```text
+segments/
+  segment-000000.bin
+  segment-000001.bin
+  ...
+```
+
+Segment suffixes are sorted as numbers and the count is not fixed. Every file is
+indexed in that order; embedded left/right JPEG records and pose records share
+their `batch_id` timeline. Frames remain in the source files and are read by
+offset with CRC32 verification. Unrelated files are ignored, while gaps,
+duplicates, truncation, malformed records and decode failures are reported.
+This source format currently supports scanning, validation and playback; the
+three export adapters explicitly reject it until they have offset-based input
+support.
+
+Sealed recorder output can be selected at its dated top-level directory, or by
+selecting a parent containing multiple dated directories:
+
+```text
+20260821_060700_.../
+  manifest.json                 # hybrid-h264-jpeg-segment-v1
+  cam0/cam0-00000.mp4
+  t265/manifest.json            # jpeg-segment-v1
+  t265/segments/segment-000000.bin
+  ...
+```
+
+The camera MP4 streams and nested T265 JPEG/pose records are merged into one
+episode. Native MP4 playback uses the first T265 batch ID as its timeline origin;
+streams recorded at 15 FPS remain aligned to the 30 Hz pose clock. Interrupted
+recordings that contain only `.partial` segments or zero-length media are kept
+visible as invalid records and fail cleanly instead of being treated as sealed
+data.
+
 When present, the optional NPZ is read directly from the mounted source in Rust. Common
 floating-point joint arrays shaped as `(frames,joints,XYZ)` or `(frames,XYZ,joints)` and
 matching frame-ID arrays are supported. The viewer never copies or modifies this file;

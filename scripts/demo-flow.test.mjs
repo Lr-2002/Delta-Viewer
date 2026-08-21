@@ -96,6 +96,42 @@ if (!browserExecutable) {
     await context.close();
   });
 
+  test("operations cockpit answers progress, assignment, alert, quality and report questions", async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    const page = await context.newPage();
+    const errors = [];
+    page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${baseUrl}/?demoScenario=operations-cockpit`, { waitUntil: "networkidle" });
+    await page.getByRole("heading", { name: "任务运营驾驶舱" }).waitFor();
+    await page.getByText("今日每小时完成量").waitFor();
+    await page.getByText("可能停滞", { exact: true }).first().waitFor();
+    await page.getByRole("button", { name: "任务分配" }).click();
+    const batch = page.locator(".batch-assignment");
+    await batch.getByText("批量任务分配").waitFor();
+    await batch.getByRole("button", { name: /整文件夹一键分配/ }).waitFor();
+    await batch.getByRole("button", { name: /按任务分配数量/ }).click();
+    const taskChecks = batch.locator('.batch-task-picker input[type="checkbox"]');
+    await taskChecks.nth(0).check();
+    await taskChecks.nth(1).check();
+    assert.equal(await taskChecks.evaluateAll((inputs) => inputs.filter((input) => input.checked).length), 2);
+    const today = new Date();
+    const localToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    await batch.locator('input[type="date"]').fill(localToday);
+    await batch.getByText("今天", { exact: true }).waitFor();
+    await page.getByText("当前已分配区间").waitFor();
+    await page.getByRole("button", { name: /异常中心/ }).click();
+    await page.getByText("确认并备注").waitFor();
+    await page.getByRole("button", { name: "质量管理" }).click();
+    await page.getByText("保存复核结果").waitFor();
+    await page.getByRole("button", { name: "报表" }).click();
+    await page.getByText("导出 JSON").waitFor();
+    const layout = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth }));
+    assert.ok(layout.scrollWidth <= layout.viewportWidth, JSON.stringify(layout));
+    assert.deepEqual(errors, []);
+    await context.close();
+  });
+
   test("registration loads the packaged browser demo without /@fs requests", async () => {
     const context = await browser.newContext({ viewport: cleanViewport });
     const page = await context.newPage();
