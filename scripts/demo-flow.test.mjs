@@ -340,7 +340,7 @@ if (!browserExecutable) {
       items.map((item) => item.getAttribute("data-series-color"))
     ));
     assert.deepEqual(series, ["#d1495b", "#007c73", "#2f67c7"]);
-    const coloredPixels = await page.locator(".telemetry-chart canvas").evaluate((canvas) => {
+    const coloredPixels = await page.locator(".telemetry-chart canvas.telemetry-plot").evaluate((canvas) => {
       const context2d = canvas.getContext("2d");
       if (!context2d) return [];
       const pixels = context2d.getImageData(0, 0, canvas.width, canvas.height).data;

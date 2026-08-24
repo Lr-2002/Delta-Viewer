@@ -105,18 +105,27 @@ pub async fn configure(data_root: &Path, source_path: &Path) -> AppResult<UserCe
     let destination = config_path(data_root);
     if destination.exists() {
         let existing = load_config(data_root)?;
-        if existing.service_id == source.service_id && existing.server_url == source.server_url {
+        if existing.service_id != source.service_id {
+            return Err(AppError::Message(
+                "USER_CENTER_ALREADY_CONFIGURED: 当前设备已绑定其他用户中心".into(),
+            ));
+        }
+        if existing.server_url == source.server_url
+            && existing.certificate_pem == source.certificate_pem
+        {
             return Ok(status_from_config(&existing));
         }
-        return Err(AppError::Message(
-            "USER_CENTER_ALREADY_CONFIGURED: 当前设备已绑定其他用户中心".into(),
-        ));
+        // The LAN host may receive a different address while remaining the
+        // same user-center instance. Health and service ID were verified above,
+        // so allow an imported config to atomically refresh its endpoint/CA.
+        write_config(&source, &destination, true)?;
+        return Ok(status_from_config(&source));
     }
     let parent = destination
         .parent()
         .ok_or_else(|| AppError::Message("用户中心配置路径无效".into()))?;
     fs::create_dir_all(parent)?;
-    write_config_noreplace(&source, &destination)?;
+    write_config(&source, &destination, false)?;
     Ok(status_from_config(&source))
 }
 
@@ -937,7 +946,7 @@ fn config_path(data_root: &Path) -> PathBuf {
     data_root.join("user-center.json")
 }
 
-fn write_config_noreplace(config: &UserCenterClientConfig, output: &Path) -> AppResult<()> {
+fn write_config(config: &UserCenterClientConfig, output: &Path, replace: bool) -> AppResult<()> {
     let parent = output
         .parent()
         .ok_or_else(|| AppError::Message("用户中心配置缺少目录".into()))?;
@@ -959,7 +968,11 @@ fn write_config_noreplace(config: &UserCenterClientConfig, output: &Path) -> App
         if verified.service_id != config.service_id || verified.server_url != config.server_url {
             return Err(AppError::Message("用户中心配置回读验证失败".into()));
         }
-        storage::publish_noreplace(&partial, output)?;
+        if replace {
+            storage::replace_file_atomic(&partial, output)?;
+        } else {
+            storage::publish_noreplace(&partial, output)?;
+        }
         Ok(())
     })();
     if let Err(error) = result {

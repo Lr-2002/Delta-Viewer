@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "dohc-viewer"
-version = "0.17.58"
+version = "0.17.59"
 dependencies = [
  "arrow-array",
  "base64 0.22.1",
@@ -1054,6 +1054,7 @@ dependencies = [
  "foxglove",
  "fs2",
  "futures-util",
+ "getrandom 0.3.4",
  "hdf5-pure",
  "image",
  "libc",

@@ -15,6 +15,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
 
@@ -381,6 +382,155 @@ fn read_mp4_frame(
     )))
 }
 
+pub(crate) fn read_mp4_preview_batch(
+    root: &Path,
+    stream: &str,
+    start_frame_id: u64,
+    app: Option<&AppHandle>,
+) -> AppResult<Vec<(u64, Arc<Vec<u8>>)>> {
+    const TIMELINE_FRAMES_PER_BATCH: u64 = 240;
+
+    let manifest = read_mp4_manifest(root)?
+        .ok_or_else(|| AppError::Message("当前记录不是 MP4 视频格式".into()))?;
+    let stream_info = manifest
+        .streams
+        .get(stream)
+        .ok_or_else(|| AppError::InvalidStream(stream.to_string()))?;
+    let fps = stream_info
+        .get("fps")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(60.0)
+        .max(1.0);
+    let frame_count = stream_info
+        .get("frame_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let segments = stream_info
+        .get("segments")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| AppError::Message(format!("{stream} 的 MP4 清单缺少 segments")))?;
+    let segment_seconds = manifest.segment_seconds.unwrap_or(300.0).max(1.0);
+    let timeline_fps = manifest.timeline_fps.max(1.0);
+    let target_for = |timeline_frame: u64| {
+        let relative = timeline_frame.saturating_sub(manifest.timeline_start_frame);
+        ((relative as f64) * fps / timeline_fps).floor() as u64
+    };
+
+    let first_target = target_for(start_frame_id);
+    if first_target >= frame_count {
+        return Err(AppError::MissingPath(format!(
+            "{stream} MP4 帧 {first_target}"
+        )));
+    }
+    let first_timestamp = first_target as f64 / fps;
+    let segment_index = (first_timestamp / segment_seconds).floor() as usize;
+    let mut timeline_targets = Vec::with_capacity(TIMELINE_FRAMES_PER_BATCH as usize);
+    for frame_id in start_frame_id..start_frame_id.saturating_add(TIMELINE_FRAMES_PER_BATCH) {
+        let target = target_for(frame_id);
+        if target >= frame_count {
+            break;
+        }
+        let target_segment = ((target as f64 / fps) / segment_seconds).floor() as usize;
+        if target_segment != segment_index {
+            break;
+        }
+        timeline_targets.push((frame_id, target));
+    }
+    let last_target = timeline_targets
+        .last()
+        .map(|(_, target)| *target)
+        .ok_or_else(|| AppError::MissingPath(format!("{stream} MP4 帧 {start_frame_id}")))?;
+    let decode_count = last_target.saturating_sub(first_target).saturating_add(1);
+    let relative_path = segments
+        .get(segment_index)
+        .and_then(|value| value.get("path"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| AppError::Message(format!("{stream} 找不到对应的 MP4 分段")))?;
+    let video_path = root.join(relative_path);
+    if !is_regular_file(&video_path) {
+        return Err(AppError::MissingPath(video_path.display().to_string()));
+    }
+    let local_timestamp = first_timestamp - segment_index as f64 * segment_seconds;
+    let downscale = stream_info
+        .get("width")
+        .and_then(|value| value.as_u64())
+        .is_some_and(|width| width > 1280);
+    let mut failures = Vec::new();
+    for ffmpeg in crate::export::lerobot::ffmpeg_candidates(app) {
+        let mut command = Command::new(&ffmpeg);
+        command
+            .args(["-v", "error", "-ss", &format!("{local_timestamp:.6}"), "-i"])
+            .arg(&video_path)
+            .args(["-frames:v", &decode_count.to_string()]);
+        if downscale {
+            command.args(["-vf", "scale=1280:-2"]);
+        }
+        let output = command
+            .args([
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "-q:v",
+                "5",
+                "pipe:1",
+            ])
+            .output();
+        match output {
+            Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+                let decoded = split_mjpeg_frames(&output.stdout, decode_count as usize)?;
+                return Ok(timeline_targets
+                    .into_iter()
+                    .map(|(timeline_frame, target)| {
+                        let decoded_index = target.saturating_sub(first_target) as usize;
+                        (timeline_frame, decoded[decoded_index].clone())
+                    })
+                    .collect());
+            }
+            Ok(output) => failures.push(format!(
+                "{}: {}",
+                ffmpeg.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+            Err(error) => failures.push(format!("{}: {error}", ffmpeg.display())),
+        }
+    }
+    Err(AppError::Message(format!(
+        "没有可用的 FFmpeg 能连续解码该 MP4: {}",
+        failures.join("；")
+    )))
+}
+
+fn split_mjpeg_frames(bytes: &[u8], expected: usize) -> AppResult<Vec<Arc<Vec<u8>>>> {
+    let mut frames = Vec::with_capacity(expected);
+    let mut cursor = 0;
+    while cursor + 1 < bytes.len() && frames.len() < expected {
+        let Some(relative_start) = bytes[cursor..]
+            .windows(2)
+            .position(|pair| pair == [0xff, 0xd8])
+        else {
+            break;
+        };
+        let start = cursor + relative_start;
+        let Some(relative_end) = bytes[start + 2..]
+            .windows(2)
+            .position(|pair| pair == [0xff, 0xd9])
+        else {
+            break;
+        };
+        let end = start + 2 + relative_end + 2;
+        frames.push(Arc::new(bytes[start..end].to_vec()));
+        cursor = end;
+    }
+    if frames.len() != expected {
+        return Err(AppError::Message(format!(
+            "MP4 连续预览期望 {expected} 帧，实际解码 {} 帧",
+            frames.len()
+        )));
+    }
+    Ok(frames)
+}
+
 struct Mp4Manifest {
     segment_seconds: Option<f64>,
     streams: serde_json::Map<String, serde_json::Value>,
@@ -718,14 +868,12 @@ fn mp4_stream_summary(root: &Path, stream_name: &str, manifest: &Mp4Manifest) ->
                 .sum()
         });
     let first_frame = (frame_count > 0).then_some(manifest.timeline_start_frame);
-    let last_frame = if manifest.hybrid && frame_count > 0 {
-        let timeline_span = ((frame_count as f64) * manifest.timeline_fps / fps).ceil() as u64;
-        manifest
-            .timeline_start_frame
-            .checked_add(timeline_span.saturating_sub(1))
-    } else {
-        frame_count.checked_sub(1)
-    };
+    let last_frame = mp4_stream_last_timeline_frame(
+        manifest.timeline_start_frame,
+        manifest.timeline_fps,
+        fps,
+        frame_count,
+    );
     StreamSummary {
         name: stream_name.to_string(),
         label: stream_label(stream_name).to_string(),
@@ -745,6 +893,20 @@ fn mp4_stream_summary(root: &Path, stream_name: &str, manifest: &Mp4Manifest) ->
             .and_then(|value| u32::try_from(value).ok()),
         channels: Some(3),
     }
+}
+
+fn mp4_stream_last_timeline_frame(
+    timeline_start_frame: u64,
+    timeline_fps: f64,
+    stream_fps: f64,
+    frame_count: u64,
+) -> Option<u64> {
+    if frame_count == 0 {
+        return None;
+    }
+    let timeline_span =
+        ((frame_count as f64) * timeline_fps.max(1.0) / stream_fps.max(1.0)).ceil() as u64;
+    timeline_start_frame.checked_add(timeline_span.saturating_sub(1))
 }
 
 pub fn collect_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathBuf>> {
@@ -1288,14 +1450,43 @@ pub fn emit_progress(app: Option<&AppHandle>, payload: ProgressPayload) {
 mod tests {
     use super::{
         collect_files, collect_stream_files, load_episode, load_episode_preview,
-        load_episode_with_index, read_frame, read_frame_with_index, scan_episode,
-        scan_episode_index, scan_source_catalog, video_source,
+        load_episode_with_index, mp4_stream_last_timeline_frame, read_frame, read_frame_with_index,
+        read_mp4_preview_batch, scan_episode, scan_episode_index, scan_source_catalog,
+        split_mjpeg_frames, video_source,
     };
     use super::{episode_fingerprint, read_states};
     use std::fs::{self, File};
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn maps_mp4_source_counts_to_the_shared_timeline_end() {
+        assert_eq!(
+            mp4_stream_last_timeline_frame(0, 60.0, 30.0, 527),
+            Some(1053)
+        );
+        assert_eq!(
+            mp4_stream_last_timeline_frame(0, 60.0, 15.0, 263),
+            Some(1051)
+        );
+        assert_eq!(
+            mp4_stream_last_timeline_frame(10_000, 30.0, 30.0, 527),
+            Some(10_526)
+        );
+        assert_eq!(mp4_stream_last_timeline_frame(0, 60.0, 60.0, 0), None);
+    }
+
+    #[test]
+    fn splits_concatenated_mjpeg_preview_frames() {
+        let bytes = [
+            0xff, 0xd8, 1, 2, 0xff, 0xd9, 0xff, 0xd8, 3, 4, 5, 0xff, 0xd9,
+        ];
+        let frames = split_mjpeg_frames(&bytes, 2).unwrap();
+        assert_eq!(frames[0].as_slice(), &[0xff, 0xd8, 1, 2, 0xff, 0xd9]);
+        assert_eq!(frames[1].as_slice(), &[0xff, 0xd8, 3, 4, 5, 0xff, 0xd9]);
+        assert!(split_mjpeg_frames(&bytes, 3).is_err());
+    }
 
     #[test]
     fn loads_valid_states_around_a_corrupt_line() {
@@ -1534,7 +1725,11 @@ mod tests {
         let data = load_episode(&root, None, &cancelled).unwrap();
         assert_eq!(data.states.len(), 1055);
         assert_eq!(data.summary.streams[0].frame_count, 527);
+        assert_eq!(data.summary.streams[0].last_frame, Some(1053));
+        assert_eq!(data.summary.streams[1].last_frame, Some(1051));
+        assert_eq!(data.summary.streams[2].last_frame, Some(1051));
         assert_eq!(data.summary.streams[3].frame_count, 1054);
+        assert_eq!(data.summary.streams[3].last_frame, Some(1053));
         let native_video = video_source(&root, "cam0").unwrap();
         assert_eq!(native_video.paths.len(), 1);
         assert_eq!(native_video.fps, 30.0);
@@ -1542,6 +1737,12 @@ mod tests {
         assert_eq!(mime, "image/jpeg");
         let image = image::load_from_memory(&bytes).unwrap();
         assert_eq!((image.width(), image.height()), (3840, 2160));
+        let preview = read_mp4_preview_batch(&root, "cam0", 60, None).unwrap();
+        assert_eq!(preview.len(), 240);
+        assert_eq!(preview.first().unwrap().0, 60);
+        assert_eq!(preview.last().unwrap().0, 299);
+        let preview_image = image::load_from_memory(preview.first().unwrap().1.as_slice()).unwrap();
+        assert_eq!(preview_image.width(), 1280);
         let report = crate::validation::validate_episode(&root, None, &cancelled).unwrap();
         assert!(report
             .issues

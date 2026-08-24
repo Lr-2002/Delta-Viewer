@@ -66,7 +66,7 @@ test("bounds delayed playback and promotes the latest rapid seek", async () => {
 
   assert.deepEqual(loads.map(({ request }) => request.frameId), [0, 0, 0, 0, 0]);
   for (const stream of streams) {
-    assert.equal(cache.pendingWorkCountForStream(root, stream), 1 + FRAME_READ_AHEAD_FRAMES);
+    assert.equal(cache.pendingWorkCountForStream(root, stream), 1 + Math.min(FRAME_READ_AHEAD_FRAMES, 195));
   }
 
   for (let frameId = 1; frameId <= 195; frameId += 1) {
@@ -165,7 +165,10 @@ test("retains sequential read-ahead during continuous playback", async () => {
 
   const next = cache.requestCurrent({ ...request, frameId: 1 }, { preserveReadAhead: true });
   cache.scheduleReadAhead({ ...request, frameId: 1, endFrame: 195 });
-  assert.equal(cache.pendingWorkCountForStream(request.root, request.stream), 1 + FRAME_READ_AHEAD_FRAMES);
+  assert.equal(
+    cache.pendingWorkCountForStream(request.root, request.stream),
+    1 + Math.min(FRAME_READ_AHEAD_FRAMES, 194),
+  );
   loads[1].next.resolve("cam0-1");
   await next;
   await flushScheduler();
@@ -192,6 +195,32 @@ test("never schedules read-ahead beyond the clip end", async () => {
   loads[1].next.resolve("cam0-11");
   await flushScheduler();
   assert.equal(cache.pendingWorkCountForStream(request.root, request.stream), 0);
+});
+
+test("counts only the consecutive decoded runway", async () => {
+  const cache = new FrameCache(async ({ frameId }) => `cam0-${frameId}`);
+  const request = { root: "/episode", stream: "cam0" };
+
+  await cache.requestCurrent({ ...request, frameId: 11 });
+  await cache.requestCurrent({ ...request, frameId: 12 });
+  await cache.requestCurrent({ ...request, frameId: 14 });
+
+  assert.equal(cache.consecutiveReadyCount(request.root, request.stream, 11, 20), 2);
+  assert.equal(cache.consecutiveReadyCount(request.root, request.stream, 12, 20), 1);
+  assert.equal(cache.consecutiveReadyCount(request.root, request.stream, 13, 20), 0);
+});
+
+test("deduplicates lower-FPS aliases while retaining a full timeline runway", async () => {
+  const cache = new FrameCache(async ({ frameId }) => `cam0-${frameId}`);
+  const request = { root: "/episode", stream: "cam0", frameId: 0 };
+  const alignThirtyFps = (frameId) => Math.floor(frameId / 2) * 2;
+
+  await cache.requestCurrent(request);
+  cache.scheduleReadAhead({ ...request, endFrame: 6 }, alignThirtyFps);
+  while (cache.pendingWorkCount) await flushScheduler();
+
+  assert.equal(cache.cachedFrameCount, 4);
+  assert.equal(cache.consecutiveReadyCount(request.root, request.stream, 1, 6, alignThirtyFps), 6);
 });
 
 test("enforces the global decoded-frame cache cap", async () => {

@@ -9,7 +9,8 @@ import {
 } from "../src/lib/supervisionAssignments.ts";
 import { distributeBySpeed, distributeEvenly, distributeTaskTotals } from "../src/lib/operationsCockpit.ts";
 import { deadlineAtEndOfDay, deadlineDateInput, deadlineDateLabel } from "../src/lib/deadlines.ts";
-import type { SupervisionTaskSummary } from "../src/types.ts";
+import { assignmentFilterForSource } from "../src/lib/assignedEpisodes.ts";
+import type { AssignedTask, EpisodeSummary, SupervisionTaskSummary } from "../src/types.ts";
 
 function task(taskName: string, total: number): SupervisionTaskSummary {
   return {
@@ -23,6 +24,22 @@ function task(taskName: string, total: number): SupervisionTaskSummary {
 
 test("accepts assignments sourced only from imported task JSON", () => {
   assert.equal(validateAssignmentSelection({ BedMaking: 3 }, [], ["BedMaking"]), null);
+});
+
+test("does not hide dated recordings on a manually selected removable drive", () => {
+  const episodes = [episode("/media/DOHC1TB/20260821_060700_recording")];
+  assert.equal(assignmentFilterForSource(episodes, [assignedTask("BedMaking")], "removable"), null);
+});
+
+test("keeps assignment filtering for a mounted NAS source", () => {
+  const episodes = [
+    episode("/mnt/Datasets/BedMaking/episode-001"),
+    episode("/mnt/Datasets/Bedsheet/episode-001"),
+  ];
+  assert.deepEqual(
+    assignmentFilterForSource(episodes, [assignedTask("BedMaking")], "remote"),
+    { episodes: [episodes[0]], taskByRoot: { [episodes[0].root]: "BedMaking" } },
+  );
 });
 
 test("keeps NAS task quantity bounds when a catalog is available", () => {
@@ -168,5 +185,30 @@ function operator(username: string, completionRatePerHour: number) {
     lastLoginAtMs: null,
     operationCount: 0,
     possibleStagnation: false,
+  };
+}
+
+function assignedTask(taskName: string): AssignedTask {
+  return {
+    task: taskName,
+    detail: taskName,
+    quantity: 10,
+    startIndex: 0,
+    priority: "normal",
+    deadlineAtMs: null,
+    status: "active",
+    order: 0,
+  };
+}
+
+function episode(root: string): EpisodeSummary {
+  return {
+    root,
+    name: root.split("/").at(-1) ?? root,
+    totalFiles: 0,
+    totalBytes: 0,
+    stateCount: 0,
+    indexed: false,
+    streams: [],
   };
 }

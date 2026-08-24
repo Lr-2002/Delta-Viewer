@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   Activity,
   BookOpenText,
@@ -76,10 +76,24 @@ import {
   updateCurrentDisplayName,
   validateEpisode,
 } from "./lib/backend";
+import { assignmentFilterForSource } from "./lib/assignedEpisodes";
+import { FRAME_READ_AHEAD_FRAMES } from "./lib/frame-cache";
 import { formatBytes, shortPath } from "./lib/format";
 import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate";
 import { OperationScope, type OperationToken } from "./lib/operationScope";
-import { clampPlaybackFrame, nextPlaybackFrame, playbackFrameDurationMs, playbackStartFrame } from "./lib/playback-clock";
+import {
+  clampPlaybackFrame,
+  nextFrameRenderProgress,
+  nextPlaybackFrame,
+  playbackAdvanceTimestamp,
+  playbackBufferRatio,
+  playbackBufferRequirement,
+  playbackFrameDue,
+  playbackFrameDurationMs,
+  primaryPlaybackFrameStep,
+  playbackStartFrame,
+  secondaryPlaybackFrame,
+} from "./lib/playback-clock";
 import type {
   AnnotatedEpisodeSummary,
   AssignedTask,
@@ -124,27 +138,6 @@ function localDateInput(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-function assignedEpisodeSelection(episodes: EpisodeSummary[], assignments: AssignedTask[]) {
-  const sorted = [...episodes].sort((left, right) => left.root.localeCompare(right.root));
-  const selected = new Map<string, EpisodeSummary>();
-  const taskByRoot: Record<string, string> = {};
-  for (const assignment of [...assignments]
-    .filter((task) => task.status !== "paused")
-    .sort((left, right) => left.order - right.order)) {
-    const taskKey = assignment.task.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-    const matches = sorted.filter((episode) => {
-      const pathKey = episode.root.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-      return taskKey.length > 0 && pathKey.includes(taskKey);
-    });
-    for (const episode of matches.slice(assignment.startIndex, assignment.startIndex + assignment.quantity)) {
-      if (selected.has(episode.root)) continue;
-      selected.set(episode.root, episode);
-      taskByRoot[episode.root] = assignment.task;
-    }
-  }
-  return { episodes: [...selected.values()], taskByRoot };
-}
-
 const UNAVAILABLE_FRAME_ISSUE_CODES = new Set([
   "EMPTY_STREAM",
   "INVALID_FRAME_FILENAME",
@@ -174,6 +167,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.59": "支持可移动 U 盘直读、离线局域网用户中心迁移，以及 Camera 0 原生连续 MP4 回放与中间定位。",
   "0.17.58": "支持从日期顶层目录和 DOHC1TB 批量根目录直接加载混合 MP4/segment BIN 真实记录，并按 batch 时间轴同步回放。",
   "0.17.57": "新增 segment BIN 文件夹直读：数值排序并连续加载全部分段，复用 T265 位姿与 JPEG 回放，并校验记录结构和 CRC。",
   "0.17.56": "修复 NAS 网络挂载无响应时标注账号自动加载长期锁死界面的问题，失败后可继续退出、重新配置或导入数据。",
@@ -340,6 +334,13 @@ function App() {
   });
   const frameRef = useRef(0);
   const settledFrameByStreamRef = useRef(new Map<string, number>());
+  const playbackModeByStreamRef = useRef(new Map<string, "native" | "fallback">());
+  const bufferedFramesByStreamRef = useRef(new Map<string, number>());
+  const playbackPrimedRef = useRef(false);
+  const [playbackPrimed, setPlaybackPrimed] = useState(false);
+  const [playbackBufferPercent, setPlaybackBufferPercent] = useState(0);
+  const [playbackBufferStreamLabel, setPlaybackBufferStreamLabel] = useState("Camera 0");
+  const [sourceFpsByStream, setSourceFpsByStream] = useState<Record<string, number>>({});
   const didAutoLoad = useRef(false);
   const operationScopeRef = useRef(new OperationScope());
   const sourcePickerOpenRef = useRef(false);
@@ -357,7 +358,41 @@ function App() {
     () => data?.summary.streams.filter((stream) => stream.frameCount > 0) ?? [],
     [data],
   );
+  const primaryStreamName = availableStreams.find((stream) => stream.name === "cam0")?.name
+    ?? availableStreams[0]?.name
+    ?? null;
   const playbackFps = fpsOverride ?? estimatedFps;
+  const primarySourceFps = primaryStreamName ? sourceFpsByStream[primaryStreamName] ?? null : null;
+  const handleFrameSettled = useCallback((streamName: string, frameId: number) => {
+    const root = data?.summary.root;
+    if (!root) return;
+    settledFrameByStreamRef.current.set(streamName, frameId);
+    const settled = availableStreams.reduce(
+      (count, stream) => count + (settledFrameByStreamRef.current.get(stream.name) === frameId ? 1 : 0),
+      0,
+    );
+    setFrameRenderProgress((current) => nextFrameRenderProgress(
+      current,
+      { root, frameId, settled, total: availableStreams.length },
+    ));
+  }, [availableStreams, data?.summary.root]);
+  const handlePlaybackModeChange = useCallback((streamName: string, mode: "native" | "fallback") => {
+    playbackModeByStreamRef.current.set(streamName, mode);
+  }, []);
+  const handleBufferProgress = useCallback((streamName: string, readyFrames: number) => {
+    bufferedFramesByStreamRef.current.set(streamName, readyFrames);
+  }, []);
+  const handleSourceFpsChange = useCallback((streamName: string, fps: number | null) => {
+    setSourceFpsByStream((current) => {
+      if (fps === null) {
+        if (!(streamName in current)) return current;
+        const next = { ...current };
+        delete next[streamName];
+        return next;
+      }
+      return current[streamName] === fps ? current : { ...current, [streamName]: fps };
+    });
+  }, []);
 
   function beginOperation(): OperationToken | null {
     const operation = operationScopeRef.current.begin();
@@ -559,6 +594,10 @@ function App() {
   }, [availableStreams.length, currentFrame, data?.summary.root]);
 
   useEffect(() => {
+    setSourceFpsByStream({});
+  }, [data?.summary.root]);
+
+  useEffect(() => {
     let unlisten: (() => void) | undefined;
     void onTaskProgress((nextProgress) => {
       const owner = operationScopeRef.current.current();
@@ -603,19 +642,58 @@ function App() {
   useEffect(() => {
     if (!playing || !data) return;
     const playbackEnd = Math.min(clipEndFrame, getMaxFrame(data));
-    const frameDurationMs = playbackFrameDurationMs(playbackFps, speed);
+    const frameStep = primaryPlaybackFrameStep(playbackFps, primarySourceFps);
+    const frameDurationMs = playbackFrameDurationMs(playbackFps / frameStep, speed);
     let lastAdvanceTimeMs = performance.now() - frameDurationMs;
     let animationFrame = 0;
 
     const tick = (nowMs: number) => {
       const current = frameRef.current;
-      const allStreamsSettled = availableStreams.every(
-        (stream) => settledFrameByStreamRef.current.get(stream.name) === current,
-      );
-      const frameIntervalElapsed = nowMs - lastAdvanceTimeMs >= frameDurationMs;
-      const next = nextPlaybackFrame(current, playbackEnd, frameIntervalElapsed && allStreamsSettled);
+      if (!playbackPrimedRef.current) {
+        const fallbackStreams = availableStreams.filter(
+          (stream) => playbackModeByStreamRef.current.get(stream.name) !== "native",
+        );
+        const primaryFallback = fallbackStreams.find((stream) => stream.name === primaryStreamName);
+        const primaryRequiredFrames = primaryFallback
+          ? playbackBufferRequirement(
+            current,
+            playbackEnd,
+            primaryFallback.lastFrame,
+            FRAME_READ_AHEAD_FRAMES,
+          )
+          : 0;
+        const primaryReadyFrames = primaryFallback
+          ? bufferedFramesByStreamRef.current.get(primaryFallback.name) ?? 0
+          : 0;
+        const primaryComplete = primaryReadyFrames >= primaryRequiredFrames;
+        const percent = Math.round(
+          playbackBufferRatio(primaryReadyFrames, primaryRequiredFrames) * 100,
+        );
+        setPlaybackBufferPercent((value) => value === percent ? value : percent);
+        if (primaryFallback) {
+          setPlaybackBufferStreamLabel((value) => (
+            value === primaryFallback.label ? value : primaryFallback.label
+          ));
+        }
+        // Camera 0 is the playback gate. Once its runway is decoded, start the
+        // real-time clock immediately; secondary tiles continue read-ahead in
+        // the background and must never strand playback at the old 50% phase.
+        if (primaryComplete) {
+          playbackPrimedRef.current = true;
+          setPlaybackPrimed(true);
+          lastAdvanceTimeMs = nowMs;
+        }
+        animationFrame = window.requestAnimationFrame(tick);
+        return;
+      }
+      const frameIntervalElapsed = playbackFrameDue(nowMs - lastAdvanceTimeMs, frameDurationMs);
+      const next = nextPlaybackFrame(current, playbackEnd, frameIntervalElapsed, frameStep);
       if (next !== frameRef.current) {
-        lastAdvanceTimeMs = nowMs;
+        lastAdvanceTimeMs = playbackAdvanceTimestamp(
+          nowMs,
+          lastAdvanceTimeMs,
+          frameDurationMs,
+        );
         frameRef.current = next;
         setCurrentFrame(next);
       }
@@ -628,7 +706,7 @@ function App() {
 
     animationFrame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [availableStreams, clipEndFrame, data, playbackFps, playing, speed]);
+  }, [availableStreams, clipEndFrame, data, playbackFps, playing, primarySourceFps, primaryStreamName, speed]);
 
   async function openSource(path: string, autoLoad = false, assignment = assignedTasks) {
     const owner = beginOperation();
@@ -639,7 +717,11 @@ function App() {
     try {
       const result = await scanSource(path, owner.id);
       ensureOperationActive(owner);
-      const filtered = assignment.length ? assignedEpisodeSelection(result.episodes, assignment) : null;
+      const filtered = assignmentFilterForSource(
+        result.episodes,
+        assignment,
+        result.volume.driveType,
+      );
       const visibleResult = filtered ? {
         ...result,
         episodes: filtered.episodes,
@@ -649,6 +731,9 @@ function App() {
       setAssignedEpisodeTasks(filtered?.taskByRoot ?? {});
       setSourcePath(visibleResult.sourceRoot);
       setScan(visibleResult);
+      if (assignment.length && result.volume.driveType === "removable") {
+        setNotice(`已从可移动盘读取 ${visibleResult.episodes.length} 条记录；NAS 任务过滤未应用于该设备。`);
+      }
       void refreshAnnotationTags();
       setSkippedEpisodeRoots({});
       setPendingAnnotationConfirmation(null);
@@ -988,7 +1073,7 @@ function App() {
     if (count) setNotice(`已恢复 ${count} 条跳过的数据。`);
   }
 
-  function handleFrameUnavailable(streamName: string, frameId: number) {
+  const handleFrameUnavailable = useCallback((streamName: string, frameId: number) => {
     if (!data) return;
     const episode = data.summary;
     const stream = data.summary.streams.find((candidate) => candidate.name === streamName);
@@ -996,14 +1081,21 @@ function App() {
     setEpisodeSourceStates((current) => ({ ...current, [data.summary.root]: "error" }));
     resetLoadedData();
     void reportFailure("load_frame", new Error(message), data.summary.root);
-  }
+  }, [data]);
 
   function resetLoadedData() {
+    settledFrameByStreamRef.current.clear();
+    playbackModeByStreamRef.current.clear();
+    bufferedFramesByStreamRef.current.clear();
+    playbackPrimedRef.current = false;
     setData(null);
     setReport(null);
     setAnnotation(null);
     setSelectedTaskId(null);
     setPlaying(false);
+    setPlaybackPrimed(false);
+    setPlaybackBufferPercent(0);
+    setPlaybackBufferStreamLabel("Camera 0");
     setExportResult(null);
     setCurrentFrame(0);
     setClipStartFrame(0);
@@ -1087,11 +1179,25 @@ function App() {
     setAuthStatus(status);
   }
 
-  function moveFrame(delta: number) {
+  function resetPlaybackPreparation() {
+    bufferedFramesByStreamRef.current.clear();
+    playbackPrimedRef.current = false;
+    setPlaybackPrimed(false);
+    setPlaybackBufferPercent(0);
+  }
+
+  function seekFrame(frame: number) {
     if (!data) return;
-    const next = Math.max(clipStartFrame, Math.min(clipEndFrame, currentFrame + delta));
+    const next = Math.max(clipStartFrame, Math.min(clipEndFrame, Math.round(frame)));
+    setPlaying(false);
+    resetPlaybackPreparation();
     frameRef.current = next;
     setCurrentFrame(next);
+  }
+
+  function moveFrame(delta: number) {
+    if (!data) return;
+    seekFrame(frameRef.current + delta);
   }
 
   function togglePlayback() {
@@ -1107,7 +1213,9 @@ function App() {
         setCurrentFrame(startFrame);
       }
     }
-    setPlaying((value) => !value);
+    const nextPlaying = !playing;
+    resetPlaybackPreparation();
+    setPlaying(nextPlaying);
   }
 
   useEffect(() => {
@@ -1587,7 +1695,7 @@ function App() {
           ) : null}
           <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy}>
             <FolderOpen size={16} />
-            {isManagedWorkspace && currentUser?.role === "operator" ? "配置 NAS 目录" : "选择 SD 卡"}
+            {isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}
           </button>
           <button
             className="icon-button history-trigger"
@@ -1725,7 +1833,14 @@ function App() {
                   <RotateCcw size={17} />
                 </button>
               ) : null}
-              <button className="icon-button" type="button" onClick={() => void chooseSource()} disabled={busy} title="重新扫描" aria-label="重新扫描">
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => void (sourcePath ? openSource(sourcePath, true) : chooseSource())}
+                disabled={busy}
+                title="重新扫描"
+                aria-label="重新扫描"
+              >
                 <RotateCcw size={17} />
               </button>
             </div>
@@ -1902,24 +2017,21 @@ function App() {
                             key={stream.name}
                             root={data.summary.root}
                             stream={stream}
-                            frameId={currentFrame}
+                            frameId={playing && stream.name !== primaryStreamName
+                              ? secondaryPlaybackFrame(currentFrame, minFrame, playbackFps)
+                              : currentFrame}
                             playing={playing}
+                            nativePlaybackEnabled={playing && playbackPrimed}
+                            readAheadEnabled={playing && stream.name === primaryStreamName}
                             playbackEndFrame={clipEndFrame}
                             playbackFps={playbackFps}
                             speed={speed}
                             className={`camera-${index}`}
-                            onFrameSettled={(streamName, frameId) => {
-                              settledFrameByStreamRef.current.set(streamName, frameId);
-                              const root = data.summary.root;
-                              const settled = availableStreams.reduce(
-                                (count, stream) => count + (settledFrameByStreamRef.current.get(stream.name) === frameId ? 1 : 0),
-                                0,
-                              );
-                              setFrameRenderProgress((current) => current.root === root && current.frameId === frameId
-                                ? { ...current, settled }
-                                : { root, frameId, settled, total: availableStreams.length });
-                            }}
+                            onFrameSettled={playing ? undefined : handleFrameSettled}
                             onFrameUnavailable={handleFrameUnavailable}
+                            onPlaybackModeChange={handlePlaybackModeChange}
+                            onBufferProgress={handleBufferProgress}
+                            onSourceFpsChange={handleSourceFpsChange}
                           />
                         ))}
                       </div>
@@ -1933,13 +2045,15 @@ function App() {
                         ) : null}
                       </div>
                     </div>
-                    <FrameRenderProgress
-                      frameId={currentFrame}
-                      settled={frameRenderProgress.root === data.summary.root && frameRenderProgress.frameId === currentFrame
-                        ? frameRenderProgress.settled
-                        : 0}
-                      total={availableStreams.length}
-                    />
+                    {!playing ? (
+                      <FrameRenderProgress
+                        frameId={currentFrame}
+                        settled={frameRenderProgress.root === data.summary.root && frameRenderProgress.frameId === currentFrame
+                          ? frameRenderProgress.settled
+                          : 0}
+                        total={availableStreams.length}
+                      />
+                    ) : null}
                     <AnnotationPanel
                       sourcePath={data.summary.root}
                       tasks={tasks}
@@ -1979,11 +2093,16 @@ function App() {
                             <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧"><SkipForward size={17} /></button>
                           </div>
                           <span className="segment-frame-readout">帧 {currentFrame} / {maxFrame}</span>
+                          {playing && !playbackPrimed ? (
+                            <span className="playback-buffering">
+                              预缓冲 {playbackBufferStreamLabel} {playbackBufferPercent}%
+                            </span>
+                          ) : null}
                           <span className="time-readout">{currentState ? formatStateTime(data, currentState.captureTimeNs) : "—"}</span>
                           <label className="speed-control">
                             <Gauge size={16} />
                             <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label="播放速度">
-                              <option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option>
+                              <option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>1×（正常速度）</option><option value={2}>2×</option>
                             </select>
                           </label>
                           <label className="fps-control" title="播放帧率">
@@ -2002,9 +2121,7 @@ function App() {
                       onNotice={setNotice}
                       onActivity={auditActivity}
                       onFrameChange={(frame) => {
-                        const next = Math.max(minFrame, Math.min(maxFrame, frame));
-                        frameRef.current = next;
-                        setCurrentFrame(next);
+                        seekFrame(Math.max(minFrame, Math.min(maxFrame, frame)));
                       }}
                     />
                   </section>

@@ -5,6 +5,23 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.59 - 2026-08-24
+
+- Keep manually selected removable recordings visible for managed operators,
+  while preserving assignment filtering for fixed/NAS roots, and support
+  same-service user-center endpoint migration plus certificate-covered private
+  LAN aliases for login without Internet access.
+- Correct lower-FPS MP4 stream bounds on the shared timeline and make middle
+  seeks reset and rebuild their own Camera 0 runway without waiting forever for
+  nonexistent tail frames or secondary streams.
+- Give Camera 0 a loopback-only, tokenized, read-only HTTP Range path for true
+  continuous MP4 decoding without copying or modifying the mounted recording;
+  retain bounded FFmpeg batch fallback with longer primary read-ahead,
+  source-FPS cadence, secondary preview throttling, and catch-up-burst removal.
+- Reduce playback main-thread work by deduplicating frame requests and native
+  settlement state, memoizing frame tiles, and separating the telemetry trace
+  from its per-frame playhead.
+
 ## 0.17.58 - 2026-08-21
 
 - Load dated `hybrid-h264-jpeg-segment-v1` recording folders directly by

@@ -1,6 +1,6 @@
-export const FRAME_CACHE_MAX_PER_STREAM = 12;
-export const FRAME_CACHE_MAX_ENTRIES = 60;
-export const FRAME_READ_AHEAD_FRAMES = 10;
+export const FRAME_CACHE_MAX_PER_STREAM = 400;
+export const FRAME_CACHE_MAX_ENTRIES = 1000;
+export const FRAME_READ_AHEAD_FRAMES = 360;
 export const FRAME_MAX_IN_FLIGHT_PER_STREAM = 1;
 export const FRAME_MAX_QUEUED_PER_STREAM = 1 + FRAME_READ_AHEAD_FRAMES;
 export const FRAME_MAX_PENDING_PER_STREAM = FRAME_MAX_IN_FLIGHT_PER_STREAM + FRAME_MAX_QUEUED_PER_STREAM;
@@ -26,6 +26,7 @@ export interface CachedFrame extends FrameRequest {
 }
 
 type FrameLoader = (request: FrameRequest) => Promise<string>;
+type FrameIdMapper = (frameId: number) => number;
 type RequestPriority = "current" | "prefetch";
 
 interface ScheduledFrame {
@@ -87,10 +88,17 @@ export class FrameCache {
     return scheduled.promise;
   }
 
-  scheduleReadAhead({ endFrame, ...request }: ReadAheadRequest): void {
+  scheduleReadAhead(
+    { endFrame, ...request }: ReadAheadRequest,
+    mapFrameId: FrameIdMapper = (frameId) => frameId,
+  ): void {
     const readAheadEnd = Math.min(endFrame, request.frameId + FRAME_READ_AHEAD_FRAMES);
+    const scheduledFrameIds = new Set<number>();
     for (let frameId = request.frameId + 1; frameId <= readAheadEnd; frameId += 1) {
-      this.enqueuePrefetch({ ...request, frameId });
+      const mappedFrameId = mapFrameId(frameId);
+      if (scheduledFrameIds.has(mappedFrameId)) continue;
+      scheduledFrameIds.add(mappedFrameId);
+      this.enqueuePrefetch({ ...request, frameId: mappedFrameId });
     }
   }
 
@@ -121,6 +129,21 @@ export class FrameCache {
     let count = 0;
     for (const scheduled of this.pending.values()) {
       if (scheduled.streamKey === streamKey) count += 1;
+    }
+    return count;
+  }
+
+  consecutiveReadyCount(
+    root: string,
+    stream: string,
+    startFrame: number,
+    endFrame: number,
+    mapFrameId: FrameIdMapper = (frameId) => frameId,
+  ): number {
+    let count = 0;
+    for (let frameId = startFrame; frameId <= endFrame; frameId += 1) {
+      if (!this.ready.has(frameRequestKey({ root, stream, frameId: mapFrameId(frameId) }))) break;
+      count += 1;
     }
     return count;
   }

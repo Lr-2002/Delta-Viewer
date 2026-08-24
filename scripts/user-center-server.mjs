@@ -92,14 +92,17 @@ function normalizeBaseUrl(value) {
   }
   const host = url.hostname;
   if (!isPrivateLanHost(host)) {
-    throw new Error("publicBaseUrl must use a private LAN IP address");
+    throw new Error("publicBaseUrl must use a private LAN IP address or .local hostname");
   }
   return url.origin;
 }
 
 function isPrivateLanHost(host) {
   const match = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
-  if (!match) return false;
+  if (!match) {
+    return /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*local$/i.test(host)
+      && host.toLowerCase() !== "local";
+  }
   const octets = match.slice(1).map(Number);
   if (octets.some((value) => value < 0 || value > 255)) return false;
   return octets[0] === 10
@@ -120,9 +123,15 @@ function normalizeConfiguration(raw) {
     || config.sessionTtlSeconds < 300 || config.sessionTtlSeconds > 86_400) {
     throw new Error("sessionTtlSeconds must be between 300 and 86400");
   }
+  const tlsAlternativeHosts = config.tlsAlternativeHosts ?? [];
+  if (!Array.isArray(tlsAlternativeHosts)
+    || tlsAlternativeHosts.some((host) => typeof host !== "string" || !isPrivateLanHost(host))) {
+    throw new Error("tlsAlternativeHosts must contain only private LAN IP addresses or .local hostnames");
+  }
   return {
     ...config,
     publicBaseUrl: normalizeBaseUrl(config.publicBaseUrl),
+    tlsAlternativeHosts: [...new Set(tlsAlternativeHosts.map((host) => host.toLowerCase()))],
   };
 }
 
@@ -361,15 +370,33 @@ function clientConfig(config, state, certificatePem) {
   };
 }
 
-async function ensureTls(dataRoot, publicBaseUrl) {
+function certificateCoversHost(certificate, host) {
+  const check = /^(?:\d+\.){3}\d+$/.test(host) ? "-checkip" : "-checkhost";
+  try {
+    const output = execFileSync(
+      "openssl",
+      ["x509", "-in", certificate, "-noout", check, host],
+      { encoding: "utf8" },
+    );
+    // OpenSSL 3 prints a mismatch but still exits with status 0 for these
+    // checks, so the textual result must also be verified.
+    return output.includes("does match certificate") && !output.includes("does NOT match");
+  } catch {
+    return false;
+  }
+}
+
+async function ensureTls(dataRoot, publicBaseUrl, tlsAlternativeHosts = []) {
   const certificate = certificatePath(dataRoot);
   const key = keyPath(dataRoot);
   const caCertificate = caCertificatePath(dataRoot);
   const caKey = caKeyPath(dataRoot);
-  if (existsSync(certificate) && existsSync(key)
-    && existsSync(caCertificate) && existsSync(caKey)) return;
   await mkdir(path.dirname(certificate), { recursive: true, mode: 0o700 });
   const host = new URL(publicBaseUrl).hostname;
+  const certificateHosts = [...new Set([host, ...tlsAlternativeHosts, "localhost"])];
+  if (existsSync(certificate) && existsSync(key)
+    && existsSync(caCertificate) && existsSync(caKey)
+    && certificateHosts.every((candidate) => certificateCoversHost(certificate, candidate))) return;
   if (!existsSync(caCertificate) && !existsSync(caKey)
     && existsSync(certificate) && existsSync(key)) {
     await rename(certificate, caCertificate);
@@ -391,8 +418,11 @@ async function ensureTls(dataRoot, publicBaseUrl) {
       "req", "-new", "-newkey", "rsa:3072", "-sha256", "-nodes",
       "-keyout", key, "-out", request, "-subj", `/CN=${host}`,
     ], { stdio: "ignore" });
+    const subjectAltNames = certificateHosts.map((candidate) => (
+      /^(?:\d+\.){3}\d+$/.test(candidate) ? `IP:${candidate}` : `DNS:${candidate}`
+    ));
     await writeFile(extensions, [
-      `subjectAltName=IP:${host},DNS:localhost`,
+      `subjectAltName=${subjectAltNames.join(",")}`,
       "basicConstraints=critical,CA:FALSE",
       "keyUsage=critical,digitalSignature,keyEncipherment",
       "extendedKeyUsage=serverAuth",
@@ -416,7 +446,7 @@ async function ensureTls(dataRoot, publicBaseUrl) {
 export async function initializeUserCenter(configuration, dataRoot, outputClientConfigPath = null) {
   await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   await chmod(dataRoot, 0o700);
-  await ensureTls(dataRoot, configuration.publicBaseUrl);
+  await ensureTls(dataRoot, configuration.publicBaseUrl, configuration.tlsAlternativeHosts);
   let state;
   if (existsSync(statePath(dataRoot))) {
     state = await readState(dataRoot);
