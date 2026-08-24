@@ -35,13 +35,13 @@ fn directory_probe_command(path: &Path) -> Command {
 fn directory_probe_command(path: &Path) -> Command {
     let mut command = Command::new("powershell.exe");
     command
+        .env("DOHC_SOURCE_PROBE_PATH", path)
         .args([
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "if (Test-Path -LiteralPath $args[0] -PathType Container) { exit 0 } else { exit 2 }",
-        ])
-        .arg(path);
+            "$probePath = [Environment]::GetEnvironmentVariable('DOHC_SOURCE_PROBE_PATH'); if (Test-Path -LiteralPath $probePath -PathType Container) { exit 0 } else { exit 2 }",
+        ]);
     command
 }
 
@@ -82,8 +82,12 @@ fn wait_for_probe(mut child: Child, path: &Path, timeout: Duration) -> AppResult
 mod tests {
     use super::{directory_probe_command, wait_for_probe};
     use std::path::Path;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
+    #[cfg(unix)]
+    use std::process::Command;
+    use std::process::Stdio;
+    use std::time::Duration;
+    #[cfg(unix)]
+    use std::time::Instant;
 
     #[test]
     fn accepts_a_responsive_directory() {

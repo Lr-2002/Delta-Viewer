@@ -167,6 +167,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.60": "重构监管工作台视觉层级与状态反馈，强化运营指标、异常告警和窄窗口可读性。",
   "0.17.59": "支持可移动 U 盘直读、离线局域网用户中心迁移，以及 Camera 0 原生连续 MP4 回放与中间定位。",
   "0.17.58": "支持从日期顶层目录和 DOHC1TB 批量根目录直接加载混合 MP4/segment BIN 真实记录，并按 batch 时间轴同步回放。",
   "0.17.57": "新增 segment BIN 文件夹直读：数值排序并连续加载全部分段，复用 T265 位姿与 JPEG 回放，并校验记录结构和 CRC。",

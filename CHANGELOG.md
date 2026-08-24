@@ -5,6 +5,21 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.60 - 2026-08-24
+
+- Refine the existing supervision cockpit without adding duplicate workflows:
+  introduce a restrained operations palette, stronger navigation and data
+  hierarchy, and clearer connected, success, warning and error states.
+- Improve dense management surfaces across overview, assignment, alerts,
+  quality and reports with consistent tables, charts, controls and responsive
+  layouts for the supported desktop and narrow diagnostic viewports.
+- Fix Windows source responsiveness probes by passing the selected path through
+  a dedicated process environment value instead of appending it to PowerShell
+  command text.
+- Restore the Windows Rust release gate by embedding the Common Controls v6
+  dependency in crate targets and making platform-specific test imports and
+  collision fixtures portable.
+
 ## 0.17.59 - 2026-08-24
 
 - Keep manually selected removable recordings visible for managed operators,
