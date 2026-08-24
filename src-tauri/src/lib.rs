@@ -1139,12 +1139,10 @@ fn get_video_source(
         scope
             .allow_file(&file_path)
             .map_err(|error| error.to_string())?;
-        if stream == "cam0" {
-            if let Some(server) = media_stream_server.inner().as_ref() {
-                *path = server
-                    .register(&file_path)
-                    .map_err(|error| error.to_string())?;
-            }
+        if let Some(server) = media_stream_server.inner().as_ref() {
+            *path = server
+                .register(&file_path)
+                .map_err(|error| error.to_string())?;
         }
     }
     Ok(source)

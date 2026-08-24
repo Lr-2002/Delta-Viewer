@@ -311,25 +311,27 @@ mod tests {
 
     #[test]
     #[ignore = "requires DOHC_MP4_SAMPLE_ROOT and GStreamer"]
-    fn gstreamer_discovers_the_real_camera_zero_loopback_stream() {
+    fn gstreamer_discovers_all_real_loopback_streams() {
         let root = PathBuf::from(
             std::env::var_os("DOHC_MP4_SAMPLE_ROOT")
                 .expect("DOHC_MP4_SAMPLE_ROOT must point to an MP4 episode"),
         );
-        let path = root.join("cam0/cam0-00000.mp4");
         let server = MediaStreamServer::start().unwrap();
-        let url = server.register(&path).unwrap();
-        let output = Command::new("gst-discoverer-1.0")
-            .arg(&url)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("video"));
-        assert!(stdout.contains("H.264"));
+        for stream in ["cam0", "cam1", "cam2", "t265_left", "t265_right"] {
+            let path = root.join(format!("{stream}/{stream}-00000.mp4"));
+            let url = server.register(&path).unwrap();
+            let output = Command::new("gst-discoverer-1.0")
+                .arg(&url)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{stream}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(stdout.contains("video"), "{stream}: {stdout}");
+            assert!(stdout.contains("H.264"), "{stream}: {stdout}");
+        }
     }
 }

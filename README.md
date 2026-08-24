@@ -238,17 +238,20 @@ every timeline frame in sequence. `1x` always means the recording's real-time
 speed; it does not quantize a 60 Hz recording into six-frame jumps. Lower-FPS
 camera streams reuse their already decoded source image on the intervening state
 ticks instead of redundantly decoding the same video frame.
-Camera 0 first uses a process-local, loopback-only HTTP Range stream so WebView
-can continuously decode the source MP4 like a normal video player. The server
-registers only canonical MP4 files already validated inside the current episode,
-uses opaque per-process tokens, never listens beyond `127.0.0.1`, and neither
-copies the video nor writes the source. Other streams remain lightweight
-synchronized previews so they do not contend with the primary 4K decoder.
+Camera 0 and every other manifest-backed MP4 stream use independent,
+process-local, loopback-only HTTP Range sources so WebView can continuously
+decode each video like a normal player. The server registers only canonical MP4
+files already validated inside the current episode, uses opaque per-process
+tokens, never listens beyond `127.0.0.1`, and neither copies the video nor writes
+the source. Camera 0 remains the primary clock/priming stream; readiness or
+initial seeking on a secondary native player automatically retries its first
+play request so slower-loading Camera 1/2 streams do not remain paused.
 If Camera 0 must use the compatibility decoder, it favors a longer initial load
 for sustained playback: it decodes 240 timeline frames per backend batch into a
 bounded in-memory cache and keeps up to 360 timeline frames of Camera 0 read-ahead.
-Only Camera 0 gates clock startup; secondary fallback streams follow at roughly
-10 FPS during playback and return to the exact selected frame when paused.
+Only Camera 0 gates clock startup. Secondary streams that genuinely lack native
+MP4 data follow through the bounded fallback at roughly 10 FPS during playback
+and return to the exact selected frame when paused.
 Once primed, the timeline clock advances independently of per-tile settlement.
 Its presentation cadence follows Camera 0's source FPS: a 30 FPS Camera 0 on a
 60 Hz state timeline advances two state ticks every 33 ms, preserving real time

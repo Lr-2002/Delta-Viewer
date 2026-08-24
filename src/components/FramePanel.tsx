@@ -166,6 +166,17 @@ export const FramePanel = memo(function FramePanel({
   useEffect(() => {
     onPlaybackModeChange?.(stream.name, nativeVideoActive ? "native" : "fallback");
   }, [nativeVideoActive, onPlaybackModeChange, stream.name]);
+
+  function resumeSecondaryNativePlayback() {
+    if (stream.name === "cam0" || !nativePlaybackEnabled || !nativeVideoActive) return;
+    const video = videoRef.current;
+    if (!video || !video.paused) return;
+    video.playbackRate = speed;
+    void video.play().catch(() => {
+      if (nativePlaybackEnabled) setVideoStatus("ready");
+    });
+  }
+
   function reportFrameUnavailable(frame: CachedFrame | { frameId: number }) {
     const key = `${streamKey}:${frame.frameId}`;
     if (unavailableFrameRef.current === key) return;
@@ -346,6 +357,8 @@ export const FramePanel = memo(function FramePanel({
             if (nativePlaybackEnabled && videoRef.current) void videoRef.current.play();
           }}
           onPlaying={() => setVideoStatus("playing")}
+          onCanPlay={resumeSecondaryNativePlayback}
+          onSeeked={resumeSecondaryNativePlayback}
           onWaiting={() => setVideoStatus("buffering")}
           onStalled={() => setVideoStatus("buffering")}
           onPause={() => { if (!nativePlaybackEnabled) setVideoStatus("ready"); }}
