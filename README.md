@@ -60,7 +60,10 @@ prompt while installing the replacement deb.
    administrator-created account. **Offline** enters directly without an account,
    user-center request, or automatic update check; local annotations use an
    offline-local provenance marker rather than a user account.
-2. Select an SD card or a recording directory.
+2. Select an SD card or a recording directory. A manually selected removable
+   volume is listed directly even when the managed operator has NAS task
+   assignments; task-name/range filtering remains active for fixed and network
+   assignment roots.
 3. Scan every direct-child episode without modifying captured files. The first
    session opens directly from the source; no automatic app-local copy is
    created. Keep the source volume mounted while viewing or exporting.
@@ -115,6 +118,12 @@ client never stores passwords and keeps login sessions only in the current
 process. Offline mode has no account or user-center request. The user center is
 for processing attribution; it does not encrypt local files, provide
 organization IAM, recover forgotten passwords, or synchronize annotation data.
+User-center login requires only reachability on the local network, not Internet
+access. An administrator may issue a refreshed client configuration when the
+LAN address changes; importing it atomically updates the endpoint only when the
+certificate-backed service ID is unchanged. The server can retain old private
+IP addresses as certificate-covered compatibility aliases so already configured
+clients continue to sign in while disconnected from the Internet.
 
 The runtime has no SSH or network recording-data path. Unified management mode
 connects only to the configured LAN user center for login and to the automatic
@@ -220,6 +229,35 @@ parse error.
 Playback estimates the recorded FPS from the median positive state timestamp
 delta and supports explicit 15, 24, 30, or 60 FPS overrides. Health issues that
 identify a frame can jump directly back to synchronized playback.
+Continuous playback keeps bounded primary-stream read-ahead on mounted sources.
+Native MP4 settlement reports are deduplicated, and the telemetry plot keeps a
+static trace while only its playhead is redrawn for each frame, avoiding UI work
+that can otherwise contend with 4K video decoding.
+If native MP4 decoding is unavailable, the FFmpeg compatibility path also keeps
+every timeline frame in sequence. `1x` always means the recording's real-time
+speed; it does not quantize a 60 Hz recording into six-frame jumps. Lower-FPS
+camera streams reuse their already decoded source image on the intervening state
+ticks instead of redundantly decoding the same video frame.
+Camera 0 first uses a process-local, loopback-only HTTP Range stream so WebView
+can continuously decode the source MP4 like a normal video player. The server
+registers only canonical MP4 files already validated inside the current episode,
+uses opaque per-process tokens, never listens beyond `127.0.0.1`, and neither
+copies the video nor writes the source. Other streams remain lightweight
+synchronized previews so they do not contend with the primary 4K decoder.
+If Camera 0 must use the compatibility decoder, it favors a longer initial load
+for sustained playback: it decodes 240 timeline frames per backend batch into a
+bounded in-memory cache and keeps up to 360 timeline frames of Camera 0 read-ahead.
+Only Camera 0 gates clock startup; secondary fallback streams follow at roughly
+10 FPS during playback and return to the exact selected frame when paused.
+Once primed, the timeline clock advances independently of per-tile settlement.
+Its presentation cadence follows Camera 0's source FPS: a 30 FPS Camera 0 on a
+60 Hz state timeline advances two state ticks every 33 ms, preserving real time
+while avoiding redundant whole-page renders and image-event round trips.
+Seeking to the middle—whether paused or already playing—pauses the clock,
+invalidates the old runway, and prebuffers forward from the selected frame;
+press Play again after the new buffer reaches 100%.
+It downscales only the transient preview to at most 1280 pixels wide, writes no
+proxy files, and leaves the mounted recording untouched.
 
 The importer retained for formal/development stress sanitizes every path
 component and stops before copying when two source paths would collide after

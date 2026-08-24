@@ -6,6 +6,11 @@ interface TelemetryChartProps {
   metric: MetricKey;
   frameId: number;
 }
+
+interface FrameBounds {
+  firstFrame: number;
+  lastFrame: number;
+}
 const COLORS = ["#d1495b", "#007c73", "#2f67c7", "#8b4fb3"];
 const LINE_DASHES = [[], [7, 3], [2, 3], [9, 3, 2, 3]];
 
@@ -17,13 +22,32 @@ const METRIC_LABELS: Record<MetricKey, string> = {
 };
 
 export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const plotCanvasRef = useRef<HTMLCanvasElement>(null);
+  const markerCanvasRef = useRef<HTMLCanvasElement>(null);
+  const frameIdRef = useRef(frameId);
+  frameIdRef.current = frameId;
   const values = useMemo(() => states.map((state) => state[metric]), [metric, states]);
+  const stateByFrame = useMemo(
+    () => new Map(states.map((state) => [state.frameId, state])),
+    [states],
+  );
+  const frameBounds = useMemo(() => {
+    let firstFrame = Number.POSITIVE_INFINITY;
+    let lastFrame = Number.NEGATIVE_INFINITY;
+    for (const state of states) {
+      firstFrame = Math.min(firstFrame, state.frameId);
+      lastFrame = Math.max(lastFrame, state.frameId);
+    }
+    return Number.isFinite(firstFrame) && Number.isFinite(lastFrame)
+      ? { firstFrame, lastFrame }
+      : null;
+  }, [states]);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const container = canvas.parentElement;
+    const plotCanvas = plotCanvasRef.current;
+    const markerCanvas = markerCanvasRef.current;
+    if (!plotCanvas || !markerCanvas) return;
+    const container = plotCanvas.parentElement;
     if (!container) return;
 
     const draw = () => {
@@ -31,11 +55,13 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
       const width = Math.max(320, Math.floor(bounds.width));
       const height = Math.max(180, Math.floor(bounds.height));
-      canvas.width = width * ratio;
-      canvas.height = height * ratio;
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-      const context = canvas.getContext("2d");
+      for (const canvas of [plotCanvas, markerCanvas]) {
+        canvas.width = width * ratio;
+        canvas.height = height * ratio;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+      }
+      const context = plotCanvas.getContext("2d");
       if (!context) return;
       context.scale(ratio, ratio);
       context.clearRect(0, 0, width, height);
@@ -77,12 +103,8 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
         context.fillText(formatAxis(value), padding.left - 8, y);
       }
 
-      let firstFrame = Number.POSITIVE_INFINITY;
-      let lastFrame = Number.NEGATIVE_INFINITY;
-      for (const state of states) {
-        firstFrame = Math.min(firstFrame, state.frameId);
-        lastFrame = Math.max(lastFrame, state.frameId);
-      }
+      const firstFrame = frameBounds?.firstFrame ?? 0;
+      const lastFrame = frameBounds?.lastFrame ?? firstFrame;
       const frameSpan = Math.max(lastFrame - firstFrame, 1);
       const xFor = (frame: number) => padding.left + ((frame - firstFrame) / frameSpan) * plotWidth;
       const yFor = (value: number) =>
@@ -109,33 +131,35 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
         context.stroke();
       }
 
-      const markerX = xFor(Math.max(firstFrame, Math.min(lastFrame, frameId)));
-      context.setLineDash([]);
-      context.strokeStyle = "#171717";
-      context.lineWidth = 1;
-      context.beginPath();
-      context.moveTo(markerX + 0.5, padding.top);
-      context.lineTo(markerX + 0.5, padding.top + plotHeight);
-      context.stroke();
-
       context.fillStyle = "#666666";
       context.textAlign = "left";
       context.textBaseline = "bottom";
       context.fillText("0", padding.left, height - 7);
       context.textAlign = "right";
       context.fillText(String(states.at(-1)?.frameId ?? 0), width - padding.right, height - 7);
+      if (frameBounds) {
+        drawPlaybackMarker(markerCanvas, container, frameBounds, frameIdRef.current);
+      }
     };
 
     draw();
     const observer = new ResizeObserver(draw);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [frameId, states, values]);
+  }, [frameBounds, states, values]);
 
-  const selected = states.find((state) => state.frameId === frameId)?.[metric] ?? null;
+  useEffect(() => {
+    const canvas = markerCanvasRef.current;
+    const container = canvas?.parentElement;
+    if (!canvas || !container || !frameBounds) return;
+    drawPlaybackMarker(canvas, container, frameBounds, frameId);
+  }, [frameBounds, frameId]);
+
+  const selected = stateByFrame.get(frameId)?.[metric] ?? null;
   return (
     <section className="telemetry-chart" aria-label={`${METRIC_LABELS[metric]}曲线`}>
-      <canvas ref={canvasRef} />
+      <canvas ref={plotCanvasRef} className="telemetry-plot" />
+      <canvas ref={markerCanvasRef} className="telemetry-marker" />
       <div className="chart-legend">
         {selected ? selected.map((value, index) => (
             <span key={index} data-series-color={COLORS[index]}>
@@ -146,6 +170,34 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
       </div>
     </section>
   );
+}
+
+function drawPlaybackMarker(
+  canvas: HTMLCanvasElement,
+  container: HTMLElement,
+  frameBounds: FrameBounds,
+  frameId: number,
+) {
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(320, Math.floor(container.getBoundingClientRect().width));
+  const height = Math.max(180, Math.floor(container.getBoundingClientRect().height));
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, width, height);
+  const padding = { top: 18, right: 18, bottom: 28, left: 54 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const frameSpan = Math.max(frameBounds.lastFrame - frameBounds.firstFrame, 1);
+  const boundedFrame = Math.max(frameBounds.firstFrame, Math.min(frameBounds.lastFrame, frameId));
+  const markerX = padding.left + ((boundedFrame - frameBounds.firstFrame) / frameSpan) * plotWidth;
+  context.setLineDash([]);
+  context.strokeStyle = "#171717";
+  context.lineWidth = 1;
+  context.beginPath();
+  context.moveTo(markerX + 0.5, padding.top);
+  context.lineTo(markerX + 0.5, padding.top + plotHeight);
+  context.stroke();
 }
 
 function sampledIndexes(values: number[][], dimension: number, bucketCount: number): number[] {

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ImageOff } from "lucide-react";
 import { frameUrl, videoSource } from "../lib/backend";
 import {
@@ -7,6 +7,7 @@ import {
   frameStreamKey,
   type CachedFrame,
 } from "../lib/frame-cache";
+import { sourceAlignedTimelineFrame } from "../lib/playback-clock";
 import type { StreamSummary, VideoSource } from "../types";
 
 interface FramePanelProps {
@@ -14,12 +15,17 @@ interface FramePanelProps {
   stream: StreamSummary;
   frameId: number;
   playing?: boolean;
+  nativePlaybackEnabled?: boolean;
+  readAheadEnabled?: boolean;
   playbackEndFrame: number;
   playbackFps?: number;
   speed?: number;
   className?: string;
   onFrameSettled?: (stream: string, frameId: number) => void;
   onFrameUnavailable?: (stream: string, frameId: number) => void;
+  onPlaybackModeChange?: (stream: string, mode: "native" | "fallback") => void;
+  onSourceFpsChange?: (stream: string, fps: number | null) => void;
+  onBufferProgress?: (stream: string, readyFrames: number) => void;
 }
 
 const frameCache = new FrameCache(async (request) => {
@@ -48,17 +54,22 @@ function decodeFrame(source: string): Promise<void> {
   });
 }
 
-export function FramePanel({
+export const FramePanel = memo(function FramePanel({
   root,
   stream,
   frameId,
   playing = false,
+  nativePlaybackEnabled = playing,
+  readAheadEnabled = playing,
   playbackEndFrame,
   playbackFps = 30,
   speed = 1,
   className = "",
   onFrameSettled,
   onFrameUnavailable,
+  onPlaybackModeChange,
+  onSourceFpsChange,
+  onBufferProgress,
 }: FramePanelProps) {
   const streamKey = frameStreamKey(root, stream.name);
   const [frames, setFrames] = useState<FrameSlots>([null, null]);
@@ -78,6 +89,8 @@ export function FramePanel({
 
   useEffect(() => {
     let active = true;
+    setNativeVideo(null);
+    setNativeVideoFailed(false);
     void videoSource(root, stream.name).then((source) => {
       if (active) {
         setNativeVideo(source);
@@ -88,10 +101,23 @@ export function FramePanel({
     return () => { active = false; };
   }, [root, stream.name]);
 
+  useEffect(() => {
+    onSourceFpsChange?.(stream.name, nativeVideo?.fps ?? null);
+  }, [nativeVideo?.fps, onSourceFpsChange, stream.name]);
+
   const nativeVideoActive = nativeVideo !== null && !nativeVideoFailed;
-  const fallbackFrameId = nativeVideo && nativeVideoFailed && playing
-    ? Math.floor(frameId / Math.max(1, Math.round(playbackFps / 10))) * Math.max(1, Math.round(playbackFps / 10))
-    : frameId;
+  const alignFallbackFrame = (candidateFrameId: number) => nativeVideo && nativeVideoFailed
+    ? sourceAlignedTimelineFrame(
+      candidateFrameId,
+      nativeVideo.startFrame,
+      playbackFps,
+      nativeVideo.fps,
+    )
+    : candidateFrameId;
+  const fallbackFrameId = alignFallbackFrame(frameId);
+  const fallbackFrameStride = nativeVideo && nativeVideoFailed
+    ? Math.max(1, Math.round(playbackFps / nativeVideo.fps))
+    : 1;
   const requestKey = frameRequestKey({ root, stream: stream.name, frameId: fallbackFrameId });
   const requestedKeyRef = useRef(requestKey);
   const timelineSeconds = Math.max(0, frameId - (nativeVideo?.startFrame ?? 0))
@@ -108,7 +134,7 @@ export function FramePanel({
     const video = videoRef.current;
     if (!nativeVideoActive || !video) return;
     video.playbackRate = speed;
-    if (playing) {
+    if (nativePlaybackEnabled) {
       if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
         video.currentTime = requestedVideoTimeRef.current;
       }
@@ -117,7 +143,7 @@ export function FramePanel({
       video.pause();
       setVideoStatus("ready");
     }
-  }, [nativeVideoActive, playing, speed, videoSegmentIndex]);
+  }, [nativePlaybackEnabled, nativeVideoActive, speed, videoSegmentIndex]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -130,13 +156,23 @@ export function FramePanel({
   useEffect(() => {
     if (nativeVideoActive) onFrameSettled?.(stream.name, frameId);
   }, [frameId, nativeVideoActive, onFrameSettled, stream.name]);
+
+  useEffect(() => {
+    if (nativeVideoActive) return;
+    const visible = framesRef.current[visibleSlotRef.current];
+    if (visible?.key === requestKey) onFrameSettled?.(stream.name, frameId);
+  }, [frameId, nativeVideoActive, onFrameSettled, requestKey, stream.name]);
+
+  useEffect(() => {
+    onPlaybackModeChange?.(stream.name, nativeVideoActive ? "native" : "fallback");
+  }, [nativeVideoActive, onPlaybackModeChange, stream.name]);
   function reportFrameUnavailable(frame: CachedFrame | { frameId: number }) {
     const key = `${streamKey}:${frame.frameId}`;
     if (unavailableFrameRef.current === key) return;
     unavailableFrameRef.current = key;
     onFrameUnavailable?.(stream.name, frame.frameId);
   }
-  function stageFrame(frame: CachedFrame) {
+  function stageFrame(frame: CachedFrame, presentImmediately = false) {
     const current = framesRef.current[visibleSlotRef.current];
     if (current?.streamKey === frame.streamKey && current.key === frame.key) {
       setStatus("ready");
@@ -150,8 +186,14 @@ export function FramePanel({
     const nextFrames = [...framesRef.current] as FrameSlots;
     nextFrames[targetSlot] = frame;
     framesRef.current = nextFrames;
-    stagedSlotRef.current = targetSlot;
+    stagedSlotRef.current = presentImmediately ? null : targetSlot;
     setFrames(nextFrames);
+    if (presentImmediately) {
+      visibleSlotRef.current = targetSlot;
+      setVisibleSlot(targetSlot);
+      setStatus("ready");
+      onFrameSettled?.(stream.name, frameId);
+    }
   }
 
   function showStagedFrame(slot: FrameSlotIndex, frame: CachedFrame) {
@@ -206,7 +248,7 @@ export function FramePanel({
     const effectRequestKey = requestKey;
     const previousFrame = lastRequestedFrameRef.current;
     const retainsSequentialReadAhead = playing
-      && (previousFrame === fallbackFrameId || previousFrame === fallbackFrameId - 1);
+      && (previousFrame === fallbackFrameId || previousFrame === fallbackFrameId - fallbackFrameStride);
     lastRequestedFrameRef.current = fallbackFrameId;
     if (requestedKeyRef.current === effectRequestKey) setStatus("loading");
     frameCache.requestCurrent(
@@ -219,7 +261,11 @@ export function FramePanel({
           || requestedKeyRef.current !== effectRequestKey
           || frame.key !== effectRequestKey
         ) return;
-        stageFrame(frame);
+        // Read-ahead already decoded this source before the real-time clock
+        // started. Waiting for another DOM image load event can take an extra
+        // display refresh and make a 60 FPS clock continually supersede its
+        // own frames, leaving the old tile visible.
+        stageFrame(frame, playing && nativePlaybackEnabled);
       })
       .catch(() => {
         if (!active || requestedKeyRef.current !== effectRequestKey) return;
@@ -228,22 +274,54 @@ export function FramePanel({
         onFrameSettled?.(stream.name, frameId);
         reportFrameUnavailable({ frameId: fallbackFrameId });
       });
-    if (playing && !nativeVideo) {
+    if (playing && readAheadEnabled && (!nativeVideo || nativeVideoFailed)) {
       const streamEnd = stream.lastFrame ?? playbackEndFrame;
       frameCache.scheduleReadAhead({
         root,
         stream: stream.name,
         frameId: fallbackFrameId,
         endFrame: Math.min(playbackEndFrame, streamEnd),
-      });
-    } else {
-      frameCache.discardReadAhead(root, stream.name);
+      }, alignFallbackFrame);
     }
     return () => {
       active = false;
-      frameCache.discardReadAhead(root, stream.name);
     };
-  }, [fallbackFrameId, frameId, nativeVideo, nativeVideoActive, playbackEndFrame, playing, root, stream.lastFrame, stream.name, streamKey]);
+  }, [fallbackFrameId, fallbackFrameStride, nativePlaybackEnabled, nativeVideo, nativeVideoActive, nativeVideoFailed, playbackEndFrame, playbackFps, playing, readAheadEnabled, root, stream.lastFrame, stream.name, streamKey]);
+
+  useEffect(() => {
+    if (!playing || !readAheadEnabled || (nativeVideo !== null && !nativeVideoFailed)) {
+      frameCache.discardReadAhead(root, stream.name);
+    }
+    return () => frameCache.discardReadAhead(root, stream.name);
+  }, [nativeVideo, nativeVideoFailed, playing, readAheadEnabled, root, stream.name]);
+
+  useEffect(() => {
+    if (!playing || !readAheadEnabled || nativeVideoActive || !onBufferProgress) return;
+    const report = () => {
+      const streamPlaybackEnd = Math.min(
+        playbackEndFrame,
+        stream.lastFrame ?? playbackEndFrame,
+      );
+      if (frameId >= streamPlaybackEnd) {
+        onBufferProgress(stream.name, 0);
+        return;
+      }
+      const startFrame = frameId + 1;
+      onBufferProgress(
+        stream.name,
+        frameCache.consecutiveReadyCount(
+          root,
+          stream.name,
+          startFrame,
+          streamPlaybackEnd,
+          alignFallbackFrame,
+        ),
+      );
+    };
+    report();
+    const interval = window.setInterval(report, 50);
+    return () => window.clearInterval(interval);
+  }, [frameId, nativeVideo, nativeVideoActive, nativeVideoFailed, onBufferProgress, playbackEndFrame, playbackFps, playing, readAheadEnabled, root, stream.lastFrame, stream.name]);
 
   return (
     <figure className={`frame-panel ${className}`}>
@@ -256,7 +334,7 @@ export function FramePanel({
           muted
           playsInline
           preload="auto"
-          autoPlay={playing}
+          autoPlay={nativePlaybackEnabled}
           onLoadedMetadata={() => {
             if (videoRef.current) {
               videoRef.current.currentTime = requestedVideoTimeRef.current;
@@ -265,12 +343,12 @@ export function FramePanel({
           onLoadedData={() => {
             setVideoStatus("ready");
             onFrameSettled?.(stream.name, frameId);
-            if (playing && videoRef.current) void videoRef.current.play();
+            if (nativePlaybackEnabled && videoRef.current) void videoRef.current.play();
           }}
           onPlaying={() => setVideoStatus("playing")}
           onWaiting={() => setVideoStatus("buffering")}
           onStalled={() => setVideoStatus("buffering")}
-          onPause={() => { if (!playing) setVideoStatus("ready"); }}
+          onPause={() => { if (!nativePlaybackEnabled) setVideoStatus("ready"); }}
           onError={() => {
             setVideoStatus("fallback");
             setNativeVideoFailed(true);
@@ -314,4 +392,4 @@ export function FramePanel({
       ) : null}
     </figure>
   );
-}
+});

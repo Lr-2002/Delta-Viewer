@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { X509Certificate } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -61,11 +62,19 @@ test("user center supports operator self-registration and administrator account 
     listenHost: "127.0.0.1",
     listenPort: port,
     publicBaseUrl: `https://10.1.11.200:${port}`,
+    tlsAlternativeHosts: ["10.1.11.201", "dohc-center.local"],
     sessionTtlSeconds: 300,
   };
   const logger = { log() {}, error() {} };
   try {
+    await initializeUserCenter({ ...configuration, tlsAlternativeHosts: [] }, root);
+    const originalCa = await readFile(path.join(root, "tls/ca.crt"), "utf8");
     const initialized = await initializeUserCenter(configuration, root);
+    assert.equal(await readFile(path.join(root, "tls/ca.crt"), "utf8"), originalCa);
+    const serverCertificate = new X509Certificate(await readFile(path.join(root, "tls/server.crt")));
+    assert.equal(serverCertificate.checkIP("10.1.11.200"), "10.1.11.200");
+    assert.equal(serverCertificate.checkIP("10.1.11.201"), "10.1.11.201");
+    assert.equal(serverCertificate.checkHost("dohc-center.local"), "dohc-center.local");
     service = await createUserCenter(configuration, root, logger);
     await service.start();
     const ca = await readFile(path.join(root, "tls/ca.crt"));

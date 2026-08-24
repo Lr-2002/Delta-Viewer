@@ -773,12 +773,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .metric-switcher { display: inline-flex; align-items: center; padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-alt); }
 .metric-switcher button { min-height: 27px; padding: 0 10px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; font-size: 11px; }
 .metric-switcher button.active { color: var(--ink); background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
-.telemetry-chart { position: relative; height: 275px; min-height: 220px; border: 1px solid var(--line); border-radius: 6px; background: #ffffff; }
-.telemetry-chart canvas { display: block; }
+.telemetry-chart { position: relative; height: 275px; min-height: 220px; border: 1px solid var(--line); border-radius: 6px; background: #ffffff; overflow: hidden; }
+.telemetry-chart canvas { position: absolute; inset: 0; display: block; }
+.telemetry-marker { pointer-events: none; }
 .chart-legend { position: absolute; top: 8px; right: 12px; display: flex; gap: 10px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .chart-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .chart-legend i { width: 13px; height: 3px; display: inline-block; border-radius: 1px; }
 .chart-legend .telemetry-unavailable { color: var(--status-error); font-weight: 600; }
+.playback-buffering { color: var(--status-warning); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
 
 .skeleton-viewer { margin: 24px 0 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #111516; }
 .skeleton-heading { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 13px; color: #f2f5f5; border-bottom: 1px solid #384244; }

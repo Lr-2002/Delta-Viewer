@@ -101,7 +101,49 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
       const images = [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")];
       return images.length === 5 && images.every((image) => image.naturalWidth > 0);
     });
+    assert.equal(await page.getByLabel("播放速度").locator('option[value="30"]').count(), 0);
+    assert.equal(await page.getByLabel("播放速度").locator('option[value="1"]').textContent(), "1×（正常速度）");
     const initialSources = await page.locator(visibleImageSelector).evaluateAll((images) => images.map((image) => image.getAttribute("src")));
+
+    const segmentTrack = page.locator(".segment-track");
+    const trackBox = await segmentTrack.boundingBox();
+    assert.ok(trackBox);
+    await segmentTrack.click({ position: { x: trackBox.width * 0.5, y: trackBox.height * 0.5 } });
+    const middleFrame = await page.locator(".frame-counter").evaluate((element) => (
+      Number(element.textContent?.match(/帧\s+(\d+)/)?.[1])
+    ));
+    assert.ok(middleFrame >= 90 && middleFrame <= 105, `unexpected middle frame ${middleFrame}`);
+    await page.getByRole("button", { name: "播放" }).click();
+    await page.waitForFunction((startFrame) => {
+      const frame = Number(document.querySelector(".frame-counter")?.textContent?.match(/帧\s+(\d+)/)?.[1]);
+      return frame > startFrame;
+    }, middleFrame);
+    const advancedMiddleFrame = await page.locator(".frame-counter").evaluate((element) => (
+      Number(element.textContent?.match(/帧\s+(\d+)/)?.[1])
+    ));
+    assert.ok(advancedMiddleFrame > middleFrame, `${middleFrame} did not advance from the middle`);
+    await segmentTrack.click({ position: { x: trackBox.width * 0.75, y: trackBox.height * 0.5 } });
+    await page.getByRole("button", { name: "播放" }).waitFor();
+    const playingSeekFrame = await page.locator(".frame-counter").evaluate((element) => (
+      Number(element.textContent?.match(/帧\s+(\d+)/)?.[1])
+    ));
+    assert.ok(playingSeekFrame >= 140 && playingSeekFrame <= 155, `unexpected playing seek ${playingSeekFrame}`);
+    await page.getByRole("button", { name: "播放" }).click();
+    await page.waitForFunction((startFrame) => {
+      const frame = Number(document.querySelector(".frame-counter")?.textContent?.match(/帧\s+(\d+)/)?.[1]);
+      return frame > startFrame;
+    }, playingSeekFrame);
+    await page.getByRole("button", { name: "暂停" }).click();
+    await segmentTrack.evaluate((track) => {
+      const rect = track.getBoundingClientRect();
+      track.dispatchEvent(new MouseEvent("click", {
+        bubbles: true,
+        clientX: rect.left,
+        clientY: rect.top + rect.height / 2,
+      }));
+    });
+    await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 0 / 195"));
+    await page.evaluate(() => { window.__playbackFrameControl.requestedFrameIds.length = 0; });
 
     await page.getByRole("button", { name: "下一帧" }).click();
     await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 1 / 195"));
@@ -120,7 +162,6 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
       const images = [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")];
       return images.length === 5 && images.every((image) => image.getAttribute("alt")?.endsWith("frame 1"));
     });
-    const frameOneSources = await page.locator(visibleImageSelector).evaluateAll((images) => images.map((image) => image.getAttribute("src")));
     assert.equal(await page.locator(".frame-error").count(), 0);
 
     await page.getByLabel("裁剪结束帧").fill("3");
@@ -137,8 +178,12 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
       width: image.naturalWidth,
     })));
     assert.equal(duringPlayback.length, 5);
-    assert.deepEqual(duringPlayback.map((image) => image.source), frameOneSources);
-    assert.ok(duringPlayback.every((image) => image.width > 0 && image.alt?.endsWith("frame 1")), JSON.stringify(duringPlayback));
+    const renderedFrameIds = duringPlayback.map((image) => Number(image.alt?.match(/frame (\d+)$/)?.[1]));
+    assert.ok(duringPlayback.every((image) => image.width > 0), JSON.stringify(duringPlayback));
+    // Camera 0 gates playback; secondary tiles may briefly retain an earlier
+    // decoded frame while their background read-ahead catches up.
+    assert.ok(renderedFrameIds[0] >= 1 && renderedFrameIds[0] <= 3, JSON.stringify(renderedFrameIds));
+    assert.ok(renderedFrameIds.slice(1).every((frameId) => frameId >= 0 && frameId <= 3));
     const screenshotPath = process.env.PLAYBACK_SCREENSHOT_PATH;
     if (screenshotPath) await page.screenshot({ path: screenshotPath, fullPage: true });
 
@@ -173,11 +218,29 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
     assert.deepEqual(pageErrors, []);
 
     await page.setViewportSize({ width: 1440, height: 920 });
-    await page.getByLabel("裁剪结束帧").fill("4");
-    await page.waitForFunction(() => document.querySelector(".segment-draft-badge")?.textContent?.includes("帧 0–4"));
+    await page.getByLabel("播放帧率").selectOption("60");
+    await page.getByLabel("裁剪结束帧").fill("60");
+    await page.waitForFunction(() => document.querySelector(".segment-draft-badge")?.textContent?.includes("帧 0–60"));
+    await page.getByRole("button", { name: "播放" }).click();
+    await page.waitForFunction(() => {
+      const images = [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")];
+      const frameIds = images.map((image) => Number(image.getAttribute("alt")?.match(/frame (\d+)$/)?.[1]));
+      return images.length === 5 && frameIds.every((frameId) => frameId >= 8 && frameId < 60);
+    });
+    await page.getByRole("button", { name: "暂停" }).click();
+    const movingFrameIds = await page.locator(visibleImageSelector).evaluateAll((images) => images.map(
+      (image) => Number(image.getAttribute("alt")?.match(/frame (\d+)$/)?.[1]),
+    ));
+    assert.ok(movingFrameIds.every((frameId) => frameId >= 8), JSON.stringify(movingFrameIds));
+
+    await page.getByRole("button", { name: "播放" }).click();
+    await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 60 / 195"));
+    await page.getByRole("button", { name: "播放" }).waitFor();
+    await page.getByLabel("裁剪结束帧").fill("61");
+    await page.waitForFunction(() => document.querySelector(".segment-draft-badge")?.textContent?.includes("帧 0–61"));
     await page.evaluate(() => {
       const control = window.__playbackFrameControl;
-      control.rejectedFrameId = 4;
+      control.rejectedFrameId = 61;
       control.holdRejectedFrame = false;
     });
     await page.getByRole("button", { name: "下一帧" }).click();

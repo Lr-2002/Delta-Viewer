@@ -1026,7 +1026,12 @@ export async function videoSource(root: string, stream: string): Promise<VideoSo
   if (!isTauriRuntime()) return null;
   try {
     const source = await invoke<VideoSource>("get_video_source", { root, stream });
-    return { ...source, paths: source.paths.map((path) => convertFileSrc(path)) };
+    return {
+      ...source,
+      paths: source.paths.map((path) => (
+        path.startsWith("http://127.0.0.1:") ? path : convertFileSrc(path)
+      )),
+    };
   } catch {
     return null;
   }

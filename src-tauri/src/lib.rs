@@ -7,7 +7,9 @@ mod error;
 mod export;
 mod identity;
 mod importer;
+mod media_stream_server;
 mod model;
+mod mp4_preview_cache;
 mod operation_history;
 mod segment_bin;
 mod skeleton;
@@ -26,6 +28,7 @@ mod workspace_mode;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use identity::AuthState;
+use media_stream_server::MediaStreamServer;
 use model::{
     AnnotatedEpisodeSummary, AnnotationAuditRequest, AppUpdateInfo, AssignmentPlan,
     AssignmentTransferResult, AuthStatus, BatchExportCommandRequest, BatchExportResult,
@@ -37,6 +40,7 @@ use model::{
     SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition, UpdateDisplayNameRequest,
     UserCenterStatus, UserIdentity, VideoSource, WorkspaceMode,
 };
+use mp4_preview_cache::Mp4PreviewCache;
 use source_index_cache::SourceIndexCache;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1122,15 +1126,26 @@ fn cancel_task(control: State<'_, TaskControl>, operation_id: u64) -> bool {
 fn get_video_source(
     app: AppHandle,
     auth: State<'_, AuthState>,
+    media_stream_server: State<'_, Option<MediaStreamServer>>,
     root: String,
     stream: String,
 ) -> Result<VideoSource, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let source =
+    let mut source =
         source::video_source(Path::new(&root), &stream).map_err(|error| error.to_string())?;
     let scope = app.asset_protocol_scope();
-    for path in &source.paths {
-        scope.allow_file(path).map_err(|error| error.to_string())?;
+    for path in &mut source.paths {
+        let file_path = PathBuf::from(path.as_str());
+        scope
+            .allow_file(&file_path)
+            .map_err(|error| error.to_string())?;
+        if stream == "cam0" {
+            if let Some(server) = media_stream_server.inner().as_ref() {
+                *path = server
+                    .register(&file_path)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
     }
     Ok(source)
 }
@@ -1140,14 +1155,34 @@ async fn read_frame(
     app: AppHandle,
     auth: State<'_, AuthState>,
     index_cache: State<'_, SourceIndexCache>,
+    mp4_preview_cache: State<'_, Mp4PreviewCache>,
     root: String,
     stream: String,
     frame_id: u64,
 ) -> Result<FramePayload, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let index_cache = index_cache.inner().clone();
+    let mp4_preview_cache = mp4_preview_cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let root_path = Path::new(&root);
+        if source::is_mp4_stream(root_path, &stream) {
+            let bytes = if let Some(bytes) = mp4_preview_cache.get(root_path, &stream, frame_id)? {
+                bytes
+            } else {
+                let frames =
+                    source::read_mp4_preview_batch(root_path, &stream, frame_id, Some(&app))?;
+                mp4_preview_cache.insert_batch(root_path, &stream, frames)?;
+                mp4_preview_cache
+                    .get(root_path, &stream, frame_id)?
+                    .ok_or_else(|| {
+                        error::AppError::MissingPath(format!("{stream} MP4 帧 {frame_id}"))
+                    })?
+            };
+            return Ok::<FramePayload, error::AppError>(FramePayload {
+                mime_type: "image/jpeg".into(),
+                data: BASE64.encode(bytes.as_slice()),
+            });
+        }
         let mut index = index_cache.index_for(root_path)?;
         if index.is_none() && source::is_segment_episode(root_path) {
             let cancelled = AtomicBool::new(false);
@@ -1176,6 +1211,8 @@ pub fn run() {
     #[cfg(not(target_os = "windows"))]
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    let media_stream_server = MediaStreamServer::start().ok();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -1184,6 +1221,8 @@ pub fn run() {
         .manage(TaskControl::default())
         .manage(ValidationCache::default())
         .manage(SourceIndexCache::default())
+        .manage(Mp4PreviewCache::default())
+        .manage(media_stream_server)
         .invoke_handler(tauri::generate_handler![
             get_auth_status,
             select_workspace_mode,
