@@ -478,9 +478,12 @@ mod tests {
     #[test]
     fn rejects_case_or_sanitization_path_collisions() {
         let source = PathBuf::from("source");
-        let error = plan_import_files(&source, vec![source.join("a:b/x"), source.join("A?B/y")])
-            .err()
-            .unwrap();
+        let error = plan_import_files(
+            &source,
+            vec![source.join("alpha/x"), source.join("ALPHA/y")],
+        )
+        .err()
+        .unwrap();
         assert!(error.to_string().contains("SANITIZED_PATH_COLLISION"));
     }
 
