@@ -5,6 +5,18 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.61 - 2026-08-24
+
+- Route every manifest-backed MP4 stream through its own tokenized,
+  loopback-only HTTP Range source so Camera 1, Camera 2 and both T265 views use
+  continuous native decoding instead of the throttled frame-preview fallback.
+- Retry initial secondary-stream playback after the first seek or readiness
+  transition, fixing Camera 1 and Camera 2 remaining paused until the operator
+  manually paused and resumed the timeline.
+- Keep Camera 0's established player, priming gate and fallback behavior
+  unchanged; streams without native MP4 data continue to use the bounded,
+  read-only per-frame compatibility path.
+
 ## 0.17.60 - 2026-08-24
 
 - Refine the existing supervision cockpit without adding duplicate workflows:

@@ -167,6 +167,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.61": "五路 MP4 分别使用持续原生播放器，修复 Camera 1/2 首次播放需暂停后重试的问题。",
   "0.17.60": "重构监管工作台视觉层级与状态反馈，强化运营指标、异常告警和窄窗口可读性。",
   "0.17.59": "支持可移动 U 盘直读、离线局域网用户中心迁移，以及 Camera 0 原生连续 MP4 回放与中间定位。",
   "0.17.58": "支持从日期顶层目录和 DOHC1TB 批量根目录直接加载混合 MP4/segment BIN 真实记录，并按 batch 时间轴同步回放。",
