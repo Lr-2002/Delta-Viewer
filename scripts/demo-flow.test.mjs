@@ -48,7 +48,10 @@ if (!browserExecutable) {
   before(async () => {
     const port = await findAvailablePort();
     baseUrl = `http://127.0.0.1:${port}`;
-    server = spawn(pnpmCommand(), ["exec", "vite", "--host", "127.0.0.1", "--port", String(port)], {
+    const viteArgs = ["exec", "vite", "--host", "127.0.0.1", "--port", String(port)];
+    const serverCommand = process.platform === "win32" ? process.env.ComSpec ?? "cmd.exe" : pnpmCommand();
+    const serverArgs = process.platform === "win32" ? ["/d", "/s", "/c", pnpmCommand(), ...viteArgs] : viteArgs;
+    server = spawn(serverCommand, serverArgs, {
       cwd: root,
       stdio: "ignore",
     });
@@ -117,8 +120,9 @@ if (!browserExecutable) {
     assert.equal(await taskChecks.evaluateAll((inputs) => inputs.filter((input) => input.checked).length), 2);
     const today = new Date();
     const localToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    await batch.locator('input[type="date"]').fill(localToday);
-    await batch.getByText("今天", { exact: true }).waitFor();
+    const deadlineInput = batch.locator('input[type="datetime-local"]');
+    await deadlineInput.fill(`${localToday}T18:00`);
+    assert.equal(await deadlineInput.inputValue(), `${localToday}T18:00`);
     await page.getByText("当前已分配区间").waitFor();
     await page.getByRole("button", { name: /异常中心/ }).click();
     await page.getByText("确认并备注").waitFor();
@@ -335,7 +339,9 @@ if (!browserExecutable) {
     await page.waitForFunction(() => document.querySelector('input[aria-label="轨迹编码"]')?.value === "整理餐具-001");
     await page.getByLabel("任务描述", { exact: true }).selectOption("__custom_description__");
     await page.locator(".annotation-custom-description").fill("整理餐具并核对数量");
-    await page.locator(".annotation-custom-description").press("Enter");
+    const saveConfirmation = acceptNextSaveConfirmation(page);
+    await page.getByRole("button", { name: "保存标注" }).click();
+    await saveConfirmation;
     await page.getByText("已保存 · r1", { exact: true }).waitFor();
     await page.locator(".episode-annotation-tag").waitFor();
     assert.equal(await page.locator(".episode-annotation-tag").innerText(), "已标注");
@@ -411,7 +417,9 @@ if (!browserExecutable) {
     assert.equal(await page.getByLabel("任务", { exact: true }).inputValue(), "sofa");
     assert.equal(await page.getByLabel("任务描述", { exact: true }).inputValue(), "整理沙发靠枕");
 
+    const saveConfirmation = acceptNextSaveConfirmation(page);
     await page.getByRole("button", { name: "保存标注" }).click();
+    await saveConfirmation;
     await page.getByText("已保存 · r1", { exact: true }).waitFor();
     assert.deepEqual(await page.locator(".segment-list strong").allTextContents(), ["片段 1"]);
     await page.locator(".segment-list button").click();
@@ -522,7 +530,9 @@ if (!browserExecutable) {
         await page.locator(".segment-editor-embedded").waitFor();
         assert.equal(await page.getByRole("button", { name: "分段标注", exact: true }).count(), 0);
         await page.getByText("保留范围 · 帧 0–195 · 1 个片段", { exact: true }).waitFor();
+        const saveConfirmation = acceptNextSaveConfirmation(page);
         await page.getByRole("button", { name: "保存标注" }).click();
+        await saveConfirmation;
         await page.getByText("已保存 · r1", { exact: true }).waitFor();
         const segmentTrack = page.locator(".segment-track");
         const trackBox = await segmentTrack.boundingBox();
@@ -538,18 +548,25 @@ if (!browserExecutable) {
         await segmentTrack.click({ position: { x: trackBox.width * (40 / 195), y: trackBox.height / 2 } });
         await page.getByRole("button", { name: "在当前帧分割" }).click();
         assert.equal(await page.locator(".segment-block").count(), 3);
+        const segmentSaveConfirmation = acceptNextSaveConfirmation(page);
         await page.getByRole("button", { name: "保存片段", exact: true }).click();
-        await page.getByText("浏览器演示已保存 · 3 个片段 · r2", { exact: true }).waitFor();
+        await segmentSaveConfirmation;
+        await page.getByText("已保存 · r2", { exact: true }).waitFor();
+        await page.getByText(/当前分配队列已处理完毕/).waitFor();
         assert.match(await page.locator(".segment-list").innerText(), /片段 2/);
         await page.getByLabel("裁剪结束帧").fill("40");
         await page.getByText("保留范围 · 帧 0–40 · 2 个片段", { exact: true }).waitFor();
+        const clippedSaveConfirmation = acceptNextSaveConfirmation(page);
         await page.getByRole("button", { name: "保存片段", exact: true }).click();
-        await page.getByText("浏览器演示已保存 · 2 个片段 · r3", { exact: true }).waitFor();
+        await clippedSaveConfirmation;
+        await page.getByText("已保存 · r3", { exact: true }).waitFor();
         await page.getByRole("button", { name: "恢复完整轨迹" }).click();
         await page.getByText("保留范围 · 帧 0–195 · 2 个片段", { exact: true }).waitFor();
         assert.match(await page.locator(".segment-list").innerText(), /帧 21–195/);
+        const restoredSaveConfirmation = acceptNextSaveConfirmation(page);
         await page.getByRole("button", { name: "保存片段", exact: true }).click();
-        await page.getByText("浏览器演示已保存 · 2 个片段 · r4", { exact: true }).waitFor();
+        await restoredSaveConfirmation;
+        await page.getByText("已保存 · r4", { exact: true }).waitFor();
         assert.equal(await page.locator(".camera-grid img[aria-hidden='false']").first().evaluate((image) => image.naturalWidth > 0), true);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
         assert.deepEqual(consoleErrors, []);
@@ -628,6 +645,14 @@ async function registerDemoAccount(page, url, suffix) {
   await passwords.nth(1).fill("demo-password-123");
   await page.getByRole("button", { name: "创建并登录" }).click();
   await page.getByRole("button", { name: "仍要标注" }).click({ timeout: 2_000 }).catch(() => undefined);
+}
+
+function acceptNextSaveConfirmation(page) {
+  return page.waitForEvent("dialog").then(async (dialog) => {
+    assert.equal(dialog.type(), "confirm");
+    assert.match(dialog.message(), /^当前任务：.+\n片段数：\d+\n覆盖帧数：\d+/);
+    await dialog.accept();
+  });
 }
 
 async function findAvailablePort() {

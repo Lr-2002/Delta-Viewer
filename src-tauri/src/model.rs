@@ -43,6 +43,8 @@ pub struct SupervisionUserSummary {
     pub operation_count: u64,
     #[serde(default)]
     pub possible_stagnation: bool,
+    #[serde(default = "default_account_status")]
+    pub account_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +77,8 @@ pub struct SupervisionAccount {
     pub assignment_updated_at_ms: u64,
     pub last_login_at_ms: Option<u64>,
     pub created_at_ms: u64,
+    #[serde(default = "default_account_status")]
+    pub account_status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +107,12 @@ pub struct AssignmentPlan {
     pub deadline_at_ms: Option<u64>,
     pub status: String,
     pub order: u64,
+    #[serde(default)]
+    pub completed: u64,
+    #[serde(default)]
+    pub remaining: u64,
+    #[serde(default)]
+    pub estimated_completion_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +131,7 @@ pub struct OperationsOverview {
     pub remaining: u64,
     pub active_operators: u64,
     pub possible_stagnation: u64,
+    pub average_completion_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +187,20 @@ pub struct QualityReview {
     pub note: String,
     pub reviewer: String,
     pub reviewed_at_ms: u64,
+    #[serde(default)]
+    pub annotator_username: String,
+    #[serde(default)]
+    pub annotation_revision: Option<u64>,
+    #[serde(default)]
+    pub segment_index: Option<u64>,
+    #[serde(default)]
+    pub start_frame: Option<u64>,
+    #[serde(default)]
+    pub end_frame: Option<u64>,
+    #[serde(default)]
+    pub parent_review_id: Option<String>,
+    #[serde(default)]
+    pub rework_assignment_created: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +211,12 @@ pub struct QualityReviewRequest {
     pub outcome: String,
     pub error_type: String,
     pub note: String,
+    pub annotator_username: String,
+    pub annotation_revision: Option<u64>,
+    pub segment_index: Option<u64>,
+    pub start_frame: Option<u64>,
+    pub end_frame: Option<u64>,
+    pub parent_review_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +250,20 @@ pub struct AssignedTask {
     pub status: String,
     #[serde(default)]
     pub order: u64,
+    #[serde(default)]
+    pub completed: u64,
+    #[serde(default)]
+    pub remaining: u64,
+    #[serde(default)]
+    pub estimated_completion_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchAccountInput {
+    pub username: String,
+    pub display_name: String,
+    pub password: String,
 }
 
 fn default_assignment_priority() -> String {
@@ -226,6 +271,10 @@ fn default_assignment_priority() -> String {
 }
 
 fn default_assignment_status() -> String {
+    "active".into()
+}
+
+fn default_account_status() -> String {
     "active".into()
 }
 
@@ -339,6 +388,7 @@ pub struct UpdateDisplayNameRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnnotationAuditRequest {
+    pub event_id: String,
     pub task_id: String,
     pub trajectory_code: String,
     pub action: String,
@@ -706,6 +756,14 @@ pub struct ValidationReport {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportExportResult {
+    pub output_path: String,
+    pub total_bytes: u64,
+    pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisionReportExportResult {
     pub output_path: String,
     pub total_bytes: u64,
     pub elapsed_ms: u128,

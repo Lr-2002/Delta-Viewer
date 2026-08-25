@@ -19,6 +19,7 @@ mod source_path_probe;
 mod storage;
 pub mod stress;
 mod supervision;
+mod supervision_report;
 mod updater;
 mod user_center;
 mod validation;
@@ -31,14 +32,14 @@ use identity::AuthState;
 use media_stream_server::MediaStreamServer;
 use model::{
     AnnotatedEpisodeSummary, AnnotationAuditRequest, AppUpdateInfo, AssignmentPlan,
-    AssignmentTransferResult, AuthStatus, BatchExportCommandRequest, BatchExportResult,
-    CreateTaskRequest, EpisodeAnnotation, EpisodeData, EpisodeValidationResult,
+    AssignmentTransferResult, AuthStatus, BatchAccountInput, BatchExportCommandRequest,
+    BatchExportResult, CreateTaskRequest, EpisodeAnnotation, EpisodeData, EpisodeValidationResult,
     ExportCommandRequest, ExportResult, FramePayload, ImportPreflight, ImportResult, LoginRequest,
     OperationErrorRecord, PartialImport, ProgressPayload, QualityReview, QualityReviewRequest,
     RecordOperationErrorRequest, RegisterRequest, ReportExportResult, SaveAnnotationRequest,
     ScanResult, SupervisionAccount, SupervisionAnnotationCatalog, SupervisionDashboardData,
-    SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition, UpdateDisplayNameRequest,
-    UserCenterStatus, UserIdentity, VideoSource, WorkspaceMode,
+    SupervisionReportExportResult, SupervisionTaskCatalog, SupervisionTaskDetail, TaskDefinition,
+    UpdateDisplayNameRequest, UserCenterStatus, UserIdentity, VideoSource, WorkspaceMode,
 };
 use mp4_preview_cache::Mp4PreviewCache;
 use source_index_cache::SourceIndexCache;
@@ -318,6 +319,60 @@ async fn get_supervision_dashboard(
     user_center::supervision_dashboard(&data_root, auth.inner())
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn batch_create_supervision_accounts(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    accounts: Vec<BatchAccountInput>,
+) -> Result<Vec<SupervisionAccount>, String> {
+    user_center::batch_create_accounts(&app_data_root(&app)?, auth.inner(), accounts)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_supervision_account_status(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    usernames: Vec<String>,
+    status: String,
+) -> Result<Vec<SupervisionAccount>, String> {
+    user_center::set_account_status(&app_data_root(&app)?, auth.inner(), usernames, &status)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn export_supervision_report(
+    auth: State<'_, AuthState>,
+    destination_parent: String,
+    kind: String,
+    format: String,
+    report_date: String,
+    generated_at_ms: u64,
+    content: String,
+) -> Result<SupervisionReportExportResult, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账号".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        supervision_report::export(
+            Path::new(&destination_parent),
+            &kind,
+            &format,
+            &report_date,
+            generated_at_ms,
+            &content,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1234,6 +1289,9 @@ pub fn run() {
             logout_account,
             record_annotation_audit,
             get_supervision_dashboard,
+            batch_create_supervision_accounts,
+            set_supervision_account_status,
+            export_supervision_report,
             set_supervision_assigned_tasks,
             update_operations_alert,
             transfer_supervision_assignment,

@@ -1,11 +1,12 @@
 use crate::error::{AppError, AppResult};
 use crate::identity::AuthState;
 use crate::model::{
-    AssignedTask, AssignedTaskActivity, AssignmentPlan, AuthStatus, DailyCompletion,
-    HourlyCompletion, LoginRequest, OperationsAlert, OperationsOverview, OperationsTaskSummary,
-    QualityReview, QualityReviewRequest, RegisterRequest, SupervisionAccount,
-    SupervisionDashboardData, SupervisionEvent, SupervisionTaskDetail, SupervisionTaskImportResult,
-    SupervisionUserSummary, UpdateDisplayNameRequest, UserCenterStatus, UserIdentity,
+    AssignedTask, AssignedTaskActivity, AssignmentPlan, AuthStatus, BatchAccountInput,
+    DailyCompletion, HourlyCompletion, LoginRequest, OperationsAlert, OperationsOverview,
+    OperationsTaskSummary, QualityReview, QualityReviewRequest, RegisterRequest,
+    SupervisionAccount, SupervisionDashboardData, SupervisionEvent, SupervisionTaskDetail,
+    SupervisionTaskImportResult, SupervisionUserSummary, UpdateDisplayNameRequest,
+    UserCenterStatus, UserIdentity,
 };
 use crate::storage;
 use reqwest::{Certificate, Client, Url};
@@ -288,6 +289,7 @@ pub async fn record_annotation_audit(
         .post(endpoint(&config, "api/v1/audit/events")?)
         .bearer_auth(token)
         .json(&serde_json::json!({
+            "eventId": request.event_id,
             "taskId": request.task_id,
             "trajectoryCode": request.trajectory_code,
             "action": request.action,
@@ -404,6 +406,81 @@ pub async fn supervision_dashboard(
         quality_reviews: audit.quality_reviews,
         generated_at_ms: audit.generated_at_ms,
     })
+}
+
+pub async fn batch_create_accounts(
+    data_root: &Path,
+    state: &AuthState,
+    accounts: Vec<BatchAccountInput>,
+) -> AppResult<Vec<SupervisionAccount>> {
+    require_supervisor(state)?;
+    if accounts.is_empty()
+        || accounts.len() > 100
+        || accounts.iter().any(|account| {
+            !(3..=32).contains(&account.username.len())
+                || !(8..=128).contains(&account.password.chars().count())
+                || account.display_name.trim().is_empty()
+                || account.display_name.chars().count() > 40
+        })
+    {
+        return Err(AppError::Message(
+            "BATCH_USERS_INVALID: 批量账号参数无效".into(),
+        ));
+    }
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let response = client_for(&config)?
+        .post(endpoint(&config, "api/v1/admin/users/batch")?)
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "users": accounts }))
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    #[derive(Deserialize)]
+    struct AccountsResponse {
+        users: Vec<SupervisionAccount>,
+    }
+    response
+        .json::<AccountsResponse>()
+        .await
+        .map(|value| value.users)
+        .map_err(|error| AppError::Message(format!("批量账号响应无效: {error}")))
+}
+
+pub async fn set_account_status(
+    data_root: &Path,
+    state: &AuthState,
+    usernames: Vec<String>,
+    status: &str,
+) -> AppResult<Vec<SupervisionAccount>> {
+    require_supervisor(state)?;
+    if usernames.is_empty() || usernames.len() > 500 || !matches!(status, "active" | "paused") {
+        return Err(AppError::Message("BATCH_ACCOUNT_STATUS_INVALID".into()));
+    }
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let response = client_for(&config)?
+        .put(endpoint(&config, "api/v1/admin/users/status")?)
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "usernames": usernames, "status": status }))
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    #[derive(Deserialize)]
+    struct AccountsResponse {
+        users: Vec<SupervisionAccount>,
+    }
+    response
+        .json::<AccountsResponse>()
+        .await
+        .map(|value| value.users)
+        .map_err(|error| AppError::Message(format!("批量账号状态响应无效: {error}")))
 }
 
 #[derive(Deserialize)]
@@ -576,6 +653,9 @@ pub async fn set_assigned_tasks(
                 deadline_at_ms: None,
                 status: "active".into(),
                 order: order as u64,
+                completed: 0,
+                remaining: *quantity,
+                estimated_completion_at_ms: None,
             })
             .collect()
     });
@@ -725,6 +805,13 @@ pub async fn create_quality_review(
         || !matches!(request.outcome.as_str(), "passed" | "rework")
         || request.error_type.chars().count() > 100
         || request.note.chars().count() > 1000
+        || request.annotator_username.trim().is_empty()
+        || request.annotator_username.chars().count() > 32
+        || request
+            .parent_review_id
+            .as_ref()
+            .is_some_and(|value| value.chars().count() > 100)
+        || matches!((request.start_frame, request.end_frame), (Some(start), Some(end)) if start > end)
     {
         return Err(AppError::Message(
             "QUALITY_REVIEW_INVALID: 复核参数无效".into(),
@@ -1062,6 +1149,7 @@ mod tests {
             assignment_updated_at_ms: 1,
             last_login_at_ms: None,
             created_at_ms: 1,
+            account_status: "active".into(),
         };
         assert!(validate_assignment_response(&requested, &legacy_response).is_err());
 

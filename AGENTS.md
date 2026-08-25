@@ -343,7 +343,7 @@ pnpm check
 ```
 
 真实样例会读取私有数据，因此保持 `#[ignore]`。`--all-targets` 常规 Rust suite
-当前为 70 项（68 通过、2 个真实样例测试 ignored），其中包含用户会话、任务创建/删除、轨迹占号、标注修订、黑屏与帧率稳定度检查、批量导出、HDF5 UTF-8 属性回读、导出 provenance 元数据和压力 CLI 参数测试；
+当前为 104 项（98 通过、6 个私有样例/环境测试 ignored），其中包含用户会话、任务创建/删除、轨迹占号、标注修订、监管报表原子发布、黑屏与帧率稳定度检查、批量导出、HDF5 UTF-8 属性回读、导出 provenance 元数据和压力 CLI 参数测试；
 debug 构建的三格式完整 smoke test 约需 69 秒。任何
 import/validation/export 行为改动都必须显式运行对应真实样例测试。
 
