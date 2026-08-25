@@ -173,6 +173,11 @@ if (!browserExecutable) {
     assert.equal(await page.getByRole("button", { name: "离线模式" }).count(), 0);
     await page.getByRole("button", { name: "登录工作区" }).click();
     await page.locator('input[autocomplete="username"]').waitFor();
+    const reconfigure = page.getByRole("button", { name: "重新导入用户中心配置" });
+    assert.equal(await reconfigure.count(), 1);
+    await reconfigure.click();
+    await page.locator('input[autocomplete="username"]').waitFor();
+    assert.equal(await page.getByRole("alert").count(), 0);
     assert.equal(await page.getByText("多路回放", { exact: true }).count(), 0);
     await context.close();
   });

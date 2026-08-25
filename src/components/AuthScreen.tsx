@@ -158,65 +158,65 @@ export function AuthScreen({
             </button>
           </div>
         ) : <form onSubmit={(event) => void submit(event)}>
-          {mode === "register" ? (
+            {mode === "register" ? (
+              <label>
+                <span>显示名称</span>
+                <input
+                  type="text"
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                  autoComplete="name"
+                  maxLength={40}
+                  required
+                  autoFocus
+                />
+              </label>
+            ) : null}
             <label>
-              <span>显示名称</span>
+              <span>账号</span>
               <input
                 type="text"
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                autoComplete="name"
-                maxLength={40}
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                autoComplete="username"
+                minLength={3}
+                maxLength={32}
+                pattern="[A-Za-z0-9](?:[A-Za-z0-9._]|-)*[A-Za-z0-9]"
                 required
-                autoFocus
+                autoFocus={mode === "login"}
               />
             </label>
-          ) : null}
-          <label>
-            <span>账号</span>
-            <input
-              type="text"
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-              autoComplete="username"
-              minLength={3}
-              maxLength={32}
-              pattern="[A-Za-z0-9](?:[A-Za-z0-9._]|-)*[A-Za-z0-9]"
-              required
-              autoFocus={mode === "login"}
-            />
-          </label>
-          <label>
-            <span>密码</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-              minLength={8}
-              maxLength={128}
-              required
-            />
-          </label>
-          {mode === "register" ? (
             <label>
-              <span>确认密码</span>
+              <span>密码</span>
               <input
                 type="password"
-                value={confirmation}
-                onChange={(event) => setConfirmation(event.target.value)}
-                autoComplete="new-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
                 minLength={8}
                 maxLength={128}
                 required
               />
             </label>
-          ) : null}
-          <button className="button button-primary auth-submit" type="submit" disabled={busy}>
-            {mode === "login" ? <LogIn size={17} /> : <UserPlus size={17} />}
-            {busy ? "处理中" : mode === "login" ? "登录" : "创建并登录"}
-          </button>
-        </form>}
+            {mode === "register" ? (
+              <label>
+                <span>确认密码</span>
+                <input
+                  type="password"
+                  value={confirmation}
+                  onChange={(event) => setConfirmation(event.target.value)}
+                  autoComplete="new-password"
+                  minLength={8}
+                  maxLength={128}
+                  required
+                />
+              </label>
+            ) : null}
+            <button className="button button-primary auth-submit" type="submit" disabled={busy || configuring}>
+              {mode === "login" ? <LogIn size={17} /> : <UserPlus size={17} />}
+              {busy ? "处理中" : mode === "login" ? "登录" : "创建并登录"}
+            </button>
+          </form>}
         {error ? <div className="auth-error" role="alert">{error}</div> : null}
         <div className="auth-switch">
           <button type="button" className="text-button" onClick={() => void returnToModeChoice()} disabled={busy || configuring}>
@@ -227,6 +227,12 @@ export function AuthScreen({
             <button type="button" className="text-button" onClick={() => switchLoginMode("register")}>注册标注员账号</button>
           ) : userCenter.configured && mode === "register" ? (
             <button type="button" className="text-button" onClick={() => switchLoginMode("login")}>返回登录</button>
+          ) : null}
+          {userCenter.configured ? (
+            <button type="button" className="text-button" onClick={() => void importUserCenter()} disabled={busy || configuring}>
+              <FolderOpen size={14} />
+              {configuring ? "验证并更新中" : "重新导入用户中心配置"}
+            </button>
           ) : null}
         </div>
       </section>
