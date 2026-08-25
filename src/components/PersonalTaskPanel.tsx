@@ -1,4 +1,5 @@
-import { CalendarDays, CheckCircle2, FolderOpen, Play, RefreshCw, SkipForward, X } from "lucide-react";
+import { useState } from "react";
+import { CalendarDays, CheckCircle2, FolderOpen, Play, RefreshCw, Search, SkipForward, X } from "lucide-react";
 import { deadlineDateLabel, localDateInput } from "../lib/deadlines";
 import type { AssignedTask, AssignedTaskActivity } from "../types";
 
@@ -32,9 +33,16 @@ const actionLabels: Record<string, string> = {
 };
 
 export function PersonalTaskPanel({ sourceRoot, tasks, activity, date, loading, onDateChange, onRefresh, onChooseSource, onContinue, onNext, onClose }: PersonalTaskPanelProps) {
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "active" | "urgent" | "rework" | "paused">("all");
   const events = activity?.events ?? [];
   const saved = new Set(events.filter((event) => event.action === "annotation_saved").map((event) => event.trajectoryCode || event.eventId));
-  const activeTasks = [...tasks].filter((task) => task.status !== "paused").sort((left, right) => left.order - right.order);
+  const activeTasks = [...tasks].filter((task) => task.status !== "paused" && (task.remaining ?? task.quantity) > 0).sort((left, right) => left.order - right.order);
+  const visibleTasks = tasks.filter((task) => {
+    const matchesSearch = !search.trim() || `${task.task} ${task.detail}`.toLowerCase().includes(search.trim().toLowerCase());
+    const matchesFilter = filter === "all" || (filter === "active" ? task.status === "active" : filter === "paused" ? task.status === "paused" : task.priority === filter);
+    return matchesSearch && matchesFilter;
+  });
   const currentTask = activeTasks[0] ?? null;
   const nextTask = activeTasks[1] ?? null;
   return (
@@ -52,7 +60,7 @@ export function PersonalTaskPanel({ sourceRoot, tasks, activity, date, loading, 
       <div className="personal-task-groups">
         <article><small>当前任务</small><strong>{currentTask?.task ?? "暂无"}</strong><span>{currentTask ? `${currentTask.quantity} 条 · ${priorityLabel(currentTask.priority)} · ${deadlineDateLabel(currentTask.deadlineAtMs)}` : "等待监管分配"}</span></article>
         <article><small>下一任务</small><strong>{nextTask?.task ?? "暂无"}</strong><span>{nextTask ? `${nextTask.quantity} 条 · ${priorityLabel(nextTask.priority)}` : "完成当前队列后结束"}</span></article>
-        <article><small>剩余任务</small><strong>{activeTasks.reduce((sum, task) => sum + task.quantity, 0)} 条</strong><span>{activeTasks.length} 类进行中 · {tasks.filter((task) => task.status === "paused").length} 类暂停</span></article>
+        <article><small>剩余任务</small><strong>{activeTasks.reduce((sum, task) => sum + (task.remaining ?? task.quantity), 0)} 条</strong><span>{activeTasks.length} 类进行中 · {tasks.filter((task) => task.status === "paused").length} 类暂停</span></article>
       </div>
       <div className="personal-source-row">
         <FolderOpen size={15} />
@@ -62,7 +70,8 @@ export function PersonalTaskPanel({ sourceRoot, tasks, activity, date, loading, 
       <div className="personal-task-grid">
         <div>
           <div className="personal-subheading"><strong>{date === localDateInput() ? "今日任务" : `${date} 的分配任务`}</strong><span>{tasks.length} 类 · {tasks.reduce((sum, task) => sum + task.quantity, 0)} 个</span></div>
-          {tasks.length ? <div className="personal-assignment-list">{[...tasks].sort((left, right) => left.order - right.order).map((task) => <div className={`personal-assignment-row${task.status === "paused" ? " paused" : ""}`} key={`${task.task}-${task.startIndex}`}><strong>{task.task}</strong><span>{task.detail}</span><b>{task.quantity} 个</b><small>区间 {task.startIndex + 1}–{task.startIndex + task.quantity} · {priorityLabel(task.priority)} · {task.status === "paused" ? "已暂停" : deadlineDateLabel(task.deadlineAtMs)}</small></div>)}</div> : <div className="personal-empty">当前没有监管分配任务。</div>}
+          <div className="personal-task-filters"><label><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务" /></label><select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)} aria-label="筛选任务"><option value="all">全部</option><option value="active">进行中</option><option value="urgent">紧急</option><option value="rework">返工</option><option value="paused">已暂停</option></select></div>
+          {visibleTasks.length ? <div className="personal-assignment-list">{[...visibleTasks].sort((left, right) => left.order - right.order).map((task) => <div className={`personal-assignment-row${task.status === "paused" ? " paused" : ""}`} key={`${task.task}-${task.startIndex}`}><strong>{task.task}</strong><span>{task.detail}</span><b>{task.completed ?? 0} / {task.quantity}</b><small>区间 {task.startIndex + 1}–{task.startIndex + task.quantity} · 剩余 {task.remaining ?? task.quantity} · {priorityLabel(task.priority)} · {task.status === "paused" ? "已暂停" : deadlineDateLabel(task.deadlineAtMs)} · 预计 {task.estimatedCompletionAtMs ? new Date(task.estimatedCompletionAtMs).toLocaleString("zh-CN", { hour12: false }) : "—"}</small></div>)}</div> : <div className="personal-empty">没有符合筛选条件的分配任务。</div>}
         </div>
         <div>
           <div className="personal-subheading"><strong>标注详情</strong><span><CheckCircle2 size={13} />已保存 {saved.size} 条 · 共 {events.length} 条操作</span></div>

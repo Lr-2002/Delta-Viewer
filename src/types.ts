@@ -25,6 +25,7 @@ export interface SupervisionUserSummary {
   lastLoginAtMs: number | null;
   operationCount: number;
   possibleStagnation: boolean;
+  accountStatus: "active" | "paused";
 }
 
 export interface SupervisionEvent {
@@ -49,6 +50,13 @@ export interface SupervisionAccount {
   assignmentUpdatedAtMs: number;
   lastLoginAtMs: number | null;
   createdAtMs: number;
+  accountStatus: "active" | "paused";
+}
+
+export interface BatchAccountInput {
+  username: string;
+  displayName: string;
+  password: string;
 }
 
 export interface SupervisionDashboardData {
@@ -76,6 +84,9 @@ export interface AssignmentPlan {
   deadlineAtMs: number | null;
   status: AssignmentStatus;
   order: number;
+  completed?: number;
+  remaining?: number;
+  estimatedCompletionAtMs?: number | null;
 }
 
 export interface AssignmentTransferResult {
@@ -90,6 +101,7 @@ export interface OperationsOverview {
   remaining: number;
   activeOperators: number;
   possibleStagnation: number;
+  averageCompletionMs: number | null;
 }
 
 export interface OperationsTaskSummary {
@@ -137,6 +149,13 @@ export interface QualityReview {
   note: string;
   reviewer: string;
   reviewedAtMs: number;
+  annotatorUsername: string;
+  annotationRevision: number | null;
+  segmentIndex: number | null;
+  startFrame: number | null;
+  endFrame: number | null;
+  parentReviewId: string | null;
+  reworkAssignmentCreated: boolean;
 }
 
 export interface QualityReviewRequest {
@@ -145,6 +164,12 @@ export interface QualityReviewRequest {
   outcome: "passed" | "rework";
   errorType: string;
   note: string;
+  annotatorUsername: string;
+  annotationRevision: number | null;
+  segmentIndex: number | null;
+  startFrame: number | null;
+  endFrame: number | null;
+  parentReviewId: string | null;
 }
 
 export interface SupervisionTaskDetail {
@@ -169,6 +194,9 @@ export interface AssignedTask {
   deadlineAtMs: number | null;
   status: AssignmentStatus;
   order: number;
+  completed: number;
+  remaining: number;
+  estimatedCompletionAtMs: number | null;
 }
 
 export interface AssignedTaskActivity {
@@ -292,13 +320,25 @@ export type AnnotationAuditAction =
   | "annotation_started" | "task_changed" | "description_changed" | "clip_changed"
   | "segment_split" | "segment_template_selected" | "segment_note_changed"
   | "segment_deleted" | "annotation_saved" | "export_started" | "export_finished"
-  | "annotation_ended";
+  | "annotation_ended" | "episode_opened" | "source_unavailable"
+  | "annotation_save_failed" | "validation_warning" | "validation_error"
+  | "user_center_unavailable";
 
 export interface AnnotationAuditRequest {
+  eventId: string;
   taskId: string;
   trajectoryCode: string;
   action: AnnotationAuditAction;
   occurredAtMs: number;
+}
+
+export type SupervisionReportKind = "daily" | "weekly" | "task";
+export type SupervisionReportFormat = "json" | "csv" | "html";
+
+export interface SupervisionReportExportResult {
+  outputPath: string;
+  totalBytes: number;
+  elapsedMs: number;
 }
 
 export interface StreamSummary {

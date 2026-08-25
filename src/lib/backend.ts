@@ -1,7 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import packageInfo from "../../package.json";
 import {
   createDemoSkeleton,
@@ -21,6 +21,7 @@ import type {
   AnnotationAuditRequest,
   AppUpdateInfo,
   AuthStatus,
+  BatchAccountInput,
   BatchExportResult,
   CreateTaskRequest,
   EpisodeAnnotation,
@@ -42,6 +43,9 @@ import type {
   ScanResult,
   VideoSource,
   SupervisionDashboardData,
+  SupervisionReportExportResult,
+  SupervisionReportFormat,
+  SupervisionReportKind,
   SupervisionAccount,
   SupervisionAnnotationCatalog,
   SupervisionTaskCatalog,
@@ -200,6 +204,23 @@ export async function getSupervisionDashboard(): Promise<SupervisionDashboardDat
   throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
 }
 
+export async function batchCreateSupervisionAccounts(accounts: BatchAccountInput[]): Promise<SupervisionAccount[]> {
+  if (isTauriRuntime()) return invoke<SupervisionAccount[]>("batch_create_supervision_accounts", { accounts });
+  throw new Error("SUPERVISOR_REQUIRED: 批量账号只能在桌面监管端创建");
+}
+
+export async function setSupervisionAccountStatus(usernames: string[], status: "active" | "paused"): Promise<SupervisionAccount[]> {
+  if (isTauriRuntime()) return invoke<SupervisionAccount[]>("set_supervision_account_status", { usernames, status });
+  if (isOperationsCockpitDemoScenario()) {
+    const dashboard = demoOperationsData ??= createDemoOperationsDashboard();
+    const selected = dashboard.accounts.filter((account) => usernames.includes(account.username));
+    selected.forEach((account) => { account.accountStatus = status; });
+    dashboard.users.filter((user) => usernames.includes(user.username)).forEach((user) => { user.accountStatus = status; });
+    return structuredClone(selected);
+  }
+  throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
+}
+
 export async function setSupervisionAssignedTasks(
   username: string,
   assignedTaskQuantities: Record<string, number>,
@@ -242,7 +263,7 @@ export async function transferSupervisionAssignment(fromUsername: string, toUser
 export async function createQualityReview(request: QualityReviewRequest): Promise<QualityReview> {
   if (isTauriRuntime()) return invoke<QualityReview>("create_quality_review", { request });
   if (isOperationsCockpitDemoScenario()) {
-    const item: QualityReview = { reviewId: `demo-review-${Date.now()}`, ...request, reviewer: "demo-admin", reviewedAtMs: Date.now() };
+    const item: QualityReview = { reviewId: `demo-review-${Date.now()}`, ...request, reviewer: "demo-admin", reviewedAtMs: Date.now(), reworkAssignmentCreated: request.outcome === "rework" };
     (demoOperationsData ??= createDemoOperationsDashboard()).qualityReviews.unshift(item);
     return item;
   }
@@ -418,10 +439,61 @@ export async function loadEpisodeAnnotation(sourcePath: string): Promise<Episode
   return demoAnnotations.get(sourcePath) ?? null;
 }
 
-export async function recordAnnotationAudit(request: AnnotationAuditRequest): Promise<void> {
-  if (isTauriRuntime()) {
+const AUDIT_QUEUE_KEY = "dohc-viewer.pending-audits.v1";
+type AuditRequestInput = Omit<AnnotationAuditRequest, "eventId"> & { eventId?: string };
+
+export async function recordAnnotationAudit(input: AuditRequestInput): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const request: AnnotationAuditRequest = { ...input, eventId: input.eventId ?? crypto.randomUUID() };
+  try {
     await invoke("record_annotation_audit", { request });
+  } catch (error) {
+    enqueueAnnotationAudit(request);
+    throw error;
   }
+}
+
+export async function flushPendingAnnotationAudits(): Promise<number> {
+  if (!isTauriRuntime()) return 0;
+  const queue = readAnnotationAuditQueue();
+  const pending: AnnotationAuditRequest[] = [];
+  for (const request of queue) {
+    try {
+      await invoke("record_annotation_audit", { request });
+    } catch {
+      pending.push(request);
+    }
+  }
+  writeAnnotationAuditQueue(pending);
+  return pending.length;
+}
+
+export function pendingAnnotationAuditCount(): number {
+  return readAnnotationAuditQueue().length;
+}
+
+function enqueueAnnotationAudit(request: AnnotationAuditRequest) {
+  const queue = readAnnotationAuditQueue();
+  if (!queue.some((item) => item.eventId === request.eventId)) queue.push(request);
+  writeAnnotationAuditQueue(queue.slice(-500));
+}
+
+function readAnnotationAuditQueue(): AnnotationAuditRequest[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(AUDIT_QUEUE_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((item): item is AnnotationAuditRequest => (
+      typeof item?.eventId === "string" && typeof item?.action === "string"
+      && typeof item?.taskId === "string" && typeof item?.trajectoryCode === "string"
+      && Number.isSafeInteger(item?.occurredAtMs)
+    )) : [];
+  } catch { return []; }
+}
+
+function writeAnnotationAuditQueue(queue: AnnotationAuditRequest[]) {
+  try {
+    if (queue.length) localStorage.setItem(AUDIT_QUEUE_KEY, JSON.stringify(queue));
+    else localStorage.removeItem(AUDIT_QUEUE_KEY);
+  } catch { /* The current audit call still reports the upload failure. */ }
 }
 
 export async function saveEpisodeAnnotation(
@@ -494,6 +566,26 @@ export async function confirmAction(message: string, title: string): Promise<boo
 
 export async function revealOutput(path: string): Promise<void> {
   if (isTauriRuntime()) await revealItemInDir(path);
+}
+
+export async function openOutput(path: string): Promise<void> {
+  if (isTauriRuntime()) await openPath(path);
+}
+
+export async function exportSupervisionReport(
+  destinationParent: string,
+  kind: SupervisionReportKind,
+  format: SupervisionReportFormat,
+  reportDate: string,
+  generatedAtMs: number,
+  content: string,
+): Promise<SupervisionReportExportResult> {
+  if (!isTauriRuntime()) {
+    return { outputPath: `${destinationParent}/dohc-${kind}-report-${reportDate}.${format}`, totalBytes: new Blob([content]).size, elapsedMs: 0 };
+  }
+  return invoke<SupervisionReportExportResult>("export_supervision_report", {
+    destinationParent, kind, format, reportDate, generatedAtMs, content,
+  });
 }
 
 export async function scanSource(path: string, operationId: number): Promise<ScanResult> {
@@ -1062,16 +1154,16 @@ function isOperationsCockpitDemoScenario(): boolean {
 function createDemoOperationsDashboard(): SupervisionDashboardData {
   const now = Date.now();
   const plans: AssignmentPlan[][] = [[
-    { task: "BedMaking", quantity: 20, startIndex: 0, priority: "urgent", deadlineAtMs: now + 4 * 60 * 60_000, status: "active", order: 0 },
-    { task: "Bedsheet", quantity: 12, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "active", order: 1 },
+    { task: "BedMaking", quantity: 20, startIndex: 0, priority: "urgent", deadlineAtMs: now + 4 * 60 * 60_000, status: "active", order: 0, completed: 8, remaining: 12, estimatedCompletionAtMs: now + 5_040_000 },
+    { task: "Bedsheet", quantity: 12, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "active", order: 1, completed: 2, remaining: 10, estimatedCompletionAtMs: now + 4_600_000 },
   ], [
-    { task: "BedMaking", quantity: 18, startIndex: 20, priority: "normal", deadlineAtMs: now + 6 * 60 * 60_000, status: "active", order: 0 },
+    { task: "BedMaking", quantity: 18, startIndex: 20, priority: "normal", deadlineAtMs: now + 6 * 60 * 60_000, status: "active", order: 0, completed: 9, remaining: 9, estimatedCompletionAtMs: now + 5_940_000 },
   ]];
   const users: SupervisionDashboardData["users"] = [
-    { username: "operator1", displayName: "标注员 1111", role: "operator", assignedTasks: 32, assignedTaskNames: ["BedMaking", "Bedsheet"], assignedTaskQuantities: { BedMaking: 20, Bedsheet: 12 }, assignmentPlans: plans[0], completedToday: 8, totalCompleted: 22, remainingTasks: 10, averageCompletionMs: 420_000, completionRatePerHour: 7.1, estimatedCompletionAtMs: now + 4_200_000, firstActivityAtMs: now - 6 * 60 * 60_000, lastActivityAtMs: now - 8 * 60_000, lastLoginAtMs: now - 7 * 60 * 60_000, operationCount: 96, possibleStagnation: false },
-    { username: "operator2", displayName: "标注员 2222", role: "operator", assignedTasks: 18, assignedTaskNames: ["BedMaking"], assignedTaskQuantities: { BedMaking: 18 }, assignmentPlans: plans[1], completedToday: 3, totalCompleted: 9, remainingTasks: 9, averageCompletionMs: 660_000, completionRatePerHour: 3.2, estimatedCompletionAtMs: now + 5_940_000, firstActivityAtMs: now - 5 * 60 * 60_000, lastActivityAtMs: now - 2 * 60 * 60_000, lastLoginAtMs: now - 6 * 60 * 60_000, operationCount: 41, possibleStagnation: true },
+    { username: "operator1", displayName: "标注员 1111", role: "operator", assignedTasks: 32, assignedTaskNames: ["BedMaking", "Bedsheet"], assignedTaskQuantities: { BedMaking: 20, Bedsheet: 12 }, assignmentPlans: plans[0], completedToday: 8, totalCompleted: 22, remainingTasks: 10, averageCompletionMs: 420_000, completionRatePerHour: 7.1, estimatedCompletionAtMs: now + 4_200_000, firstActivityAtMs: now - 6 * 60 * 60_000, lastActivityAtMs: now - 8 * 60_000, lastLoginAtMs: now - 7 * 60 * 60_000, operationCount: 96, possibleStagnation: false, accountStatus: "active" },
+    { username: "operator2", displayName: "标注员 2222", role: "operator", assignedTasks: 18, assignedTaskNames: ["BedMaking"], assignedTaskQuantities: { BedMaking: 18 }, assignmentPlans: plans[1], completedToday: 3, totalCompleted: 9, remainingTasks: 9, averageCompletionMs: 660_000, completionRatePerHour: 3.2, estimatedCompletionAtMs: now + 5_940_000, firstActivityAtMs: now - 5 * 60 * 60_000, lastActivityAtMs: now - 2 * 60 * 60_000, lastLoginAtMs: now - 6 * 60 * 60_000, operationCount: 41, possibleStagnation: true, accountStatus: "active" },
   ];
-  const accounts: SupervisionDashboardData["accounts"] = users.map((user) => ({ username: user.username, displayName: user.displayName, role: user.role, assignedTasks: user.assignedTasks, assignedTaskNames: user.assignedTaskNames, assignedTaskQuantities: user.assignedTaskQuantities, assignmentPlans: user.assignmentPlans, assignmentUpdatedAtMs: now - 24 * 60 * 60_000, lastLoginAtMs: user.lastLoginAtMs, createdAtMs: now - 30 * 24 * 60 * 60_000 }));
+  const accounts: SupervisionDashboardData["accounts"] = users.map((user) => ({ username: user.username, displayName: user.displayName, role: user.role, assignedTasks: user.assignedTasks, assignedTaskNames: user.assignedTaskNames, assignedTaskQuantities: user.assignedTaskQuantities, assignmentPlans: user.assignmentPlans, assignmentUpdatedAtMs: now - 24 * 60 * 60_000, lastLoginAtMs: user.lastLoginAtMs, createdAtMs: now - 30 * 24 * 60 * 60_000, accountStatus: user.accountStatus }));
   return {
     users,
     accounts,
@@ -1080,7 +1172,7 @@ function createDemoOperationsDashboard(): SupervisionDashboardData {
       { task: "BedMaking", detail: "整理床铺并标注完整动作片段。", source: "admin", updatedAtMs: now, updatedBy: "demo-admin" },
       { task: "Bedsheet", detail: "整理床单并检查片段覆盖。", source: "admin", updatedAtMs: now, updatedBy: "demo-admin" },
     ],
-    overview: { completedToday: 11, totalCompleted: 31, assigned: 50, remaining: 19, activeOperators: 1, possibleStagnation: 1 },
+    overview: { completedToday: 11, totalCompleted: 31, assigned: 50, remaining: 19, activeOperators: 1, possibleStagnation: 1, averageCompletionMs: 491_613 },
     taskSummaries: [
       { task: "BedMaking", assigned: 38, completedToday: 9, totalCompleted: 25, remaining: 13, operatorCount: 2, averageCompletionMs: 510_000 },
       { task: "Bedsheet", assigned: 12, completedToday: 2, totalCompleted: 6, remaining: 6, operatorCount: 1, averageCompletionMs: 460_000 },
@@ -1088,7 +1180,7 @@ function createDemoOperationsDashboard(): SupervisionDashboardData {
     hourlyTrend: Array.from({ length: 24 }, (_, hour) => ({ hour, completed: hour >= 8 && hour <= 16 ? [1, 2, 1, 0, 3, 1, 2, 1, 0][hour - 8] : 0 })),
     dailyTrend: Array.from({ length: 7 }, (_, index) => ({ date: new Date(now - (6 - index) * 86_400_000).toLocaleDateString("sv-SE"), completed: [18, 21, 17, 24, 20, 27, 11][index] })),
     alerts: [{ alertId: "possible-stagnation:operator2", type: "possible_stagnation", severity: "medium", status: "open", username: "operator2", taskId: "", message: "标注员 2222 长时间没有可见进展，请先确认工作状态", detectedAtMs: now - 2 * 60 * 60_000, updatedAtMs: now - 2 * 60 * 60_000, note: "", updatedBy: null }],
-    qualityReviews: [{ reviewId: "demo-quality-1", taskId: "BedMaking", trajectoryCode: "bed-007", outcome: "passed", errorType: "", note: "边界清晰。", reviewer: "demo-admin", reviewedAtMs: now - 60 * 60_000 }],
+    qualityReviews: [{ reviewId: "demo-quality-1", taskId: "BedMaking", trajectoryCode: "bed-007", outcome: "passed", errorType: "", note: "边界清晰。", reviewer: "demo-admin", reviewedAtMs: now - 60 * 60_000, annotatorUsername: "operator1", annotationRevision: 2, segmentIndex: 0, startFrame: 1, endFrame: 195, parentReviewId: null, reworkAssignmentCreated: false }],
     generatedAtMs: now,
   };
 }

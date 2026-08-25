@@ -58,9 +58,11 @@ export function AnnotationPanel({
   const [creatingTask, setCreatingTask] = useState(false);
   const [importingTemplates, setImportingTemplates] = useState(false);
   const [editStartedAtMs, setEditStartedAtMs] = useState(() => Date.now());
+  const [draftRestored, setDraftRestored] = useState(false);
   const previewRequest = useRef(0);
   const previousSourcePath = useRef<string | null>(null);
   const taskIds = tasks.map((task) => task.id).join("\u0000");
+  const draftKey = `dohc-viewer.annotation-draft.v1:${currentUser?.username ?? "offline"}:${sourcePath}`;
 
   useEffect(() => {
     let active = true;
@@ -75,7 +77,28 @@ export function AnnotationPanel({
       const annotationTask = tasks.find((task) => task.id === annotation.taskId);
       setCustomDescriptionOpen(Boolean(annotationTask && !predefinedDescriptions(annotationTask).includes(annotation.taskDescription)));
       setEditStartedAtMs(Date.now());
+      setDraftRestored(false);
       return () => { active = false; };
+    }
+    if (sourceChanged) {
+      try {
+        const draft = JSON.parse(localStorage.getItem(draftKey) ?? "null") as { taskId?: string; description?: string; editStartedAtMs?: number } | null;
+        const draftTask = draft?.taskId ? tasks.find((task) => task.id === draft.taskId) : null;
+        if (draftTask && typeof draft?.description === "string") {
+          const requestId = ++previewRequest.current;
+          setTaskId(draftTask.id);
+          onTaskSelected(draftTask.id);
+          setDescription(draft.description);
+          setCustomDescriptionOpen(!predefinedDescriptions(draftTask).includes(draft.description));
+          setTrajectoryCode("");
+          setEditStartedAtMs(Number.isSafeInteger(draft.editStartedAtMs) ? draft.editStartedAtMs! : Date.now());
+          setDraftRestored(true);
+          void suggestTrajectoryCode(draftTask.id)
+            .then((code) => { if (active && previewRequest.current === requestId) setTrajectoryCode(code); })
+            .catch((reason) => { if (active && previewRequest.current === requestId) onError(toMessage(reason)); });
+          return () => { active = false; };
+        }
+      } catch { localStorage.removeItem(draftKey); }
     }
     if (!firstTask) {
       ++previewRequest.current;
@@ -98,6 +121,7 @@ export function AnnotationPanel({
     setCustomDescriptionOpen(false);
     setTrajectoryCode("");
     setEditStartedAtMs(Date.now());
+    setDraftRestored(false);
     void suggestTrajectoryCode(firstTask.id)
       .then((code) => { if (active && previewRequest.current === requestId) setTrajectoryCode(code); })
       .catch((reason) => { if (active && previewRequest.current === requestId) onError(toMessage(reason)); });
@@ -110,7 +134,15 @@ export function AnnotationPanel({
     onTaskSelected,
     sourcePath,
     taskIds,
+    draftKey,
   ]);
+
+  useEffect(() => {
+    if (annotation || !taskId) return;
+    try {
+      localStorage.setItem(draftKey, JSON.stringify({ taskId, description, editStartedAtMs }));
+    } catch { /* The visible unsaved state remains authoritative. */ }
+  }, [annotation, description, draftKey, editStartedAtMs, taskId]);
 
   const activeTask = tasks.find((task) => task.id === taskId) ?? null;
   const descriptionOptions = activeTask ? predefinedDescriptions(activeTask) : [];
@@ -146,6 +178,9 @@ export function AnnotationPanel({
   async function save(descriptionOverride?: string) {
     const nextDescription = (descriptionOverride ?? description).trim();
     if (!taskId || !nextDescription) return;
+    const segmentCount = annotation?.segments.length ?? 0;
+    const coveredFrames = annotation?.segments.reduce((sum, segment) => sum + segment.endFrame - segment.startFrame + 1, 0) ?? 0;
+    if (!await confirmAction(`当前任务：${activeTask?.label ?? taskId}\n片段数：${segmentCount}\n覆盖帧数：${coveredFrames}\n\n确认保存当前标注？`, "确认保存标注")) return;
     setSaving(true);
     onError("");
     try {
@@ -159,6 +194,8 @@ export function AnnotationPanel({
         segments: annotation?.segments ?? [],
       });
       setEditStartedAtMs(Date.now());
+      localStorage.removeItem(draftKey);
+      setDraftRestored(false);
       onSaved(saved);
       onActivity("annotation_saved", saved.taskId, saved.trajectoryCode);
       const persistenceNotice = isTauriRuntime()
@@ -168,6 +205,7 @@ export function AnnotationPanel({
         ? `${saved.trajectoryCode} · ${persistenceNotice}`
         : `${saved.trajectoryCode} · ${saved.processedBy.displayName} · ${persistenceNotice}`);
     } catch (reason) {
+      onActivity("annotation_save_failed", taskId, trajectoryCode);
       onError(toMessage(reason));
     } finally {
       setSaving(false);
@@ -271,7 +309,7 @@ export function AnnotationPanel({
             </div>
           ) : null}
           <span className={`annotation-state${annotation && !dirty ? " saved" : ""}`}>
-            {annotation && !dirty ? `已保存 · r${annotation.revision}` : "待保存"}
+            {annotation && !dirty ? `已保存 · r${annotation.revision}` : draftRestored ? "已恢复本机草稿" : "草稿已自动保存"}
           </span>
           <button
             className="button button-primary"
@@ -360,9 +398,7 @@ export function AnnotationPanel({
                 onBlur={(event) => {
                   const value = event.currentTarget.value.trim();
                   onActivity("description_changed", taskId, trajectoryCode);
-                  if (value && (!annotation || taskId !== annotation.taskId || value !== annotation.taskDescription)) {
-                    void save(value);
-                  }
+                  if (value) setDescription(value);
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {

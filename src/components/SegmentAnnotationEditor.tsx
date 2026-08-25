@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { RotateCcw, Save, Scissors, Trash2 } from "lucide-react";
-import { isTauriRuntime, saveEpisodeAnnotation } from "../lib/backend";
+import { confirmAction, isTauriRuntime, saveEpisodeAnnotation } from "../lib/backend";
 import { descriptionMetadataPath } from "../lib/format";
 import type { AnnotationAuditAction, EpisodeAnnotation, EpisodeData } from "../types";
 
@@ -30,6 +30,7 @@ interface Props {
   onClipEndChange: (frame: number) => void;
   onClipReset: () => void;
   onSaved: (annotation: EpisodeAnnotation) => void;
+  onCompleted: (annotation: EpisodeAnnotation) => void;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
   onActivity: (action: AnnotationAuditAction, taskId: string, trajectoryCode: string) => void;
@@ -39,20 +40,34 @@ export function SegmentAnnotationEditor({
   data, currentFrame, minFrame, maxFrame, clipStartFrame, clipEndFrame, busy,
   annotation, templateTaskId, templateSegments, playbackControls, onFrameChange, onClipStartChange, onClipEndChange, onClipReset,
   onSaved, onError, onNotice,
+  onCompleted,
   onActivity,
 }: Props) {
   const [segments, setSegments] = useState<Segment[]>(() => [createSegment(minFrame, maxFrame, 0)]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const hasMatchingAnnotation = annotation?.taskId === templateTaskId;
+  const draftKey = `dohc-viewer.segment-draft.v1:${data.summary.root}:${templateTaskId ?? "none"}`;
+  const skipNextDraftWrite = useRef(true);
 
   useEffect(() => {
-    const savedSegments = hasMatchingAnnotation && annotation.segments.length
+    skipNextDraftWrite.current = true;
+    let savedSegments = hasMatchingAnnotation && annotation.segments.length
       ? annotation.segments.map((segment, index) => ({ ...segment, id: `saved-${annotation.revision}-${index}` }))
       : [createSegment(minFrame, maxFrame, 0, `initial-${templateTaskId ?? "none"}`)];
+    if (!hasMatchingAnnotation) {
+      try {
+        const draft = JSON.parse(localStorage.getItem(draftKey) ?? "null") as { segments?: Segment[]; clipStartFrame?: number; clipEndFrame?: number } | null;
+        if (draft?.segments?.length && draft.segments.every((segment) => Number.isSafeInteger(segment.startFrame) && Number.isSafeInteger(segment.endFrame) && segment.startFrame >= minFrame && segment.endFrame <= maxFrame && segment.startFrame <= segment.endFrame)) {
+          savedSegments = draft.segments;
+          if (Number.isSafeInteger(draft.clipStartFrame)) onClipStartChange(Math.max(minFrame, Math.min(maxFrame, draft.clipStartFrame!)));
+          if (Number.isSafeInteger(draft.clipEndFrame)) onClipEndChange(Math.max(minFrame, Math.min(maxFrame, draft.clipEndFrame!)));
+        }
+      } catch { localStorage.removeItem(draftKey); }
+    }
     setSegments(savedSegments);
     setSelectedId(null);
-  }, [annotation?.revision, data.summary.root, hasMatchingAnnotation, maxFrame, minFrame, templateTaskId]);
+  }, [annotation?.revision, data.summary.root, draftKey, hasMatchingAnnotation, maxFrame, minFrame, templateTaskId]);
 
   useEffect(() => {
     setSegments((current) => extendSegmentsToRange(current, clipStartFrame, clipEndFrame));
@@ -82,13 +97,19 @@ export function SegmentAnnotationEditor({
   const currentSignature = segmentSignature(clipStartFrame, clipEndFrame, visibleSegments);
   const dirty = persistedSignature !== currentSignature;
   const saveStatus = !annotation || dirty
-    ? "片段未保存"
+    ? "片段草稿已自动保存"
     : isTauriRuntime()
       ? `已保存到 description.json · r${annotation.revision}`
       : `浏览器演示已保存 · r${annotation.revision}`;
 
   async function saveSegments() {
     if (!annotation || !visibleSegments.length) return;
+    const coveredFrames = visibleSegments.reduce((sum, segment) => sum + segment.endFrame - segment.startFrame + 1, 0);
+    const confirmed = await confirmAction(
+      `当前任务：${annotation.taskId}\n片段数：${visibleSegments.length}\n覆盖帧数：${coveredFrames}\n\n确认保存并完成当前任务？`,
+      "确认完成任务",
+    );
+    if (!confirmed) return;
     setSaving(true);
     onError("");
     try {
@@ -102,17 +123,34 @@ export function SegmentAnnotationEditor({
         segments: visibleSegments.map(({ startFrame, endFrame, title, note }) => ({ startFrame, endFrame, title, note })),
       });
       onSaved(saved);
+      localStorage.removeItem(draftKey);
       onActivity("annotation_saved", saved.taskId, saved.trajectoryCode);
       const persistenceNotice = isTauriRuntime()
         ? `片段已保存到 ${descriptionMetadataPath(saved.episodeRoot)}`
         : "浏览器演示已保存";
       onNotice(`${persistenceNotice} · ${saved.segments.length} 个片段 · r${saved.revision}`);
+      onCompleted(saved);
     } catch (reason) {
+      onActivity("annotation_save_failed", annotation.taskId, annotation.trajectoryCode);
       onError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setSaving(false);
     }
   }
+
+  useEffect(() => {
+    if (skipNextDraftWrite.current) {
+      skipNextDraftWrite.current = false;
+      return;
+    }
+    if (!dirty) {
+      localStorage.removeItem(draftKey);
+      return;
+    }
+    try {
+      localStorage.setItem(draftKey, JSON.stringify({ clipStartFrame, clipEndFrame, segments }));
+    } catch { /* The unsaved badge remains visible if local persistence is unavailable. */ }
+  }, [clipEndFrame, clipStartFrame, dirty, draftKey, segments]);
 
   function splitSegment() {
     if (!canSplit || !containingSegment) return;

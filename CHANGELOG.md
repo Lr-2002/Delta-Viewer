@@ -5,6 +5,25 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.63 - 2026-08-25
+
+- Complete the operations cockpit with per-assignment progress and ETA, exact
+  minute deadlines, batch account lifecycle controls, bulk transfer previews,
+  and capacity-aware assignment previews.
+- Persist annotation and segment drafts locally, restore the last unfinished
+  assigned episode, restrict every source type to the signed-in operator's
+  assignment range, confirm task/segment/frame totals before saving, advance to
+  the next item after completion, and retry idempotent audit events after an
+  outage.
+- Expand the exception center with inactivity, delayed start, slow processing,
+  repeated-open, source, user-center, save and validation signals while keeping
+  “possible stagnation” advisory; reject non-whitelisted audit payload fields.
+- Record independent quality reviews against annotator, revision, segment and
+  frame ranges, preserve rework chains, and create rework-priority assignments
+  from review results rather than operator self-reporting.
+- Export daily, weekly and task reports as atomic, verified JSON, CSV or
+  printable HTML files and reveal their output folder after completion.
+
 ## 0.17.62 - 2026-08-25
 
 - Add a login-page action for re-importing a refreshed LAN user-center

@@ -32,8 +32,8 @@ export function assignedEpisodeSelection(
 export function assignmentFilterForSource(
   episodes: EpisodeSummary[],
   assignments: AssignedTask[],
-  driveType: ScanResult["volume"]["driveType"],
+  _driveType: ScanResult["volume"]["driveType"],
 ): AssignedEpisodeSelection | null {
-  if (!assignments.length || driveType === "removable") return null;
+  if (!assignments.length) return null;
   return assignedEpisodeSelection(episodes, assignments);
 }

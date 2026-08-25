@@ -28,6 +28,30 @@ const OPERATOR_PROFILE_CAPABILITY = "operatorProfileV1";
 const OPERATIONS_COCKPIT_CAPABILITY = "operationsCockpitV1";
 const MAX_JSON_BYTES = 16 * 1024;
 const MAX_USERS = 10_000;
+let resolvedOpenSsl = null;
+
+function openSslCommand() {
+  if (resolvedOpenSsl) return resolvedOpenSsl;
+  const candidates = [
+    process.env.DOHC_OPENSSL,
+    process.platform === "win32" && process.env.ProgramFiles
+      ? path.join(process.env.ProgramFiles, "Git/usr/bin/openssl.exe")
+      : null,
+    process.platform === "win32" && process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, "Programs/Git/usr/bin/openssl.exe")
+      : null,
+    "openssl",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (path.isAbsolute(candidate) && !existsSync(candidate)) continue;
+    try {
+      execFileSync(candidate, ["version"], { stdio: "ignore" });
+      resolvedOpenSsl = candidate;
+      return candidate;
+    } catch { /* Try the next reviewed installation location. */ }
+  }
+  throw new Error("OPENSSL_UNAVAILABLE: 未找到 OpenSSL；请安装 Git for Windows/OpenSSL 或设置 DOHC_OPENSSL");
+}
 const MAX_AUDIT_EVENTS = 200_000;
 const MAX_TASK_DETAILS = 500;
 const MAX_QUALITY_REVIEWS = 50_000;
@@ -37,7 +61,9 @@ const AUDIT_ACTIONS = new Set([
   "annotation_started", "task_changed", "description_changed", "clip_changed",
   "segment_split", "segment_template_selected", "segment_note_changed",
   "segment_deleted", "annotation_saved", "export_started", "export_finished",
-  "annotation_ended",
+  "annotation_ended", "episode_opened", "source_unavailable",
+  "annotation_save_failed", "validation_warning", "validation_error",
+  "user_center_unavailable",
 ]);
 
 function parseArguments(argv) {
@@ -295,6 +321,7 @@ function validateStoredUser(user) {
   normalizeUsername(user.username);
   normalizeDisplayName(user.displayName);
   if (!["admin", "operator"].includes(user.role)
+    || (user.accountStatus !== undefined && !["active", "paused"].includes(user.accountStatus))
     || (user.assignedTasks !== undefined
       && (!Number.isSafeInteger(user.assignedTasks) || user.assignedTasks < 0 || user.assignedTasks > 1_000_000))
     || (user.assignedTaskNames !== undefined && (!Array.isArray(user.assignedTaskNames)
@@ -340,6 +367,19 @@ function validateQualityReview(review) {
   normalizeTaskDetailText(review.trajectoryCode, "轨迹码", 100);
   normalizeTaskDetailText(review.reviewer, "复核人", 32);
   if (!["passed", "rework"].includes(review.outcome)
+    || typeof (review.annotatorUsername ?? "") !== "string"
+    || (review.annotationRevision !== null && review.annotationRevision !== undefined
+      && (!Number.isSafeInteger(review.annotationRevision) || review.annotationRevision < 1))
+    || (review.segmentIndex !== null && review.segmentIndex !== undefined
+      && (!Number.isSafeInteger(review.segmentIndex) || review.segmentIndex < 0))
+    || (review.startFrame !== null && review.startFrame !== undefined
+      && (!Number.isSafeInteger(review.startFrame) || review.startFrame < 0))
+    || (review.endFrame !== null && review.endFrame !== undefined
+      && (!Number.isSafeInteger(review.endFrame) || review.endFrame < 0))
+    || (review.startFrame != null && review.endFrame != null && review.startFrame > review.endFrame)
+    || (review.parentReviewId !== null && review.parentReviewId !== undefined
+      && (typeof review.parentReviewId !== "string" || [...review.parentReviewId].length > 100))
+    || typeof (review.reworkAssignmentCreated ?? false) !== "boolean"
     || typeof review.errorType !== "string" || [...review.errorType].length > 100
     || typeof review.note !== "string" || [...review.note].length > 1000
     || containsSourceReference(`${review.errorType}${review.note}`)
@@ -374,7 +414,7 @@ function certificateCoversHost(certificate, host) {
   const check = /^(?:\d+\.){3}\d+$/.test(host) ? "-checkip" : "-checkhost";
   try {
     const output = execFileSync(
-      "openssl",
+      openSslCommand(),
       ["x509", "-in", certificate, "-noout", check, host],
       { encoding: "utf8" },
     );
@@ -403,7 +443,7 @@ async function ensureTls(dataRoot, publicBaseUrl, tlsAlternativeHosts = []) {
     await rename(key, caKey);
   }
   if (!existsSync(caCertificate) || !existsSync(caKey)) {
-    execFileSync("openssl", [
+    execFileSync(openSslCommand(), [
       "req", "-x509", "-newkey", "rsa:3072", "-sha256", "-nodes", "-days", "3650",
       "-keyout", caKey, "-out", caCertificate, "-subj", "/CN=DOHC User Center Local CA",
       "-addext", "basicConstraints=critical,CA:TRUE",
@@ -414,7 +454,7 @@ async function ensureTls(dataRoot, publicBaseUrl, tlsAlternativeHosts = []) {
   const request = path.join(path.dirname(certificate), `.server-${nonce}.csr`);
   const extensions = path.join(path.dirname(certificate), `.server-${nonce}.ext`);
   try {
-    execFileSync("openssl", [
+    execFileSync(openSslCommand(), [
       "req", "-new", "-newkey", "rsa:3072", "-sha256", "-nodes",
       "-keyout", key, "-out", request, "-subj", `/CN=${host}`,
     ], { stdio: "ignore" });
@@ -428,7 +468,7 @@ async function ensureTls(dataRoot, publicBaseUrl, tlsAlternativeHosts = []) {
       "extendedKeyUsage=serverAuth",
       "",
     ].join("\n"), { encoding: "utf8", flag: "wx", mode: 0o600 });
-    execFileSync("openssl", [
+    execFileSync(openSslCommand(), [
       "x509", "-req", "-in", request, "-CA", caCertificate, "-CAkey", caKey,
       "-CAcreateserial", "-out", certificate, "-days", "825", "-sha256",
       "-extfile", extensions,
@@ -535,6 +575,7 @@ function publicUser(user) {
     assignmentUpdatedAtMs: user.assignmentUpdatedAtMs ?? user.createdAtMs,
     lastLoginAtMs: user.lastLoginAtMs ?? null,
     createdAtMs: user.createdAtMs,
+    accountStatus: user.accountStatus ?? "active",
   };
 }
 
@@ -578,6 +619,11 @@ function availableAssignmentStart(users, excludedUsername, task, quantity) {
 }
 
 function auditEvent(body, user) {
+  const allowedFields = new Set(["eventId", "taskId", "trajectoryCode", "action", "occurredAtMs"]);
+  if (!body || typeof body !== "object" || Array.isArray(body)
+    || Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new Error("AUDIT_FIELD_INVALID: 监管 payload 只能包含白名单字段");
+  }
   const action = String(body.action ?? "");
   if (!AUDIT_ACTIONS.has(action)) throw new Error("AUDIT_ACTION_INVALID: 行为类型无效");
   const taskId = String(body.taskId ?? "");
@@ -587,9 +633,13 @@ function auditEvent(body, user) {
   if (!Number.isSafeInteger(occurredAtMs) || Math.abs(nowMs() - occurredAtMs) > 86_400_000) {
     throw new Error("AUDIT_TIME_INVALID: 行为时间无效");
   }
+  const eventId = String(body.eventId ?? "");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventId)) {
+    throw new Error("AUDIT_EVENT_ID_INVALID: 事件 ID 无效");
+  }
   return {
     schemaVersion: 1,
-    eventId: randomUUID(),
+    eventId,
     username: user.username,
     displayName: user.displayName,
     taskId,
@@ -628,6 +678,7 @@ function operationsSummary(events, accounts, alertActions = [], currentTimeMs = 
     assignedTaskQuantities: account.assignedTaskQuantities ?? {},
     assignmentPlans: assignmentPlansFor(account),
     assignmentUpdatedAtMs: account.assignmentUpdatedAtMs ?? account.createdAtMs,
+    accountStatus: account.accountStatus ?? "active",
     lastLoginAtMs: account.lastLoginAtMs ?? null,
     completedToday: new Set(),
     totalCompleted: new Set(),
@@ -636,6 +687,9 @@ function operationsSummary(events, accounts, alertActions = [], currentTimeMs = 
     completionDurationsMs: [],
     completionDurationsByTask: new Map(),
     starts: new Map(),
+    startCounts: new Map(),
+    saveCounts: new Map(),
+    operationalEvents: [],
     firstActivityAtMs: null,
     lastActivityAtMs: null,
     operationCount: 0,
@@ -667,7 +721,16 @@ function operationsSummary(events, accounts, alertActions = [], currentTimeMs = 
     }
     const taskKey = event.taskId.trim().toLowerCase();
     const completionKey = `${taskKey}\u0000${event.trajectoryCode.trim().toLowerCase()}`;
-    if (event.action === "annotation_started") row.starts.set(completionKey, event.occurredAtMs);
+    if (event.action === "annotation_started") {
+      row.starts.set(completionKey, event.occurredAtMs);
+      row.startCounts.set(completionKey, (row.startCounts.get(completionKey) ?? 0) + 1);
+    }
+    if (event.action === "annotation_saved") {
+      row.saveCounts.set(completionKey, (row.saveCounts.get(completionKey) ?? 0) + 1);
+    }
+    if (["source_unavailable", "annotation_save_failed", "validation_warning", "validation_error", "user_center_unavailable"].includes(event.action)) {
+      row.operationalEvents.push(event);
+    }
     if (event.action === "annotation_saved" && event.trajectoryCode && !row.totalCompleted.has(completionKey)) {
       row.totalCompleted.add(completionKey);
       const taskCompleted = row.completedByTask.get(taskKey) ?? new Set();
@@ -694,12 +757,26 @@ function operationsSummary(events, accounts, alertActions = [], currentTimeMs = 
     users.set(event.username, row);
   }
   const summaries = [...users.values()].map((row) => {
-    const remainingTasks = row.assignmentPlans.reduce((sum, plan) => (
-      sum + Math.max(0, plan.quantity - (row.completedByTask.get(plan.task.toLowerCase())?.size ?? 0))
-    ), 0);
     const averageCompletionMs = row.completionDurationsMs.length
       ? Math.round(row.completionDurationsMs.reduce((sum, value) => sum + value, 0) / row.completionDurationsMs.length)
       : null;
+    const assignmentPlans = row.assignmentPlans.map((plan) => {
+      const key = plan.task.toLowerCase();
+      const completed = Math.min(plan.quantity, row.completedByTask.get(key)?.size ?? 0);
+      const remaining = Math.max(0, plan.quantity - completed);
+      const durations = row.completionDurationsByTask.get(key) ?? [];
+      const taskAverage = durations.length
+        ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length)
+        : averageCompletionMs;
+      return {
+        ...plan,
+        completed,
+        remaining,
+        estimatedCompletionAtMs: taskAverage === null || remaining === 0
+          ? null : currentTimeMs + taskAverage * remaining,
+      };
+    });
+    const remainingTasks = assignmentPlans.reduce((sum, plan) => sum + plan.remaining, 0);
     const stagnationReference = row.lastActivityAtMs ?? row.lastLoginAtMs ?? row.assignmentUpdatedAtMs;
     const possibleStagnation = row.role === "operator" && remainingTasks > 0
       && currentTimeMs - stagnationReference >= STAGNATION_THRESHOLD_MS;
@@ -713,7 +790,7 @@ function operationsSummary(events, accounts, alertActions = [], currentTimeMs = 
       assignedTasks: row.assignedTasks,
       assignedTaskNames: row.assignedTaskNames,
       assignedTaskQuantities: row.assignedTaskQuantities,
-      assignmentPlans: row.assignmentPlans,
+      assignmentPlans,
       completedToday: row.completedToday.size,
       totalCompleted: row.totalCompleted.size,
       remainingTasks,
@@ -726,6 +803,7 @@ function operationsSummary(events, accounts, alertActions = [], currentTimeMs = 
       lastLoginAtMs: row.lastLoginAtMs,
       operationCount: row.operationCount,
       possibleStagnation,
+      accountStatus: row.accountStatus,
     };
   });
   const taskRows = new Map();
@@ -769,6 +847,56 @@ function operationsSummary(events, accounts, alertActions = [], currentTimeMs = 
         actions,
       ));
     }
+    const row = users.get(summary.username);
+    if (!row || summary.role !== "operator") continue;
+    if (summary.assignedTasks > 0 && summary.firstActivityAtMs === null
+      && currentTimeMs - row.assignmentUpdatedAtMs >= STAGNATION_THRESHOLD_MS) {
+      alerts.push(operationalAlert(
+        `assignment-not-started:${summary.username}`, "assignment_not_started", summary.username, "",
+        `${summary.displayName} 的已分配任务长时间没有开始`, row.assignmentUpdatedAtMs, actions,
+      ));
+    }
+    if (summary.lastLoginAtMs && (summary.lastActivityAtMs ?? 0) < summary.lastLoginAtMs
+      && currentTimeMs - summary.lastLoginAtMs >= STAGNATION_THRESHOLD_MS) {
+      alerts.push(operationalAlert(
+        `login-no-operation:${summary.username}`, "login_without_operation", summary.username, "",
+        `${summary.displayName} 已登录但长时间没有操作`, summary.lastLoginAtMs, actions,
+      ));
+    }
+    for (const [key, count] of row.startCounts) {
+      if (count <= (row.saveCounts.get(key) ?? 0) + 1) continue;
+      const taskId = key.split("\u0000")[0];
+      alerts.push(operationalAlert(
+        `repeated-open:${summary.username}:${Buffer.from(key).toString("base64url")}`,
+        "repeated_open_without_save", summary.username, taskId,
+        `${summary.displayName} 反复打开 ${taskId || "任务"} 但没有保存`, summary.lastActivityAtMs ?? currentTimeMs, actions,
+      ));
+    }
+    if (row.completionDurationsMs.length >= 6) {
+      const recent = row.completionDurationsMs.slice(-3);
+      const history = row.completionDurationsMs.slice(0, -3);
+      const recentAverage = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+      const historyAverage = history.reduce((sum, value) => sum + value, 0) / history.length;
+      if (recentAverage > historyAverage * 1.5) {
+        alerts.push(operationalAlert(
+          `speed-below-history:${summary.username}`, "speed_below_history", summary.username, "",
+          `${summary.displayName} 当前处理速度明显低于个人历史平均值`, summary.lastActivityAtMs ?? currentTimeMs, actions,
+        ));
+      }
+    }
+    for (const event of row.operationalEvents.filter((item) => currentTimeMs - item.receivedAtMs <= 24 * 60 * 60_000)) {
+      const labels = {
+        source_unavailable: "源数据断开",
+        annotation_save_failed: "标注保存失败",
+        validation_warning: "数据检查出现警告",
+        validation_error: "数据检查出现错误",
+        user_center_unavailable: "用户中心连接曾中断",
+      };
+      alerts.push(operationalAlert(
+        `event:${event.eventId}`, event.action, summary.username, event.taskId,
+        `${summary.displayName}：${labels[event.action]}`, event.receivedAtMs, actions,
+      ));
+    }
   }
   const intervals = new Map();
   for (const row of users.values()) {
@@ -797,6 +925,7 @@ function operationsSummary(events, accounts, alertActions = [], currentTimeMs = 
   const assigned = summaries.filter((row) => row.role === "operator")
     .reduce((sum, row) => sum + row.assignedTasks, 0);
   const totalCompleted = summaries.reduce((sum, row) => sum + row.totalCompleted, 0);
+  const completionDurations = [...users.values()].flatMap((row) => row.completionDurationsMs);
   return {
     users: summaries,
     overview: {
@@ -807,6 +936,9 @@ function operationsSummary(events, accounts, alertActions = [], currentTimeMs = 
       activeOperators: summaries.filter((row) => row.role === "operator" && row.lastActivityAtMs !== null
         && currentTimeMs - row.lastActivityAtMs < STAGNATION_THRESHOLD_MS).length,
       possibleStagnation: summaries.filter((row) => row.possibleStagnation).length,
+      averageCompletionMs: completionDurations.length
+        ? Math.round(completionDurations.reduce((sum, value) => sum + value, 0) / completionDurations.length)
+        : null,
     },
     taskSummaries,
     hourlyTrend,
@@ -820,7 +952,8 @@ function operationalAlert(alertId, type, username, taskId, message, detectedAtMs
   return {
     alertId,
     type,
-    severity: type === "duplicate_assignment" ? "high" : "medium",
+    severity: ["duplicate_assignment", "annotation_save_failed", "validation_error", "source_unavailable"].includes(type)
+      ? "high" : "medium",
     status: action?.status ?? "open",
     username,
     taskId,
@@ -856,6 +989,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
   const sessions = new Map();
   const attempts = new Map();
   const registrations = new Map();
+  const auditEventIds = new Set((await readAuditEvents(dataRoot)).map((event) => event.eventId));
   let stateMutationTail = Promise.resolve();
 
   async function writeState(state) {
@@ -958,6 +1092,9 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             recordFailedAttempt(request);
             return sendJson(response, 401, { error: "AUTH_INVALID: 账号或密码错误" });
           }
+          if ((user.accountStatus ?? "active") === "paused") {
+            return sendJson(response, 403, { error: "ACCOUNT_PAUSED: 账号已暂停，请联系管理员" });
+          }
           user.lastLoginAtMs = nowMs();
           await writeState(state);
           const token = randomBytes(32).toString("base64url");
@@ -1047,8 +1184,13 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const user = state.users.find((candidate) => candidate.username === session.user.username);
         if (!user) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND" });
         const details = new Map((state.taskDetails ?? []).map((entry) => [entry.task.toLowerCase(), entry.detail]));
+        const events = await readAuditEvents(dataRoot);
+        const summary = operationsSummary(events, state.users, state.alertActions ?? []).users
+          .find((candidate) => candidate.username === user.username);
+        const progressByTask = new Map((summary?.assignmentPlans ?? []).map((plan) => [plan.task.toLowerCase(), plan]));
         const tasks = assignmentPlansFor(user).map((plan) => ({
           ...plan,
+          ...(progressByTask.get(plan.task.toLowerCase()) ?? {}),
           detail: details.get(plan.task.toLowerCase()) ?? plan.task,
         }));
         return sendJson(response, 200, { tasks });
@@ -1067,8 +1209,14 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const session = authorize(request);
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         const event = auditEvent(await parseJsonBody(request), session.user);
-        await appendAuditEvent(dataRoot, event);
-        return sendJson(response, 201, { eventId: event.eventId });
+        return await serializeStateMutation(async () => {
+          if (auditEventIds.has(event.eventId)) {
+            return sendJson(response, 200, { eventId: event.eventId, duplicate: true });
+          }
+          await appendAuditEvent(dataRoot, event);
+          auditEventIds.add(event.eventId);
+          return sendJson(response, 201, { eventId: event.eventId });
+        });
       }
       if (request.method === "GET" && url.pathname === "/api/v1/admin/audit") {
         const session = authorize(request, true);
@@ -1089,6 +1237,68 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const state = await readState(dataRoot);
         return sendJson(response, 200, { users: state.users.map(publicUser) });
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/admin/users/batch") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        const body = await parseJsonBody(request);
+        if (!Array.isArray(body.users) || !body.users.length || body.users.length > 100) {
+          return sendJson(response, 400, { error: "BATCH_USERS_INVALID: 账号数量必须是 1-100" });
+        }
+        const requested = body.users.map((entry) => ({
+          username: normalizeUsername(entry.username),
+          displayName: normalizeDisplayName(entry.displayName),
+          password: requirePassword(entry.password),
+        }));
+        if (new Set(requested.map((entry) => entry.username)).size !== requested.length) {
+          return sendJson(response, 409, { error: "BATCH_USERS_DUPLICATE: 批量账号存在重复" });
+        }
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          const existing = new Set(state.users.map((user) => user.username));
+          const conflicts = requested.filter((entry) => existing.has(entry.username)).map((entry) => entry.username);
+          if (conflicts.length) return sendJson(response, 409, { error: `ACCOUNT_EXISTS: ${conflicts.join(", ")}` });
+          if (state.users.length + requested.length > MAX_USERS) {
+            return sendJson(response, 409, { error: "USER_LIMIT_EXCEEDED" });
+          }
+          const created = requested.map((entry) => ({
+            username: entry.username,
+            displayName: entry.displayName,
+            role: "operator",
+            password: passwordRecord(entry.password),
+            accountStatus: "active",
+            createdAtMs: nowMs(),
+            createdBy: session.user.username,
+          }));
+          state.users.push(...created);
+          await writeState(state);
+          return sendJson(response, 201, { users: created.map(publicUser) });
+        });
+      }
+      if (request.method === "PUT" && url.pathname === "/api/v1/admin/users/status") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        const body = await parseJsonBody(request);
+        const usernames = Array.isArray(body.usernames) ? body.usernames.map(normalizeUsername) : [];
+        const status = String(body.status ?? "");
+        if (!usernames.length || usernames.length > 500 || !["active", "paused"].includes(status)) {
+          return sendJson(response, 400, { error: "BATCH_ACCOUNT_STATUS_INVALID" });
+        }
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          const selected = state.users.filter((user) => usernames.includes(user.username) && user.role === "operator");
+          if (selected.length !== new Set(usernames).size) {
+            return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND: 部分标注账号不存在" });
+          }
+          for (const user of selected) user.accountStatus = status;
+          if (status === "paused") {
+            for (const [token, active] of sessions) {
+              if (usernames.includes(active.user.username)) sessions.delete(token);
+            }
+          }
+          await writeState(state);
+          return sendJson(response, 200, { users: selected.map(publicUser) });
+        });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/users") {
         const session = authorize(request, true);
@@ -1274,7 +1484,20 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const outcome = String(body.outcome ?? "");
         const errorType = String(body.errorType ?? "").trim();
         const note = String(body.note ?? "").trim();
+        const annotatorUsername = body.annotatorUsername ? normalizeUsername(body.annotatorUsername) : "";
+        const annotationRevision = body.annotationRevision == null ? null : Number(body.annotationRevision);
+        const segmentIndex = body.segmentIndex == null ? null : Number(body.segmentIndex);
+        const startFrame = body.startFrame == null ? null : Number(body.startFrame);
+        const endFrame = body.endFrame == null ? null : Number(body.endFrame);
+        const parentReviewId = body.parentReviewId == null ? null : String(body.parentReviewId);
         if (!["passed", "rework"].includes(outcome)
+          || !annotatorUsername
+          || (annotationRevision !== null && (!Number.isSafeInteger(annotationRevision) || annotationRevision < 1))
+          || (segmentIndex !== null && (!Number.isSafeInteger(segmentIndex) || segmentIndex < 0))
+          || (startFrame !== null && (!Number.isSafeInteger(startFrame) || startFrame < 0))
+          || (endFrame !== null && (!Number.isSafeInteger(endFrame) || endFrame < 0))
+          || (startFrame !== null && endFrame !== null && startFrame > endFrame)
+          || (parentReviewId !== null && [...parentReviewId].length > 100)
           || [...errorType].length > 100 || [...note].length > 1000
           || containsSourceReference(`${errorType}${note}`)
           || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(`${errorType}${note}`)) {
@@ -1286,9 +1509,46 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           if (state.qualityReviews.length >= MAX_QUALITY_REVIEWS) {
             return sendJson(response, 409, { error: "QUALITY_REVIEW_LIMIT_EXCEEDED" });
           }
+          const parentReview = parentReviewId
+            ? state.qualityReviews.find((item) => item.reviewId === parentReviewId)
+            : null;
+          if (parentReviewId && (!parentReview
+            || parentReview.outcome !== "rework"
+            || parentReview.taskId !== taskId
+            || parentReview.trajectoryCode !== trajectoryCode
+            || parentReview.annotatorUsername !== annotatorUsername)) {
+            return sendJson(response, 409, { error: "QUALITY_REVIEW_PARENT_INVALID: 返工来源复核不匹配" });
+          }
+          if (parentReviewId && outcome === "passed"
+            && state.qualityReviews.some((item) => item.parentReviewId === parentReviewId && item.outcome === "passed")) {
+            return sendJson(response, 409, { error: "QUALITY_REVIEW_ALREADY_PASSED: 返工已存在通过记录" });
+          }
+          let reworkAssignmentCreated = false;
+          if (outcome === "rework") {
+            const annotator = state.users.find((user) => user.username === annotatorUsername && user.role === "operator");
+            if (!annotator) return sendJson(response, 404, { error: "QUALITY_ANNOTATOR_NOT_FOUND: 标注账号不存在" });
+            const plans = assignmentPlansFor(annotator);
+            const existing = plans.find((plan) => plan.task.toLowerCase() === taskId.toLowerCase());
+            if (existing) {
+              existing.priority = "rework";
+              existing.status = "active";
+              existing.order = 0;
+              synchronizeAssignmentFields(annotator, [existing, ...plans.filter((plan) => plan !== existing)]);
+            } else {
+              const quantity = 1;
+              const plan = {
+                task: taskId, quantity, startIndex: availableAssignmentStart(state.users, annotator.username, taskId, quantity),
+                priority: "rework", deadlineAtMs: null, status: "active", order: 0,
+              };
+              synchronizeAssignmentFields(annotator, [plan, ...plans]);
+            }
+            reworkAssignmentCreated = true;
+          }
           const review = {
             reviewId: randomUUID(), taskId, trajectoryCode, outcome, errorType, note,
-            reviewer: session.user.username, reviewedAtMs: nowMs(),
+            reviewer: session.user.username, reviewedAtMs: nowMs(), annotatorUsername,
+            annotationRevision, segmentIndex, startFrame, endFrame, parentReviewId,
+            reworkAssignmentCreated,
           };
           state.qualityReviews.push(review);
           await writeState(state);

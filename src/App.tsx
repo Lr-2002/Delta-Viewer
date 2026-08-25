@@ -57,6 +57,7 @@ import {
   getAssignedTaskActivity,
   getAssignedSourceRoot,
   getAssignedTasks,
+  flushPendingAnnotationAudits,
   installAppUpdate,
   isTauriRuntime,
   listAnnotatedEpisodes,
@@ -505,6 +506,9 @@ function App() {
     if (isManagedWorkspace && authStatus?.currentUser?.role === "operator") {
       const date = localDateInput();
       setAssignedActivityDate(date);
+      void flushPendingAnnotationAudits()
+        .then((remaining) => setAuditUploadPending(remaining > 0))
+        .catch(() => setAuditUploadPending(true));
       void Promise.all([listAssignedTaskDefinitions(), getAssignedTasks(), getAssignedSourceRoot(), getAssignedTaskActivity(date)])
         .then(async ([definitions, assignments, assignedRoot, activity]) => {
           setTasks(definitions);
@@ -733,9 +737,7 @@ function App() {
       setAssignedEpisodeTasks(filtered?.taskByRoot ?? {});
       setSourcePath(visibleResult.sourceRoot);
       setScan(visibleResult);
-      if (assignment.length && result.volume.driveType === "removable") {
-        setNotice(`已从可移动盘读取 ${visibleResult.episodes.length} 条记录；NAS 任务过滤未应用于该设备。`);
-      }
+      if (assignment.length) setNotice(`仅显示当前账号分配范围内的 ${visibleResult.episodes.length} 条记录。`);
       void refreshAnnotationTags();
       setSkippedEpisodeRoots({});
       setPendingAnnotationConfirmation(null);
@@ -743,7 +745,12 @@ function App() {
       setEpisodeSourceStates(Object.fromEntries(
         visibleResult.episodes.map((episode) => [episode.root, "available" as const]),
       ));
-      const first = visibleResult.episodes[0] ?? null;
+      const lastAssignedRoot = authStatus?.currentUser?.role === "operator"
+        ? localStorage.getItem(`dohc-viewer.last-assigned-episode.v1:${authStatus.currentUser.username}`)
+        : null;
+      const first = visibleResult.episodes.find((episode) => episode.root === lastAssignedRoot)
+        ?? visibleResult.episodes[0]
+        ?? null;
       setSelectedEpisode(first);
       resetLoadedData();
       if (autoLoad && first) {
@@ -890,6 +897,9 @@ function App() {
       setError(presentOperationError(message));
       setCurrentOperationError(true);
     }
+    if (["scan_source", "load_and_validate", "load_episode", "load_frame", "choose_source"].includes(operation)) {
+      auditActivity("source_unavailable", assignedEpisodeTasks[path] ?? "", "");
+    }
     if (!workspaceActive) return;
     try {
       const record = await recordOperationError({
@@ -937,6 +947,8 @@ function App() {
 
     const validated = await validateEpisode(root, owner.id);
     ensureOperationActive(owner);
+    if (validated.report.status === "warning") auditActivity("validation_warning");
+    if (validated.report.status === "error") auditActivity("validation_error");
     updateScannedEpisode(validated.summary);
     if (hasUnavailableFrame(validated.report)) {
       resetLoadedData();
@@ -998,6 +1010,10 @@ function App() {
   function handleLoadResult(episode: EpisodeSummary, result: EpisodeLoadResult) {
     if (result === "loaded") {
       setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "available" }));
+      if (authStatus?.currentUser?.role === "operator") {
+        localStorage.setItem(`dohc-viewer.last-assigned-episode.v1:${authStatus.currentUser.username}`, episode.root);
+      }
+      auditActivity("episode_opened", assignedEpisodeTasks[episode.root] ?? "", "");
       setNotice(`已从源目录只读载入：${episode.name}`);
       return;
     }
@@ -1273,14 +1289,17 @@ function App() {
   }
 
   function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "") {
-    if (!data || authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
+    if (authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
     void recordAnnotationAudit({
       taskId,
       trajectoryCode,
       action,
       occurredAtMs: Date.now(),
-    }).then(() => setAuditUploadPending(false)).catch((reason) => {
+    }).then(() => flushPendingAnnotationAudits()).then((remaining) => setAuditUploadPending(remaining > 0)).catch((reason) => {
       setAuditUploadPending(true);
+      if (action !== "user_center_unavailable") {
+        void recordAnnotationAudit({ taskId: "", trajectoryCode: "", action: "user_center_unavailable", occurredAtMs: Date.now() }).catch(() => undefined);
+      }
       setError(`本地操作已保留，但监管记录尚未上传：${reason instanceof Error ? reason.message : String(reason)}`);
     });
   }
@@ -2119,6 +2138,15 @@ function App() {
                       onClipEndChange={updateClipEnd}
                       onClipReset={resetClipRange}
                       onSaved={handleAnnotationSaved}
+                      onCompleted={(saved) => {
+                        const nextRoot = nextAvailableEpisodeRoot(saved.episodeRoot);
+                        if (nextRoot) {
+                          setQueuedEpisodeRoot(nextRoot);
+                          setNotice(`已完成 ${saved.trajectoryCode}，正在进入下一条任务。`);
+                        } else {
+                          setNotice(`已完成 ${saved.trajectoryCode}，当前分配队列已处理完毕。`);
+                        }
+                      }}
                       onError={setError}
                       onNotice={setNotice}
                       onActivity={auditActivity}

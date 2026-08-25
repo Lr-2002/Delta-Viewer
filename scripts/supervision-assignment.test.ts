@@ -8,7 +8,7 @@ import {
   validateAssignmentSelection,
 } from "../src/lib/supervisionAssignments.ts";
 import { distributeBySpeed, distributeEvenly, distributeTaskTotals } from "../src/lib/operationsCockpit.ts";
-import { deadlineAtEndOfDay, deadlineDateInput, deadlineDateLabel } from "../src/lib/deadlines.ts";
+import { deadlineAtEndOfDay, deadlineAtMinute, deadlineDateInput, deadlineDateLabel, deadlineDateTimeInput } from "../src/lib/deadlines.ts";
 import { assignmentFilterForSource } from "../src/lib/assignedEpisodes.ts";
 import type { AssignedTask, EpisodeSummary, SupervisionTaskSummary } from "../src/types.ts";
 
@@ -26,9 +26,12 @@ test("accepts assignments sourced only from imported task JSON", () => {
   assert.equal(validateAssignmentSelection({ BedMaking: 3 }, [], ["BedMaking"]), null);
 });
 
-test("does not hide dated recordings on a manually selected removable drive", () => {
-  const episodes = [episode("/media/DOHC1TB/20260821_060700_recording")];
-  assert.equal(assignmentFilterForSource(episodes, [assignedTask("BedMaking")], "removable"), null);
+test("shows only assigned task ranges on a removable drive", () => {
+  const episodes = [episode("/media/DOHC1TB/BedMaking/20260821_060700_recording")];
+  assert.deepEqual(assignmentFilterForSource(episodes, [assignedTask("BedMaking")], "removable"), {
+    episodes,
+    taskByRoot: { [episodes[0].root]: "BedMaking" },
+  });
 });
 
 test("keeps assignment filtering for a mounted NAS source", () => {
@@ -88,6 +91,7 @@ test("reports tasks already assigned to another operator", () => {
     lastLoginAtMs: null,
     operationCount: 0,
     possibleStagnation: false,
+    accountStatus: "active" as const,
   }];
   assert.deepEqual(assignmentConflicts("operator1", { bedmaking: 3 }, users), [{
     task: "bedmaking",
@@ -120,6 +124,7 @@ test("suggests more work for the historically faster operator", () => {
     lastLoginAtMs: null,
     operationCount: 0,
     possibleStagnation: false,
+    accountStatus: "active" as const,
   };
   const result = distributeBySpeed(12, [
     { ...base, username: "fast", averageCompletionMs: 60_000, completionRatePerHour: 60 },
@@ -156,13 +161,16 @@ test("prevents a whole-folder batch from exceeding totals held by unselected ope
   assert.equal(validateBatchAssignmentTotals(["selected", "outside"], { BedMaking: 5 }, [task("BedMaking", 5)], users), null);
 });
 
-test("stores date-only deadlines at local end of day and labels today", () => {
+test("stores exact minute deadlines and labels today", () => {
   const value = deadlineAtEndOfDay("2026-08-21");
   assert.ok(value);
   assert.equal(deadlineDateInput(value), "2026-08-21");
   assert.equal(new Date(value).getHours(), 23);
-  assert.equal(deadlineDateLabel(value, new Date(2026, 7, 21, 9)), "截止 2026/8/21（今天）");
+  assert.equal(deadlineDateLabel(value, new Date(2026, 7, 21, 9)), "截止 2026/8/21（今天） 23:59");
   assert.equal(deadlineAtEndOfDay("2026-02-31"), null);
+  const exact = deadlineAtMinute("2026-08-21T18:40");
+  assert.ok(exact);
+  assert.equal(deadlineDateTimeInput(exact), "2026-08-21T18:40");
 });
 
 function operator(username: string, completionRatePerHour: number) {
@@ -185,6 +193,7 @@ function operator(username: string, completionRatePerHour: number) {
     lastLoginAtMs: null,
     operationCount: 0,
     possibleStagnation: false,
+    accountStatus: "active" as const,
   };
 }
 
@@ -198,6 +207,9 @@ function assignedTask(taskName: string): AssignedTask {
     deadlineAtMs: null,
     status: "active",
     order: 0,
+    completed: 0,
+    remaining: 10,
+    estimatedCompletionAtMs: null,
   };
 }
 

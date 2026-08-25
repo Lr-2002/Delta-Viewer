@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { X509Certificate } from "node:crypto";
+import { randomUUID, X509Certificate } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -9,7 +9,10 @@ import { createUserCenter, initializeUserCenter } from "./user-center-server.mjs
 
 function request(port, ca, method, pathname, body = null, token = null) {
   return new Promise((resolve, reject) => {
-    const payload = body == null ? null : Buffer.from(JSON.stringify(body));
+    const normalizedBody = pathname === "/api/v1/audit/events" && body && !body.eventId
+      ? { ...body, eventId: randomUUID() }
+      : body;
+    const payload = normalizedBody == null ? null : Buffer.from(JSON.stringify(normalizedBody));
     const request = httpsRequest({
       hostname: "127.0.0.1",
       port,
@@ -165,6 +168,25 @@ test("user center supports operator self-registration and administrator account 
         .sort(),
       concurrentUsernames,
     );
+    const batchCreated = await request(port, ca, "POST", "/api/v1/admin/users/batch", {
+      users: [
+        { username: "batch01", displayName: "批量账号一", password: "batch-password-01" },
+        { username: "batch02", displayName: "批量账号二", password: "batch-password-02" },
+      ],
+    }, login.body.token);
+    assert.equal(batchCreated.status, 201);
+    assert.deepEqual(batchCreated.body.users.map((user) => user.username), ["batch01", "batch02"]);
+    const paused = await request(port, ca, "PUT", "/api/v1/admin/users/status", {
+      usernames: ["batch01", "batch02"],
+      status: "paused",
+    }, login.body.token);
+    assert.equal(paused.status, 200);
+    assert.ok(paused.body.users.every((user) => user.accountStatus === "paused"));
+    const pausedLogin = await request(port, ca, "POST", "/api/v1/auth/login", {
+      username: "batch01",
+      password: "batch-password-01",
+    });
+    assert.equal(pausedLogin.status, 403);
     const created = await request(port, ca, "POST", "/api/v1/admin/users", {
       username: "operator",
       displayName: "操作员",
@@ -235,8 +257,8 @@ test("user center supports operator self-registration and administrator account 
     });
     const secondTasks = await request(port, ca, "GET", "/api/v1/tasks/assigned", null, secondLogin.body.token);
     assert.deepEqual(secondTasks.body.tasks, [
-      { task: "BedMaking", quantity: 2, startIndex: 3, priority: "normal", deadlineAtMs: null, status: "active", order: 0, detail: "BedMaking" },
-      { task: "ConcurrentTask", quantity: 7, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "active", order: 1, detail: "ConcurrentTask" },
+      { task: "BedMaking", quantity: 2, startIndex: 3, priority: "normal", deadlineAtMs: null, status: "active", order: 0, detail: "BedMaking", completed: 0, remaining: 2, estimatedCompletionAtMs: null },
+      { task: "ConcurrentTask", quantity: 7, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "active", order: 1, detail: "ConcurrentTask", completed: 0, remaining: 7, estimatedCompletionAtMs: null },
     ]);
     const editedDetail = await request(port, ca, "PUT", "/api/v1/admin/task-details", {
       task: "Bedsheet",
@@ -252,20 +274,38 @@ test("user center supports operator self-registration and administrator account 
     const operatorTasks = await request(port, ca, "GET", "/api/v1/tasks/assigned", null, operator.body.token);
     assert.equal(operatorTasks.status, 200);
     assert.deepEqual(operatorTasks.body.tasks, [
-      { task: "BedMaking", quantity: 3, startIndex: 0, priority: "urgent", deadlineAtMs: assigned.body.user.assignmentPlans[0].deadlineAtMs, status: "active", order: 0, detail: "BedMaking" },
-      { task: "Bedsheet", quantity: 2, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "paused", order: 1, detail: "整理床单并完成整段视频标注。" },
+      { task: "BedMaking", quantity: 3, startIndex: 0, priority: "urgent", deadlineAtMs: assigned.body.user.assignmentPlans[0].deadlineAtMs, status: "active", order: 0, detail: "BedMaking", completed: 0, remaining: 3, estimatedCompletionAtMs: null },
+      { task: "Bedsheet", quantity: 2, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "paused", order: 1, detail: "整理床单并完成整段视频标注。", completed: 0, remaining: 2, estimatedCompletionAtMs: null },
     ]);
     const startedAtMs = Date.now() - 60_000;
+    const stableEventId = randomUUID();
     const started = await request(port, ca, "POST", "/api/v1/audit/events", {
-      episodeId: "12345678abcdef00",
+      eventId: stableEventId,
       taskId: "sofa",
       trajectoryCode: "sofa-001",
       action: "annotation_started",
       occurredAtMs: startedAtMs,
     }, operator.body.token);
     assert.equal(started.status, 201);
+    const duplicateStarted = await request(port, ca, "POST", "/api/v1/audit/events", {
+      eventId: stableEventId,
+      taskId: "sofa",
+      trajectoryCode: "sofa-001",
+      action: "annotation_started",
+      occurredAtMs: startedAtMs,
+    }, operator.body.token);
+    assert.equal(duplicateStarted.status, 200);
+    assert.equal(duplicateStarted.body.duplicate, true);
+    const auditFieldRejected = await request(port, ca, "POST", "/api/v1/audit/events", {
+      eventId: randomUUID(),
+      taskId: "sofa",
+      trajectoryCode: "sofa-001",
+      action: "annotation_started",
+      occurredAtMs: Date.now(),
+      episodeId: "must-not-leave-client",
+    }, operator.body.token);
+    assert.equal(auditFieldRejected.status, 400);
     const event = await request(port, ca, "POST", "/api/v1/audit/events", {
-      episodeId: "12345678abcdef00",
       taskId: "sofa",
       trajectoryCode: "sofa-001",
       action: "annotation_saved",
@@ -273,13 +313,19 @@ test("user center supports operator self-registration and administrator account 
     }, operator.body.token);
     assert.equal(event.status, 201);
     const revision = await request(port, ca, "POST", "/api/v1/audit/events", {
-      episodeId: "12345678abcdef00",
       taskId: "sofa",
       trajectoryCode: "sofa-001",
       action: "annotation_saved",
       occurredAtMs: Date.now(),
     }, operator.body.token);
     assert.equal(revision.status, 201);
+    const sourceUnavailable = await request(port, ca, "POST", "/api/v1/audit/events", {
+      taskId: "sofa",
+      trajectoryCode: "",
+      action: "source_unavailable",
+      occurredAtMs: Date.now(),
+    }, operator.body.token);
+    assert.equal(sourceUnavailable.status, 201);
     const statePath = path.join(root, "users.json");
     const storedState = JSON.parse(await readFile(statePath, "utf8"));
     const idleOperator = storedState.users.find((user) => user.username === "operator2");
@@ -300,6 +346,7 @@ test("user center supports operator self-registration and administrator account 
     assert.equal(audit.body.dailyTrend.length, 7);
     assert.ok(audit.body.taskSummaries.some((task) => task.task === "BedMaking"));
     assert.ok(Number.isSafeInteger(audit.body.generatedAtMs));
+    assert.ok(audit.body.alerts.some((alert) => alert.type === "source_unavailable"));
     const stagnationAlert = audit.body.alerts.find((alert) => alert.alertId === "possible-stagnation:operator2");
     assert.equal(stagnationAlert.status, "open");
     const acknowledged = await request(port, ca, "PUT", `/api/v1/admin/alerts/${encodeURIComponent(stagnationAlert.alertId)}`, {
@@ -310,22 +357,45 @@ test("user center supports operator self-registration and administrator account 
     const acknowledgedAudit = await request(port, ca, "GET", "/api/v1/admin/audit", null, login.body.token);
     assert.equal(acknowledgedAudit.body.alerts.find((alert) => alert.alertId === stagnationAlert.alertId).status, "acknowledged");
     assert.equal(audit.body.taskDetails.length, 2);
-    assert.equal(audit.body.events[0].action, "annotation_saved");
+    assert.ok(audit.body.events.some((item) => item.action === "annotation_saved"));
     const quality = await request(port, ca, "POST", "/api/v1/admin/quality-reviews", {
       taskId: "sofa",
       trajectoryCode: "sofa-001",
       outcome: "rework",
       errorType: "片段边界",
       note: "请复核边界。",
+      annotatorUsername: "operator",
+      annotationRevision: 2,
+      segmentIndex: 0,
+      startFrame: 1,
+      endFrame: 195,
     }, login.body.token);
     assert.equal(quality.status, 201);
     assert.equal(quality.body.review.reviewer, "supervisor");
+    assert.equal(quality.body.review.reworkAssignmentCreated, true);
+    const reworkTasks = await request(port, ca, "GET", "/api/v1/tasks/assigned", null, operator.body.token);
+    assert.ok(reworkTasks.body.tasks.some((task) => task.task === "sofa" && task.priority === "rework"));
+    const reworkPassed = await request(port, ca, "POST", "/api/v1/admin/quality-reviews", {
+      taskId: "sofa",
+      trajectoryCode: "sofa-001",
+      outcome: "passed",
+      errorType: "",
+      note: "返工后通过。",
+      annotatorUsername: "operator",
+      annotationRevision: 3,
+      segmentIndex: 0,
+      startFrame: 1,
+      endFrame: 195,
+      parentReviewId: quality.body.review.reviewId,
+    }, login.body.token);
+    assert.equal(reworkPassed.status, 201);
     const qualityPathRejected = await request(port, ca, "POST", "/api/v1/admin/quality-reviews", {
       taskId: "sofa",
       trajectoryCode: "sofa-001",
       outcome: "rework",
       errorType: "路径泄漏",
       note: "/mnt/source/private/frame.jpg",
+      annotatorUsername: "operator",
     }, login.body.token);
     assert.equal(qualityPathRejected.status, 400);
     const qualityAudit = await request(port, ca, "GET", "/api/v1/admin/audit", null, login.body.token);
