@@ -5,6 +5,14 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.62 - 2026-08-25
+
+- Add a login-page action for re-importing a refreshed LAN user-center
+  configuration after the service host address changes, while preserving the
+  existing TLS health and same-service-ID migration gates.
+- Keep the configuration refresh action with the secondary login links below
+  the form, including wrapping behavior for narrow diagnostic viewports.
+
 ## 0.17.61 - 2026-08-24
 
 - Route every manifest-backed MP4 stream through its own tokenized,
