@@ -311,7 +311,12 @@ pub fn scan_task_catalog(root: &Path, cancelled: &AtomicBool) -> AppResult<Super
             };
             let key = task.to_ascii_lowercase();
             let row = tasks.entry(key).or_insert((task, 0, 0, 0, 0));
-            add_episode_summary(row, std::slice::from_ref(&episode), include_frame_counts, cancelled)?;
+            add_episode_summary(
+                row,
+                std::slice::from_ref(&episode),
+                include_frame_counts,
+                cancelled,
+            )?;
         }
     }
 
@@ -395,8 +400,7 @@ fn summarize_episode_slice(
         counts.3 = counts.3.saturating_add(frames);
         // Completion metadata is also optional on a network catalog. Avoid a
         // second SMB round trip per episode; assignment only needs `total`.
-        let completed = include_frame_counts
-            && is_regular_file(&episode.join("description.json"))?;
+        let completed = include_frame_counts && is_regular_file(&episode.join("description.json"))?;
         if completed {
             counts.0 = counts.0.saturating_add(1);
             counts.2 = counts.2.saturating_add(frames);
@@ -437,9 +441,7 @@ fn count_episode_frames(episode: &Path, cancelled: &AtomicBool) -> AppResult<u64
 fn is_network_path(path: &Path) -> bool {
     let value = path.to_string_lossy();
     value.starts_with(r"\\?\UNC\")
-        || (value.starts_with(r"\\")
-            && !value.starts_with(r"\\?\")
-            && !value.starts_with(r"\\.\"))
+        || (value.starts_with(r"\\") && !value.starts_with(r"\\?\") && !value.starts_with(r"\\.\"))
         || value.starts_with("//")
 }
 
@@ -670,9 +672,7 @@ mod tests {
         assert!(is_network_path(std::path::Path::new(
             r"\\10.1.40.2\Datasets"
         )));
-        assert!(!is_network_path(std::path::Path::new(
-            r"\\?\C:\datasets"
-        )));
+        assert!(!is_network_path(std::path::Path::new(r"\\?\C:\datasets")));
     }
 
     #[test]
