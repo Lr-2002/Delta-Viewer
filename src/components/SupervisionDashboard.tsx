@@ -23,6 +23,7 @@ import type {
 
 interface Props { currentUser: UserIdentity; onLogout: () => Promise<void> }
 type View = "overview" | "assignment" | "alerts" | "quality" | "reports";
+type CockpitProgress = { key: string; label: string; detail: string; completed: number; total: number | null };
 
 const NAVIGATION: { id: View; label: string }[] = [
   { id: "overview", label: "监管总览" },
@@ -44,6 +45,7 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
   const [draggedTask, setDraggedTask] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
+  const [progress, setProgress] = useState<CockpitProgress | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [alertNotes, setAlertNotes] = useState<Record<string, string>>({});
@@ -78,6 +80,20 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  useEffect(() => {
+    if (!busy) {
+      setProgress(null);
+      return;
+    }
+    setProgress((current) => current?.key === busy ? current : {
+      key: busy,
+      label: cockpitProgressLabel(busy),
+      detail: "正在处理，请稍候",
+      completed: 0,
+      total: null,
+    });
+  }, [busy]);
 
   const operators = data?.users.filter((user) => user.role === "operator") ?? [];
   const availableTasks = useMemo(() => [...new Map([
@@ -178,10 +194,12 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
     ]).join("\n");
     if (!await confirmAction(`批量操作预览：\n\n${preview}\n\n用户中心将按任务生成不重叠区间。是否确认？`, "确认批量分配")) return;
     setBusy("batch");
+    setProgress({ key: "batch", label: "批量分配任务", detail: `准备保存 ${batchSelected.length} 个账号`, completed: 0, total: batchSelected.length });
     setError("");
     try {
       const deadlineAtMs = deadlineAtMinute(batchDeadline);
-      for (const user of batchSelected) {
+      for (const [index, user] of batchSelected.entries()) {
+        setProgress({ key: "batch", label: "批量分配任务", detail: `正在保存 @${user.username}`, completed: index, total: batchSelected.length });
         const selectedKeys = new Set(batchTasks.map((task) => task.toLowerCase()));
         const next = (drafts[user.username] ?? []).filter((plan) => !selectedKeys.has(plan.task.toLowerCase()));
         for (const allocation of batchPreview) {
@@ -190,6 +208,7 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
           next.push({ task: allocation.task, quantity, startIndex: 0, priority: batchPriority, deadlineAtMs, status: "active" as const, order: next.length, completed: 0, remaining: quantity, estimatedCompletionAtMs: null });
         }
         await savePlans(user.username, next);
+        setProgress({ key: "batch", label: "批量分配任务", detail: `已保存 @${user.username}`, completed: index + 1, total: batchSelected.length });
       }
       await refresh();
       const total = batchTaskTotals.reduce((sum, item) => sum + item.total, 0);
@@ -261,6 +280,7 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
     const preview = transferable.map((task) => { const plan = selectedPlans.find((item) => item.task.toLowerCase() === task.toLowerCase())!; return `${task}：${plan.quantity} 条，区间 ${plan.startIndex + 1}–${plan.startIndex + plan.quantity}`; }).join("\n");
     if (!await confirmAction(`从 @${selectedUser.username} 批量转移给 @${batchTransferTarget}：\n\n${preview}\n\n用户中心会为目标账号重新生成互斥区间。`, "确认批量转移任务")) return;
     setBusy("batch-transfer"); setError("");
+    setProgress({ key: "batch-transfer", label: "批量转移任务", detail: `准备转移 ${transferable.length} 个任务`, completed: 0, total: null });
     try { for (const task of transferable) await transferSupervisionAssignment(selectedUser.username, batchTransferTarget, task); await refresh(); setNotice(`已批量转移 ${transferable.length} 类任务`); }
     catch (reason) { await refresh(); setError(`批量转移已停止，请核对已完成项：${message(reason)}`); } finally { setBusy(""); }
   }
@@ -321,7 +341,8 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
   return <main className="supervision-shell operations-cockpit">
     <header className="supervision-header"><div className="brand-lockup"><span className="brand-mark">D</span><div><strong>DOHC Viewer</strong><span>任务运营驾驶舱</span></div></div><div className="supervision-account"><ShieldCheck size={17} /><span><strong>{currentUser.displayName}</strong><small>@{currentUser.username} · 监管账户</small></span><button className="icon-button" type="button" onClick={() => void onLogout()} title="退出"><LogOut size={16} /></button></div></header>
     <section className="supervision-content">
-      <div className="supervision-title"><div><span className="section-kicker">OPERATIONS COCKPIT</span><h1>任务运营驾驶舱</h1><p>谁在做什么、进度如何、哪里可能卡住，以及下一步如何调整。</p></div><button className="button button-secondary" type="button" onClick={() => void refresh()} disabled={loading}><RefreshCw className={loading ? "spin" : undefined} size={16} />刷新</button></div>
+      {progress ? <CockpitProgress progress={progress} /> : null}
+      <div className="supervision-title"><div><span className="section-kicker">OPERATIONS COCKPIT</span><h1>任务运营驾驶舱</h1><p>谁在做什么、进度如何、哪里可能卡住，以及下一步如何调整。</p></div><button className="button button-secondary" type="button" onClick={() => void refresh()} disabled={loading || Boolean(busy)}><RefreshCw className={loading ? "spin" : undefined} size={16} />刷新</button></div>
       <div className="cockpit-statusbar"><span className={data ? "connected" : "disconnected"}><i />用户中心：{data ? "已连接" : "未连接"}</span><span>数据更新：{data ? formatTime(data.generatedAtMs) : "—"}</span><span>片段/帧：{annotations ? "本机标注 JSON" : "待本机导入"}</span></div>
       <nav className="cockpit-nav">{NAVIGATION.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} type="button" onClick={() => setView(item.id)}>{item.label}{item.id === "alerts" && data?.alerts.some((alert) => alert.status !== "closed") ? <b>{data.alerts.filter((alert) => alert.status !== "closed").length}</b> : null}</button>)}</nav>
       {error ? <div className="auth-error supervision-feedback" role="alert">{error}</div> : null}
@@ -487,6 +508,33 @@ function Quality({ data, annotations, review, setReview, importAnnotations, busy
 function Reports({ data, annotations, kind, setKind, exportReport, exportDailyWeekly, busy }: { data: SupervisionDashboardData; annotations: SupervisionAnnotationCatalog | null; kind: SupervisionReportKind; setKind: (value: SupervisionReportKind) => void; exportReport: (format: SupervisionReportFormat) => Promise<void>; exportDailyWeekly: (format: SupervisionReportFormat) => Promise<void>; busy: string }) {
   const local = annotationTotals(annotations);
   return <><section className="supervision-section report-kind-picker"><Heading kicker="REPORT TYPE" title="选择报表范围" note="日报、周报和任务报表均支持三种格式" /><div role="group">{(["daily", "weekly", "task"] as const).map((value) => <button type="button" className={kind === value ? "active" : ""} onClick={() => setKind(value)} key={value}>{reportKindLabel(value)}</button>)}</div></section><section className="report-actions"><button type="button" onClick={() => void exportReport("json")} disabled={Boolean(busy)}><FileJson size={22} /><strong>导出 JSON</strong><span>结构化{reportKindLabel(kind)}</span></button><button type="button" onClick={() => void exportReport("csv")} disabled={Boolean(busy)}><Download size={22} /><strong>导出 CSV</strong><span>可在表格软件中查看</span></button><button type="button" onClick={() => void exportReport("html")} disabled={Boolean(busy)}><ClipboardCheck size={22} /><strong>导出可打印 HTML</strong><span>生成后自动打开所在文件夹</span></button><button type="button" onClick={() => void exportDailyWeekly("json")} disabled={Boolean(busy)}><FileUp size={22} /><strong>批量导出日报 + 周报</strong><span>一次生成两份 JSON 并打开文件夹</span></button></section><section className="supervision-section report-preview"><Heading kicker={kind.toUpperCase()} title={`${reportKindLabel(kind)}预览`} note={dateKey(data.generatedAtMs)} /><div className="report-summary"><span>今日分配<strong>{assignedToday(data)}</strong></span><span>今日完成<strong>{data.overview.completedToday}</strong></span><span>当前剩余<strong>{data.overview.remaining}</strong></span><span>异常数量<strong>{data.alerts.filter((item) => item.status !== "closed").length}</strong></span><span>episode / 片段<strong>{local.episodes || data.overview.totalCompleted} / {local.segments}</strong></span><span>平均耗时<strong>{formatDuration(data.overview.averageCompletionMs ?? weightedAverage(data.users))}</strong></span></div>{kind === "weekly" ? <div className="weekly-preview">{data.dailyTrend.map((item) => <span key={item.date}><small>{item.date.slice(5)}</small><strong>{item.completed}</strong></span>)}</div> : null}{kind === "task" ? <div className="supervision-table-wrap"><table><thead><tr><th>任务</th><th>总量</th><th>已分配</th><th>已完成</th><th>剩余</th><th>参与人数</th><th>平均时长</th></tr></thead><tbody>{data.taskSummaries.map((task) => <tr key={task.task}><td>{task.task}</td><td>{Math.max(task.assigned, task.totalCompleted + task.remaining)}</td><td>{task.assigned}</td><td>{task.totalCompleted}</td><td>{task.remaining}</td><td>{task.operatorCount}</td><td>{formatDuration(task.averageCompletionMs)}</td></tr>)}</tbody></table></div> : null}<p>报表不包含源路径、图像、状态、片段文本、原始数据或 hash。文件使用 partial 回读验证后原子发布，不覆盖已有输出。</p></section></>;
+}
+
+function CockpitProgress({ progress }: { progress: CockpitProgress }) {
+  const determinate = progress.total !== null;
+  const percent = determinate ? Math.min(100, Math.round((progress.completed / Math.max(1, progress.total!)) * 100)) : null;
+  return <div className="cockpit-operation-progress" role="status" aria-live="polite">
+    <div className="cockpit-operation-icon"><LoaderCircle className="spin" size={16} /></div>
+    <div className="cockpit-operation-copy"><strong>{progress.label}</strong><span>{progress.detail}</span></div>
+    <div className="cockpit-progress-track" role="progressbar" aria-label={progress.label} aria-valuemin={determinate ? 0 : undefined} aria-valuemax={determinate ? 100 : undefined} aria-valuenow={percent ?? undefined}><span className={determinate ? undefined : "indeterminate"} style={determinate ? { width: `${percent}%` } : undefined} /></div>
+    <strong className="cockpit-operation-count">{determinate ? `${progress.completed}/${progress.total}` : "处理中"}</strong>
+  </div>;
+}
+
+function cockpitProgressLabel(key: string) {
+  if (key === "scan") return "读取任务目录";
+  if (key === "tasks") return "导入任务定义";
+  if (key === "annotations") return "汇总标注数据";
+  if (key === "batch") return "批量分配任务";
+  if (key === "batch-transfer") return "批量转移任务";
+  if (key.startsWith("report")) return "生成监管报表";
+  if (key === "accounts") return "创建账号";
+  if (key === "account-status") return "更新账号状态";
+  if (key === "review") return "保存质量复核";
+  if (key.startsWith("transfer:")) return "转移任务";
+  if (key.startsWith("alert:")) return "更新运营预警";
+  if (key.startsWith("save:")) return "保存任务队列";
+  return "正在处理";
 }
 
 function Heading({ kicker, title, note }: { kicker: string; title: string; note?: string }) { return <div className="supervision-section-heading"><div><span className="section-kicker">{kicker}</span><h2>{title}</h2></div>{note ? <small>{note}</small> : null}</div>; }

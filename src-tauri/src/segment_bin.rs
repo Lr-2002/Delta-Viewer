@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -247,7 +247,12 @@ fn scan_segment_file(
     if file_len == 0 {
         return Err(segment_error(path, 0, "segment 文件为空"));
     }
-    let mut file = File::open(path)?;
+    // Indexing is deliberately sequential: random seeks turn every JPEG boundary
+    // check into a separate SMB round trip and can fail on high-latency NAS paths.
+    const NAS_READ_BUFFER_SIZE: usize = 1024 * 1024;
+    let reader = ResilientReader::open(path)?;
+    let mut file = BufReader::with_capacity(NAS_READ_BUFFER_SIZE, reader);
+    let mut jpeg_skip_buffer = vec![0_u8; NAS_READ_BUFFER_SIZE];
     let mut offset = 0_u64;
     let mut record_count = 0_u64;
     while offset < file_len {
@@ -255,7 +260,6 @@ fn scan_segment_file(
         if file_len - offset < HEADER_LEN + TRAILER_LEN {
             return Err(segment_error(path, offset, "记录头或尾被截断"));
         }
-        file.seek(SeekFrom::Start(offset))?;
         let header = read_header(&mut file, path, offset)?;
         let payload_offset = offset + HEADER_LEN;
         let payload_end = payload_offset
@@ -299,8 +303,13 @@ fn scan_segment_file(
             )?;
             Some(payload)
         } else {
-            verify_jpeg_boundaries(&mut file, path, payload_offset, header.payload_len)?;
-            file.seek(SeekFrom::Start(payload_end))?;
+            verify_jpeg_boundaries_sequential(
+                &mut file,
+                path,
+                payload_offset,
+                header.payload_len,
+                &mut jpeg_skip_buffer,
+            )?;
             None
         };
         let (trailer_batch_id, record_crc32) = read_trailer(&mut file, path, payload_end)?;
@@ -454,7 +463,7 @@ pub fn read_frame_at(index: &SegmentEpisodeIndex, frame: &SegmentFrame) -> AppRe
     Ok(payload)
 }
 
-fn read_header(file: &mut File, path: &Path, offset: u64) -> AppResult<RecordHeader> {
+fn read_header<R: Read>(file: &mut R, path: &Path, offset: u64) -> AppResult<RecordHeader> {
     let mut bytes = [0_u8; HEADER_LEN as usize];
     read_exact_context(file, &mut bytes, path, offset, "记录头")?;
     if &bytes[0..4] != HEADER_MAGIC {
@@ -481,7 +490,7 @@ fn read_header(file: &mut File, path: &Path, offset: u64) -> AppResult<RecordHea
     })
 }
 
-fn read_trailer(file: &mut File, path: &Path, offset: u64) -> AppResult<(u64, u32)> {
+fn read_trailer<R: Read>(file: &mut R, path: &Path, offset: u64) -> AppResult<(u64, u32)> {
     let mut bytes = [0_u8; TRAILER_LEN as usize];
     read_exact_context(file, &mut bytes, path, offset, "记录尾")?;
     if &bytes[0..4] != TRAILER_MAGIC {
@@ -490,6 +499,7 @@ fn read_trailer(file: &mut File, path: &Path, offset: u64) -> AppResult<(u64, u3
     Ok((le_u64(&bytes[4..12]), le_u32(&bytes[12..16])))
 }
 
+#[allow(dead_code)]
 fn verify_jpeg_boundaries(
     file: &mut File,
     path: &Path,
@@ -518,6 +528,61 @@ fn verify_jpeg_boundaries(
     read_exact_context(file, &mut marker, path, end_offset, "JPEG 结束标记")?;
     if marker != [0xff, 0xd9] {
         return Err(segment_error(path, end_offset, "JPEG 缺少 EOI 结束标记"));
+    }
+    Ok(())
+}
+
+fn verify_jpeg_boundaries_sequential<R: Read>(
+    reader: &mut R,
+    path: &Path,
+    payload_offset: u64,
+    payload_len: u32,
+    skip_buffer: &mut [u8],
+) -> AppResult<()> {
+    if payload_len < 4 {
+        return Err(segment_error(
+            path,
+            payload_offset,
+            "JPEG payload 闀垮害灏忎簬 4",
+        ));
+    }
+
+    let mut marker = [0_u8; 2];
+    read_exact_context(reader, &mut marker, path, payload_offset, "JPEG 璧峰鏍囪")?;
+    if marker != [0xff, 0xd8] {
+        return Err(segment_error(
+            path,
+            payload_offset,
+            "JPEG 缂哄皯 SOI 璧峰鏍囪",
+        ));
+    }
+
+    let mut remaining = u64::from(payload_len) - 2;
+    while remaining > 2 {
+        let chunk_len = remaining.saturating_sub(2).min(skip_buffer.len() as u64) as usize;
+        read_exact_context(
+            reader,
+            &mut skip_buffer[..chunk_len],
+            path,
+            payload_offset + u64::from(payload_len) - remaining,
+            "JPEG payload",
+        )?;
+        remaining -= chunk_len as u64;
+    }
+
+    read_exact_context(
+        reader,
+        &mut marker,
+        path,
+        payload_offset + u64::from(payload_len) - 2,
+        "JPEG 缁撴潫鏍囪",
+    )?;
+    if marker != [0xff, 0xd9] {
+        return Err(segment_error(
+            path,
+            payload_offset + u64::from(payload_len) - 2,
+            "JPEG 缂哄皯 EOI 缁撴潫鏍囪",
+        ));
     }
     Ok(())
 }
@@ -590,8 +655,55 @@ fn stream_name(stream_id: u8) -> Option<&'static str> {
     }
 }
 
-fn read_exact_context(
-    file: &mut File,
+struct ResilientReader {
+    path: PathBuf,
+    file: File,
+    position: u64,
+}
+
+impl ResilientReader {
+    fn open(path: &Path) -> io::Result<Self> {
+        Ok(Self {
+            path: path.to_path_buf(),
+            file: File::open(path)?,
+            position: 0,
+        })
+    }
+
+    fn reconnect(&mut self) -> io::Result<()> {
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(self.position))?;
+        self.file = file;
+        Ok(())
+    }
+}
+
+impl Read for ResilientReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        const MAX_RETRIES: usize = 3;
+        for attempt in 0..=MAX_RETRIES {
+            match self.file.read(buffer) {
+                Ok(read) => {
+                    self.position = self.position.saturating_add(read as u64);
+                    return Ok(read);
+                }
+                Err(error) if attempt < MAX_RETRIES && is_transient_network_error(&error) => {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    self.reconnect()?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("retry loop always returns")
+    }
+}
+
+fn is_transient_network_error(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(53 | 59 | 64 | 67 | 121))
+}
+
+fn read_exact_context<R: Read>(
+    file: &mut R,
     bytes: &mut [u8],
     path: &Path,
     offset: u64,

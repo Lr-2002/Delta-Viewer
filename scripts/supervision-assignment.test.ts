@@ -45,6 +45,21 @@ test("keeps assignment filtering for a mounted NAS source", () => {
   );
 });
 
+test("matches assignments to dated NAS task folders with recording-style episode names", () => {
+  const episodes = [
+    episode("\\\\10.1.40.2\\Datasets\\DOHC\\Seed_sample\\2026-8-25-Washing\\20260824_002737_session"),
+    episode("\\\\10.1.40.2\\Datasets\\DOHC\\Seed_sample\\2026-08-25-Box\\20260825_073237_session"),
+  ];
+  assert.deepEqual(
+    assignmentFilterForSource(episodes, [assignedTask("Washing")], "remote"),
+    { episodes: [episodes[0]], taskByRoot: { [episodes[0].root]: "Washing" } },
+  );
+  assert.deepEqual(
+    assignmentFilterForSource(episodes, [assignedTask("Box")], "remote"),
+    { episodes: [episodes[1]], taskByRoot: { [episodes[1].root]: "Box" } },
+  );
+});
+
 test("keeps NAS task quantity bounds when a catalog is available", () => {
   assert.equal(
     validateAssignmentSelection({ BedMaking: 4 }, [task("BedMaking", 3)], []),
