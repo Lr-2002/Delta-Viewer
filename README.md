@@ -230,6 +230,18 @@ Playback estimates the recorded FPS from the median positive state timestamp
 delta and supports explicit 15, 24, 30, or 60 FPS overrides. Health issues that
 identify a frame can jump directly back to synchronized playback.
 Continuous playback keeps bounded primary-stream read-ahead on mounted sources.
+For JPEG recordings on SMB/NFS and GVFS-mounted NAS paths, startup and middle
+seeks use a shorter 30-frame Camera 0 runway instead of waiting for the local
+360-frame runway. The four secondary JPEG views keep independent, strided
+12-frame read-ahead at their roughly 10 FPS preview cadence, so slow directory
+latency cannot leave them permanently behind. These buffers remain in memory;
+the Viewer does not copy or modify NAS data.
+Ordinary JPEG directories use the same security shape as native MP4 playback:
+the backend registers only a validated stream directory behind an opaque
+per-process token on `127.0.0.1`, and WebView fetches decimal frame IDs from that
+read-only route. This avoids per-frame Base64 IPC while keeping filesystem paths
+private and rejecting symlinked frame files. Segment BIN and MP4 fallback frames
+continue through their existing bounded backend decoders.
 Native MP4 settlement reports are deduplicated, and the telemetry plot keeps a
 static trace while only its playhead is redrawn for each frame, avoiding UI work
 that can otherwise contend with 4K video decoding.

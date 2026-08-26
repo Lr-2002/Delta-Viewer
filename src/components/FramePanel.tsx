@@ -17,6 +17,8 @@ interface FramePanelProps {
   playing?: boolean;
   nativePlaybackEnabled?: boolean;
   readAheadEnabled?: boolean;
+  readAheadFrames?: number;
+  readAheadStride?: number;
   playbackEndFrame: number;
   playbackFps?: number;
   speed?: number;
@@ -61,6 +63,8 @@ export const FramePanel = memo(function FramePanel({
   playing = false,
   nativePlaybackEnabled = playing,
   readAheadEnabled = playing,
+  readAheadFrames,
+  readAheadStride = 1,
   playbackEndFrame,
   playbackFps = 30,
   speed = 1,
@@ -117,7 +121,7 @@ export const FramePanel = memo(function FramePanel({
   const fallbackFrameId = alignFallbackFrame(frameId);
   const fallbackFrameStride = nativeVideo && nativeVideoFailed
     ? Math.max(1, Math.round(playbackFps / nativeVideo.fps))
-    : 1;
+    : Math.max(1, Math.round(readAheadStride));
   const requestKey = frameRequestKey({ root, stream: stream.name, frameId: fallbackFrameId });
   const requestedKeyRef = useRef(requestKey);
   const timelineSeconds = Math.max(0, frameId - (nativeVideo?.startFrame ?? 0))
@@ -292,12 +296,12 @@ export const FramePanel = memo(function FramePanel({
         stream: stream.name,
         frameId: fallbackFrameId,
         endFrame: Math.min(playbackEndFrame, streamEnd),
-      }, alignFallbackFrame);
+      }, alignFallbackFrame, readAheadFrames, fallbackFrameStride);
     }
     return () => {
       active = false;
     };
-  }, [fallbackFrameId, fallbackFrameStride, nativePlaybackEnabled, nativeVideo, nativeVideoActive, nativeVideoFailed, playbackEndFrame, playbackFps, playing, readAheadEnabled, root, stream.lastFrame, stream.name, streamKey]);
+  }, [fallbackFrameId, fallbackFrameStride, nativePlaybackEnabled, nativeVideo, nativeVideoActive, nativeVideoFailed, playbackEndFrame, playbackFps, playing, readAheadEnabled, readAheadFrames, root, stream.lastFrame, stream.name, streamKey]);
 
   useEffect(() => {
     if (!playing || !readAheadEnabled || (nativeVideo !== null && !nativeVideoFailed)) {

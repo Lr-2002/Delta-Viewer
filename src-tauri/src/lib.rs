@@ -1204,6 +1204,28 @@ fn get_video_source(
 }
 
 #[tauri::command]
+fn get_jpeg_stream_source(
+    auth: State<'_, AuthState>,
+    media_stream_server: State<'_, Option<MediaStreamServer>>,
+    root: String,
+    stream: String,
+) -> Result<Option<String>, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let Some(directory) = source::jpeg_stream_directory(Path::new(&root), &stream)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let Some(server) = media_stream_server.inner().as_ref() else {
+        return Ok(None);
+    };
+    server
+        .register_jpeg_directory(&directory)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn read_frame(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -1328,6 +1350,7 @@ pub fn run() {
             export_validation_report,
             cancel_task,
             get_video_source,
+            get_jpeg_stream_source,
             read_frame
         ])
         .run(tauri::generate_context!())

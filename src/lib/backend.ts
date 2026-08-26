@@ -1102,10 +1102,28 @@ function demoRangeSuffix(range: ExportRange): string {
     : `_frames_${range.startFrame}-${range.endFrame}`;
 }
 
+const jpegStreamSources = new Map<string, Promise<string | null>>();
+
+function jpegStreamKey(root: string, stream: string): string {
+  return `${root}\0${stream}`;
+}
+
+function jpegStreamSource(root: string, stream: string): Promise<string | null> {
+  const key = jpegStreamKey(root, stream);
+  const cached = jpegStreamSources.get(key);
+  if (cached) return cached;
+  const source = invoke<string | null>("get_jpeg_stream_source", { root, stream })
+    .catch(() => null);
+  jpegStreamSources.set(key, source);
+  return source;
+}
+
 export async function frameUrl(root: string, stream: string, frameId: number): Promise<string> {
   if (!isTauriRuntime()) {
     return demoFrameUrl(stream, frameId);
   }
+  const streamSource = await jpegStreamSource(root, stream);
+  if (streamSource) return `${streamSource}/${frameId}`;
   const payload = await invoke<{ mimeType: string; data: string }>("read_frame", {
     root,
     stream,

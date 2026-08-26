@@ -700,6 +700,7 @@ fn linux_drive_type(mount: &LinuxMountInfo, device_is_removable: bool) -> String
             | "davfs"
             | "davfs2"
             | "fuse.sshfs"
+            | "fuse.gvfsd-fuse"
             | "glusterfs"
             | "nfs"
             | "nfs4"
@@ -803,6 +804,14 @@ mod tests {
             source: "server:/records".into(),
         };
         assert_eq!(super::linux_drive_type(&mount, true), "remote");
+
+        let gvfs_smb = super::LinuxMountInfo {
+            device: "0:77".into(),
+            mount_point: PathBuf::from("/run/user/1000/gvfs"),
+            filesystem: "fuse.gvfsd-fuse".into(),
+            source: "gvfsd-fuse".into(),
+        };
+        assert_eq!(super::linux_drive_type(&gvfs_smb, false), "remote");
     }
 
     #[test]

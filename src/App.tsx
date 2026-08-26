@@ -78,7 +78,11 @@ import {
   validateEpisode,
 } from "./lib/backend";
 import { assignmentFilterForSource } from "./lib/assignedEpisodes";
-import { FRAME_READ_AHEAD_FRAMES } from "./lib/frame-cache";
+import {
+  FRAME_READ_AHEAD_FRAMES,
+  REMOTE_PRIMARY_READ_AHEAD_FRAMES,
+  REMOTE_SECONDARY_READ_AHEAD_FRAMES,
+} from "./lib/frame-cache";
 import { formatBytes, shortPath } from "./lib/format";
 import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate";
 import { OperationScope, type OperationToken } from "./lib/operationScope";
@@ -168,6 +172,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "0.17.64": "优化 NAS 上逐帧 JPEG 数据的播放：缩短中间定位后的主画面预缓冲，并为四路小画面增加有界网络预读。",
   "0.17.61": "五路 MP4 分别使用持续原生播放器，修复 Camera 1/2 首次播放需暂停后重试的问题。",
   "0.17.60": "重构监管工作台视觉层级与状态反馈，强化运营指标、异常告警和窄窗口可读性。",
   "0.17.59": "支持可移动 U 盘直读、离线局域网用户中心迁移，以及 Camera 0 原生连续 MP4 回放与中间定位。",
@@ -365,6 +370,11 @@ function App() {
     ?? availableStreams[0]?.name
     ?? null;
   const playbackFps = fpsOverride ?? estimatedFps;
+  const remotePlaybackSource = scan?.volume.driveType === "remote";
+  const primaryReadAheadFrames = remotePlaybackSource
+    ? REMOTE_PRIMARY_READ_AHEAD_FRAMES
+    : FRAME_READ_AHEAD_FRAMES;
+  const secondaryReadAheadStride = Math.max(1, Math.round(playbackFps / 10));
   const primarySourceFps = primaryStreamName ? sourceFpsByStream[primaryStreamName] ?? null : null;
   const handleFrameSettled = useCallback((streamName: string, frameId: number) => {
     const root = data?.summary.root;
@@ -665,7 +675,7 @@ function App() {
             current,
             playbackEnd,
             primaryFallback.lastFrame,
-            FRAME_READ_AHEAD_FRAMES,
+            primaryReadAheadFrames,
           )
           : 0;
         const primaryReadyFrames = primaryFallback
@@ -712,7 +722,7 @@ function App() {
 
     animationFrame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [availableStreams, clipEndFrame, data, playbackFps, playing, primarySourceFps, primaryStreamName, speed]);
+  }, [availableStreams, clipEndFrame, data, playbackFps, playing, primaryReadAheadFrames, primarySourceFps, primaryStreamName, speed]);
 
   async function openSource(path: string, autoLoad = false, assignment = assignedTasks) {
     const owner = beginOperation();
@@ -2043,7 +2053,15 @@ function App() {
                               : currentFrame}
                             playing={playing}
                             nativePlaybackEnabled={playing && playbackPrimed}
-                            readAheadEnabled={playing && stream.name === primaryStreamName}
+                            readAheadEnabled={playing && (
+                              stream.name === primaryStreamName || remotePlaybackSource
+                            )}
+                            readAheadFrames={stream.name === primaryStreamName
+                              ? primaryReadAheadFrames
+                              : REMOTE_SECONDARY_READ_AHEAD_FRAMES}
+                            readAheadStride={stream.name === primaryStreamName
+                              ? 1
+                              : secondaryReadAheadStride}
                             playbackEndFrame={clipEndFrame}
                             playbackFps={playbackFps}
                             speed={speed}

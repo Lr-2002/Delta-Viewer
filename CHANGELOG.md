@@ -5,6 +5,22 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.64 - 2026-08-26
+
+- Classify Linux GVFS mounts as remote sources so SMB shares opened through the
+  desktop file manager receive the same network-source behavior as native
+  CIFS/NFS mounts.
+- Make JPEG playback on NAS sources start and recover from middle seeks after a
+  30-frame Camera 0 runway instead of the local 360-frame runway, while keeping
+  bounded background read-ahead during playback.
+- Add independent strided read-ahead for the four secondary JPEG views at their
+  existing roughly 10 FPS preview cadence, preventing small camera tiles from
+  remaining stuck behind slow per-file network reads without copying source data.
+- Route ordinary per-frame JPEG directories through a tokenized, loopback-only
+  read-only media source so WebView decodes the files directly instead of moving
+  every frame through Rust-to-JavaScript Base64 IPC; segment BIN and MP4
+  compatibility decoding keep their existing validated fallback paths.
+
 ## 0.17.63 - 2026-08-25
 
 - Complete the operations cockpit with per-assignment progress and ETA, exact

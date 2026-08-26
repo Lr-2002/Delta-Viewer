@@ -1,6 +1,8 @@
 export const FRAME_CACHE_MAX_PER_STREAM = 400;
 export const FRAME_CACHE_MAX_ENTRIES = 1000;
 export const FRAME_READ_AHEAD_FRAMES = 360;
+export const REMOTE_PRIMARY_READ_AHEAD_FRAMES = 30;
+export const REMOTE_SECONDARY_READ_AHEAD_FRAMES = 12;
 export const FRAME_MAX_IN_FLIGHT_PER_STREAM = 1;
 export const FRAME_MAX_QUEUED_PER_STREAM = 1 + FRAME_READ_AHEAD_FRAMES;
 export const FRAME_MAX_PENDING_PER_STREAM = FRAME_MAX_IN_FLIGHT_PER_STREAM + FRAME_MAX_QUEUED_PER_STREAM;
@@ -91,10 +93,14 @@ export class FrameCache {
   scheduleReadAhead(
     { endFrame, ...request }: ReadAheadRequest,
     mapFrameId: FrameIdMapper = (frameId) => frameId,
+    readAheadFrames = FRAME_READ_AHEAD_FRAMES,
+    frameStride = 1,
   ): void {
-    const readAheadEnd = Math.min(endFrame, request.frameId + FRAME_READ_AHEAD_FRAMES);
+    const boundedReadAhead = Math.max(0, Math.min(FRAME_READ_AHEAD_FRAMES, Math.round(readAheadFrames)));
+    const stride = Math.max(1, Math.round(frameStride));
+    const readAheadEnd = Math.min(endFrame, request.frameId + boundedReadAhead * stride);
     const scheduledFrameIds = new Set<number>();
-    for (let frameId = request.frameId + 1; frameId <= readAheadEnd; frameId += 1) {
+    for (let frameId = request.frameId + stride; frameId <= readAheadEnd; frameId += stride) {
       const mappedFrameId = mapFrameId(frameId);
       if (scheduledFrameIds.has(mappedFrameId)) continue;
       scheduledFrameIds.add(mappedFrameId);

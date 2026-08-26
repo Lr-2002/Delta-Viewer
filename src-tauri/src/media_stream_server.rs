@@ -12,7 +12,16 @@ use std::time::Duration;
 pub struct MediaStreamServer {
     address: SocketAddrV4,
     nonce: [u8; 32],
-    routes: Arc<Mutex<HashMap<String, PathBuf>>>,
+    routes: Arc<Mutex<HashMap<String, MediaRoute>>>,
+}
+
+#[derive(Clone)]
+enum MediaRoute {
+    File {
+        path: PathBuf,
+        mime_type: &'static str,
+    },
+    JpegDirectory(PathBuf),
 }
 
 impl MediaStreamServer {
@@ -50,6 +59,10 @@ impl MediaStreamServer {
     }
 
     pub fn register(&self, path: &Path) -> AppResult<String> {
+        self.register_file(path, "video/mp4")
+    }
+
+    fn register_file(&self, path: &Path, mime_type: &'static str) -> AppResult<String> {
         let canonical = path.canonicalize()?;
         if !canonical.is_file() {
             return Err(AppError::MissingPath(canonical.display().to_string()));
@@ -61,14 +74,38 @@ impl MediaStreamServer {
         self.routes
             .lock()
             .map_err(|_| AppError::Message("本机媒体流路由不可用".into()))?
-            .insert(token.clone(), canonical);
+            .insert(
+                token.clone(),
+                MediaRoute::File {
+                    path: canonical,
+                    mime_type,
+                },
+            );
         Ok(format!("http://{}/media/{token}", self.address))
+    }
+
+    pub fn register_jpeg_directory(&self, path: &Path) -> AppResult<String> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_dir() {
+            return Err(AppError::MissingPath(path.display().to_string()));
+        }
+        let canonical = path.canonicalize()?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&self.nonce);
+        hasher.update(b"jpeg-directory\0");
+        hasher.update(canonical.as_os_str().as_encoded_bytes());
+        let token = hasher.finalize().to_hex().to_string();
+        self.routes
+            .lock()
+            .map_err(|_| AppError::Message("本机媒体流路由不可用".into()))?
+            .insert(token.clone(), MediaRoute::JpegDirectory(canonical));
+        Ok(format!("http://{}/frames/{token}", self.address))
     }
 }
 
 fn serve_connection(
     mut stream: TcpStream,
-    routes: &Arc<Mutex<HashMap<String, PathBuf>>>,
+    routes: &Arc<Mutex<HashMap<String, MediaRoute>>>,
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
@@ -82,18 +119,42 @@ fn serve_connection(
     if request.method != "GET" && request.method != "HEAD" {
         return write_empty_response(&mut stream, "405 Method Not Allowed", &[]);
     }
-    let Some(token) = request.path.strip_prefix("/media/") else {
+    let (token, frame_id) = if let Some(token) = request.path.strip_prefix("/media/") {
+        (token, None)
+    } else if let Some(route) = request.path.strip_prefix("/frames/") {
+        let Some((token, frame_id)) = route.split_once('/') else {
+            return write_empty_response(&mut stream, "404 Not Found", &[]);
+        };
+        if frame_id.is_empty() || !frame_id.bytes().all(|value| value.is_ascii_digit()) {
+            return write_empty_response(&mut stream, "404 Not Found", &[]);
+        }
+        (token, Some(frame_id))
+    } else {
         return write_empty_response(&mut stream, "404 Not Found", &[]);
     };
     if token.is_empty() || !token.bytes().all(|value| value.is_ascii_hexdigit()) {
         return write_empty_response(&mut stream, "404 Not Found", &[]);
     }
-    let path = routes
+    let route = routes
         .lock()
         .ok()
         .and_then(|routes| routes.get(token).cloned());
-    let Some(path) = path else {
+    let Some(route) = route else {
         return write_empty_response(&mut stream, "404 Not Found", &[]);
+    };
+    let (path, mime_type) = match (route, frame_id) {
+        (MediaRoute::File { path, mime_type }, None) => (path, mime_type),
+        (MediaRoute::JpegDirectory(directory), Some(frame_id)) => {
+            let path = directory.join(format!("{frame_id}.jpg"));
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                return write_empty_response(&mut stream, "404 Not Found", &[]);
+            };
+            if !metadata.file_type().is_file() {
+                return write_empty_response(&mut stream, "404 Not Found", &[]);
+            }
+            (path, "image/jpeg")
+        }
+        _ => return write_empty_response(&mut stream, "404 Not Found", &[]),
     };
     let mut file = match File::open(path) {
         Ok(file) => file,
@@ -118,7 +179,7 @@ fn serve_connection(
     };
     let mut headers = vec![
         ("Accept-Ranges", "bytes".to_string()),
-        ("Content-Type", "video/mp4".to_string()),
+        ("Content-Type", mime_type.to_string()),
         ("Content-Length", length.to_string()),
         ("Cache-Control", "private, max-age=3600".to_string()),
     ];
@@ -306,6 +367,54 @@ mod tests {
             .unwrap();
         assert!(String::from_utf8_lossy(&response[..separator]).contains("206 Partial Content"));
         assert_eq!(&response[separator + 4..], b"3456");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn serves_registered_jpeg_directories_without_following_frame_symlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "dohc-jpeg-stream-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("42.jpg"), b"jpeg-frame").unwrap();
+        let server = MediaStreamServer::start().unwrap();
+        let url = server.register_jpeg_directory(&root).unwrap();
+        let address_and_path = url.strip_prefix("http://").unwrap();
+        let (address, request_path) = address_and_path.split_once('/').unwrap();
+        let mut stream = TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "GET /{request_path}/42 HTTP/1.1\r\nHost: {address}\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let separator = response
+            .windows(4)
+            .position(|value| value == b"\r\n\r\n")
+            .unwrap();
+        let headers = String::from_utf8_lossy(&response[..separator]);
+        assert!(headers.contains("200 OK"));
+        assert!(headers.contains("Content-Type: image/jpeg"));
+        assert_eq!(&response[separator + 4..], b"jpeg-frame");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("42.jpg"), root.join("43.jpg")).unwrap();
+            let mut stream = TcpStream::connect(address).unwrap();
+            write!(
+                stream,
+                "GET /{request_path}/43 HTTP/1.1\r\nHost: {address}\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            assert!(response.contains("404 Not Found"));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
