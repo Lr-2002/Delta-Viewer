@@ -298,6 +298,20 @@ pub fn read_frame_with_index(
     read_mp4_frame(root, stream, frame_id, app)
 }
 
+pub fn jpeg_stream_directory(root: &Path, stream: &str) -> AppResult<Option<PathBuf>> {
+    if !STREAM_NAMES.contains(&stream) {
+        return Err(AppError::InvalidStream(stream.to_string()));
+    }
+    let stream_root = root.join(stream);
+    let Ok(metadata) = fs::symlink_metadata(&stream_root) else {
+        return Ok(None);
+    };
+    if !metadata.file_type().is_dir() {
+        return Ok(None);
+    }
+    Ok(Some(stream_root.canonicalize()?))
+}
+
 fn read_mp4_frame(
     root: &Path,
     stream: &str,

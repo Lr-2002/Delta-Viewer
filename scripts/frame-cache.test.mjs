@@ -6,6 +6,8 @@ import {
   FRAME_MAX_IN_FLIGHT_PER_STREAM,
   FRAME_MAX_PENDING_PER_STREAM,
   FRAME_READ_AHEAD_FRAMES,
+  REMOTE_PRIMARY_READ_AHEAD_FRAMES,
+  REMOTE_SECONDARY_READ_AHEAD_FRAMES,
   FrameCache,
 } from "../src/lib/frame-cache.ts";
 
@@ -195,6 +197,27 @@ test("never schedules read-ahead beyond the clip end", async () => {
   loads[1].next.resolve("cam0-11");
   await flushScheduler();
   assert.equal(cache.pendingWorkCountForStream(request.root, request.stream), 0);
+});
+
+test("bounds NAS read-ahead and can prefetch quantized secondary frames", async () => {
+  const loaded = [];
+  const cache = new FrameCache(async (request) => {
+    loaded.push(request.frameId);
+    return `cam-${request.frameId}`;
+  });
+  const request = { root: "/nas/episode", stream: "cam1", frameId: 90 };
+
+  await cache.requestCurrent(request);
+  cache.scheduleReadAhead(
+    { ...request, endFrame: 195 },
+    (frameId) => frameId,
+    REMOTE_SECONDARY_READ_AHEAD_FRAMES,
+    3,
+  );
+  while (cache.pendingWorkCount) await flushScheduler();
+
+  assert.deepEqual(loaded, [90, 93, 96, 99, 102, 105, 108, 111, 114, 117, 120, 123, 126]);
+  assert.ok(REMOTE_PRIMARY_READ_AHEAD_FRAMES < FRAME_READ_AHEAD_FRAMES);
 });
 
 test("counts only the consecutive decoded runway", async () => {
