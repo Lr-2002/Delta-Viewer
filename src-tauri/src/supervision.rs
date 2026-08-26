@@ -265,9 +265,27 @@ pub fn scan_task_catalog(root: &Path, cancelled: &AtomicBool) -> AppResult<Super
             "TASK_CATALOG_INVALID: 任务来源必须是目录".into(),
         ));
     }
+    // Frame totals are informational for the admin catalog. Reading nearly a
+    // thousand tiny manifests sequentially over SMB can block on one stale
+    // network entry, while task/episode totals are enough for assignment.
+    // Keep full frame accounting for local sources.
+    let include_frame_counts = !is_network_path(&root);
 
-    let directories = read_directories(&root)?;
     let mut tasks: BTreeMap<String, (String, u64, u64, u64, u64)> = BTreeMap::new();
+    // The administrator may select a single dated task folder (for example
+    // `2026-08-25-Box`) instead of its parent. Treat that folder as the task
+    // root; its immediate children are the recording episodes.
+    if let Some(task) = task_name(&root) {
+        let key = task.to_ascii_lowercase();
+        let row = tasks.entry(key).or_insert((task, 0, 0, 0, 0));
+        add_episode_summary(
+            row,
+            &episode_directories(&root, cancelled)?,
+            include_frame_counts,
+            cancelled,
+        )?;
+    }
+    let directories = read_directories(&root)?;
     for entry in &directories {
         ensure_active(cancelled)?;
         let Some(task) = task_name(entry) else {
@@ -275,15 +293,12 @@ pub fn scan_task_catalog(root: &Path, cancelled: &AtomicBool) -> AppResult<Super
         };
         let key = task.to_ascii_lowercase();
         let row = tasks.entry(key).or_insert((task, 0, 0, 0, 0));
-        for episode in episode_directories(entry, cancelled)? {
-            let frames = count_state_frames(&episode.join("states.jsonl"), cancelled)?;
-            row.2 = row.2.saturating_add(1);
-            row.4 = row.4.saturating_add(frames);
-            if is_regular_file(&episode.join("description.json"))? {
-                row.1 = row.1.saturating_add(1);
-                row.3 = row.3.saturating_add(frames);
-            }
-        }
+        add_episode_summary(
+            row,
+            &episode_directories(entry, cancelled)?,
+            include_frame_counts,
+            cancelled,
+        )?;
     }
     if tasks.is_empty() {
         for episode in directories {
@@ -296,13 +311,7 @@ pub fn scan_task_catalog(root: &Path, cancelled: &AtomicBool) -> AppResult<Super
             };
             let key = task.to_ascii_lowercase();
             let row = tasks.entry(key).or_insert((task, 0, 0, 0, 0));
-            let frames = count_state_frames(&episode.join("states.jsonl"), cancelled)?;
-            row.2 = row.2.saturating_add(1);
-            row.4 = row.4.saturating_add(frames);
-            if is_regular_file(&episode.join("description.json"))? {
-                row.1 = row.1.saturating_add(1);
-                row.3 = row.3.saturating_add(frames);
-            }
+            add_episode_summary(row, std::slice::from_ref(&episode), include_frame_counts, cancelled)?;
         }
     }
 
@@ -323,8 +332,98 @@ pub fn scan_task_catalog(root: &Path, cancelled: &AtomicBool) -> AppResult<Super
     })
 }
 
-fn count_state_frames(path: &Path, cancelled: &AtomicBool) -> AppResult<u64> {
-    let reader = BufReader::new(File::open(path)?);
+type TaskCounts = (u64, u64, u64, u64);
+
+fn add_episode_summary(
+    row: &mut (String, u64, u64, u64, u64),
+    episodes: &[PathBuf],
+    include_frame_counts: bool,
+    cancelled: &AtomicBool,
+) -> AppResult<()> {
+    let (completed, total, completed_frames, total_frames) =
+        summarize_episodes(episodes, include_frame_counts, cancelled)?;
+    row.1 = row.1.saturating_add(completed);
+    row.2 = row.2.saturating_add(total);
+    row.3 = row.3.saturating_add(completed_frames);
+    row.4 = row.4.saturating_add(total_frames);
+    Ok(())
+}
+
+fn summarize_episodes(
+    episodes: &[PathBuf],
+    include_frame_counts: bool,
+    cancelled: &AtomicBool,
+) -> AppResult<TaskCounts> {
+    if include_frame_counts || episodes.len() < 32 {
+        return summarize_episode_slice(episodes, include_frame_counts, cancelled);
+    }
+    let workers = episodes.len().min(8);
+    let chunk_size = episodes.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let handles = episodes
+            .chunks(chunk_size)
+            .map(|chunk| scope.spawn(move || summarize_episode_slice(chunk, false, cancelled)))
+            .collect::<Vec<_>>();
+        let mut total = (0_u64, 0_u64, 0_u64, 0_u64);
+        for handle in handles {
+            let counts = handle.join().map_err(|_| {
+                AppError::Message("TASK_CATALOG_UNAVAILABLE: 任务目录读取线程异常退出".into())
+            })??;
+            total.0 = total.0.saturating_add(counts.0);
+            total.1 = total.1.saturating_add(counts.1);
+            total.2 = total.2.saturating_add(counts.2);
+            total.3 = total.3.saturating_add(counts.3);
+        }
+        Ok(total)
+    })
+}
+
+fn summarize_episode_slice(
+    episodes: &[PathBuf],
+    include_frame_counts: bool,
+    cancelled: &AtomicBool,
+) -> AppResult<TaskCounts> {
+    let mut counts = (0_u64, 0_u64, 0_u64, 0_u64);
+    for episode in episodes {
+        ensure_active(cancelled)?;
+        let frames = if include_frame_counts {
+            count_episode_frames(episode, cancelled)?
+        } else {
+            0
+        };
+        counts.1 = counts.1.saturating_add(1);
+        counts.3 = counts.3.saturating_add(frames);
+        // Completion metadata is also optional on a network catalog. Avoid a
+        // second SMB round trip per episode; assignment only needs `total`.
+        let completed = include_frame_counts
+            && is_regular_file(&episode.join("description.json"))?;
+        if completed {
+            counts.0 = counts.0.saturating_add(1);
+            counts.2 = counts.2.saturating_add(frames);
+        }
+    }
+    Ok(counts)
+}
+
+fn count_episode_frames(episode: &Path, cancelled: &AtomicBool) -> AppResult<u64> {
+    let states_path = episode.join("states.jsonl");
+    if !is_regular_file(&states_path)? {
+        let manifest_path = episode.join("manifest.json");
+        let manifest = match File::open(manifest_path) {
+            Ok(file) => serde_json::from_reader::<_, serde_json::Value>(BufReader::new(file))
+                .unwrap_or_default(),
+            Err(_) => serde_json::Value::Null,
+        };
+        return Ok(manifest
+            .get("streams")
+            .and_then(|value| value.get("cam0"))
+            .and_then(|value| value.get("frame_count"))
+            .and_then(|value| value.as_u64())
+            .filter(|count| *count > 0)
+            .or_else(|| manifest.get("batch_count").and_then(|value| value.as_u64()))
+            .unwrap_or_default());
+    }
+    let reader = BufReader::new(File::open(states_path)?);
     let mut count = 0_u64;
     for line in reader.lines() {
         ensure_active(cancelled)?;
@@ -335,9 +434,41 @@ fn count_state_frames(path: &Path, cancelled: &AtomicBool) -> AppResult<u64> {
     Ok(count)
 }
 
+fn is_network_path(path: &Path) -> bool {
+    let value = path.to_string_lossy();
+    value.starts_with(r"\\?\UNC\")
+        || (value.starts_with(r"\\")
+            && !value.starts_with(r"\\?\")
+            && !value.starts_with(r"\\.\"))
+        || value.starts_with("//")
+}
+
 fn episode_directories(task_root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathBuf>> {
+    let children = read_directories(task_root)?;
+    // A dated task folder is already the boundary between task metadata and
+    // recording episodes.  Its immediate child directories are episodes, so
+    // do not probe every child manifest and segment folder over SMB just to
+    // rediscover that fact.
+    if task_name(task_root).is_some() {
+        let mut episodes = Vec::new();
+        for child in children {
+            if episode_task_name(&child).is_some() || is_episode(&child)? {
+                episodes.push(child);
+                continue;
+            }
+            // Some legacy exports add one container directory (for example
+            // `SDCARD_processed`) below the dated task folder.
+            for grandchild in read_directories(&child)? {
+                ensure_active(cancelled)?;
+                if episode_task_name(&grandchild).is_some() || is_episode(&grandchild)? {
+                    episodes.push(grandchild);
+                }
+            }
+        }
+        return Ok(episodes);
+    }
     let mut episodes = Vec::new();
-    for child in read_directories(task_root)? {
+    for child in children {
         ensure_active(cancelled)?;
         if is_episode(&child)? {
             episodes.push(child);
@@ -359,14 +490,14 @@ fn read_directories(root: &Path) -> AppResult<Vec<PathBuf>> {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if matches!(name.as_ref(), "@eaDir" | ".DS_Store")
+        if matches!(name.as_ref(), "@eaDir" | ".DS_Store" | ".dohc-qc" | ".qc")
             || name.starts_with("._")
             || name.starts_with(".Trash-")
         {
             continue;
         }
-        let metadata = fs::symlink_metadata(entry.path())?;
-        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() && !file_type.is_symlink() {
             directories.push(entry.path());
         }
     }
@@ -376,17 +507,19 @@ fn read_directories(root: &Path) -> AppResult<Vec<PathBuf>> {
 
 fn task_name(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
-    let bytes = name.as_bytes();
-    let dated = bytes.len() > 11
-        && bytes.get(4) == Some(&b'-')
-        && bytes.get(7) == Some(&b'-')
-        && bytes.get(10) == Some(&b'-')
-        && bytes[..4].iter().all(u8::is_ascii_digit)
-        && bytes[5..7].iter().all(u8::is_ascii_digit)
-        && bytes[8..10].iter().all(u8::is_ascii_digit);
-    dated
-        .then(|| name[11..].to_string())
-        .filter(|task| !task.is_empty())
+    let mut parts = name.splitn(4, '-');
+    let year = parts.next()?;
+    let month = parts.next()?;
+    let day = parts.next()?;
+    let task = parts.next()?;
+    (year.len() == 4
+        && year.bytes().all(|byte| byte.is_ascii_digit())
+        && (1..=2).contains(&month.len())
+        && month.bytes().all(|byte| byte.is_ascii_digit())
+        && (1..=2).contains(&day.len())
+        && day.bytes().all(|byte| byte.is_ascii_digit())
+        && !task.is_empty())
+    .then(|| task.to_string())
 }
 
 fn episode_task_name(path: &Path) -> Option<String> {
@@ -409,7 +542,7 @@ fn episode_task_name(path: &Path) -> Option<String> {
 }
 
 fn is_episode(path: &Path) -> AppResult<bool> {
-    is_regular_file(&path.join("states.jsonl"))
+    Ok(is_regular_file(&path.join("states.jsonl"))? || crate::source::is_segment_episode(path))
 }
 
 fn is_regular_file(path: &Path) -> AppResult<bool> {
@@ -429,7 +562,7 @@ fn ensure_active(cancelled: &AtomicBool) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{import_annotation_catalog, scan_task_catalog};
+    use super::{import_annotation_catalog, is_network_path, scan_task_catalog};
     use crate::model::{EpisodeAnnotation, SegmentAnnotation, UserIdentity};
     use serde_json::json;
     use std::fs::{self, File};
@@ -498,6 +631,48 @@ mod tests {
             (1, 2)
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recognizes_hybrid_episodes_in_single_digit_dated_task_folders() {
+        let root = test_output("hybrid-task-catalog");
+        let episode = root.join("2026-8-25-Washing/20260825_073237_session");
+        fs::create_dir_all(episode.join("t265/segments")).unwrap();
+        fs::write(
+            episode.join("manifest.json"),
+            serde_json::to_vec(&json!({
+                "storage_format": "hybrid-h264-jpeg-segment-v1",
+                "batch_count": 1,
+                "streams": { "cam0": { "frame_count": 1 } }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        crate::segment_bin::write_test_segment(
+            &episode.join("t265/segments/segment-000000.bin"),
+            1,
+        );
+
+        let result = scan_task_catalog(&root, &AtomicBool::new(false)).unwrap();
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].task, "Washing");
+        assert_eq!((result.tasks[0].completed, result.tasks[0].total), (0, 1));
+        assert_eq!(result.tasks[0].total_frames, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn distinguishes_extended_unc_paths_from_extended_local_paths() {
+        assert!(is_network_path(std::path::Path::new(
+            r"\\?\UNC\10.1.40.2\Datasets"
+        )));
+        assert!(is_network_path(std::path::Path::new(
+            r"\\10.1.40.2\Datasets"
+        )));
+        assert!(!is_network_path(std::path::Path::new(
+            r"\\?\C:\datasets"
+        )));
     }
 
     #[test]
