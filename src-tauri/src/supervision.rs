@@ -564,7 +564,9 @@ fn ensure_active(cancelled: &AtomicBool) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{import_annotation_catalog, is_network_path, scan_task_catalog};
+    #[cfg(windows)]
+    use super::is_network_path;
+    use super::{import_annotation_catalog, scan_task_catalog};
     use crate::model::{EpisodeAnnotation, SegmentAnnotation, UserIdentity};
     use serde_json::json;
     use std::fs::{self, File};
