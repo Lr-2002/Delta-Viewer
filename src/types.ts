@@ -357,6 +357,7 @@ export interface StreamSummary {
 
 export interface VideoSource {
   fps: number;
+  mediaFps: number;
   segmentSeconds: number;
   startFrame: number;
   paths: string[];

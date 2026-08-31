@@ -79,8 +79,6 @@ import {
 } from "./lib/backend";
 import { assignmentFilterForSource } from "./lib/assignedEpisodes";
 import {
-  FRAME_READ_AHEAD_FRAMES,
-  REMOTE_PRIMARY_READ_AHEAD_FRAMES,
   REMOTE_SECONDARY_READ_AHEAD_FRAMES,
 } from "./lib/frame-cache";
 import { formatBytes, shortPath } from "./lib/format";
@@ -91,13 +89,11 @@ import {
   nextFrameRenderProgress,
   nextPlaybackFrame,
   playbackAdvanceTimestamp,
-  playbackBufferRatio,
-  playbackBufferRequirement,
   playbackFrameDue,
   playbackFrameDurationMs,
+  playbackStreamsSettled,
   primaryPlaybackFrameStep,
   playbackStartFrame,
-  secondaryPlaybackFrame,
 } from "./lib/playback-clock";
 import type {
   AnnotatedEpisodeSummary,
@@ -342,12 +338,7 @@ function App() {
   });
   const frameRef = useRef(0);
   const settledFrameByStreamRef = useRef(new Map<string, number>());
-  const playbackModeByStreamRef = useRef(new Map<string, "native" | "fallback">());
-  const bufferedFramesByStreamRef = useRef(new Map<string, number>());
-  const playbackPrimedRef = useRef(false);
   const [playbackPrimed, setPlaybackPrimed] = useState(false);
-  const [playbackBufferPercent, setPlaybackBufferPercent] = useState(0);
-  const [playbackBufferStreamLabel, setPlaybackBufferStreamLabel] = useState("Camera 0");
   const [sourceFpsByStream, setSourceFpsByStream] = useState<Record<string, number>>({});
   const didAutoLoad = useRef(false);
   const operationScopeRef = useRef(new OperationScope());
@@ -371,9 +362,6 @@ function App() {
     ?? null;
   const playbackFps = fpsOverride ?? estimatedFps;
   const remotePlaybackSource = scan?.volume.driveType === "remote";
-  const primaryReadAheadFrames = remotePlaybackSource
-    ? REMOTE_PRIMARY_READ_AHEAD_FRAMES
-    : FRAME_READ_AHEAD_FRAMES;
   const secondaryReadAheadStride = Math.max(1, Math.round(playbackFps / 10));
   const primarySourceFps = primaryStreamName ? sourceFpsByStream[primaryStreamName] ?? null : null;
   const handleFrameSettled = useCallback((streamName: string, frameId: number) => {
@@ -389,12 +377,6 @@ function App() {
       { root, frameId, settled, total: availableStreams.length },
     ));
   }, [availableStreams, data?.summary.root]);
-  const handlePlaybackModeChange = useCallback((streamName: string, mode: "native" | "fallback") => {
-    playbackModeByStreamRef.current.set(streamName, mode);
-  }, []);
-  const handleBufferProgress = useCallback((streamName: string, readyFrames: number) => {
-    bufferedFramesByStreamRef.current.set(streamName, readyFrames);
-  }, []);
   const handleSourceFpsChange = useCallback((streamName: string, fps: number | null) => {
     setSourceFpsByStream((current) => {
       if (fps === null) {
@@ -525,7 +507,10 @@ function App() {
           setAssignedTasks(assignments);
           setAssignedSourceRootState(assignedRoot);
           setAssignedActivity(activity);
-          if (assignedRoot && assignments.length) await openSource(assignedRoot, true, assignments);
+          // A missing assignment is a valid preview state. Keep the configured
+          // source visible so operators can inspect and demonstrate the data;
+          // active assignments still control the work queue and default task.
+          if (assignedRoot) await openSource(assignedRoot, true, assignments);
         })
         .catch((reason) => setError(`无法加载已分配任务：${toMessage(reason)}`));
       return;
@@ -600,7 +585,6 @@ function App() {
   }, [currentFrame]);
 
   useEffect(() => {
-    settledFrameByStreamRef.current.clear();
     setFrameRenderProgress({
       root: data?.summary.root ?? null,
       frameId: currentFrame,
@@ -665,44 +649,20 @@ function App() {
 
     const tick = (nowMs: number) => {
       const current = frameRef.current;
-      if (!playbackPrimedRef.current) {
-        const fallbackStreams = availableStreams.filter(
-          (stream) => playbackModeByStreamRef.current.get(stream.name) !== "native",
-        );
-        const primaryFallback = fallbackStreams.find((stream) => stream.name === primaryStreamName);
-        const primaryRequiredFrames = primaryFallback
-          ? playbackBufferRequirement(
-            current,
-            playbackEnd,
-            primaryFallback.lastFrame,
-            primaryReadAheadFrames,
-          )
-          : 0;
-        const primaryReadyFrames = primaryFallback
-          ? bufferedFramesByStreamRef.current.get(primaryFallback.name) ?? 0
-          : 0;
-        const primaryComplete = primaryReadyFrames >= primaryRequiredFrames;
-        const percent = Math.round(
-          playbackBufferRatio(primaryReadyFrames, primaryRequiredFrames) * 100,
-        );
-        setPlaybackBufferPercent((value) => value === percent ? value : percent);
-        if (primaryFallback) {
-          setPlaybackBufferStreamLabel((value) => (
-            value === primaryFallback.label ? value : primaryFallback.label
-          ));
-        }
-        // Camera 0 is the playback gate. Once its runway is decoded, start the
-        // real-time clock immediately; secondary tiles continue read-ahead in
-        // the background and must never strand playback at the old 50% phase.
-        if (primaryComplete) {
-          playbackPrimedRef.current = true;
-          setPlaybackPrimed(true);
-          lastAdvanceTimeMs = nowMs;
-        }
+      const frameIntervalElapsed = playbackFrameDue(nowMs - lastAdvanceTimeMs, frameDurationMs);
+      // Keep the shared timeline on the last frame until every stream has
+      // presented it. This prevents a slow SMB stream from visibly lagging
+      // behind the primary camera during continuous playback.
+      const frameReady = playbackStreamsSettled(
+        availableStreams.map((stream) => stream.name),
+        settledFrameByStreamRef.current,
+        current,
+      );
+      if (!frameReady) {
+        lastAdvanceTimeMs = nowMs;
         animationFrame = window.requestAnimationFrame(tick);
         return;
       }
-      const frameIntervalElapsed = playbackFrameDue(nowMs - lastAdvanceTimeMs, frameDurationMs);
       const next = nextPlaybackFrame(current, playbackEnd, frameIntervalElapsed, frameStep);
       if (next !== frameRef.current) {
         lastAdvanceTimeMs = playbackAdvanceTimestamp(
@@ -722,7 +682,7 @@ function App() {
 
     animationFrame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [availableStreams, clipEndFrame, data, playbackFps, playing, primaryReadAheadFrames, primarySourceFps, primaryStreamName, speed]);
+  }, [availableStreams, clipEndFrame, data, playbackFps, playing, primarySourceFps, speed]);
 
   async function openSource(path: string, autoLoad = false, assignment = assignedTasks) {
     const owner = beginOperation();
@@ -733,21 +693,17 @@ function App() {
     try {
       const result = await scanSource(path, owner.id);
       ensureOperationActive(owner);
-      const filtered = assignmentFilterForSource(
+      const assignmentView = assignmentFilterForSource(
         result.episodes,
         assignment,
         result.volume.driveType,
       );
-      const visibleResult = filtered ? {
-        ...result,
-        episodes: filtered.episodes,
-        totalFiles: filtered.episodes.reduce((sum, episode) => sum + episode.totalFiles, 0),
-        totalBytes: filtered.episodes.reduce((sum, episode) => sum + episode.totalBytes, 0),
-      } : result;
-      setAssignedEpisodeTasks(filtered?.taskByRoot ?? {});
+      // Assignment metadata chooses the operator's work queue and default task,
+      // but never hides source episodes from read-only preview/demo workflows.
+      const visibleResult = result;
+      setAssignedEpisodeTasks(assignmentView?.taskByRoot ?? {});
       setSourcePath(visibleResult.sourceRoot);
       setScan(visibleResult);
-      if (assignment.length) setNotice(`仅显示当前账号分配范围内的 ${visibleResult.episodes.length} 条记录。`);
       void refreshAnnotationTags();
       setSkippedEpisodeRoots({});
       setPendingAnnotationConfirmation(null);
@@ -1113,17 +1069,12 @@ function App() {
 
   function resetLoadedData() {
     settledFrameByStreamRef.current.clear();
-    playbackModeByStreamRef.current.clear();
-    bufferedFramesByStreamRef.current.clear();
-    playbackPrimedRef.current = false;
     setData(null);
     setReport(null);
     setAnnotation(null);
     setSelectedTaskId(null);
     setPlaying(false);
     setPlaybackPrimed(false);
-    setPlaybackBufferPercent(0);
-    setPlaybackBufferStreamLabel("Camera 0");
     setExportResult(null);
     setCurrentFrame(0);
     setClipStartFrame(0);
@@ -1208,10 +1159,9 @@ function App() {
   }
 
   function resetPlaybackPreparation() {
-    bufferedFramesByStreamRef.current.clear();
-    playbackPrimedRef.current = false;
-    setPlaybackPrimed(false);
-    setPlaybackBufferPercent(0);
+    // The current frame is already the synchronization anchor. Read-ahead is
+    // opportunistic and must never delay starting playback on local or NAS data.
+    setPlaybackPrimed(true);
   }
 
   function seekFrame(frame: number) {
@@ -2048,16 +1998,18 @@ function App() {
                             key={stream.name}
                             root={data.summary.root}
                             stream={stream}
-                            frameId={playing && stream.name !== primaryStreamName
-                              ? secondaryPlaybackFrame(currentFrame, minFrame, playbackFps)
-                              : currentFrame}
+                            // All streams use the same timeline frame. The
+                            // bounded cache and readiness barrier handle slow
+                            // network streams without introducing a preview
+                            // frame offset between cameras.
+                            frameId={currentFrame}
                             playing={playing}
                             nativePlaybackEnabled={playing && playbackPrimed}
                             readAheadEnabled={playing && (
                               stream.name === primaryStreamName || remotePlaybackSource
                             )}
                             readAheadFrames={stream.name === primaryStreamName
-                              ? primaryReadAheadFrames
+                              ? 12
                               : REMOTE_SECONDARY_READ_AHEAD_FRAMES}
                             readAheadStride={stream.name === primaryStreamName
                               ? 1
@@ -2066,10 +2018,8 @@ function App() {
                             playbackFps={playbackFps}
                             speed={speed}
                             className={`camera-${index}`}
-                            onFrameSettled={playing ? undefined : handleFrameSettled}
+                            onFrameSettled={handleFrameSettled}
                             onFrameUnavailable={handleFrameUnavailable}
-                            onPlaybackModeChange={handlePlaybackModeChange}
-                            onBufferProgress={handleBufferProgress}
                             onSourceFpsChange={handleSourceFpsChange}
                           />
                         ))}
@@ -2132,11 +2082,6 @@ function App() {
                             <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧"><SkipForward size={17} /></button>
                           </div>
                           <span className="segment-frame-readout">帧 {currentFrame} / {maxFrame}</span>
-                          {playing && !playbackPrimed ? (
-                            <span className="playback-buffering">
-                              预缓冲 {playbackBufferStreamLabel} {playbackBufferPercent}%
-                            </span>
-                          ) : null}
                           <span className="time-readout">{currentState ? formatStateTime(data, currentState.captureTimeNs) : "—"}</span>
                           <label className="speed-control">
                             <Gauge size={16} />

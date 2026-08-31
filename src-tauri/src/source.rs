@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
 
@@ -24,6 +24,38 @@ pub(crate) const SOURCE_INDEX_MAX_FRAME_PATHS: usize = 250_000;
 
 thread_local! {
     static PROGRESS_OPERATION_ID: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+static MP4_MEDIA_FPS_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, f64>>> = OnceLock::new();
+
+fn probed_mp4_fps(path: &Path, app: Option<&AppHandle>) -> Option<f64> {
+    let cache = MP4_MEDIA_FPS_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(fps) = guard.get(path) {
+            return Some(*fps);
+        }
+    }
+    let fps = crate::export::lerobot::ffmpeg_candidates(app)
+        .into_iter()
+        .find_map(|ffmpeg| {
+            let output = Command::new(ffmpeg)
+                .args(["-hide_banner", "-i"])
+                .arg(path)
+                .output()
+                .ok()?;
+            let text = String::from_utf8_lossy(&output.stderr).replace(['\r', '\n'], " ");
+            let fps_marker = text.find(" fps")?;
+            text[..fps_marker]
+                .rsplit_once(',')
+                .and_then(|(_, value)| value.trim().parse::<f64>().ok())
+        })
+        .filter(|value| value.is_finite() && *value > 0.0);
+    if let Some(value) = fps {
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(path.to_path_buf(), value);
+        }
+    }
+    fps
 }
 
 pub struct ProgressOperationScope {
@@ -302,6 +334,12 @@ pub fn jpeg_stream_directory(root: &Path, stream: &str) -> AppResult<Option<Path
     if !STREAM_NAMES.contains(&stream) {
         return Err(AppError::InvalidStream(stream.to_string()));
     }
+    // MP4 streams use the same per-stream directory as legacy JPEG sources.
+    // Do not expose that directory as a JPEG URL: native playback may fall
+    // back to `read_frame`, which must invoke the MP4 decoder instead.
+    if is_mp4_stream(root, stream) {
+        return Ok(None);
+    }
     let stream_root = root.join(stream);
     let Ok(metadata) = fs::symlink_metadata(&stream_root) else {
         return Ok(None);
@@ -330,13 +368,13 @@ fn read_mp4_frame(
         .streams
         .get(stream)
         .ok_or_else(|| AppError::InvalidStream(stream.to_string()))?;
-    let fps = stream_info
+    let declared_fps = stream_info
         .get("fps")
         .and_then(|value| value.as_f64())
         .unwrap_or(60.0);
     let relative_frame = frame_id.saturating_sub(manifest.timeline_start_frame);
     let target_index =
-        ((relative_frame as f64) * fps / manifest.timeline_fps.max(1.0)).floor() as u64;
+        ((relative_frame as f64) * declared_fps / manifest.timeline_fps.max(1.0)).floor() as u64;
     let frame_count = stream_info
         .get("frame_count")
         .and_then(|value| value.as_u64())
@@ -351,8 +389,8 @@ fn read_mp4_frame(
         .and_then(|value| value.as_array())
         .ok_or_else(|| AppError::Message(format!("{stream} 的 MP4 清单缺少 segments")))?;
     let segment_seconds = manifest.segment_seconds.unwrap_or(300.0).max(1.0);
-    let timestamp_seconds = target_index as f64 / fps.max(1.0);
-    let segment_index = (timestamp_seconds / segment_seconds).floor() as usize;
+    let declared_timestamp = target_index as f64 / declared_fps.max(1.0);
+    let segment_index = (declared_timestamp / segment_seconds).floor() as usize;
     let relative_path = segments
         .get(segment_index)
         .and_then(|value| value.get("path"))
@@ -362,7 +400,9 @@ fn read_mp4_frame(
     if !is_regular_file(&video_path) {
         return Err(AppError::MissingPath(video_path.display().to_string()));
     }
-    let local_timestamp = timestamp_seconds - segment_index as f64 * segment_seconds;
+    let media_fps = probed_mp4_fps(&video_path, app).unwrap_or(declared_fps);
+    let local_timestamp = target_index as f64 / media_fps.max(1.0)
+        - segment_index as f64 * segment_seconds * declared_fps / media_fps.max(1.0);
     let mut failures = Vec::new();
     for ffmpeg in crate::export::lerobot::ffmpeg_candidates(app) {
         let output = Command::new(&ffmpeg)
@@ -436,8 +476,8 @@ pub(crate) fn read_mp4_preview_batch(
             "{stream} MP4 帧 {first_target}"
         )));
     }
-    let first_timestamp = first_target as f64 / fps;
-    let segment_index = (first_timestamp / segment_seconds).floor() as usize;
+    let declared_first_timestamp = first_target as f64 / fps;
+    let segment_index = (declared_first_timestamp / segment_seconds).floor() as usize;
     let mut timeline_targets = Vec::with_capacity(TIMELINE_FRAMES_PER_BATCH as usize);
     for frame_id in start_frame_id..start_frame_id.saturating_add(TIMELINE_FRAMES_PER_BATCH) {
         let target = target_for(frame_id);
@@ -464,7 +504,9 @@ pub(crate) fn read_mp4_preview_batch(
     if !is_regular_file(&video_path) {
         return Err(AppError::MissingPath(video_path.display().to_string()));
     }
-    let local_timestamp = first_timestamp - segment_index as f64 * segment_seconds;
+    let media_fps = probed_mp4_fps(&video_path, app).unwrap_or(fps);
+    let local_timestamp = first_target as f64 / media_fps.max(1.0)
+        - segment_index as f64 * segment_seconds * fps / media_fps.max(1.0);
     let downscale = stream_info
         .get("width")
         .and_then(|value| value.as_u64())
@@ -623,7 +665,11 @@ pub(crate) fn is_mp4_stream(root: &Path, stream: &str) -> bool {
         .is_some_and(|frame_count| frame_count > 0)
 }
 
-pub(crate) fn video_source(root: &Path, stream: &str) -> AppResult<VideoSource> {
+pub(crate) fn video_source(
+    root: &Path,
+    stream: &str,
+    app: Option<&AppHandle>,
+) -> AppResult<VideoSource> {
     if !STREAM_NAMES.contains(&stream) {
         return Err(AppError::InvalidStream(stream.to_string()));
     }
@@ -659,8 +705,13 @@ pub(crate) fn video_source(root: &Path, stream: &str) -> AppResult<VideoSource> 
     if paths.is_empty() {
         return Err(AppError::Message(format!("{stream} 没有 MP4 分段")));
     }
+    let media_fps = paths
+        .first()
+        .and_then(|path| probed_mp4_fps(Path::new(path), app))
+        .unwrap_or(fps);
     Ok(VideoSource {
         fps,
+        media_fps,
         segment_seconds: manifest.segment_seconds.unwrap_or(300.0).max(1.0),
         start_frame: manifest.timeline_start_frame,
         paths,
@@ -1615,7 +1666,7 @@ mod tests {
         assert_eq!(index.summary.streams[3].frame_count, 1);
         let data = load_episode_with_index(&root, &index, &cancelled).unwrap();
         assert_eq!(data.states[0].frame_id, 1);
-        let video = video_source(&root, "cam0").unwrap();
+        let video = video_source(&root, "cam0", None).unwrap();
         assert_eq!(video.start_frame, 1);
         assert_eq!(video.paths.len(), 1);
         let (_, bytes) = read_frame_with_index(&root, "t265_left", 1, Some(&index), None).unwrap();
@@ -1744,7 +1795,7 @@ mod tests {
         assert_eq!(data.summary.streams[2].last_frame, Some(1051));
         assert_eq!(data.summary.streams[3].frame_count, 1054);
         assert_eq!(data.summary.streams[3].last_frame, Some(1053));
-        let native_video = video_source(&root, "cam0").unwrap();
+        let native_video = video_source(&root, "cam0", None).unwrap();
         assert_eq!(native_video.paths.len(), 1);
         assert_eq!(native_video.fps, 30.0);
         let (mime, bytes) = read_frame(&root, "cam0", 60, None).unwrap();
@@ -1873,7 +1924,7 @@ mod tests {
                     let first_frame = index.summary.streams[3].first_frame.unwrap();
                     let last_frame = index.summary.streams[3].last_frame.unwrap();
                     assert_eq!(index.summary.streams[0].first_frame, Some(first_frame));
-                    let video = video_source(&root, "cam0").unwrap();
+                    let video = video_source(&root, "cam0", None).unwrap();
                     assert_eq!(video.start_frame, first_frame);
                     assert!(!video.paths.is_empty());
                     for frame_id in [first_frame, last_frame] {

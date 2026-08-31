@@ -35,5 +35,8 @@ export function assignmentFilterForSource(
   _driveType: ScanResult["volume"]["driveType"],
 ): AssignedEpisodeSelection | null {
   if (!assignments.length) return null;
-  return assignedEpisodeSelection(episodes, assignments);
+  return {
+    episodes,
+    taskByRoot: assignedEpisodeSelection(episodes, assignments).taskByRoot,
+  };
 }
