@@ -540,31 +540,28 @@ async fn list_assigned_task_definitions(
     let assigned = user_center::assigned_tasks(&data_root, auth.inner())
         .await
         .map_err(|error| error.to_string())?;
+    if assigned.is_empty() {
+        // Operators without an active server assignment still need to be able
+        // to inspect a configured source and demonstrate the viewer. This is
+        // read-only preview access; annotation saves continue to use the
+        // normal task and account checks.
+        return tauri::async_runtime::spawn_blocking(move || {
+            annotations::task_definitions(&data_root)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string());
+    }
     let requested = assigned
         .iter()
         .map(|task| (task.task.clone(), task.detail.clone()))
         .collect::<Vec<_>>();
-    let names = assigned
-        .iter()
-        .map(|task| task.task.to_lowercase())
-        .collect::<std::collections::BTreeSet<_>>();
-    let prefixes = assigned
-        .iter()
-        .map(|task| {
-            annotations::task_code_prefix_for_assignment(&task.task)
-                .unwrap_or_else(|_| task.task.to_lowercase())
-        })
-        .collect::<std::collections::BTreeSet<_>>();
     tauri::async_runtime::spawn_blocking(move || {
-        annotations::ensure_assigned_tasks(&data_root, &user, &requested).map(|tasks| {
-            tasks
-                .into_iter()
-                .filter(|task| {
-                    names.contains(&task.label.to_lowercase())
-                        || prefixes.contains(&task.code_prefix.to_lowercase())
-                })
-                .collect()
-        })
+        // Ensure server-provided task definitions exist locally, then expose
+        // the complete local catalog. Assignment ranges are for queueing and
+        // default selection, not a read-only visualization permission gate.
+        annotations::ensure_assigned_tasks(&data_root, &user, &requested)
+            .and_then(|_| annotations::task_definitions(&data_root))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1186,8 +1183,8 @@ fn get_video_source(
     stream: String,
 ) -> Result<VideoSource, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let mut source =
-        source::video_source(Path::new(&root), &stream).map_err(|error| error.to_string())?;
+    let mut source = source::video_source(Path::new(&root), &stream, Some(&app))
+        .map_err(|error| error.to_string())?;
     let scope = app.asset_protocol_scope();
     for path in &mut source.paths {
         let file_path = PathBuf::from(path.as_str());

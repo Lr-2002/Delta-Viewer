@@ -9,6 +9,7 @@ import {
   playbackBufferRequirement,
   playbackFrameDue,
   playbackFrameDurationMs,
+  playbackStreamsSettled,
   primaryPlaybackFrameStep,
   playbackStartFrame,
   secondaryPlaybackFrame,
@@ -20,6 +21,20 @@ test("ignores duplicate native-video settlement reports", () => {
   const current = { root: "/episode", frameId: 27, settled: 3, total: 3 };
   assert.equal(nextFrameRenderProgress(current, { ...current }), current);
   assert.notEqual(nextFrameRenderProgress(current, { ...current, frameId: 28 }), current);
+});
+
+test("advances synchronized playback only after every camera presents the shared frame", () => {
+  const settled = new Map([
+    ["cam0", 27],
+    ["cam1", 27],
+    ["cam2", 26],
+    ["t265_left", 27],
+    ["t265_right", 27],
+  ]);
+  const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
+  assert.equal(playbackStreamsSettled(streams, settled, 27), false);
+  settled.set("cam2", 27);
+  assert.equal(playbackStreamsSettled(streams, settled, 27), true);
 });
 
 test("keeps every timeline frame in MP4 compatibility fallback", () => {

@@ -26,22 +26,30 @@ test("accepts assignments sourced only from imported task JSON", () => {
   assert.equal(validateAssignmentSelection({ BedMaking: 3 }, [], ["BedMaking"]), null);
 });
 
-test("shows only assigned task ranges on a removable drive", () => {
-  const episodes = [episode("/media/DOHC1TB/BedMaking/20260821_060700_recording")];
+test("does not apply a catalog filter when the operator has no assignment", () => {
+  const episodes = [episode("/mnt/Datasets/Box/episode-001")];
+  assert.equal(assignmentFilterForSource(episodes, [], "remote"), null);
+});
+
+test("keeps unassigned episodes visible while mapping assigned work on a removable drive", () => {
+  const episodes = [
+    episode("/media/DOHC1TB/BedMaking/20260821_060700_recording"),
+    episode("/media/DOHC1TB/Box/20260821_070700_recording"),
+  ];
   assert.deepEqual(assignmentFilterForSource(episodes, [assignedTask("BedMaking")], "removable"), {
     episodes,
     taskByRoot: { [episodes[0].root]: "BedMaking" },
   });
 });
 
-test("keeps assignment filtering for a mounted NAS source", () => {
+test("keeps the full mounted NAS catalog available for preview", () => {
   const episodes = [
     episode("/mnt/Datasets/BedMaking/episode-001"),
     episode("/mnt/Datasets/Bedsheet/episode-001"),
   ];
   assert.deepEqual(
     assignmentFilterForSource(episodes, [assignedTask("BedMaking")], "remote"),
-    { episodes: [episodes[0]], taskByRoot: { [episodes[0].root]: "BedMaking" } },
+    { episodes, taskByRoot: { [episodes[0].root]: "BedMaking" } },
   );
 });
 
@@ -52,11 +60,11 @@ test("matches assignments to dated NAS task folders with recording-style episode
   ];
   assert.deepEqual(
     assignmentFilterForSource(episodes, [assignedTask("Washing")], "remote"),
-    { episodes: [episodes[0]], taskByRoot: { [episodes[0].root]: "Washing" } },
+    { episodes, taskByRoot: { [episodes[0].root]: "Washing" } },
   );
   assert.deepEqual(
     assignmentFilterForSource(episodes, [assignedTask("Box")], "remote"),
-    { episodes: [episodes[1]], taskByRoot: { [episodes[1].root]: "Box" } },
+    { episodes, taskByRoot: { [episodes[1].root]: "Box" } },
   );
 });
 

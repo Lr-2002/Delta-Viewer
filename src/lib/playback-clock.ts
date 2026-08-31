@@ -17,6 +17,14 @@ export function nextFrameRenderProgress(
     : next;
 }
 
+export function playbackStreamsSettled(
+  streamNames: readonly string[],
+  settledFrameByStream: ReadonlyMap<string, number>,
+  frameId: number,
+): boolean {
+  return streamNames.every((streamName) => settledFrameByStream.get(streamName) === frameId);
+}
+
 export function sequentialFallbackFrame(frameId: number): number {
   return frameId;
 }

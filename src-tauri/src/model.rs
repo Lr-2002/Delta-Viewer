@@ -863,6 +863,7 @@ pub struct FramePayload {
 #[serde(rename_all = "camelCase")]
 pub struct VideoSource {
     pub fps: f64,
+    pub media_fps: f64,
     pub segment_seconds: f64,
     pub start_frame: u64,
     pub paths: Vec<String>,

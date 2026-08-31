@@ -97,7 +97,9 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let child = command.spawn().unwrap();
-        wait_for_probe(child, Path::new("."), Duration::from_secs(1)).unwrap();
+        // Windows may need a cold PowerShell startup longer than one second;
+        // use the same bounded probe window as the production path.
+        wait_for_probe(child, Path::new("."), Duration::from_secs(5)).unwrap();
     }
 
     #[test]

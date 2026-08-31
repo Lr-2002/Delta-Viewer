@@ -742,11 +742,6 @@ fn task_code_prefix(label: &str) -> AppResult<String> {
     Ok(prefix)
 }
 
-pub fn task_code_prefix_for_assignment(label: &str) -> AppResult<String> {
-    let label = validate_task_label(label)?;
-    task_code_prefix(&label)
-}
-
 fn validate_description(value: &str) -> AppResult<String> {
     let description = value.trim();
     let count = description.chars().count();
