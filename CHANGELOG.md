@@ -5,6 +5,15 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.65 - 2026-08-31
+
+- Fix synchronized MP4 playback by using the media stream's probed frame rate
+  for native playback and compatibility frame decoding.
+- Route MP4 streams through the FFmpeg fallback instead of treating their
+  stream directories as legacy JPEG sources.
+- Keep source episodes available for read-only preview when no server task is
+  assigned, while retaining assignment controls for annotation work.
+
 ## 0.17.64 - 2026-08-26
 
 - Classify Linux GVFS mounts as remote sources so SMB shares opened through the
