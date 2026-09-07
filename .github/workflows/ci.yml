@@ -76,6 +76,8 @@ jobs:
         run: pnpm test:playback
 
       - name: Run native MP4 playback regression coverage
+        env:
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
         run: pnpm test:native-playback
 
       - name: Run release workflow regression coverage

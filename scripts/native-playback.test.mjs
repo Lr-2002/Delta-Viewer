@@ -12,11 +12,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const artifactRoot = path.join(root, "artifacts/nas-playback");
 const browserPath = process.env.PLAYWRIGHT_CHROMIUM ?? [
   "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+  "/usr/bin/google-chrome",
   "/usr/bin/chromium", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 ].find(existsSync) ?? chromium.executablePath();
 
 for (const presentationCallback of process.env.DOHC_MP4_SAMPLE_ROOT ? [true] : [true, false]) {
-test(`native MP4 playback handles discovery, buffering, seeks and completion (presentation callback: ${presentationCallback})`, async () => {
+test(`native MP4 playback handles discovery, buffering, seeks and completion (presentation callback: ${presentationCallback})`, async (t) => {
   await mkdir(artifactRoot, { recursive: true });
   const sampleRoot = process.env.DOHC_MP4_SAMPLE_ROOT;
   let sources;
@@ -79,12 +80,21 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
       });
     } }],
   });
+  let browser;
+  t.after(async () => {
+    await browser?.close();
+    await server.close();
+    if (mediaConfig) await writeFile(mediaConfig.replace(/\.[^.]+$/, ".done"), "done");
+  });
   await server.listen();
-  const browser = await chromium.launch({ executablePath: browserPath, headless: true });
+  browser = await chromium.launch({ executablePath: browserPath, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
+    const h264Support = await page.evaluate(() => document.createElement("video")
+      .canPlayType('video/mp4; codecs="avc1.42E01E"'));
+    assert.notEqual(h264Support, "", `H.264 playback is unavailable in ${browserPath}`);
     const origin = server.resolvedUrls.local[0];
     await page.addInitScript(({ streams, sourcePayloads, end, origin, presentationCallback }) => {
       if (!presentationCallback) {
@@ -115,7 +125,8 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
       }
     }, { streams, sourcePayloads, end, origin, presentationCallback });
     await page.goto(new URL("scripts/fixtures/native-playback.html", origin).href, { waitUntil: "domcontentloaded", timeout: 90000 });
-    await page.waitForFunction(() => [...document.querySelectorAll("video")].length > 0
+    await page.waitForFunction(() => window.__nativeStats.fallbacks > 0
+      || [...document.querySelectorAll("video")].length > 0
       && [...document.querySelectorAll("video")].every((v) => v.readyState >= 2), null, { timeout: 90000 });
     assert.equal(await page.evaluate(() => window.__nativeStats.fallbacks), 0);
     await page.evaluate(() => { window.__nativeStats.events = []; window.__nativePlayback.play(true); });
@@ -172,9 +183,6 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
     console.error(await page.evaluate(() => ({ stats: window.__nativeStats, html: document.body.innerText,
       videos: [...document.querySelectorAll("video")].map((v) => ({ src: v.currentSrc, time: v.currentTime, ready: v.readyState, error: v.error?.message })) })).catch(() => null));
     throw error;
-  } finally {
-    await browser.close(); await server.close();
-    if (mediaConfig) await writeFile(mediaConfig.replace(/\.[^.]+$/, ".done"), "done");
   }
 });
 }
