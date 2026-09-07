@@ -576,6 +576,35 @@ if (!browserExecutable) {
     }
   });
 
+  test("read-only preview stays available while annotation restoration gates draft editors", async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    try {
+      const page = await context.newPage();
+      await page.addInitScript(() => {
+        window.annotationRestoreGate = new Promise((resolveGate) => { window.releaseAnnotationRestore = resolveGate; });
+      });
+      await page.route("**/src/lib/backend.ts", async (route) => {
+        const response = await route.fetch();
+        const original = await response.text();
+        const signature = "export async function loadEpisodeAnnotation(sourcePath) {";
+        assert.ok(original.includes(signature));
+        await route.fulfill({ response, body: original.replace(signature,
+          `${signature}\nwindow.annotationRestoreWaiting = true; await window.annotationRestoreGate;`) });
+      });
+      await registerDemoAccount(page, baseUrl, "annotation-restore-gate");
+      await page.waitForFunction(() => window.annotationRestoreWaiting === true);
+      assert.equal(await page.locator(".camera-grid").isVisible(), true);
+      assert.equal(await page.locator(".segment-editor-embedded").count(), 0);
+      assert.equal(await page.getByRole("button", { name: "保存标注", exact: true }).count(), 0);
+      assert.equal(await page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("dohc-viewer.segment-draft."))), false);
+      await page.evaluate(() => window.releaseAnnotationRestore());
+      await page.locator(".segment-editor-embedded").waitFor();
+      assert.equal(await page.getByRole("button", { name: "保存标注", exact: true }).count(), 1);
+    } finally {
+      await context.close();
+    }
+  });
+
   test("saved trims survive re-entry and catalog completion requires saved segments", async () => {
     for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
       const context = await browser.newContext({ viewport });

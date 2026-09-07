@@ -277,6 +277,7 @@ function App() {
   const [assignedEpisodeTasks, setAssignedEpisodeTasks] = useState<Record<string, string>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [annotation, setAnnotation] = useState<EpisodeAnnotation | null>(null);
+  const [annotationReadyRoot, setAnnotationReadyRoot] = useState<string | null>(null);
   const [sourcePath, setSourcePath] = useState("");
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeSummary | null>(null);
@@ -941,25 +942,21 @@ function App() {
     updateScannedEpisode(loaded.summary);
     const loadedMinFrame = getMinFrame(loaded);
     const loadedMaxFrame = getMaxFrame(loaded);
-    const savedAnnotation = await loadEpisodeAnnotation(root);
-    ensureOperationActive(owner);
-    const restoredStart = Math.max(loadedMinFrame, Math.min(loadedMaxFrame, savedAnnotation?.clipStartFrame ?? loadedMinFrame));
-    const restoredEnd = Math.max(restoredStart, Math.min(loadedMaxFrame, savedAnnotation?.clipEndFrame ?? loadedMaxFrame));
-
-    // Restore saved bounds before mounting draft editors; a temporary empty
-    // annotation can otherwise restore a stale full-range draft over them.
+    // Show read-only frames immediately, but mount draft editors only after
+    // validation has cached the fingerprint and saved bounds are restored.
     setData(loaded);
     setReport(null);
-    setAnnotation(savedAnnotation);
-    setSelectedTaskId(savedAnnotation?.taskId ?? null);
+    setAnnotation(null);
+    setAnnotationReadyRoot(null);
+    setSelectedTaskId(null);
     setLoadedEpisodeSourceRoot(sourceEpisodeRoot);
     setPlaying(false);
     setExportResult(null);
     setFpsOverride(null);
-    setClipStartFrame(restoredStart);
-    setClipEndFrame(restoredEnd);
-    setCurrentFrame(restoredStart);
-    frameRef.current = restoredStart;
+    setClipStartFrame(loadedMinFrame);
+    setClipEndFrame(loadedMaxFrame);
+    setCurrentFrame(loadedMinFrame);
+    frameRef.current = loadedMinFrame;
     setView("review");
 
     const validated = await validateEpisode(root, owner.id);
@@ -988,17 +985,30 @@ function App() {
       return "confirmation_required";
     }
 
-    applyLoadedEpisode(candidate);
+    const savedAnnotation = await loadEpisodeAnnotation(root);
+    ensureOperationActive(owner);
+    applyLoadedEpisode(candidate, savedAnnotation);
     return "loaded";
   }
 
   function applyLoadedEpisode(
     candidate: PendingAnnotationConfirmation,
+    savedAnnotation: EpisodeAnnotation | null,
   ) {
     setReport(candidate.report);
     setData(candidate.data);
     setLoadedEpisodeSourceRoot(candidate.sourceEpisodeRoot);
-    // Validation must not reset edits or the playback position in the preview.
+    setAnnotation(savedAnnotation);
+    setSelectedTaskId(savedAnnotation?.taskId ?? null);
+    const start = Math.max(candidate.minFrame, Math.min(candidate.maxFrame, savedAnnotation?.clipStartFrame ?? candidate.minFrame));
+    const end = Math.max(start, Math.min(candidate.maxFrame, savedAnnotation?.clipEndFrame ?? candidate.maxFrame));
+    setClipStartFrame(start);
+    setClipEndFrame(end);
+    const frame = clampPlaybackFrame(frameRef.current, start, end);
+    setCurrentFrame(frame);
+    frameRef.current = frame;
+    setPlaying(false);
+    setAnnotationReadyRoot(candidate.data.summary.root);
     setView("review");
   }
 
@@ -1029,8 +1039,9 @@ function App() {
     setPendingAnnotationConfirmation(null);
     resetOperationFeedback(owner);
     try {
+      const savedAnnotation = await loadEpisodeAnnotation(candidate.data.summary.root);
       ensureOperationActive(owner);
-      applyLoadedEpisode(candidate);
+      applyLoadedEpisode(candidate, savedAnnotation);
       setEpisodeSourceStates((current) => ({ ...current, [candidate.data.summary.root]: "available" }));
       setNotice(`已确认数据警告，进入标注：${candidate.data.summary.name}`);
     } catch (reason) {
@@ -1098,6 +1109,7 @@ function App() {
 
   function resetLoadedData() {
     settledFrameByStreamRef.current.clear();
+    setAnnotationReadyRoot(null);
     setData(null);
     setReport(null);
     setAnnotation(null);
@@ -2038,7 +2050,7 @@ function App() {
                         total={availableStreams.length}
                       />
                     ) : null}
-                    <AnnotationPanel
+                    {annotationReadyRoot === data.summary.root && <AnnotationPanel
                       key={data.summary.root}
                       sourcePath={data.summary.root}
                       tasks={tasks}
@@ -2058,8 +2070,8 @@ function App() {
                       onError={setError}
                       onNotice={setNotice}
                       onActivity={auditActivity}
-                    />
-                    <SegmentAnnotationEditor
+                    />}
+                    {annotationReadyRoot === data.summary.root && <SegmentAnnotationEditor
                       key={`${data.summary.root}:${selectedTaskTemplate?.id ?? "none"}`}
                       data={data}
                       annotation={annotation}
@@ -2114,7 +2126,7 @@ function App() {
                       onFrameChange={(frame) => {
                         seekFrame(Math.max(minFrame, Math.min(maxFrame, frame)));
                       }}
-                    />
+                    />}
                   </section>
 
                   <section className="telemetry-section">

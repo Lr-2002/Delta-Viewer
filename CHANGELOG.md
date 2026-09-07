@@ -7,15 +7,18 @@ after `main` CI succeeds for a coordinated version change.
 
 ## 0.17.67 - 2026-09-07
 
-- Restore saved trim boundaries before mounting the preview so stale drafts
+- Restore saved trim boundaries before mounting annotation editors so stale drafts
   cannot replace the retained range when an episode is reopened.
-- Preserve in-progress trim edits when background validation completes and
-  restore both draft boundaries together for task-only annotations.
+- Keep read-only previews available while validation runs, reuse the validated
+  fingerprint for annotation loading, and restore both draft boundaries
+  together for task-only annotations.
 - Show the catalog's annotated marker only after the task annotation and
   nonempty segments have both been saved. Changing tasks requires saving the
   new task's segments instead of inheriting completion from the previous task.
 - Keep a newly selected task when the task catalog refreshes and verify
   re-entry, completion markers, and task changes at desktop and narrow widths.
+- Make the buffering regression wait for the final submitted frame to paint
+  before asserting that both the shared timeline and media clocks stay frozen.
 - Physical target-machine and large-volume qualification gaps
   GAP-003/GAP-007 remain open.
 
