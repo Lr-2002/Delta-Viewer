@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   clampPlaybackFrame,
+  clampStreamFrame,
   nextFrameRenderProgress,
+  nativeVideoTimelineFrame,
+  nativeVideoTimelinePosition,
   nextPlaybackFrame,
   playbackAdvanceTimestamp,
   playbackBufferRatio,
   playbackBufferRequirement,
+  playbackClockReady,
   playbackFrameDue,
   playbackFrameDurationMs,
   playbackStreamsSettled,
@@ -37,12 +41,31 @@ test("advances synchronized playback only after every camera presents the shared
   assert.equal(playbackStreamsSettled(streams, settled, 27), true);
 });
 
+test("uses the primary camera as the continuous playback clock", () => {
+  const streams = ["cam0", "cam1", "t265_left"];
+  const settled = new Map([
+    ["cam0", 27],
+    ["cam1", 26],
+    ["t265_left", 24],
+  ]);
+  assert.equal(playbackClockReady(streams, "cam0", settled, 27), true);
+  assert.equal(playbackClockReady(streams, "cam0", settled, 28), false);
+  assert.equal(playbackClockReady(streams, null, settled, 27), false);
+});
+
 test("keeps every timeline frame in MP4 compatibility fallback", () => {
   assert.deepEqual(
     [0, 1, 2, 3, 4, 5, 6].map(sequentialFallbackFrame),
     [0, 1, 2, 3, 4, 5, 6],
   );
   assert.equal(sequentialFallbackFrame(61), 61);
+});
+
+test("clamps a camera request to that stream's actual frame range", () => {
+  assert.equal(clampStreamFrame(0, 1, 10_229), 1);
+  assert.equal(clampStreamFrame(6_000, 1, 10_229), 6_000);
+  assert.equal(clampStreamFrame(10_230, 1, 10_229), 10_229);
+  assert.equal(clampStreamFrame(0, null, null), 0);
 });
 
 test("aligns lower-FPS camera frames without changing real-time playback", () => {
@@ -61,6 +84,15 @@ test("aligns lower-FPS camera frames without changing real-time playback", () =>
   assert.equal(primaryPlaybackFrameStep(30, 30), 1);
   assert.equal(nextPlaybackFrame(20, 99, true, 2), 22);
   assert.equal(nextPlaybackFrame(98, 99, true, 2), 99);
+});
+
+test("derives the shared timeline frame from the frame actually presented by MP4", () => {
+  assert.equal(nativeVideoTimelineFrame(0, 0, 300, 1, 30, 30, 30), 1);
+  assert.equal(nativeVideoTimelineFrame(3.5, 0, 300, 1, 30, 30, 30), 106);
+  assert.equal(nativeVideoTimelineFrame(0.5, 1, 10, 1, 30, 30, 30), 316);
+  assert.equal(nativeVideoTimelineFrame(1, 0, 300, 1, 60, 30, 60), 121);
+  assert.equal(nativeVideoTimelinePosition(0.5, 0, 300, 1, 30, 30, 30), 16);
+  assert.equal(nativeVideoTimelinePosition(1 / 60, 0, 300, 0, 30, 30, 30), 0.5);
 });
 
 test("throttles secondary playback previews while preserving exact paused frames", () => {

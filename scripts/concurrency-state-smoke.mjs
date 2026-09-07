@@ -129,15 +129,15 @@ async function stop(child) {
 
 const port = await getFreePort();
 const url = `http://127.0.0.1:${port}`;
-const vite = spawn(process.platform === "win32" ? "pnpm.cmd" : "pnpm", [
-  "exec",
-  "vite",
+const vite = spawn(process.execPath, [
+  path.join(root, "node_modules/vite/bin/vite.js"),
   "--host",
   "127.0.0.1",
   "--port",
   String(port),
 ], {
   cwd: root,
+  windowsHide: true,
   stdio: ["ignore", "pipe", "pipe"],
 });
 let viteOutput = "";

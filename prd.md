@@ -78,6 +78,13 @@ DOHC 采集设备将一次记录写入 SD 卡。现有卡使用 ext4，macOS 和
 | D-039 | 日期开头的真实采集目录可作为 `hybrid-h264-jpeg-segment-v1` episode 直接加载，也可从包含多条日期目录的挂载根批量发现。顶层 manifest 中的 `cam0/cam1/cam2` 分段 MP4 与 `t265/segments` 中的左右目 JPEG/pose 合并到同一条 batch 时间轴，首个 T265 `batch_id` 是原生视频和逐帧 fallback 的时间原点；30 FPS 相机逐 batch 对齐，15 FPS 相机每两个 30 Hz batch 对齐一帧。完整混合记录复用 D-036 MP4 和 D-038 BIN 逻辑，不复制数据。仅包含 `.partial` segment、缺少有效 BIN 或零长度媒体的中断 `jpeg-stream-v1` 记录保留为可见 error，不得伪装成完整数据或导致 crash。 |
 | D-040 | 逐帧 JPEG 从已挂载 NAS 读取时使用网络源专用有界预读：Camera 0 以 30 帧作为起播和中间定位门槛，四路次要画面按约 10 FPS 展示步长分别预读 12 个实际会显示的帧；本地/可移动源继续使用较长 Camera 0 跑道。Linux GVFS 挂载必须归类为 remote。普通 JPEG 目录通过仅绑定 `127.0.0.1`、进程随机不透明 token 的只读帧地址交给 WebView 直接解码，路径只接受十进制 frame ID 并拒绝 symlink 文件，避免逐帧 Base64 IPC；segment BIN 与 MP4 fallback 保持后端有界解码。预读只存在于进程内存，不写缓存、不复制或修改源数据。 |
 
+`v0.17.66` 使用主视频实际呈现帧驱动 MP4 时间轴和骨架，避免播放过程中反复 seek。
+原生视频发现和探测放入 blocking worker；发现完成后才允许兼容解码回退。
+主视频开始或欠载时等待短时内存缓冲，其余原生画面随主视频缓冲暂停。
+只读媒体 Range 响应采用有界 1 MiB 读取，播放器断开后停止继续读源文件；
+逐帧更新不再重建整个 episode 列表。不持久化或复制源视频。
+实测证据及限制见 `docs/nas-playback-diagnostics.md`。
+
 ### 3.1 分段标注首版边界
 
 `v0.17.18` 首次增加“分段标注”编辑能力，并直接融合到回放首页的

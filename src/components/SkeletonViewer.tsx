@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import type { SkeletonFrame, SkeletonSeries } from "../types";
+import type { SkeletonSeries } from "../types";
+import {
+  skeletonFrameForTimeline,
+  skeletonSampleForTimeline,
+  type SkeletonTimelineSample,
+} from "../lib/skeleton-frame";
 import {
   createSkeletonAlignment,
   skeletonOrigin,
@@ -11,6 +16,11 @@ import {
 interface SkeletonViewerProps {
   skeleton: SkeletonSeries;
   frameId: number;
+  timelineStartFrame: number;
+  timelineEndFrame: number;
+  playing?: boolean;
+  nativePlayback?: boolean;
+  onFramePresenterChange?: (presenter: ((frameId: number) => void) | null) => void;
 }
 
 interface RendererState {
@@ -34,8 +44,17 @@ const COCO_EDGES: [number, number][] = [
   [5, 11], [6, 12], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
 ];
 
-export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
+export const SkeletonViewer = memo(function SkeletonViewer({
+  skeleton,
+  frameId,
+  timelineStartFrame,
+  timelineEndFrame,
+  playing = false,
+  nativePlayback = false,
+  onFramePresenterChange,
+}: SkeletonViewerProps) {
   const mountRef = useRef<HTMLDivElement>(null);
+  const frameLabelRef = useRef<HTMLSpanElement>(null);
   const rendererRef = useRef<RendererState | null>(null);
   const [unavailable, setUnavailable] = useState(false);
 
@@ -48,6 +67,8 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
       renderer = new THREE.WebGLRenderer({
         antialias: true,
         powerPreference: "high-performance",
+        // The viewer's canvas is also used for deterministic screenshots and
+        // pixel checks, so keep its drawing buffer available after compositing.
         preserveDrawingBuffer: true,
       });
     } catch {
@@ -56,7 +77,9 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
     }
 
     renderer.setClearColor(0x111516, 1);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // The skeleton is a compact overlay. A 1.5x cap avoids making WebView2
+    // rasterize a needlessly large MSAA buffer on high-DPI displays.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.domElement.setAttribute("aria-label", "SMPL 骨架三维视图");
     mount.appendChild(renderer.domElement);
 
@@ -72,7 +95,14 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
     scene.add(new THREE.Points(jointsGeometry, jointsMaterial));
 
     const edges = skeletonEdges(skeleton.jointCount);
-    const alignment = createSkeletonAlignment(skeleton, frameId);
+    const initialFrame = skeletonFrameForTimeline(
+      skeleton.frames,
+      frameId,
+      timelineStartFrame,
+      timelineEndFrame,
+      skeleton.usesTimelineFrameIds,
+    );
+    const alignment = createSkeletonAlignment(skeleton, initialFrame?.frameId ?? frameId);
     const bonesGeometry = new THREE.BufferGeometry();
     const bonePositions = new Float32Array(edges.length * 6);
     bonesGeometry.setAttribute("position", new THREE.BufferAttribute(bonePositions, 3));
@@ -84,19 +114,51 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
     keyLight.position.set(2, 3, 4);
     scene.add(ambient, keyLight);
 
+    let displayedFrame = Math.max(
+      timelineStartFrame,
+      Math.min(timelineEndFrame, frameId),
+    );
+    let displayedSourcePosition = -1;
     const render = () => {
       renderer.render(scene, camera);
     };
-    const update = (requestedFrame: number) => {
-      const frame = closestFrame(skeleton.frames, requestedFrame);
-      if (!frame) return { extent: 1, minY: -1, maxY: 1 };
-      const bounds = fillJointPositions(frame, jointPositions, bonePositions, edges, alignment, skeleton.jointCount);
+    const paintFrame = (requestedFrame: number) => {
+      const sample = skeletonSampleForTimeline(
+        skeleton.frames,
+        requestedFrame,
+        timelineStartFrame,
+        timelineEndFrame,
+        skeleton.usesTimelineFrameIds,
+      );
+      if (!sample) return { extent: 1, minY: -1, maxY: 1 };
+      const bounds = fillJointPositions(sample, jointPositions, bonePositions, edges, alignment, skeleton.jointCount);
       jointsGeometry.attributes.position.needsUpdate = true;
       bonesGeometry.attributes.position.needsUpdate = true;
+      displayedFrame = requestedFrame;
+      displayedSourcePosition = sample.sourcePosition;
+      renderer.domElement.dataset.frameId = String(Math.round(displayedFrame));
+      renderer.domElement.dataset.skeletonFrameId = String(sample.frame.frameId);
+      if (frameLabelRef.current) {
+        frameLabelRef.current.textContent = `帧 ${Math.round(displayedFrame)} · ${skeleton.jointCount} 关节`;
+      }
       render();
       return bounds;
     };
-    const initialBounds = update(frameId);
+    const update = (requestedFrame: number) => {
+      const targetFrame = Math.max(
+        timelineStartFrame,
+        Math.min(timelineEndFrame, requestedFrame),
+      );
+      const sample = skeletonSampleForTimeline(
+        skeleton.frames,
+        targetFrame,
+        timelineStartFrame,
+        timelineEndFrame,
+        skeleton.usesTimelineFrameIds,
+      );
+      if (sample && Math.abs(sample.sourcePosition - displayedSourcePosition) > 1e-4) paintFrame(targetFrame);
+    };
+    const initialBounds = paintFrame(displayedFrame);
     const bodyHeight = Math.max(0.5, initialBounds.maxY - initialBounds.minY);
     const targetY = initialBounds.minY + bodyHeight * 0.52;
     const cameraDistance = Math.max(1.5, initialBounds.extent * 2.6);
@@ -115,15 +177,19 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      // Resize and initial mount must paint synchronously so the canvas never
+      // presents a blank frame while the first animation tick is pending.
       render();
     };
     const observer = new ResizeObserver(resize);
     observer.observe(mount);
     controls.addEventListener("change", render);
     rendererRef.current = { update, render };
+    onFramePresenterChange?.(update);
     resize();
 
     return () => {
+      onFramePresenterChange?.(null);
       rendererRef.current = null;
       observer.disconnect();
       controls.removeEventListener("change", render);
@@ -135,11 +201,13 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [skeleton]);
+  }, [onFramePresenterChange, skeleton, timelineEndFrame, timelineStartFrame]);
 
-  useEffect(() => {
-    rendererRef.current?.update(frameId);
-  }, [frameId, skeleton]);
+  useLayoutEffect(() => {
+    // JPEG timeline updates become visible with the React commit. Native MP4
+    // presentation callbacks retain ownership of continuous subframe updates.
+    if (!playing || !nativePlayback) rendererRef.current?.update(frameId);
+  }, [frameId, nativePlayback, playing, skeleton]);
 
   return (
     <section className="skeleton-viewer" aria-label="SMPL 骨架">
@@ -148,14 +216,14 @@ export function SkeletonViewer({ skeleton, frameId }: SkeletonViewerProps) {
           <span className="section-kicker">SMPL / SKELETON</span>
           <h2>三维骨架</h2>
         </div>
-        <span>帧 {frameId} · {skeleton.jointCount} 关节</span>
+        <span ref={frameLabelRef}>帧 {frameId} · {skeleton.jointCount} 关节</span>
       </header>
       <div ref={mountRef} className="skeleton-canvas" />
       {unavailable ? <p className="skeleton-unavailable">当前设备不支持 3D 渲染</p> : null}
       <footer>{skeleton.sourceName} · {skeleton.frameCount} 帧</footer>
     </section>
   );
-}
+});
 
 function skeletonEdges(jointCount: number): [number, number][] {
   const definition = jointCount >= 24 ? SMPL_EDGES : jointCount >= 17 ? COCO_EDGES : [];
@@ -163,39 +231,30 @@ function skeletonEdges(jointCount: number): [number, number][] {
   return Array.from({ length: Math.max(0, jointCount - 1) }, (_, index) => [index, index + 1]);
 }
 
-function closestFrame(frames: SkeletonFrame[], requestedFrame: number): SkeletonFrame | null {
-  if (frames.length === 0) return null;
-  let lower = 0;
-  let upper = frames.length - 1;
-  while (lower <= upper) {
-    const middle = Math.floor((lower + upper) / 2);
-    const candidate = frames[middle];
-    if (candidate.frameId === requestedFrame) return candidate;
-    if (candidate.frameId < requestedFrame) lower = middle + 1;
-    else upper = middle - 1;
-  }
-  const before = frames[Math.max(0, upper)];
-  const after = frames[Math.min(frames.length - 1, lower)];
-  return Math.abs(before.frameId - requestedFrame) <= Math.abs(after.frameId - requestedFrame) ? before : after;
-}
-
 function fillJointPositions(
-  frame: SkeletonFrame,
+  sample: SkeletonTimelineSample,
   jointPositions: Float32Array,
   bonePositions: Float32Array,
   edges: [number, number][],
   alignment: THREE.Quaternion,
   jointCount: number,
 ): SkeletonBounds {
-  const origin = skeletonOrigin(frame, jointCount);
+  const beforeOrigin = skeletonOrigin(sample.before, jointCount);
+  const afterOrigin = skeletonOrigin(sample.after, jointCount);
+  const origin = beforeOrigin.clone().lerp(afterOrigin, sample.mix);
   let extent = 0.5;
   let minY = Number.POSITIVE_INFINITY;
   let maxY = Number.NEGATIVE_INFINITY;
   const transformed = new THREE.Vector3();
+  const interpolatedPoint: [number, number, number] = [0, 0, 0];
   for (let index = 0; index < jointPositions.length / 3; index += 1) {
-    const point = frame.joints[index] ?? [origin.x, origin.y, origin.z] as [number, number, number];
+    const before = sample.before.joints[index] ?? [beforeOrigin.x, beforeOrigin.y, beforeOrigin.z] as [number, number, number];
+    const after = sample.after.joints[index] ?? before;
+    interpolatedPoint[0] = before[0] + (after[0] - before[0]) * sample.mix;
+    interpolatedPoint[1] = before[1] + (after[1] - before[1]) * sample.mix;
+    interpolatedPoint[2] = before[2] + (after[2] - before[2]) * sample.mix;
     const offset = index * 3;
-    transformSkeletonPoint(point, origin, alignment, transformed);
+    transformSkeletonPoint(interpolatedPoint, origin, alignment, transformed);
     jointPositions[offset] = transformed.x;
     jointPositions[offset + 1] = transformed.y;
     jointPositions[offset + 2] = transformed.z;

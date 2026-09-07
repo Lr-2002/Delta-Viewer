@@ -326,7 +326,8 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
 });
 
 test("release controller auto-tags the successful main commit with GITHUB_TOKEN", async () => {
-  const workflow = await readFile(path.join(root, ".github/workflows/release.yml"), "utf8");
+  const workflow = (await readFile(path.join(root, ".github/workflows/release.yml"), "utf8"))
+    .replace(/\r\n/g, "\n");
 
   assert.match(
     workflow,
@@ -374,7 +375,7 @@ test("CI owns the shared gate and release jobs use isolated dependency caches", 
   const [ciWorkflow, releaseWorkflow] = await Promise.all([
     readFile(path.join(root, ".github/workflows/ci.yml"), "utf8"),
     readFile(path.join(root, ".github/workflows/release.yml"), "utf8"),
-  ]);
+  ]).then((workflows) => workflows.map((workflow) => workflow.replace(/\r\n/g, "\n")));
   const rustCacheRef =
     "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1";
 

@@ -689,6 +689,7 @@ pub struct SkeletonSeries {
     pub source_name: String,
     pub frame_count: u64,
     pub joint_count: u64,
+    pub uses_timeline_frame_ids: bool,
     pub frames: Vec<SkeletonFrame>,
 }
 

@@ -5,6 +5,20 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.66 - 2026-09-07
+
+- Use the primary video's presentation clock for MP4 playback and skeleton
+  synchronization, avoiding repeated seeks and stalls caused by slower views.
+- Wait for native video discovery before starting compatibility decoding and
+  move filesystem discovery and media probing off Tauri's command thread.
+- Read media byte ranges in bounded 1 MiB blocks, coordinate camera buffering,
+  and avoid rebuilding the episode catalog on each playback frame.
+- Recover native playback after buffering, preserve exact paused seeks, and
+  handle segment transitions, recording completion, and replay explicitly.
+- Add native-browser playback regressions and read-only NAS diagnostics.
+  Sustained source throughput must still support the video bitrate; physical
+  target-machine and large-volume qualification gaps GAP-003/GAP-007 remain open.
+
 ## 0.17.65 - 2026-08-31
 
 - Fix synchronized MP4 playback by using the media stream's probed frame rate
