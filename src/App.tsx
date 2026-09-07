@@ -717,7 +717,6 @@ function App() {
           frameDurationMs,
         );
         frameRef.current = next;
-        skeletonFramePresenterRef.current?.(next);
         setCurrentFrame(next);
       }
       if (next >= playbackEnd) {
@@ -2023,6 +2022,7 @@ function App() {
                             timelineStartFrame={primaryStream?.firstFrame ?? minFrame}
                             timelineEndFrame={primaryStream?.lastFrame ?? maxFrame}
                             playing={playing}
+                            nativePlayback={primaryNativeClockRef.current}
                             onFramePresenterChange={handleSkeletonFramePresenterChange}
                           />
                         ) : null}

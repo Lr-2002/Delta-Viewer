@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { SkeletonSeries } from "../types";
@@ -19,6 +19,7 @@ interface SkeletonViewerProps {
   timelineStartFrame: number;
   timelineEndFrame: number;
   playing?: boolean;
+  nativePlayback?: boolean;
   onFramePresenterChange?: (presenter: ((frameId: number) => void) | null) => void;
 }
 
@@ -49,6 +50,7 @@ export const SkeletonViewer = memo(function SkeletonViewer({
   timelineStartFrame,
   timelineEndFrame,
   playing = false,
+  nativePlayback = false,
   onFramePresenterChange,
 }: SkeletonViewerProps) {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -201,9 +203,11 @@ export const SkeletonViewer = memo(function SkeletonViewer({
     };
   }, [onFramePresenterChange, skeleton, timelineEndFrame, timelineStartFrame]);
 
-  useEffect(() => {
-    if (!playing) rendererRef.current?.update(frameId);
-  }, [frameId, playing, skeleton]);
+  useLayoutEffect(() => {
+    // JPEG timeline updates become visible with the React commit. Native MP4
+    // presentation callbacks retain ownership of continuous subframe updates.
+    if (!playing || !nativePlayback) rendererRef.current?.update(frameId);
+  }, [frameId, nativePlayback, playing, skeleton]);
 
   return (
     <section className="skeleton-viewer" aria-label="SMPL 骨架">
