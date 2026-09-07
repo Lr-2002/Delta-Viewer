@@ -277,6 +277,7 @@ function App() {
   const [assignedEpisodeTasks, setAssignedEpisodeTasks] = useState<Record<string, string>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [annotation, setAnnotation] = useState<EpisodeAnnotation | null>(null);
+  const [annotationReadyRoot, setAnnotationReadyRoot] = useState<string | null>(null);
   const [sourcePath, setSourcePath] = useState("");
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeSummary | null>(null);
@@ -941,12 +942,13 @@ function App() {
     updateScannedEpisode(loaded.summary);
     const loadedMinFrame = getMinFrame(loaded);
     const loadedMaxFrame = getMaxFrame(loaded);
-
-    // Mount the read-only preview before the health check finishes so operators
-    // can start inspecting frames while validation runs in the background.
+    // Show read-only frames immediately, but mount draft editors only after
+    // validation has cached the fingerprint and saved bounds are restored.
     setData(loaded);
     setReport(null);
     setAnnotation(null);
+    setAnnotationReadyRoot(null);
+    setSelectedTaskId(null);
     setLoadedEpisodeSourceRoot(sourceEpisodeRoot);
     setPlaying(false);
     setExportResult(null);
@@ -995,27 +997,18 @@ function App() {
   ) {
     setReport(candidate.report);
     setData(candidate.data);
-    setAnnotation(savedAnnotation);
     setLoadedEpisodeSourceRoot(candidate.sourceEpisodeRoot);
+    setAnnotation(savedAnnotation);
+    setSelectedTaskId(savedAnnotation?.taskId ?? null);
+    const start = Math.max(candidate.minFrame, Math.min(candidate.maxFrame, savedAnnotation?.clipStartFrame ?? candidate.minFrame));
+    const end = Math.max(start, Math.min(candidate.maxFrame, savedAnnotation?.clipEndFrame ?? candidate.maxFrame));
+    setClipStartFrame(start);
+    setClipEndFrame(end);
+    const frame = clampPlaybackFrame(frameRef.current, start, end);
+    setCurrentFrame(frame);
+    frameRef.current = frame;
     setPlaying(false);
-    setExportResult(null);
-    setFpsOverride(null);
-    const savedStart = savedAnnotation?.clipStartFrame;
-    const savedEnd = savedAnnotation?.clipEndFrame;
-    const restoredStart = savedStart !== null && savedStart !== undefined
-      ? Math.max(candidate.minFrame, Math.min(candidate.maxFrame, savedStart))
-      : candidate.minFrame;
-    const restoredEnd = savedEnd !== null && savedEnd !== undefined
-      ? Math.max(restoredStart, Math.min(candidate.maxFrame, savedEnd))
-      : candidate.maxFrame;
-    setClipStartFrame(restoredStart);
-    setClipEndFrame(restoredEnd);
-    // The preview is interactive while validation runs. Preserve the live
-    // playback position when validation finishes instead of snapping an
-    // operator who already started reviewing back to the annotation start.
-    const restoredFrame = clampPlaybackFrame(frameRef.current, restoredStart, restoredEnd);
-    setCurrentFrame(restoredFrame);
-    frameRef.current = restoredFrame;
+    setAnnotationReadyRoot(candidate.data.summary.root);
     setView("review");
   }
 
@@ -1116,6 +1109,7 @@ function App() {
 
   function resetLoadedData() {
     settledFrameByStreamRef.current.clear();
+    setAnnotationReadyRoot(null);
     setData(null);
     setReport(null);
     setAnnotation(null);
@@ -1298,6 +1292,19 @@ function App() {
     setPlaying(false);
     setExportResult(null);
     auditActivity("clip_changed");
+  }
+
+  function restoreClipRange(startFrame: number, endFrame: number) {
+    if (!data) return;
+    const start = Math.max(getMinFrame(data), Math.min(getMaxFrame(data), startFrame));
+    const end = Math.max(start, Math.min(getMaxFrame(data), endFrame));
+    setClipStartFrame(start);
+    setClipEndFrame(end);
+    const frame = clampPlaybackFrame(frameRef.current, start, end);
+    frameRef.current = frame;
+    setCurrentFrame(frame);
+    setPlaying(false);
+    setExportResult(null);
   }
 
   function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "") {
@@ -2043,7 +2050,8 @@ function App() {
                         total={availableStreams.length}
                       />
                     ) : null}
-                    <AnnotationPanel
+                    {annotationReadyRoot === data.summary.root && <AnnotationPanel
+                      key={data.summary.root}
                       sourcePath={data.summary.root}
                       tasks={tasks}
                       annotation={annotation}
@@ -2062,8 +2070,9 @@ function App() {
                       onError={setError}
                       onNotice={setNotice}
                       onActivity={auditActivity}
-                    />
-                    <SegmentAnnotationEditor
+                    />}
+                    {annotationReadyRoot === data.summary.root && <SegmentAnnotationEditor
+                      key={`${data.summary.root}:${selectedTaskTemplate?.id ?? "none"}`}
                       data={data}
                       annotation={annotation}
                       templateTaskId={selectedTaskTemplate?.id ?? null}
@@ -2099,6 +2108,7 @@ function App() {
                       )}
                       onClipStartChange={updateClipStart}
                       onClipEndChange={updateClipEnd}
+                      onClipRestore={restoreClipRange}
                       onClipReset={resetClipRange}
                       onSaved={handleAnnotationSaved}
                       onCompleted={(saved) => {
@@ -2116,7 +2126,7 @@ function App() {
                       onFrameChange={(frame) => {
                         seekFrame(Math.max(minFrame, Math.min(maxFrame, frame)));
                       }}
-                    />
+                    />}
                   </section>
 
                   <section className="telemetry-section">
@@ -2294,7 +2304,9 @@ const EpisodeListRow = memo(function EpisodeListRow({
   const activationHint = sourceState === "error"
     ? "单击选择；双击或按 Enter/空格重试读取"
     : "单击选择；双击或按 Enter/空格进入回放";
-  const episodeTitle = savedAnnotation
+  const completed = Boolean(savedAnnotation?.taskId && savedAnnotation.taskDescription.trim()
+    && savedAnnotation.segments.length && savedAnnotation.clipStartFrame !== null && savedAnnotation.clipEndFrame !== null);
+  const episodeTitle = completed && savedAnnotation
     ? `已标注 · ${savedAnnotation.trajectoryCode}；${activationHint}` : activationHint;
   return <div className="episode-entry">
     <button type="button" className={`episode-item${selected ? " selected" : ""}`}
@@ -2313,7 +2325,7 @@ const EpisodeListRow = memo(function EpisodeListRow({
       }}>
       <span className="episode-item-top">
         <Images size={16} /><strong>{episode.name}</strong>
-        {savedAnnotation ? <span className="episode-annotation-tag"
+        {completed && savedAnnotation ? <span className="episode-annotation-tag"
           title={`已标注 · ${savedAnnotation.trajectoryCode} · r${savedAnnotation.revision}`}
           aria-label="已标注">已标注</span> : null}
         <EpisodeSourceMark state={sourceState} /><ChevronRight size={15} />

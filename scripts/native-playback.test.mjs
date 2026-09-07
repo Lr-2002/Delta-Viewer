@@ -149,10 +149,21 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
         primary.dispatchEvent(new Event("waiting"));
       });
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => v.paused));
-      const pausedPosition = await page.locator("#position").textContent();
+      const paused = await page.evaluate(async () => {
+        // A frame submitted before pause can still report its presentation.
+        // Let that callback and React's paint finish before taking the snapshot.
+        await new Promise((resolvePaint) => requestAnimationFrame(() => requestAnimationFrame(resolvePaint)));
+        return {
+          position: document.getElementById("position").textContent,
+          mediaTimes: [...document.querySelectorAll("video")].map((video) => video.currentTime),
+        };
+      });
       await page.waitForTimeout(250);
-      assert.equal(await page.locator("#position").textContent(), pausedPosition,
+      assert.equal(await page.locator("#position").textContent(), paused.position,
         "buffering must freeze the shared timeline");
+      assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll("video")].map((video) => video.currentTime)),
+        paused.mediaTimes, "buffering must freeze the media clocks");
+      assert.ok(await page.evaluate(() => [...document.querySelectorAll("video")].every((video) => video.paused)));
       await page.evaluate(() => { delete document.querySelector("video").buffered; });
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => !v.paused));
       const before = await page.evaluate(() => window.__nativeStats.events.filter((e) => e.event === "seeking" && e.stream === "cam0").length);

@@ -28,6 +28,7 @@ interface Props {
   onFrameChange: (frame: number) => void;
   onClipStartChange: (frame: number) => void;
   onClipEndChange: (frame: number) => void;
+  onClipRestore: (startFrame: number, endFrame: number) => void;
   onClipReset: () => void;
   onSaved: (annotation: EpisodeAnnotation) => void;
   onCompleted: (annotation: EpisodeAnnotation) => void;
@@ -38,7 +39,7 @@ interface Props {
 
 export function SegmentAnnotationEditor({
   data, currentFrame, minFrame, maxFrame, clipStartFrame, clipEndFrame, busy,
-  annotation, templateTaskId, templateSegments, playbackControls, onFrameChange, onClipStartChange, onClipEndChange, onClipReset,
+  annotation, templateTaskId, templateSegments, playbackControls, onFrameChange, onClipStartChange, onClipEndChange, onClipRestore, onClipReset,
   onSaved, onError, onNotice,
   onCompleted,
   onActivity,
@@ -55,13 +56,15 @@ export function SegmentAnnotationEditor({
     let savedSegments = hasMatchingAnnotation && annotation.segments.length
       ? annotation.segments.map((segment, index) => ({ ...segment, id: `saved-${annotation.revision}-${index}` }))
       : [createSegment(minFrame, maxFrame, 0, `initial-${templateTaskId ?? "none"}`)];
-    if (!hasMatchingAnnotation) {
+    if (!hasMatchingAnnotation || !annotation.segments.length) {
       try {
         const draft = JSON.parse(localStorage.getItem(draftKey) ?? "null") as { segments?: Segment[]; clipStartFrame?: number; clipEndFrame?: number } | null;
         if (draft?.segments?.length && draft.segments.every((segment) => Number.isSafeInteger(segment.startFrame) && Number.isSafeInteger(segment.endFrame) && segment.startFrame >= minFrame && segment.endFrame <= maxFrame && segment.startFrame <= segment.endFrame)) {
           savedSegments = draft.segments;
-          if (Number.isSafeInteger(draft.clipStartFrame)) onClipStartChange(Math.max(minFrame, Math.min(maxFrame, draft.clipStartFrame!)));
-          if (Number.isSafeInteger(draft.clipEndFrame)) onClipEndChange(Math.max(minFrame, Math.min(maxFrame, draft.clipEndFrame!)));
+          if (Number.isSafeInteger(draft.clipStartFrame) && Number.isSafeInteger(draft.clipEndFrame)
+            && draft.clipStartFrame! <= draft.clipEndFrame!) {
+            onClipRestore(draft.clipStartFrame!, draft.clipEndFrame!);
+          }
         }
       } catch { localStorage.removeItem(draftKey); }
     }
@@ -103,7 +106,7 @@ export function SegmentAnnotationEditor({
       : `浏览器演示已保存 · r${annotation.revision}`;
 
   async function saveSegments() {
-    if (!annotation || !visibleSegments.length) return;
+    if (!hasMatchingAnnotation || !annotation || !visibleSegments.length) return;
     const coveredFrames = visibleSegments.reduce((sum, segment) => sum + segment.endFrame - segment.startFrame + 1, 0);
     const confirmed = await confirmAction(
       `当前任务：${annotation.taskId}\n片段数：${visibleSegments.length}\n覆盖帧数：${coveredFrames}\n\n确认保存并完成当前任务？`,
@@ -216,7 +219,7 @@ export function SegmentAnnotationEditor({
         <div className="segment-range-status">
           <span className="segment-draft-badge">保留范围 · 帧 {clipStartFrame}–{clipEndFrame} · {visibleSegments.length} 个片段</span>
           <span className={`segment-save-badge${!annotation || dirty ? " dirty" : ""}`}>{saveStatus}</span>
-          <button className="button button-primary segment-save-action" type="button" disabled={busy || saving || !annotation} onClick={() => void saveSegments()} title={!annotation ? "请先保存上方的数据标注" : "保存片段到本机标注"}>
+          <button className="button button-primary segment-save-action" type="button" disabled={busy || saving || !hasMatchingAnnotation} onClick={() => void saveSegments()} title={!hasMatchingAnnotation ? "请先保存上方的数据标注" : "保存片段到本机标注"}>
             <Save size={14} />{saving ? "保存中…" : dirty ? "保存片段" : "重新保存片段"}
           </button>
           <button className="icon-button" type="button" onClick={onClipReset} disabled={busy || (clipStartFrame === minFrame && clipEndFrame === maxFrame)} title="恢复完整轨迹" aria-label="恢复完整轨迹"><RotateCcw size={15} /></button>

@@ -343,8 +343,7 @@ if (!browserExecutable) {
     await page.getByRole("button", { name: "保存标注" }).click();
     await saveConfirmation;
     await page.getByText("已保存 · r1", { exact: true }).waitFor();
-    await page.locator(".episode-annotation-tag").waitFor();
-    assert.equal(await page.locator(".episode-annotation-tag").innerText(), "已标注");
+    assert.equal(await page.locator(".episode-annotation-tag").count(), 0);
     assert.equal(await page.getByLabel("轨迹编码").inputValue(), "整理餐具-001");
 
     const series = await page.locator(".chart-legend span[data-series-color]").evaluateAll((items) => (
@@ -571,6 +570,112 @@ if (!browserExecutable) {
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
         assert.deepEqual(consoleErrors, []);
         assert.deepEqual(pageErrors, []);
+      } finally {
+        await context.close();
+      }
+    }
+  });
+
+  test("read-only preview stays available while annotation restoration gates draft editors", async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    try {
+      const page = await context.newPage();
+      await page.addInitScript(() => {
+        window.annotationRestoreGate = new Promise((resolveGate) => { window.releaseAnnotationRestore = resolveGate; });
+      });
+      await page.route("**/src/lib/backend.ts", async (route) => {
+        const response = await route.fetch();
+        const original = await response.text();
+        const signature = "export async function loadEpisodeAnnotation(sourcePath) {";
+        assert.ok(original.includes(signature));
+        await route.fulfill({ response, body: original.replace(signature,
+          `${signature}\nwindow.annotationRestoreWaiting = true; await window.annotationRestoreGate;`) });
+      });
+      await registerDemoAccount(page, baseUrl, "annotation-restore-gate");
+      await page.waitForFunction(() => window.annotationRestoreWaiting === true);
+      assert.equal(await page.locator(".camera-grid").isVisible(), true);
+      assert.equal(await page.locator(".segment-editor-embedded").count(), 0);
+      assert.equal(await page.getByRole("button", { name: "保存标注", exact: true }).count(), 0);
+      assert.equal(await page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("dohc-viewer.segment-draft."))), false);
+      await page.evaluate(() => window.releaseAnnotationRestore());
+      await page.locator(".segment-editor-embedded").waitFor();
+      assert.equal(await page.getByRole("button", { name: "保存标注", exact: true }).count(), 1);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("saved trims survive re-entry and catalog completion requires saved segments", async () => {
+    for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
+      const context = await browser.newContext({ viewport });
+      try {
+        const page = await context.newPage();
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await registerDemoAccount(page, baseUrl, `trim-reentry-${viewport.width}`);
+        await page.locator(".segment-editor-embedded").waitFor();
+        assert.equal(await page.locator(".episode-annotation-tag").count(), 0);
+        let confirmation = acceptNextSaveConfirmation(page);
+        await page.getByRole("button", { name: "保存标注", exact: true }).click();
+        await confirmation;
+        await page.getByText("已保存 · r1", { exact: true }).waitFor();
+        assert.equal(await page.locator(".episode-annotation-tag").count(), 0);
+
+        await page.getByLabel("裁剪起始帧").fill("30");
+        await page.getByLabel("裁剪结束帧").fill("90");
+        await page.getByText("保留范围 · 帧 30–90 · 1 个片段", { exact: true }).waitFor();
+        await page.locator(".episode-item").first().press("Enter");
+        await page.getByRole("button", { name: "仍要标注" }).click({ timeout: 2_000 }).catch(() => undefined);
+        await page.getByText("保留范围 · 帧 30–90 · 1 个片段", { exact: true }).waitFor();
+        assert.equal(await page.locator(".episode-annotation-tag").count(), 0);
+        confirmation = acceptNextSaveConfirmation(page);
+        await page.getByRole("button", { name: "保存片段", exact: true }).click();
+        await confirmation;
+        await page.getByText("已保存 · r2", { exact: true }).waitFor();
+        await page.locator(".episode-annotation-tag").waitFor();
+
+        const stored = await page.evaluate(async () => {
+          const backend = await import("/src/lib/backend.ts");
+          const [{ annotation }] = await backend.listAnnotatedEpisodes();
+          // A stale draft from the previous full-range preview must never win
+          // over the saved revision when an episode is reopened.
+          localStorage.setItem(`dohc-viewer.segment-draft.v1:${annotation.episodeRoot}:${annotation.taskId}`, JSON.stringify({
+            clipStartFrame: 0, clipEndFrame: 195,
+            segments: [{ id: "stale", startFrame: 0, endFrame: 195, title: "stale", note: "", children: [] }],
+          }));
+          return annotation;
+        });
+        assert.equal(stored.clipStartFrame, 30);
+        assert.equal(stored.clipEndFrame, 90);
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await page.locator(".episode-item").first().press("Enter");
+          await page.getByRole("button", { name: "仍要标注" }).click({ timeout: 2_000 }).catch(() => undefined);
+          await page.getByText("保留范围 · 帧 30–90 · 1 个片段", { exact: true }).waitFor();
+          assert.equal(await page.getByLabel("裁剪起始帧").inputValue(), "30");
+          assert.equal(await page.getByLabel("裁剪结束帧").inputValue(), "90");
+          assert.match(await page.locator(".segment-frame-readout").innerText(), /帧 30 /);
+          assert.equal(await page.locator(".episode-annotation-tag").count(), 1);
+        }
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+        mkdirSync(resolve(root, "artifacts/annotation-reentry"), { recursive: true });
+        await page.screenshot({ path: resolve(root, `artifacts/annotation-reentry/saved-${viewport.width}.png`), fullPage: true });
+
+        await page.getByRole("button", { name: "创建任务" }).click();
+        await page.getByLabel("新任务名称").fill("新任务验收");
+        await page.locator(".task-create-form button[type=submit]").click();
+        await page.waitForFunction(() => document.querySelector('input[aria-label="轨迹编码"]')?.value === "新任务验收-001");
+        assert.equal(await page.getByRole("button", { name: "保存片段", exact: true }).isDisabled(), true);
+        confirmation = acceptNextSaveConfirmation(page);
+        await page.getByRole("button", { name: "保存标注", exact: true }).click();
+        await confirmation;
+        await page.getByText("已保存 · r3", { exact: true }).waitFor();
+        assert.equal(await page.locator(".episode-annotation-tag").count(), 0);
+        confirmation = acceptNextSaveConfirmation(page);
+        await page.getByRole("button", { name: "保存片段", exact: true }).click();
+        await confirmation;
+        await page.getByText("已保存 · r4", { exact: true }).waitFor();
+        assert.equal(await page.locator(".episode-annotation-tag").count(), 1);
+        assert.deepEqual(errors, []);
       } finally {
         await context.close();
       }
