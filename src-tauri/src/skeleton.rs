@@ -125,8 +125,11 @@ fn load_skeleton_archive(
         return Err(AppError::Message("骨架数组为空".into()));
     }
 
-    let frame_ids = read_frame_ids(&mut archive, &names, frame_count)
-        .unwrap_or_else(|| fallback_frame_ids(states, frame_count));
+    let (frame_ids, uses_timeline_frame_ids) =
+        match read_frame_ids(&mut archive, &names, frame_count) {
+            Some(frame_ids) => (frame_ids, true),
+            None => (fallback_frame_ids(states, frame_count), false),
+        };
     let frames = joints
         .into_iter()
         .zip(frame_ids)
@@ -140,6 +143,7 @@ fn load_skeleton_archive(
             .to_string(),
         frame_count: frame_count as u64,
         joint_count: joint_count as u64,
+        uses_timeline_frame_ids,
         frames,
     })
 }
@@ -353,9 +357,33 @@ mod tests {
         assert_eq!(skeleton.source_name, "smpl_skeleton.npz");
         assert_eq!(skeleton.frame_count, 2);
         assert_eq!(skeleton.joint_count, 24);
+        assert!(skeleton.uses_timeline_frame_ids);
         assert_eq!(skeleton.frames[0].frame_id, 42);
         assert_eq!(skeleton.frames[1].frame_id, 44);
         assert_eq!(skeleton.frames[1].joints[23], [33.0, 33.1, 33.2]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn marks_unlabelled_processed_frames_for_duration_alignment() {
+        let root = test_root("duration-aligned");
+        fs::create_dir_all(&root).unwrap();
+        let archive_path = root.join("smpl_skeleton.npz");
+        let joints = Array3::from_shape_fn((3, 24, 3), |(frame, joint, axis)| {
+            (frame * 100 + joint * 10 + axis) as f32 / 10.0
+        });
+        let mut archive = NpzWriter::new(File::create(&archive_path).unwrap());
+        archive.add_array("joints", &joints).unwrap();
+        archive.finish().unwrap();
+
+        let (skeleton, error) =
+            load_optional_skeleton(&root, &[state(10), state(11)], &AtomicBool::new(false))
+                .expect("load should not fail");
+        let skeleton = skeleton.expect("skeleton should load");
+        assert_eq!(error, None);
+        assert!(!skeleton.uses_timeline_frame_ids);
+        assert_eq!(skeleton.frames[0].frame_id, 0);
+        assert_eq!(skeleton.frames[2].frame_id, 2);
         fs::remove_dir_all(root).unwrap();
     }
 

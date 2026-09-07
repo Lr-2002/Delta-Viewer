@@ -107,6 +107,7 @@ fn serve_connection(
     mut stream: TcpStream,
     routes: &Arc<Mutex<HashMap<String, MediaRoute>>>,
 ) -> io::Result<()> {
+    stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     let request = read_request(&stream)?;
@@ -191,7 +192,30 @@ fn serve_connection(
         return Ok(());
     }
     file.seek(SeekFrom::Start(start))?;
-    io::copy(&mut file.take(length), &mut stream)?;
+    copy_media_range(&mut file, &mut stream, length)?;
+    Ok(())
+}
+
+// Amortize SMB reads without caching a recording or reading beyond the Range.
+fn copy_media_range(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    length: u64,
+) -> io::Result<()> {
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    let mut remaining = length;
+    while remaining > 0 {
+        let wanted = remaining.min(buffer.len() as u64) as usize;
+        let count = reader.read(&mut buffer[..wanted])?;
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "media source truncated",
+            ));
+        }
+        writer.write_all(&buffer[..count])?;
+        remaining -= count as u64;
+    }
     Ok(())
 }
 
@@ -320,13 +344,76 @@ fn write_headers(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_range, MediaStreamServer};
+    use super::{copy_media_range, parse_range, MediaStreamServer};
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::path::PathBuf;
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn media_copy_is_bounded_and_preserves_range_tail() {
+        let bytes: Vec<u8> = (0..2 * 1024 * 1024 + 37).map(|i| (i % 251) as u8).collect();
+        let mut input = bytes.as_slice();
+        let mut output = Vec::new();
+        copy_media_range(&mut input, &mut output, bytes.len() as u64 - 11).unwrap();
+        assert_eq!(output, bytes[..bytes.len() - 11]);
+        assert_eq!(input, &bytes[bytes.len() - 11..]);
+        assert!(copy_media_range(&mut input, &mut Vec::new(), 12).is_err());
+    }
+
+    #[test]
+    fn disconnected_player_stops_reading_the_source() {
+        struct Disconnected;
+        impl Write for Disconnected {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = vec![0; 3 * 1024 * 1024];
+        let mut input = bytes.as_slice();
+        assert!(copy_media_range(&mut input, &mut Disconnected, bytes.len() as u64).is_err());
+        assert_eq!(input.len(), 2 * 1024 * 1024);
+    }
+
+    #[test]
+    #[ignore = "requires DOHC_MP4_SAMPLE_ROOT and DOHC_MEDIA_TEST_CONFIG; read-only browser diagnostic"]
+    fn serves_nas_sample_for_browser() {
+        let root = PathBuf::from(std::env::var_os("DOHC_MP4_SAMPLE_ROOT").unwrap());
+        let config = PathBuf::from(std::env::var_os("DOHC_MEDIA_TEST_CONFIG").unwrap());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
+        let server = MediaStreamServer::start().unwrap();
+        let mut sources = serde_json::Map::new();
+        for (name, stream) in manifest["streams"].as_object().unwrap() {
+            let Some(segments) = stream["segments"].as_array() else {
+                continue;
+            };
+            let urls: Vec<String> = segments
+                .iter()
+                .map(|segment| {
+                    server
+                        .register(&root.join(segment["path"].as_str().unwrap()))
+                        .unwrap()
+                })
+                .collect();
+            sources.insert(name.clone(), serde_json::json!(urls));
+        }
+        fs::write(&config, serde_json::to_vec(&sources).unwrap()).unwrap();
+        let done = config.with_extension("done");
+        let started = std::time::Instant::now();
+        while !done.exists() && started.elapsed() < std::time::Duration::from_secs(180) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(
+            done.exists(),
+            "browser diagnostic did not finish within 180 seconds"
+        );
+    }
 
     #[test]
     fn parses_browser_byte_ranges() {

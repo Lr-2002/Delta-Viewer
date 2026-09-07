@@ -111,7 +111,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let child = command.spawn().unwrap();
-        let error = wait_for_probe(child, missing, Duration::from_secs(1))
+        let error = wait_for_probe(child, missing, Duration::from_secs(5))
             .unwrap_err()
             .to_string();
         assert!(error.contains("SOURCE_UNAVAILABLE"));

@@ -63,7 +63,8 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libssl-dev \
-            patchelf
+            patchelf \
+            ffmpeg
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -73,6 +74,9 @@ jobs:
 
       - name: Run playback regression coverage
         run: pnpm test:playback
+
+      - name: Run native MP4 playback regression coverage
+        run: pnpm test:native-playback
 
       - name: Run release workflow regression coverage
         run: pnpm check:release-scripts

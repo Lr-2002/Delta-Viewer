@@ -1175,7 +1175,7 @@ fn cancel_task(control: State<'_, TaskControl>, operation_id: u64) -> bool {
 }
 
 #[tauri::command]
-fn get_video_source(
+async fn get_video_source(
     app: AppHandle,
     auth: State<'_, AuthState>,
     media_stream_server: State<'_, Option<MediaStreamServer>>,
@@ -1183,43 +1183,53 @@ fn get_video_source(
     stream: String,
 ) -> Result<VideoSource, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let mut source = source::video_source(Path::new(&root), &stream, Some(&app))
-        .map_err(|error| error.to_string())?;
-    let scope = app.asset_protocol_scope();
-    for path in &mut source.paths {
-        let file_path = PathBuf::from(path.as_str());
-        scope
-            .allow_file(&file_path)
+    let media_stream_server = media_stream_server.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut source = source::video_source(Path::new(&root), &stream, Some(&app))
             .map_err(|error| error.to_string())?;
-        if let Some(server) = media_stream_server.inner().as_ref() {
-            *path = server
-                .register(&file_path)
+        let scope = app.asset_protocol_scope();
+        for path in &mut source.paths {
+            let file_path = PathBuf::from(path.as_str());
+            scope
+                .allow_file(&file_path)
                 .map_err(|error| error.to_string())?;
+            if let Some(server) = media_stream_server.as_ref() {
+                *path = server
+                    .register(&file_path)
+                    .map_err(|error| error.to_string())?;
+            }
         }
-    }
-    Ok(source)
+        Ok(source)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn get_jpeg_stream_source(
+async fn get_jpeg_stream_source(
     auth: State<'_, AuthState>,
     media_stream_server: State<'_, Option<MediaStreamServer>>,
     root: String,
     stream: String,
 ) -> Result<Option<String>, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    let Some(directory) = source::jpeg_stream_directory(Path::new(&root), &stream)
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(None);
-    };
-    let Some(server) = media_stream_server.inner().as_ref() else {
-        return Ok(None);
-    };
-    server
-        .register_jpeg_directory(&directory)
-        .map(Some)
-        .map_err(|error| error.to_string())
+    let media_stream_server = media_stream_server.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(directory) = source::jpeg_stream_directory(Path::new(&root), &stream)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let Some(server) = media_stream_server.as_ref() else {
+            return Ok(None);
+        };
+        server
+            .register_jpeg_directory(&directory)
+            .map(Some)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

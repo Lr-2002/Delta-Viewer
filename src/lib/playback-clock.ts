@@ -25,8 +25,34 @@ export function playbackStreamsSettled(
   return streamNames.every((streamName) => settledFrameByStream.get(streamName) === frameId);
 }
 
+/**
+ * Continuous playback follows the primary camera. Secondary streams may
+ * arrive later, but seek/pause callers can still use playbackStreamsSettled
+ * when exact multi-camera alignment is required.
+ */
+export function playbackClockReady(
+  streamNames: readonly string[],
+  primaryStreamName: string | null,
+  settledFrameByStream: ReadonlyMap<string, number>,
+  frameId: number,
+): boolean {
+  const clockStreams = primaryStreamName && streamNames.includes(primaryStreamName)
+    ? [primaryStreamName]
+    : streamNames;
+  return playbackStreamsSettled(clockStreams, settledFrameByStream, frameId);
+}
+
 export function sequentialFallbackFrame(frameId: number): number {
   return frameId;
+}
+
+export function clampStreamFrame(
+  frameId: number,
+  firstFrame: number | null,
+  lastFrame: number | null,
+): number {
+  if (firstFrame === null || lastFrame === null || firstFrame > lastFrame) return frameId;
+  return Math.max(firstFrame, Math.min(lastFrame, frameId));
 }
 
 export function sourceAlignedTimelineFrame(
@@ -54,6 +80,41 @@ export function nextPlaybackFrame(
 export function primaryPlaybackFrameStep(timelineFps: number, primarySourceFps: number | null): number {
   if (!primarySourceFps || primarySourceFps >= timelineFps) return 1;
   return Math.max(1, Math.round(timelineFps / primarySourceFps));
+}
+
+export function nativeVideoTimelineFrame(
+  mediaTimeSeconds: number,
+  segmentIndex: number,
+  segmentSeconds: number,
+  timelineStartFrame: number,
+  timelineFps: number,
+  sourceFps: number,
+  mediaFps: number,
+): number {
+  return Math.round(nativeVideoTimelinePosition(
+    mediaTimeSeconds,
+    segmentIndex,
+    segmentSeconds,
+    timelineStartFrame,
+    timelineFps,
+    sourceFps,
+    mediaFps,
+  ));
+}
+
+export function nativeVideoTimelinePosition(
+  mediaTimeSeconds: number,
+  segmentIndex: number,
+  segmentSeconds: number,
+  timelineStartFrame: number,
+  timelineFps: number,
+  sourceFps: number,
+  mediaFps: number,
+): number {
+  const mediaClockRatio = Math.max(sourceFps, 1) / Math.max(mediaFps, 1);
+  const timelineSeconds = Math.max(0, segmentIndex) * Math.max(segmentSeconds, 0)
+    + Math.max(0, mediaTimeSeconds) / mediaClockRatio;
+  return timelineStartFrame + timelineSeconds * Math.max(timelineFps, 1);
 }
 
 export function secondaryPlaybackFrame(

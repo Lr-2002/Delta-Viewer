@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from "react";
 import {
   Activity,
   BookOpenText,
@@ -91,7 +91,7 @@ import {
   playbackAdvanceTimestamp,
   playbackFrameDue,
   playbackFrameDurationMs,
-  playbackStreamsSettled,
+  playbackClockReady,
   primaryPlaybackFrameStep,
   playbackStartFrame,
 } from "./lib/playback-clock";
@@ -337,8 +337,11 @@ function App() {
     total: 0,
   });
   const frameRef = useRef(0);
+  const skeletonFramePresenterRef = useRef<((frameId: number) => void) | null>(null);
+  const primaryNativeClockRef = useRef(false);
   const settledFrameByStreamRef = useRef(new Map<string, number>());
   const [playbackPrimed, setPlaybackPrimed] = useState(false);
+  const [primaryBuffering, setPrimaryBuffering] = useState(false);
   const [sourceFpsByStream, setSourceFpsByStream] = useState<Record<string, number>>({});
   const didAutoLoad = useRef(false);
   const operationScopeRef = useRef(new OperationScope());
@@ -360,8 +363,14 @@ function App() {
   const primaryStreamName = availableStreams.find((stream) => stream.name === "cam0")?.name
     ?? availableStreams[0]?.name
     ?? null;
+  const primaryStream = primaryStreamName
+    ? availableStreams.find((stream) => stream.name === primaryStreamName) ?? null
+    : null;
+  const primaryPlaybackEndFrame = Math.min(
+    clipEndFrame,
+    primaryStream?.lastFrame ?? clipEndFrame,
+  );
   const playbackFps = fpsOverride ?? estimatedFps;
-  const remotePlaybackSource = scan?.volume.driveType === "remote";
   const secondaryReadAheadStride = Math.max(1, Math.round(playbackFps / 10));
   const primarySourceFps = primaryStreamName ? sourceFpsByStream[primaryStreamName] ?? null : null;
   const handleFrameSettled = useCallback((streamName: string, frameId: number) => {
@@ -388,6 +397,33 @@ function App() {
       return current[streamName] === fps ? current : { ...current, [streamName]: fps };
     });
   }, []);
+  const handlePrimaryNativeClockChange = useCallback((streamName: string, active: boolean) => {
+    if (streamName !== primaryStreamName) return;
+    primaryNativeClockRef.current = active;
+  }, [primaryStreamName]);
+  const handleNativeBufferingChange = useCallback((streamName: string, buffering: boolean) => {
+    if (streamName === primaryStreamName) setPrimaryBuffering(buffering);
+  }, [primaryStreamName]);
+  const handleSkeletonFramePresenterChange = useCallback((
+    presenter: ((frameId: number) => void) | null,
+  ) => {
+    skeletonFramePresenterRef.current = presenter;
+  }, []);
+  const handlePrimaryFramePresented = useCallback((
+    streamName: string,
+    frameId: number,
+    timelinePosition: number,
+  ) => {
+    if (streamName !== primaryStreamName || !primaryNativeClockRef.current) return;
+    const next = Math.max(clipStartFrame, Math.min(primaryPlaybackEndFrame, frameId));
+    const presentedPosition = Math.max(clipStartFrame, Math.min(primaryPlaybackEndFrame, timelinePosition));
+    skeletonFramePresenterRef.current?.(presentedPosition);
+    if (next !== frameRef.current) {
+      frameRef.current = next;
+      setCurrentFrame(next);
+    }
+    if (next >= primaryPlaybackEndFrame) setPlaying(false);
+  }, [clipStartFrame, primaryPlaybackEndFrame, primaryStreamName]);
 
   function beginOperation(): OperationToken | null {
     const operation = operationScopeRef.current.begin();
@@ -595,6 +631,7 @@ function App() {
 
   useEffect(() => {
     setSourceFpsByStream({});
+    primaryNativeClockRef.current = false;
   }, [data?.summary.root]);
 
   useEffect(() => {
@@ -641,20 +678,29 @@ function App() {
 
   useEffect(() => {
     if (!playing || !data) return;
-    const playbackEnd = Math.min(clipEndFrame, getMaxFrame(data));
+    const playbackEnd = Math.min(primaryPlaybackEndFrame, getMaxFrame(data));
     const frameStep = primaryPlaybackFrameStep(playbackFps, primarySourceFps);
     const frameDurationMs = playbackFrameDurationMs(playbackFps / frameStep, speed);
     let lastAdvanceTimeMs = performance.now() - frameDurationMs;
     let animationFrame = 0;
 
     const tick = (nowMs: number) => {
+      // Native MP4 presentation is the authoritative playback clock. Its
+      // callback advances the timeline, while the skeleton reads the same
+      // video's continuous currentTime without ever gating video playback.
+      if (primaryNativeClockRef.current) {
+        lastAdvanceTimeMs = nowMs;
+        animationFrame = window.requestAnimationFrame(tick);
+        return;
+      }
       const current = frameRef.current;
       const frameIntervalElapsed = playbackFrameDue(nowMs - lastAdvanceTimeMs, frameDurationMs);
-      // Keep the shared timeline on the last frame until every stream has
-      // presented it. This prevents a slow SMB stream from visibly lagging
-      // behind the primary camera during continuous playback.
-      const frameReady = playbackStreamsSettled(
+      // The primary camera is the playback clock. Secondary NAS/local streams
+      // keep their latest decoded frame and catch up asynchronously, so one
+      // slow stream cannot pause an otherwise playable MP4.
+      const frameReady = playbackClockReady(
         availableStreams.map((stream) => stream.name),
+        primaryStreamName,
         settledFrameByStreamRef.current,
         current,
       );
@@ -671,6 +717,7 @@ function App() {
           frameDurationMs,
         );
         frameRef.current = next;
+        skeletonFramePresenterRef.current?.(next);
         setCurrentFrame(next);
       }
       if (next >= playbackEnd) {
@@ -682,7 +729,7 @@ function App() {
 
     animationFrame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [availableStreams, clipEndFrame, data, playbackFps, playing, primarySourceFps, speed]);
+  }, [availableStreams, data, playbackFps, playing, primaryPlaybackEndFrame, primarySourceFps, primaryStreamName, speed]);
 
   async function openSource(path: string, autoLoad = false, assignment = assignedTasks) {
     const owner = beginOperation();
@@ -1059,13 +1106,14 @@ function App() {
 
   const handleFrameUnavailable = useCallback((streamName: string, frameId: number) => {
     if (!data) return;
+    if (streamName !== primaryStreamName) return;
     const episode = data.summary;
     const stream = data.summary.streams.find((candidate) => candidate.name === streamName);
     const message = `FRAME_UNAVAILABLE: ${episode.name} 的 ${stream?.label ?? streamName} 帧 ${frameId} 不可用，已停止加载。请在左侧跳过该数据。`;
     setEpisodeSourceStates((current) => ({ ...current, [data.summary.root]: "error" }));
     resetLoadedData();
     void reportFailure("load_frame", new Error(message), data.summary.root);
-  }, [data]);
+  }, [data, primaryStreamName]);
 
   function resetLoadedData() {
     settledFrameByStreamRef.current.clear();
@@ -1162,6 +1210,7 @@ function App() {
     // The current frame is already the synchronization anchor. Read-ahead is
     // opportunistic and must never delay starting playback on local or NAS data.
     setPlaybackPrimed(true);
+    setPrimaryBuffering(false);
   }
 
   function seekFrame(frame: number) {
@@ -1185,7 +1234,11 @@ function App() {
     // mistake a fresh middle seek for the previous end frame and restart the
     // first play attempt from the clip beginning.
     if (!playing) {
-      const startFrame = playbackStartFrame(frameRef.current, clipStartFrame, clipEndFrame);
+      const startFrame = playbackStartFrame(
+        frameRef.current,
+        clipStartFrame,
+        primaryPlaybackEndFrame,
+      );
       if (startFrame !== frameRef.current) {
         frameRef.current = startFrame;
         setCurrentFrame(startFrame);
@@ -1560,7 +1613,12 @@ function App() {
     () => statusForRange(report, clipRange),
     [clipEndFrame, clipStartFrame, report],
   );
-  const visibleEpisodes = scan?.episodes.filter((episode) => !skippedEpisodeRoots[episode.root]) ?? [];
+  const visibleEpisodes = useMemo(
+    () => scan?.episodes.filter((episode) => !skippedEpisodeRoots[episode.root]) ?? [],
+    [scan?.episodes, skippedEpisodeRoots],
+  );
+  const episodeActions = useRef({ select: selectEpisode, load: loadEpisodeForReview, skip: skipEpisode });
+  episodeActions.current = { select: selectEpisode, load: loadEpisodeForReview, skip: skipEpisode };
   const skippedEpisodeCount = (scan?.episodes.length ?? 0) - visibleEpisodes.length;
   const selectedTaskTemplate = tasks.find((task) => task.id === (selectedTaskId ?? annotation?.taskId)) ?? null;
 
@@ -1830,83 +1888,12 @@ function App() {
           {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
           <div className="episode-list">
             {visibleEpisodes.length ? (
-              visibleEpisodes.map((episode) => {
-                const sourceState = episodeSourceStates[episode.root] ?? "available";
-                const savedAnnotation = annotationTags[episode.root];
-                const activationHint = sourceState === "error"
-                  ? "单击选择；双击或按 Enter/空格重试读取"
-                  : "单击选择；双击或按 Enter/空格进入回放";
-                const episodeTitle = savedAnnotation
-                  ? `已标注 · ${savedAnnotation.trajectoryCode}；${activationHint}`
-                  : activationHint;
-                return (
-                  <div className="episode-entry" key={episode.root}>
-                    <button
-                      type="button"
-                      className={`episode-item${selectedEpisode?.root === episode.root ? " selected" : ""}`}
-                      ref={(element) => {
-                        if (element) episodeButtonRefs.current.set(episode.root, element);
-                        else episodeButtonRefs.current.delete(episode.root);
-                      }}
-                      aria-pressed={selectedEpisode?.root === episode.root}
-                      disabled={busy}
-                      title={episodeTitle}
-                      aria-label={`${episode.name}：${activationHint}`}
-                      onClick={() => selectEpisode(episode)}
-                      onDoubleClick={() => void loadEpisodeForReview(episode, false, true)}
-                      onKeyDown={(event) => {
-                        if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
-                        event.preventDefault();
-                        void loadEpisodeForReview(episode, false, true);
-                      }}
-                    >
-                      <span className="episode-item-top">
-                        <Images size={16} />
-                        <strong>{episode.name}</strong>
-                        {savedAnnotation ? (
-                          <span
-                            className="episode-annotation-tag"
-                            title={`已标注 · ${savedAnnotation.trajectoryCode} · r${savedAnnotation.revision}`}
-                            aria-label="已标注"
-                          >
-                            已标注
-                          </span>
-                        ) : null}
-                        <EpisodeSourceMark state={sourceState} />
-                        <ChevronRight size={15} />
-                      </span>
-                      <span className="episode-item-meta">
-                        {episode.indexed
-                          ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
-                          : episode.stateCount
-                            ? `${episode.stateCount} states · 快速预览`
-                            : "待读取"}
-                      </span>
-                      <span className="stream-dots">
-                        {episode.streams.map((stream) => (
-                          <i
-                            className={episode.indexed
-                              ? stream.frameCount ? "dot-ok" : "dot-error"
-                              : stream.frameCount ? "dot-ok" : ""}
-                            key={stream.name}
-                            title={stream.label}
-                          />
-                        ))}
-                      </span>
-                    </button>
-                    <button
-                      className="icon-button episode-skip"
-                      type="button"
-                      onClick={() => skipEpisode(episode)}
-                      disabled={busy}
-                      title="跳过数据"
-                      aria-label={`跳过 ${episode.name}`}
-                    >
-                      <EyeOff size={15} />
-                    </button>
-                  </div>
-                );
-              })
+              visibleEpisodes.map((episode) => <EpisodeListRow
+                key={episode.root} episode={episode} selected={selectedEpisode?.root === episode.root}
+                sourceState={episodeSourceStates[episode.root] ?? "available"}
+                savedAnnotation={annotationTags[episode.root]} busy={busy}
+                actions={episodeActions} buttonRefs={episodeButtonRefs}
+              />)
             ) : skippedEpisodeCount ? (
               <div className="sidebar-empty sidebar-skipped">
                 <EyeOff size={23} />
@@ -1998,34 +1985,47 @@ function App() {
                             key={stream.name}
                             root={data.summary.root}
                             stream={stream}
-                            // All streams use the same timeline frame. The
-                            // bounded cache and readiness barrier handle slow
-                            // network streams without introducing a preview
-                            // frame offset between cameras.
+                            // The timeline stays exact for the primary camera;
+                            // secondary playback previews may be quantized,
+                            // while paused/seeking frames remain exact.
                             frameId={currentFrame}
+                            isPrimary={stream.name === primaryStreamName}
                             playing={playing}
-                            nativePlaybackEnabled={playing && playbackPrimed}
-                            readAheadEnabled={playing && (
-                              stream.name === primaryStreamName || remotePlaybackSource
-                            )}
+                            nativePlaybackEnabled={playing && playbackPrimed
+                              && (stream.name === primaryStreamName || !primaryBuffering)}
+                            readAheadEnabled={playing}
                             readAheadFrames={stream.name === primaryStreamName
                               ? 12
                               : REMOTE_SECONDARY_READ_AHEAD_FRAMES}
                             readAheadStride={stream.name === primaryStreamName
                               ? 1
                               : secondaryReadAheadStride}
-                            playbackEndFrame={clipEndFrame}
+                            playbackEndFrame={stream.name === primaryStreamName
+                              ? primaryPlaybackEndFrame
+                              : clipEndFrame}
                             playbackFps={playbackFps}
                             speed={speed}
                             className={`camera-${index}`}
                             onFrameSettled={handleFrameSettled}
                             onFrameUnavailable={handleFrameUnavailable}
                             onSourceFpsChange={handleSourceFpsChange}
+                            onNativeClockChange={handlePrimaryNativeClockChange}
+                            onFramePresented={handlePrimaryFramePresented}
+                            onBufferingChange={handleNativeBufferingChange}
                           />
                         ))}
                       </div>
                       <div className="skeleton-side-panel">
-                        {data.skeleton ? <SkeletonViewer skeleton={data.skeleton} frameId={currentFrame} /> : null}
+                        {data.skeleton ? (
+                          <SkeletonViewer
+                            skeleton={data.skeleton}
+                            frameId={currentFrame}
+                            timelineStartFrame={primaryStream?.firstFrame ?? minFrame}
+                            timelineEndFrame={primaryStream?.lastFrame ?? maxFrame}
+                            playing={playing}
+                            onFramePresenterChange={handleSkeletonFramePresenterChange}
+                          />
+                        ) : null}
                         {!data.skeleton && data.skeletonError ? (
                           <section className="skeleton-load-error" aria-label="骨架数据">
                             <strong>骨架数据不可用</strong>
@@ -2273,6 +2273,62 @@ function AnnotationWarningGate({
     </section>
   );
 }
+
+// Keep the NAS catalog out of the per-frame video render work. Action refs
+// retain current application state without invalidating every row on a tick.
+const EpisodeListRow = memo(function EpisodeListRow({
+  episode, selected, sourceState, savedAnnotation, busy, actions, buttonRefs,
+}: {
+  episode: EpisodeSummary;
+  selected: boolean;
+  sourceState: EpisodeSourceState;
+  savedAnnotation?: EpisodeAnnotation;
+  busy: boolean;
+  actions: RefObject<{
+    select: (episode: EpisodeSummary) => void;
+    load: (episode: EpisodeSummary, imported: boolean, focus: boolean) => Promise<void>;
+    skip: (episode: EpisodeSummary) => void;
+  }>;
+  buttonRefs: RefObject<Map<string, HTMLButtonElement>>;
+}) {
+  const activationHint = sourceState === "error"
+    ? "单击选择；双击或按 Enter/空格重试读取"
+    : "单击选择；双击或按 Enter/空格进入回放";
+  const episodeTitle = savedAnnotation
+    ? `已标注 · ${savedAnnotation.trajectoryCode}；${activationHint}` : activationHint;
+  return <div className="episode-entry">
+    <button type="button" className={`episode-item${selected ? " selected" : ""}`}
+      ref={(element) => {
+        if (element) buttonRefs.current.set(episode.root, element);
+        else buttonRefs.current.delete(episode.root);
+      }}
+      aria-pressed={selected} disabled={busy} title={episodeTitle}
+      aria-label={`${episode.name}：${activationHint}`}
+      onClick={() => actions.current.select(episode)}
+      onDoubleClick={() => void actions.current.load(episode, false, true)}
+      onKeyDown={(event) => {
+        if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        void actions.current.load(episode, false, true);
+      }}>
+      <span className="episode-item-top">
+        <Images size={16} /><strong>{episode.name}</strong>
+        {savedAnnotation ? <span className="episode-annotation-tag"
+          title={`已标注 · ${savedAnnotation.trajectoryCode} · r${savedAnnotation.revision}`}
+          aria-label="已标注">已标注</span> : null}
+        <EpisodeSourceMark state={sourceState} /><ChevronRight size={15} />
+      </span>
+      <span className="episode-item-meta">{episode.indexed
+        ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
+        : episode.stateCount ? `${episode.stateCount} states · 快速预览` : "待读取"}</span>
+      <span className="stream-dots">{episode.streams.map((stream) => <i
+        className={episode.indexed ? stream.frameCount ? "dot-ok" : "dot-error" : stream.frameCount ? "dot-ok" : ""}
+        key={stream.name} title={stream.label} />)}</span>
+    </button>
+    <button className="icon-button episode-skip" type="button" onClick={() => actions.current.skip(episode)}
+      disabled={busy} title="跳过数据" aria-label={`跳过 ${episode.name}`}><EyeOff size={15} /></button>
+  </div>;
+});
 
 function EpisodeSourceMark({ state }: { state: EpisodeSourceState }) {
   if (state === "loading") {

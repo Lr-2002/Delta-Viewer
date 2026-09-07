@@ -438,6 +438,7 @@ export interface SkeletonSeries {
   sourceName: string;
   frameCount: number;
   jointCount: number;
+  usesTimelineFrameIds?: boolean;
   frames: SkeletonFrame[];
 }
 

@@ -121,6 +121,7 @@ export function createDemoSkeleton(fixture: DemoFixture): SkeletonSeries {
     sourceName: "smpl_skeleton.npz",
     frameCount: fixture.episode.stateCount,
     jointCount: DEMO_SMPL_JOINTS.length,
+    usesTimelineFrameIds: false,
     frames: Array.from({ length: fixture.episode.stateCount }, (_, frameId) => {
       const phase = frameId / 30;
       return {

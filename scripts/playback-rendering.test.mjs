@@ -122,6 +122,18 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
       Number(element.textContent?.match(/帧\s+(\d+)/)?.[1])
     ));
     assert.ok(advancedMiddleFrame > middleFrame, `${middleFrame} did not advance from the middle`);
+    for (let sample = 0; sample < 5; sample += 1) {
+      await page.waitForTimeout(40);
+      const presented = await page.evaluate(() => ({
+        skeleton: Number(document.querySelector(".skeleton-viewer canvas")?.dataset.frameId),
+        timeline: Number(document.querySelector(".frame-counter")?.textContent?.match(/帧\s+(\d+)/)?.[1]),
+      }));
+      assert.equal(
+        presented.skeleton,
+        presented.timeline,
+        `skeleton frame ${presented.skeleton} drifted from primary timeline ${presented.timeline}`,
+      );
+    }
     await segmentTrack.click({ position: { x: trackBox.width * 0.75, y: trackBox.height * 0.5 } });
     await page.getByRole("button", { name: "播放" }).waitFor();
     const playingSeekFrame = await page.locator(".frame-counter").evaluate((element) => (
