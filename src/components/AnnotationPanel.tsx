@@ -61,6 +61,7 @@ export function AnnotationPanel({
   const [draftRestored, setDraftRestored] = useState(false);
   const previewRequest = useRef(0);
   const previousSourcePath = useRef<string | null>(null);
+  const previousAnnotation = useRef<EpisodeAnnotation | null>(null);
   const taskIds = tasks.map((task) => task.id).join("\u0000");
   const draftKey = `dohc-viewer.annotation-draft.v1:${currentUser?.username ?? "offline"}:${sourcePath}`;
 
@@ -68,7 +69,9 @@ export function AnnotationPanel({
     let active = true;
     const sourceChanged = previousSourcePath.current !== sourcePath;
     previousSourcePath.current = sourcePath;
-    if (annotation) {
+    const annotationChanged = previousAnnotation.current !== annotation;
+    previousAnnotation.current = annotation;
+    if (annotation && (sourceChanged || annotationChanged)) {
       ++previewRequest.current;
       setTaskId(annotation.taskId);
       onTaskSelected(annotation.taskId);
@@ -178,8 +181,9 @@ export function AnnotationPanel({
   async function save(descriptionOverride?: string) {
     const nextDescription = (descriptionOverride ?? description).trim();
     if (!taskId || !nextDescription) return;
-    const segmentCount = annotation?.segments.length ?? 0;
-    const coveredFrames = annotation?.segments.reduce((sum, segment) => sum + segment.endFrame - segment.startFrame + 1, 0) ?? 0;
+    const matchingAnnotation = annotation?.taskId === taskId ? annotation : null;
+    const segmentCount = matchingAnnotation?.segments.length ?? 0;
+    const coveredFrames = matchingAnnotation?.segments.reduce((sum, segment) => sum + segment.endFrame - segment.startFrame + 1, 0) ?? 0;
     if (!await confirmAction(`当前任务：${activeTask?.label ?? taskId}\n片段数：${segmentCount}\n覆盖帧数：${coveredFrames}\n\n确认保存当前标注？`, "确认保存标注")) return;
     setSaving(true);
     onError("");
@@ -189,9 +193,9 @@ export function AnnotationPanel({
         taskId,
         taskDescription: nextDescription,
         editStartedAtMs,
-        clipStartFrame: annotation?.clipStartFrame ?? null,
-        clipEndFrame: annotation?.clipEndFrame ?? null,
-        segments: annotation?.segments ?? [],
+        clipStartFrame: matchingAnnotation?.clipStartFrame ?? null,
+        clipEndFrame: matchingAnnotation?.clipEndFrame ?? null,
+        segments: matchingAnnotation?.segments ?? [],
       });
       setEditStartedAtMs(Date.now());
       localStorage.removeItem(draftKey);

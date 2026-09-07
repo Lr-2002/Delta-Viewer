@@ -5,6 +5,20 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 0.17.67 - 2026-09-07
+
+- Restore saved trim boundaries before mounting the preview so stale drafts
+  cannot replace the retained range when an episode is reopened.
+- Preserve in-progress trim edits when background validation completes and
+  restore both draft boundaries together for task-only annotations.
+- Show the catalog's annotated marker only after the task annotation and
+  nonempty segments have both been saved. Changing tasks requires saving the
+  new task's segments instead of inheriting completion from the previous task.
+- Keep a newly selected task when the task catalog refreshes and verify
+  re-entry, completion markers, and task changes at desktop and narrow widths.
+- Physical target-machine and large-volume qualification gaps
+  GAP-003/GAP-007 remain open.
+
 ## 0.17.66 - 2026-09-07
 
 - Use the primary video's presentation clock for MP4 playback and skeleton

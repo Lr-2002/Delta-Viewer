@@ -941,20 +941,25 @@ function App() {
     updateScannedEpisode(loaded.summary);
     const loadedMinFrame = getMinFrame(loaded);
     const loadedMaxFrame = getMaxFrame(loaded);
+    const savedAnnotation = await loadEpisodeAnnotation(root);
+    ensureOperationActive(owner);
+    const restoredStart = Math.max(loadedMinFrame, Math.min(loadedMaxFrame, savedAnnotation?.clipStartFrame ?? loadedMinFrame));
+    const restoredEnd = Math.max(restoredStart, Math.min(loadedMaxFrame, savedAnnotation?.clipEndFrame ?? loadedMaxFrame));
 
-    // Mount the read-only preview before the health check finishes so operators
-    // can start inspecting frames while validation runs in the background.
+    // Restore saved bounds before mounting draft editors; a temporary empty
+    // annotation can otherwise restore a stale full-range draft over them.
     setData(loaded);
     setReport(null);
-    setAnnotation(null);
+    setAnnotation(savedAnnotation);
+    setSelectedTaskId(savedAnnotation?.taskId ?? null);
     setLoadedEpisodeSourceRoot(sourceEpisodeRoot);
     setPlaying(false);
     setExportResult(null);
     setFpsOverride(null);
-    setClipStartFrame(loadedMinFrame);
-    setClipEndFrame(loadedMaxFrame);
-    setCurrentFrame(loadedMinFrame);
-    frameRef.current = loadedMinFrame;
+    setClipStartFrame(restoredStart);
+    setClipEndFrame(restoredEnd);
+    setCurrentFrame(restoredStart);
+    frameRef.current = restoredStart;
     setView("review");
 
     const validated = await validateEpisode(root, owner.id);
@@ -983,39 +988,17 @@ function App() {
       return "confirmation_required";
     }
 
-    const savedAnnotation = await loadEpisodeAnnotation(root);
-    ensureOperationActive(owner);
-    applyLoadedEpisode(candidate, savedAnnotation);
+    applyLoadedEpisode(candidate);
     return "loaded";
   }
 
   function applyLoadedEpisode(
     candidate: PendingAnnotationConfirmation,
-    savedAnnotation: EpisodeAnnotation | null,
   ) {
     setReport(candidate.report);
     setData(candidate.data);
-    setAnnotation(savedAnnotation);
     setLoadedEpisodeSourceRoot(candidate.sourceEpisodeRoot);
-    setPlaying(false);
-    setExportResult(null);
-    setFpsOverride(null);
-    const savedStart = savedAnnotation?.clipStartFrame;
-    const savedEnd = savedAnnotation?.clipEndFrame;
-    const restoredStart = savedStart !== null && savedStart !== undefined
-      ? Math.max(candidate.minFrame, Math.min(candidate.maxFrame, savedStart))
-      : candidate.minFrame;
-    const restoredEnd = savedEnd !== null && savedEnd !== undefined
-      ? Math.max(restoredStart, Math.min(candidate.maxFrame, savedEnd))
-      : candidate.maxFrame;
-    setClipStartFrame(restoredStart);
-    setClipEndFrame(restoredEnd);
-    // The preview is interactive while validation runs. Preserve the live
-    // playback position when validation finishes instead of snapping an
-    // operator who already started reviewing back to the annotation start.
-    const restoredFrame = clampPlaybackFrame(frameRef.current, restoredStart, restoredEnd);
-    setCurrentFrame(restoredFrame);
-    frameRef.current = restoredFrame;
+    // Validation must not reset edits or the playback position in the preview.
     setView("review");
   }
 
@@ -1046,9 +1029,8 @@ function App() {
     setPendingAnnotationConfirmation(null);
     resetOperationFeedback(owner);
     try {
-      const savedAnnotation = await loadEpisodeAnnotation(candidate.data.summary.root);
       ensureOperationActive(owner);
-      applyLoadedEpisode(candidate, savedAnnotation);
+      applyLoadedEpisode(candidate);
       setEpisodeSourceStates((current) => ({ ...current, [candidate.data.summary.root]: "available" }));
       setNotice(`已确认数据警告，进入标注：${candidate.data.summary.name}`);
     } catch (reason) {
@@ -1298,6 +1280,19 @@ function App() {
     setPlaying(false);
     setExportResult(null);
     auditActivity("clip_changed");
+  }
+
+  function restoreClipRange(startFrame: number, endFrame: number) {
+    if (!data) return;
+    const start = Math.max(getMinFrame(data), Math.min(getMaxFrame(data), startFrame));
+    const end = Math.max(start, Math.min(getMaxFrame(data), endFrame));
+    setClipStartFrame(start);
+    setClipEndFrame(end);
+    const frame = clampPlaybackFrame(frameRef.current, start, end);
+    frameRef.current = frame;
+    setCurrentFrame(frame);
+    setPlaying(false);
+    setExportResult(null);
   }
 
   function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "") {
@@ -2044,6 +2039,7 @@ function App() {
                       />
                     ) : null}
                     <AnnotationPanel
+                      key={data.summary.root}
                       sourcePath={data.summary.root}
                       tasks={tasks}
                       annotation={annotation}
@@ -2064,6 +2060,7 @@ function App() {
                       onActivity={auditActivity}
                     />
                     <SegmentAnnotationEditor
+                      key={`${data.summary.root}:${selectedTaskTemplate?.id ?? "none"}`}
                       data={data}
                       annotation={annotation}
                       templateTaskId={selectedTaskTemplate?.id ?? null}
@@ -2099,6 +2096,7 @@ function App() {
                       )}
                       onClipStartChange={updateClipStart}
                       onClipEndChange={updateClipEnd}
+                      onClipRestore={restoreClipRange}
                       onClipReset={resetClipRange}
                       onSaved={handleAnnotationSaved}
                       onCompleted={(saved) => {
@@ -2294,7 +2292,9 @@ const EpisodeListRow = memo(function EpisodeListRow({
   const activationHint = sourceState === "error"
     ? "单击选择；双击或按 Enter/空格重试读取"
     : "单击选择；双击或按 Enter/空格进入回放";
-  const episodeTitle = savedAnnotation
+  const completed = Boolean(savedAnnotation?.taskId && savedAnnotation.taskDescription.trim()
+    && savedAnnotation.segments.length && savedAnnotation.clipStartFrame !== null && savedAnnotation.clipEndFrame !== null);
+  const episodeTitle = completed && savedAnnotation
     ? `已标注 · ${savedAnnotation.trajectoryCode}；${activationHint}` : activationHint;
   return <div className="episode-entry">
     <button type="button" className={`episode-item${selected ? " selected" : ""}`}
@@ -2313,7 +2313,7 @@ const EpisodeListRow = memo(function EpisodeListRow({
       }}>
       <span className="episode-item-top">
         <Images size={16} /><strong>{episode.name}</strong>
-        {savedAnnotation ? <span className="episode-annotation-tag"
+        {completed && savedAnnotation ? <span className="episode-annotation-tag"
           title={`已标注 · ${savedAnnotation.trajectoryCode} · r${savedAnnotation.revision}`}
           aria-label="已标注">已标注</span> : null}
         <EpisodeSourceMark state={sourceState} /><ChevronRight size={15} />
