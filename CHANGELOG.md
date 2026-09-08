@@ -5,6 +5,17 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 1.0.2-dev.2 - 2026-09-08
+
+- Restore operator annotation for readable videos whose position tracking is
+  static or missing: show the warning and allow explicit continuation instead
+  of automatically skipping the episode and hiding all annotation controls.
+- Preserve task saving, trims, segment saving and saved-range restoration.
+  Keep the proofreading workspace unchanged and retain unreadable-frame gates.
+- Restore editable human bounds when returning from proofreading through a
+  double-click on the already loaded episode in the source list.
+- Development installers remain UNSIGNED and use their separate app identity.
+
 ## 1.0.2-dev.1 - 2026-09-08
 
 - Add a development-only Proofread workspace alongside Replay, Checks,

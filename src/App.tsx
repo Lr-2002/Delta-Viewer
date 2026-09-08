@@ -845,8 +845,7 @@ function App() {
     if (episodeLoadInFlight.current || operationScopeRef.current.current()) return;
     selectEpisode(episode);
     if (!force && data && report && loadedEpisodeSourceRoot === episode.root) {
-      setPlaying(false);
-      setView("review");
+      changeView("review");
       return;
     }
     const owner = beginOperation();
@@ -986,7 +985,9 @@ function App() {
       minFrame: loadedMinFrame,
       maxFrame: loadedMaxFrame,
     };
-    if (hasUnusableTrajectory(validated.report)) return "skipped";
+    // Static/missing position does not imply static video. Development
+    // operators may continue annotating after acknowledging tracking warnings.
+    if (!IS_DEVELOPMENT_EDITION && hasUnusableTrajectory(validated.report)) return "skipped";
     if (annotationConfirmationWarnings(validated.report).length) {
       setPendingAnnotationConfirmation(candidate);
       setView("review");

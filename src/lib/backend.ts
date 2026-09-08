@@ -929,6 +929,7 @@ export async function validateEpisode(path: string, operationId: number): Promis
   if (isTauriRuntime()) return invoke<EpisodeValidationResult>("validate_episode", { path, operationId });
   const fixture = await loadDemoFixture();
   const sessionActivationEpisode = sessionActivationDemoEpisode(path);
+  const trajectoryScenario = new URLSearchParams(window.location.search).get("trajectoryWarning");
   const report: ValidationReport = {
     formatVersion: 6,
     episodeRoot: path,
@@ -948,6 +949,13 @@ export async function validateEpisode(path: string, operationId: number): Promis
     checkedFiles: 26,
     elapsedMs: 214,
     issues: [
+      ...(trajectoryScenario === "static" || trajectoryScenario === "unavailable" ? [{
+        severity: "warning" as const,
+        code: trajectoryScenario === "static" ? "TRAJECTORY_STATIC" : "TRAJECTORY_POSITION_UNAVAILABLE",
+        scope: "states",
+        message: trajectoryScenario === "static" ? "状态位置没有变化，请检查轨迹数据" : "状态位置不可用，请检查轨迹数据",
+        frameId: 0,
+      }] : []),
       {
         severity: "warning",
         code: "TIMESTAMP_GAP",

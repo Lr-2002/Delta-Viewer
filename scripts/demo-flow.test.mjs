@@ -66,6 +66,49 @@ if (!browserExecutable) {
     await new Promise((resolveExit) => server.once("exit", resolveExit));
   });
 
+  test("development operators can annotate videos with tracking warnings and retain proofreading", async () => {
+    for (const scenario of ["static", "unavailable"]) {
+      const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+      const page = await context.newPage();
+      await registerDemoAccount(page, `${baseUrl}/?machineAnnotation=present&trajectoryWarning=${scenario}`, `tracking-${scenario}`, false);
+      const warning = page.getByRole("region", { name: "标注前数据警告" });
+      await warning.getByText(scenario === "static" ? "TRAJECTORY_STATIC" : "TRAJECTORY_POSITION_UNAVAILABLE", { exact: true }).waitFor();
+      assert.equal(await page.locator(".episode-item").count(), 1);
+      assert.equal(await page.getByRole("button", { name: "保存标注", exact: true }).count(), 0);
+      await warning.getByRole("button", { name: "仍要标注" }).click();
+      await page.getByLabel("裁剪起始帧").fill("30");
+      await page.getByLabel("裁剪结束帧").fill("90");
+      const taskSave = acceptNextSaveConfirmation(page);
+      await page.getByRole("button", { name: "保存标注", exact: true }).click();
+      await taskSave;
+      await page.getByText("已保存 · r1", { exact: true }).waitFor();
+      assert.equal(await page.getByLabel("已标注", { exact: true }).count(), 0);
+      await page.locator(".segment-list button").first().click();
+      await page.getByLabel("片段注解").fill("人工核对后的动作");
+      const segmentSave = acceptNextSaveConfirmation(page);
+      await page.getByRole("button", { name: "保存片段", exact: true }).click();
+      await segmentSave;
+      await page.getByText("已保存 · r2", { exact: true }).waitFor();
+      assert.equal(await page.getByLabel("已标注", { exact: true }).count(), 1);
+      await page.getByRole("button", { name: "校对", exact: true }).click();
+      await page.getByRole("button", { name: "定位机标片段 3" }).click();
+      await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent === "帧 120 / 195");
+      assert.equal(await page.locator("[data-boundary-frame]").count(), 2);
+      await page.locator(".episode-item").first().dblclick();
+      await page.getByRole("button", { name: "重新保存片段", exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "重新保存片段", exact: true }).isEnabled(), true);
+      assert.equal(await page.getByLabel("裁剪起始帧").inputValue(), "30");
+      assert.equal(await page.getByLabel("裁剪结束帧").inputValue(), "90");
+      assert.equal(await page.getByRole("button", { name: "重新保存片段", exact: true }).count(), 1);
+      await page.getByRole("button", { name: "重新扫描", exact: true }).click();
+      await page.getByRole("button", { name: "仍要标注" }).click();
+      await page.getByRole("button", { name: "重新保存片段", exact: true }).waitFor();
+      assert.equal(await page.getByLabel("裁剪起始帧").inputValue(), "30");
+      assert.equal(await page.getByLabel("裁剪结束帧").inputValue(), "90");
+      await context.close();
+    }
+  });
+
   test("machine annotations preview outside the human trim without changing saved bounds", async () => {
     for (const viewport of [{ width: 1440, height: 920 }, { width: 960, height: 680 }, { width: 390, height: 844 }]) {
       const context = await browser.newContext({ viewport });
@@ -833,7 +876,7 @@ if (!browserExecutable) {
   });
 }
 
-async function registerDemoAccount(page, url, suffix) {
+async function registerDemoAccount(page, url, suffix, acknowledgeWarnings = true) {
   await page.goto(url, { waitUntil: "networkidle" });
   if (await page.getByRole("button", { name: "登录工作区" }).count()) {
     await page.getByRole("button", { name: "登录工作区" }).click();
@@ -844,7 +887,7 @@ async function registerDemoAccount(page, url, suffix) {
   await passwords.nth(0).fill("demo-password-123");
   await passwords.nth(1).fill("demo-password-123");
   await page.getByRole("button", { name: "创建并登录" }).click();
-  await page.getByRole("button", { name: "仍要标注" }).click({ timeout: 2_000 }).catch(() => undefined);
+  if (acknowledgeWarnings) await page.getByRole("button", { name: "仍要标注" }).click({ timeout: 2_000 }).catch(() => undefined);
 }
 
 function acceptNextSaveConfirmation(page) {
