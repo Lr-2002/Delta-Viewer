@@ -27,6 +27,7 @@ interface FramePanelProps {
   readAheadStride?: number;
   playbackEndFrame: number;
   playbackFps?: number;
+  exactFrameSeek?: boolean;
   speed?: number;
   className?: string;
   onFrameSettled?: (stream: string, frameId: number) => void;
@@ -75,6 +76,7 @@ export const FramePanel = memo(function FramePanel({
   readAheadStride = 1,
   playbackEndFrame,
   playbackFps = 30,
+  exactFrameSeek = false,
   speed = 1,
   className = "",
   onFrameSettled,
@@ -168,6 +170,8 @@ export const FramePanel = memo(function FramePanel({
     : 1;
   const videoLocalSeconds = nativeVideo
     ? (timelineSeconds - videoSegmentIndex * nativeVideo.segmentSeconds) * mediaClockRatio
+      // Seeking on a rounded PTS boundary can display the preceding frame.
+      + (exactFrameSeek ? 0.5 / Math.max(nativeVideo.mediaFps, 1) : 0)
     : 0;
   requestedVideoTimeRef.current = Math.max(0, videoLocalSeconds);
 
@@ -190,6 +194,10 @@ export const FramePanel = memo(function FramePanel({
     const resume = () => {
       if (!active || !video.paused || video.seeking || video.ended
         || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      if (exactFrameSeek && Math.abs(video.currentTime - requestedVideoTimeRef.current) > 0.03) {
+        video.currentTime = requestedVideoTimeRef.current;
+        return;
+      }
       const remaining = Math.max(0, video.duration - video.currentTime);
       const runway = Math.min(1.5 * video.playbackRate, remaining);
       const buffered = Array.from({ length: video.buffered.length }, (_, index) => index)
@@ -228,7 +236,7 @@ export const FramePanel = memo(function FramePanel({
       video.removeEventListener("canplay", resume);
       video.removeEventListener("seeked", resume);
     };
-  }, [isPrimary, nativePlaybackEnabled, nativeVideoActive, onBufferingChange, stream.name, videoSegmentIndex]);
+  }, [exactFrameSeek, isPrimary, nativePlaybackEnabled, nativeVideoActive, onBufferingChange, stream.name, videoSegmentIndex]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -253,10 +261,21 @@ export const FramePanel = memo(function FramePanel({
       }
       return;
     }
+    if (exactFrameSeek) {
+      // Coalesce scrub events while decoding a seek; only the newest target survives.
+      const seekLatest = () => {
+        if (!video.seeking && Math.abs(video.currentTime - requestedVideoTimeRef.current) > 0.001) {
+          video.currentTime = requestedVideoTimeRef.current;
+        }
+      };
+      seekLatest();
+      video.addEventListener("seeked", seekLatest);
+      return () => video.removeEventListener("seeked", seekLatest);
+    }
     if (Math.abs(video.currentTime - videoLocalSeconds) > 0.001) {
       video.currentTime = Math.max(0, videoLocalSeconds);
     }
-  }, [frameId, isPrimary, nativeVideoActive, playing, videoLocalSeconds, videoSegmentIndex]);
+  }, [exactFrameSeek, frameId, isPrimary, nativeVideoActive, playing, videoLocalSeconds, videoSegmentIndex]);
 
   useEffect(() => {
     if (!nativeVideoActive) return;

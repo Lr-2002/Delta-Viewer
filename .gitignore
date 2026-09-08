@@ -21,3 +21,4 @@ artifacts/exfat-smoke/
 artifacts/stress-check/
 artifacts/windows-cross-check/
 artifacts/nas-playback/
+artifacts/machine-annotation/

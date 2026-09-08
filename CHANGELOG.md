@@ -5,6 +5,29 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 1.0.2 - 2026-09-08
+
+- Recognize new recordings whose MP4 manifest is stored in .session_meta,
+  including their actual state cadence and per-camera startup offsets. Preserve
+  readable recordings when quality checks flag individual streams or frames;
+  a failed primary frame pauses playback without clearing the workspace.
+- Keep health findings visible and preserve backend export validation gates.
+- Promote proofreading into the stable edition while retaining operator task,
+  trim and segment annotation, including explicit tracking-warning continuation.
+- Align segment playback and boundary previews with source video frames,
+  independent of state counts; sample inside each frame to avoid preceding-frame
+  seeks. Coalesce rapid seeks and keep segment lists stable during playback.
+- Display true annotation gaps, adjust shared boundaries without creating gaps,
+  and support description edits, frame fine-tuning, deletion and restoration.
+- Autosave per-segment review decisions locally. Create a separate
+  bailian_annotation_reviewed.json only after all retained segments pass, then
+  update it atomically while preserving untouched machine fields and reporting
+  pending/rejected decisions after further edits. Preserve the original JSON.
+- Protect saves with source/output hashes, revisions, cross-process locks and
+  interrupted-write recovery. Keep proofreading out of manual completion counts.
+- Ship the complete UNSIGNED Windows, macOS arm64 and Ubuntu installer set on
+  the stable update channel. Existing GAP-003/GAP-007 qualification limits remain.
+
 ## 1.0.1 - 2026-09-08
 
 - Begin the user-requested stable release numbering at 1.0.1, retaining the
@@ -16,6 +39,36 @@ after `main` CI succeeds for a coordinated version change.
 - Installers remain explicitly UNSIGNED. Existing physical-device and
   large-volume qualification gaps GAP-003/GAP-007 remain open; the version
   numbering change does not assert that those checks have passed.
+
+## 1.0.2-dev.2 - 2026-09-08
+
+- Restore operator annotation for readable videos whose position tracking is
+  static or missing: show the warning and allow explicit continuation instead
+  of automatically skipping the episode and hiding all annotation controls.
+- Preserve task saving, trims, segment saving and saved-range restoration.
+  Keep the proofreading workspace unchanged and retain unreadable-frame gates.
+- Restore editable human bounds when returning from proofreading through a
+  double-click on the already loaded episode in the source list.
+- Development installers remain UNSIGNED and use their separate app identity.
+
+## 1.0.2-dev.1 - 2026-09-08
+
+- Add a development-only Proofread workspace alongside Replay, Checks,
+  Export and Batch. Keep machine annotations out of the human annotation page.
+- Read per-episode bailian_annotation.json without modifying source files;
+  compare model segments with saved human annotations and preview media ranges.
+- Align exclusive source-video intervals with the primary playback timeline,
+  and report missing, malformed, legacy or mismatched machine metadata.
+- Match the requested proofreading layout with a main video, independent
+  start/end frame previews, a colored action strip, segment attributes and JSON.
+- Publish an Apple Silicon development DMG first at the user's request,
+  with ad-hoc sealing, mounted-install startup verification and checksums.
+- Distribute the development edition as DOHC Viewer Dev with the separate
+  com.dohc.viewer.dev application identity and local data directory.
+- Disable stable-update checks and installation in the development edition.
+  Stable 1.0.1 retains the previously released annotation optimizations.
+- Development builds remain unsigned and do not imply target-machine or
+  large-volume qualification.
 
 ## 0.17.67 - 2026-09-07
 

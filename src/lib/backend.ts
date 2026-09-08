@@ -26,6 +26,7 @@ import type {
   CreateTaskRequest,
   EpisodeAnnotation,
   EpisodeData,
+  MachineAnnotation,
   EpisodeValidationResult,
   ExportFormat,
   ExportRange,
@@ -61,6 +62,7 @@ import type {
 
 export const DEMO_ROOT = DEMO_EPISODE_ROOT;
 export const APP_VERSION = packageInfo.version;
+export const IS_DEVELOPMENT_EDITION = APP_VERSION.includes("-dev.");
 
 const SESSION_ACTIVATION_DEMO_SOURCE_ROOT = "demo://session-activation";
 const SESSION_ACTIVATION_DEMO_EPISODES = [
@@ -437,6 +439,54 @@ export async function loadEpisodeAnnotation(sourcePath: string): Promise<Episode
     return invoke<EpisodeAnnotation | null>("load_episode_annotation", { sourcePath });
   }
   return demoAnnotations.get(sourcePath) ?? null;
+}
+
+export async function loadMachineAnnotation(sourcePath: string): Promise<MachineAnnotation | null> {
+  if (isTauriRuntime()) return invoke<MachineAnnotation | null>("load_machine_annotation", { sourcePath });
+  demoActor();
+  const scenario = new URLSearchParams(window.location.search).get("machineAnnotation");
+  if (!scenario || scenario === "missing") return null;
+  if (scenario === "invalid") throw new Error("MACHINE_ANNOTATION_INVALID: 机标 JSON 格式无效");
+  return {
+    episodeId: sourcePath.split("/").at(-1) ?? "demo",
+    model: "Demo model",
+    completedAt: "2026-09-08T10:00:00+08:00",
+    validationStatus: "passed",
+    frameCount: scenario === "mismatch" ? 200 : 196,
+    warnings: [],
+    segments: [
+      { label: "phase_stand", description: "站立", startFrame: 0, endFrame: 59, attributes: { body_part: "whole_body" } },
+      { label: "phase_walk", description: "向前行走", startFrame: 60, endFrame: 119, attributes: { body_part: "whole_body" } },
+      { label: "phase_open", description: "右手打开门", startFrame: 120, endFrame: 195, attributes: { body_part: "right_hand", object_name: "门" } },
+    ],
+  };
+}
+
+const demoMachineReviews = new Map<string, import("../types").MachineReview>();
+export async function loadMachineReview(sourcePath: string): Promise<import("../types").MachineReview> {
+  if (isTauriRuntime()) return invoke("load_machine_review", { sourcePath });
+  demoActor();
+  const saved = demoMachineReviews.get(sourcePath);
+  if (saved) return structuredClone(saved);
+  const annotation = await loadMachineAnnotation(sourcePath);
+  if (!annotation) throw new Error("未找到机标");
+  return { sourceHash: annotation.sourceHash ?? "demo-machine", revision: 0, published: false, outputHash: null,
+    updatedAtMs: 0, reviewer: "", segments: annotation.segments.map((segment, sourceIndex) => ({
+      sourceIndex, startFrame: segment.startFrame, endFrame: segment.endFrame,
+      description: segment.description, deleted: false, decision: "pending",
+    })) };
+}
+
+export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[]): Promise<import("../types").MachineReview> {
+  if (isTauriRuntime()) return invoke("save_machine_review", { request: { sourcePath, sourceHash, expectedRevision, segments } });
+  demoActor();
+  const state = await loadMachineReview(sourcePath);
+  if (state.revision !== expectedRevision || state.sourceHash !== sourceHash) throw new Error("复核保存冲突");
+  const retained = segments.filter((segment) => !segment.deleted);
+  const published = state.published || (retained.length > 0 && retained.every((segment) => segment.decision === "approved"));
+  const next = { ...state, revision: state.revision + 1, segments: structuredClone(segments), published, updatedAtMs: Date.now(), reviewer: "demo" };
+  demoMachineReviews.set(sourcePath, next);
+  return structuredClone(next);
 }
 
 const AUDIT_QUEUE_KEY = "dohc-viewer.pending-audits.v1";
@@ -906,6 +956,8 @@ export async function validateEpisode(path: string, operationId: number): Promis
   if (isTauriRuntime()) return invoke<EpisodeValidationResult>("validate_episode", { path, operationId });
   const fixture = await loadDemoFixture();
   const sessionActivationEpisode = sessionActivationDemoEpisode(path);
+  const trajectoryScenario = new URLSearchParams(window.location.search).get("trajectoryWarning");
+  const frameQualityIssue = new URLSearchParams(window.location.search).get("frameQualityIssue");
   const report: ValidationReport = {
     formatVersion: 6,
     episodeRoot: path,
@@ -925,6 +977,13 @@ export async function validateEpisode(path: string, operationId: number): Promis
     checkedFiles: 26,
     elapsedMs: 214,
     issues: [
+      ...(trajectoryScenario === "static" || trajectoryScenario === "unavailable" ? [{
+        severity: "warning" as const,
+        code: trajectoryScenario === "static" ? "TRAJECTORY_STATIC" : "TRAJECTORY_POSITION_UNAVAILABLE",
+        scope: "states",
+        message: trajectoryScenario === "static" ? "状态位置没有变化，请检查轨迹数据" : "状态位置不可用，请检查轨迹数据",
+        frameId: 0,
+      }] : []),
       {
         severity: "warning",
         code: "TIMESTAMP_GAP",
@@ -940,6 +999,10 @@ export async function validateEpisode(path: string, operationId: number): Promis
       status: "ok" as const,
     })),
   };
+  if (["DIMENSION_MISMATCH", "DECODE_FAILED", "EMPTY_STREAM"].includes(frameQualityIssue ?? "")) {
+    report.status = "error";
+    report.issues.push({ severity: "error", code: frameQualityIssue!, scope: "cam1", message: "Camera 1 quality finding", frameId: 30 });
+  }
   return {
     report,
     summary: sessionActivationEpisode

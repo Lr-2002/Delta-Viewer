@@ -31,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 import { AnnotationPanel } from "./components/AnnotationPanel";
+import { MachineAnnotationPanel } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
 import { BatchExportPanel } from "./components/BatchExportPanel";
 import { ChecksPanel } from "./components/ChecksPanel";
@@ -44,6 +45,7 @@ import { SupervisionDashboard } from "./components/SupervisionDashboard";
 import { TelemetryChart } from "./components/TelemetryChart";
 import {
   APP_VERSION,
+  IS_DEVELOPMENT_EDITION,
   DEMO_ROOT,
   cancelTask,
   checkForAppUpdate,
@@ -120,7 +122,7 @@ import type {
   WorkspaceMode,
 } from "./types";
 
-type View = "review" | "checks" | "export" | "batch";
+type View = "review" | "checks" | "export" | "batch" | "proofread";
 type EpisodeSourceState = "available" | "loading" | "error";
 type UpdatePhase = "idle" | "checking" | "available" | "current" | "downloading" | "failed";
 type EpisodeLoadResult = "loaded" | "confirmation_required" | "skipped";
@@ -139,18 +141,7 @@ function localDateInput(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-const UNAVAILABLE_FRAME_ISSUE_CODES = new Set([
-  "EMPTY_STREAM",
-  "INVALID_FRAME_FILENAME",
-  "DUPLICATE_FRAME_ID",
-  "FRAME_ID_MISMATCH",
-  "DECODE_FAILED",
-  "DIMENSION_MISMATCH",
-  "DUPLICATE_SEGMENT_NUMBER",
-]);
 const FRAME_JUMP_ISSUE_CODE = "STATE_FRAME_GAP";
-const STATIC_TRAJECTORY_ISSUE_CODE = "TRAJECTORY_STATIC";
-const UNAVAILABLE_TRAJECTORY_ISSUE_CODE = "TRAJECTORY_POSITION_UNAVAILABLE";
 
 const METRICS: { key: MetricKey; label: string }[] = [
   { key: "position", label: "位置" },
@@ -301,6 +292,7 @@ function App() {
   const [currentFrame, setCurrentFrame] = useState(0);
   const [clipStartFrame, setClipStartFrame] = useState(0);
   const [clipEndFrame, setClipEndFrame] = useState(0);
+  const [machinePreviewRange, setMachinePreviewRange] = useState<ExportRange | null>(null);
   const [speed, setSpeed] = useState(1);
   const [fpsOverride, setFpsOverride] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -367,9 +359,11 @@ function App() {
   const primaryStream = primaryStreamName
     ? availableStreams.find((stream) => stream.name === primaryStreamName) ?? null
     : null;
+  const playbackStart = machinePreviewRange?.startFrame ?? clipStartFrame;
+  const playbackEnd = machinePreviewRange?.endFrame ?? clipEndFrame;
   const primaryPlaybackEndFrame = Math.min(
-    clipEndFrame,
-    primaryStream?.lastFrame ?? clipEndFrame,
+    playbackEnd,
+    primaryStream?.lastFrame ?? playbackEnd,
   );
   const playbackFps = fpsOverride ?? estimatedFps;
   const secondaryReadAheadStride = Math.max(1, Math.round(playbackFps / 10));
@@ -416,15 +410,15 @@ function App() {
     timelinePosition: number,
   ) => {
     if (streamName !== primaryStreamName || !primaryNativeClockRef.current) return;
-    const next = Math.max(clipStartFrame, Math.min(primaryPlaybackEndFrame, frameId));
-    const presentedPosition = Math.max(clipStartFrame, Math.min(primaryPlaybackEndFrame, timelinePosition));
+    const next = Math.max(playbackStart, Math.min(primaryPlaybackEndFrame, frameId));
+    const presentedPosition = Math.max(playbackStart, Math.min(primaryPlaybackEndFrame, timelinePosition));
     skeletonFramePresenterRef.current?.(presentedPosition);
     if (next !== frameRef.current) {
       frameRef.current = next;
       setCurrentFrame(next);
     }
     if (next >= primaryPlaybackEndFrame) setPlaying(false);
-  }, [clipStartFrame, primaryPlaybackEndFrame, primaryStreamName]);
+  }, [playbackStart, primaryPlaybackEndFrame, primaryStreamName]);
 
   function beginOperation(): OperationToken | null {
     const operation = operationScopeRef.current.begin();
@@ -461,6 +455,7 @@ function App() {
   }
 
   async function runAutomaticUpdate() {
+    if (IS_DEVELOPMENT_EDITION) return;
     if (operationScopeRef.current.current()) return;
     setUpdatePhase("checking");
     setUpdateError("");
@@ -484,6 +479,7 @@ function App() {
   }
 
   async function installAvailableUpdate() {
+    if (IS_DEVELOPMENT_EDITION) return;
     const owner = beginOperation();
     if (!owner) return;
     setUpdatePhase("downloading");
@@ -838,8 +834,7 @@ function App() {
     if (episodeLoadInFlight.current || operationScopeRef.current.current()) return;
     selectEpisode(episode);
     if (!force && data && report && loadedEpisodeSourceRoot === episode.root) {
-      setPlaying(false);
-      setView("review");
+      changeView("review");
       return;
     }
     const owner = beginOperation();
@@ -945,6 +940,7 @@ function App() {
     // Show read-only frames immediately, but mount draft editors only after
     // validation has cached the fingerprint and saved bounds are restored.
     setData(loaded);
+    setMachinePreviewRange(null);
     setReport(null);
     setAnnotation(null);
     setAnnotationReadyRoot(null);
@@ -964,10 +960,10 @@ function App() {
     if (validated.report.status === "warning") auditActivity("validation_warning");
     if (validated.report.status === "error") auditActivity("validation_error");
     updateScannedEpisode(validated.summary);
-    if (hasUnavailableFrame(validated.report)) {
+    if (!validated.summary.streams.some((stream) => stream.frameCount > 0)) {
       resetLoadedData();
       throw new Error(
-        `FRAME_UNAVAILABLE: ${loaded.summary.name} 存在不可用图像帧，已阻止加载。请在左侧跳过该数据后继续。`,
+        `FRAME_UNAVAILABLE: ${loaded.summary.name} 未发现可读取的视频或图像，请检查数据文件是否完整。`,
       );
     }
 
@@ -978,7 +974,7 @@ function App() {
       minFrame: loadedMinFrame,
       maxFrame: loadedMaxFrame,
     };
-    if (hasUnusableTrajectory(validated.report)) return "skipped";
+    // Quality findings remain visible without discarding readable camera data.
     if (annotationConfirmationWarnings(validated.report).length) {
       setPendingAnnotationConfirmation(candidate);
       setView("review");
@@ -1101,13 +1097,14 @@ function App() {
     if (streamName !== primaryStreamName) return;
     const episode = data.summary;
     const stream = data.summary.streams.find((candidate) => candidate.name === streamName);
-    const message = `FRAME_UNAVAILABLE: ${episode.name} 的 ${stream?.label ?? streamName} 帧 ${frameId} 不可用，已停止加载。请在左侧跳过该数据。`;
-    setEpisodeSourceStates((current) => ({ ...current, [data.summary.root]: "error" }));
-    resetLoadedData();
+    const message = `FRAME_UNAVAILABLE: ${episode.name} 的 ${stream?.label ?? streamName} 帧 ${frameId} 暂时无法读取，已暂停播放。数据仍保留，可定位其他帧继续查看。`;
+    setPlaying(false);
+    resetPlaybackPreparation();
     void reportFailure("load_frame", new Error(message), data.summary.root);
   }, [data, primaryStreamName]);
 
   function resetLoadedData() {
+    setMachinePreviewRange(null);
     settledFrameByStreamRef.current.clear();
     setAnnotationReadyRoot(null);
     setData(null);
@@ -1208,7 +1205,7 @@ function App() {
 
   function seekFrame(frame: number) {
     if (!data) return;
-    const next = Math.max(clipStartFrame, Math.min(clipEndFrame, Math.round(frame)));
+    const next = Math.max(playbackStart, Math.min(playbackEnd, Math.round(frame)));
     setPlaying(false);
     resetPlaybackPreparation();
     frameRef.current = next;
@@ -1229,7 +1226,7 @@ function App() {
     if (!playing) {
       const startFrame = playbackStartFrame(
         frameRef.current,
-        clipStartFrame,
+        playbackStart,
         primaryPlaybackEndFrame,
       );
       if (startFrame !== frameRef.current) {
@@ -1243,7 +1240,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (!data) return;
+    if (!data || view === "proofread") return;
     const handleShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
@@ -1256,20 +1253,47 @@ function App() {
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
         moveFrame(1);
-      } else if (event.key === "[") {
+      } else if (event.key === "[" && view === "review" && !machinePreviewRange) {
         event.preventDefault();
         updateClipStart(frameRef.current);
-      } else if (event.key === "]") {
+      } else if (event.key === "]" && view === "review" && !machinePreviewRange) {
         event.preventDefault();
         updateClipEnd(frameRef.current);
       }
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [data, clipStartFrame, clipEndFrame, playing]);
+  }, [data, clipStartFrame, clipEndFrame, machinePreviewRange, playing, view]);
+
+  function previewMachineSegment(range: ExportRange, play: boolean) {
+    if (!data || busy) return;
+    const startFrame = Math.max(getMinFrame(data), range.startFrame);
+    const endFrame = Math.min(getMaxFrame(data), range.endFrame);
+    if (startFrame > endFrame) return;
+    setMachinePreviewRange({ startFrame, endFrame });
+    frameRef.current = startFrame;
+    setCurrentFrame(startFrame);
+    resetPlaybackPreparation();
+    setPlaying(play);
+  }
+
+  function exitMachinePreview() {
+    setMachinePreviewRange(null);
+    setPlaying(false);
+    const frame = clampPlaybackFrame(frameRef.current, clipStartFrame, clipEndFrame);
+    frameRef.current = frame;
+    setCurrentFrame(frame);
+    resetPlaybackPreparation();
+  }
+
+  function changeView(next: View) {
+    setPlaying(false);
+    if (machinePreviewRange) exitMachinePreview();
+    setView(next);
+  }
 
   function updateClipStart(value: number) {
-    if (!data) return;
+    if (!data || machinePreviewRange) return;
     const next = Math.max(getMinFrame(data), Math.min(Math.round(value), clipEndFrame));
     setClipStartFrame(next);
     if (currentFrame < next) {
@@ -1282,7 +1306,7 @@ function App() {
   }
 
   function updateClipEnd(value: number) {
-    if (!data) return;
+    if (!data || machinePreviewRange) return;
     const next = Math.min(getMaxFrame(data), Math.max(Math.round(value), clipStartFrame));
     setClipEndFrame(next);
     if (currentFrame > next) {
@@ -1324,7 +1348,7 @@ function App() {
   }
 
   function resetClipRange() {
-    if (!data) return;
+    if (!data || machinePreviewRange) return;
     const start = getMinFrame(data);
     const end = getMaxFrame(data);
     setClipStartFrame(start);
@@ -1578,6 +1602,7 @@ function App() {
 
   function locateIssue(issue: ValidationIssue) {
     if (!data) return;
+    setMachinePreviewRange(null);
     const location = resolveIssueLocation(data, issue);
     if (location.kind === "unavailable") {
       setNotice(location.message);
@@ -1697,7 +1722,7 @@ function App() {
         <div className="brand-lockup">
           <span className="brand-mark">D</span>
           <div>
-            <strong>DOHC Viewer</strong>
+            <strong>DOHC Viewer{IS_DEVELOPMENT_EDITION ? " Dev" : ""}</strong>
             <span>v{updateInfo?.currentVersion ?? APP_VERSION}</span>
           </div>
           <button
@@ -1718,7 +1743,7 @@ function App() {
         </div>
         <div className="topbar-actions">
           <StatusBadge status={status} />
-          {isManagedWorkspace && currentUser ? (
+          {isManagedWorkspace && currentUser && !IS_DEVELOPMENT_EDITION ? (
             <button
               className={`icon-button update-trigger${updatePhase === "failed" ? " update-failed" : ""}`}
               type="button"
@@ -1934,21 +1959,24 @@ function App() {
               <nav className="view-tabs" aria-label="工作区视图">
                 {data ? (
                   <>
-                    <button type="button" className={view === "review" ? "active" : ""} onClick={() => setView("review")}>
+                    <button type="button" className={view === "review" ? "active" : ""} onClick={() => changeView("review")}>
                       <Images size={17} />回放
                     </button>
-                    <button type="button" className={view === "checks" ? "active" : ""} onClick={() => setView("checks")}>
+                    <button type="button" className={view === "checks" ? "active" : ""} onClick={() => changeView("checks")}>
                       <ShieldCheck size={17} />检查
                       {report?.status === "warning" ? <span className="tab-alert" /> : null}
                     </button>
-                    <button type="button" className={view === "export" ? "active" : ""} onClick={() => setView("export")}>
+                    <button type="button" className={view === "export" ? "active" : ""} onClick={() => changeView("export")}>
                       <PackageOpen size={17} />导出
                     </button>
                   </>
                 ) : null}
-                <button type="button" className={view === "batch" ? "active" : ""} onClick={openBatchExport}>
+                <button type="button" className={view === "batch" ? "active" : ""} onClick={() => { if (machinePreviewRange) exitMachinePreview(); openBatchExport(); }}>
                   <ListChecks size={17} />批量
                 </button>
+                {data && <button type="button" className={view === "proofread" ? "active" : ""} onClick={() => changeView("proofread")}>
+                  <FileSearch size={17} />校对
+                </button>}
                 <span className="view-tab-spacer" />
                 {data ? (
                   <span className="loaded-label"><span className="source-dot" />{shortPath(data.summary.root, 52)}</span>
@@ -1974,7 +2002,11 @@ function App() {
                   onExport={() => void runBatchExport()}
                   onReveal={(path) => void revealExport(path)}
                 />
-              ) : !data ? null : view === "review" ? (
+              ) : !data ? null : view === "proofread" ? (
+                <MachineAnnotationPanel key={`machine:${data.summary.root}`} data={data} annotation={annotation}
+                  currentFrame={currentFrame} previewing={machinePreviewRange !== null} busy={busy}
+                  onPreview={previewMachineSegment} onExitPreview={exitMachinePreview} />
+              ) : view === "review" ? (
                 <div className="review-view">
                   <section className="camera-section">
                     <div className="section-heading compact-heading">
@@ -2008,7 +2040,7 @@ function App() {
                               : secondaryReadAheadStride}
                             playbackEndFrame={stream.name === primaryStreamName
                               ? primaryPlaybackEndFrame
-                              : clipEndFrame}
+                              : playbackEnd}
                             playbackFps={playbackFps}
                             speed={speed}
                             className={`camera-${index}`}
@@ -2041,7 +2073,7 @@ function App() {
                         ) : null}
                       </div>
                     </div>
-                    {!playing ? (
+                    {!playing && view === "review" ? (
                       <FrameRenderProgress
                         frameId={currentFrame}
                         settled={frameRenderProgress.root === data.summary.root && frameRenderProgress.frameId === currentFrame
@@ -2050,14 +2082,14 @@ function App() {
                         total={availableStreams.length}
                       />
                     ) : null}
-                    {annotationReadyRoot === data.summary.root && <AnnotationPanel
+                    {view === "review" && annotationReadyRoot === data.summary.root && <AnnotationPanel
                       key={data.summary.root}
                       sourcePath={data.summary.root}
                       tasks={tasks}
                       annotation={annotation}
                       currentUser={currentUser}
                       offlineMode={isOfflineWorkspace}
-                      busy={busy}
+                      busy={busy || machinePreviewRange !== null}
                       onTaskCreated={(task) => setTasks((current) => [...current, task])}
                       onTaskDeleted={(taskId) => {
                         setTasks((current) => current.filter((task) => task.id !== taskId));
@@ -2071,7 +2103,7 @@ function App() {
                       onNotice={setNotice}
                       onActivity={auditActivity}
                     />}
-                    {annotationReadyRoot === data.summary.root && <SegmentAnnotationEditor
+                    {view === "review" && annotationReadyRoot === data.summary.root && <SegmentAnnotationEditor
                       key={`${data.summary.root}:${selectedTaskTemplate?.id ?? "none"}`}
                       data={data}
                       annotation={annotation}
@@ -2082,7 +2114,7 @@ function App() {
                       maxFrame={maxFrame}
                       clipStartFrame={clipStartFrame}
                       clipEndFrame={clipEndFrame}
-                      busy={busy}
+                      busy={busy || machinePreviewRange !== null}
                       playbackControls={(
                         <>
                           <div className="transport-buttons">
@@ -2129,7 +2161,7 @@ function App() {
                     />}
                   </section>
 
-                  <section className="telemetry-section">
+                  {view === "review" && <section className="telemetry-section">
                     <div className="section-heading compact-heading">
                       <div>
                         <span className="section-kicker">STATE TELEMETRY</span>
@@ -2144,7 +2176,7 @@ function App() {
                       </div>
                     </div>
                     <TelemetryChart states={data.states} metric={metric} frameId={currentFrame} />
-                  </section>
+                  </section>}
                 </div>
               ) : view === "checks" ? (
                 <ChecksPanel
@@ -2638,17 +2670,6 @@ function ReleaseHistoryDialog({
       </section>
     </div>
   );
-}
-
-function hasUnavailableFrame(report: ValidationReport): boolean {
-  return report.issues.some((issue) => UNAVAILABLE_FRAME_ISSUE_CODES.has(issue.code));
-}
-
-function hasUnusableTrajectory(report: ValidationReport): boolean {
-  return report.issues.some((issue) => (
-    issue.code === STATIC_TRAJECTORY_ISSUE_CODE
-    || issue.code === UNAVAILABLE_TRAJECTORY_ISSUE_CODE
-  ));
 }
 
 function annotationConfirmationWarnings(report: ValidationReport): ValidationIssue[] {

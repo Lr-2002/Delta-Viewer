@@ -1147,7 +1147,7 @@ fn check_trajectory_motion(states: &[RawStateRecord], issues: &mut Vec<Validatio
                 "TRAJECTORY_POSITION_UNAVAILABLE",
                 "states",
                 &format!(
-                    "状态轨迹的 position 在 {} 条记录中均不可用，已跳过该数据",
+                    "状态轨迹的 position 在 {} 条记录中均不可用，请检查轨迹数据",
                     states.len()
                 ),
                 first_state.frame_id,

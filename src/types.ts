@@ -449,6 +449,48 @@ export interface EpisodeData {
   skeletonError: string | null;
 }
 
+export interface MachineSegment {
+  sourceIndex?: number;
+  segmentId?: string | null;
+  label: string;
+  description: string;
+  startFrame: number;
+  endFrame: number;
+  attributes: Record<string, unknown>;
+}
+
+export interface MachineAnnotation {
+  sourceHash?: string;
+  episodeId: string;
+  sourceJson?: string;
+  boundaryMethod?: string | null;
+  model: string | null;
+  completedAt: string | null;
+  validationStatus: string | null;
+  frameCount: number;
+  warnings: string[];
+  segments: MachineSegment[];
+}
+
+export interface ReviewSegment {
+  sourceIndex: number;
+  startFrame: number;
+  endFrame: number;
+  description: string;
+  deleted: boolean;
+  decision: "pending" | "approved" | "rejected";
+}
+
+export interface MachineReview {
+  sourceHash: string;
+  revision: number;
+  segments: ReviewSegment[];
+  published: boolean;
+  outputHash: string | null;
+  updatedAtMs: number;
+  reviewer: string;
+}
+
 export type Severity = "warning" | "error";
 
 export interface ValidationIssue {

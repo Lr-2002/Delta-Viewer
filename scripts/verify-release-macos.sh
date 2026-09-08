@@ -12,6 +12,7 @@ version=""
 tag=""
 commit=""
 output=""
+expected_bundle_id="com.dohc.viewer"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target) target="${2:-}"; shift 2 ;;
@@ -20,6 +21,7 @@ while [[ $# -gt 0 ]]; do
     --tag) tag="${2:-}"; shift 2 ;;
     --commit) commit="${2:-}"; shift 2 ;;
     --output) output="${2:-}"; shift 2 ;;
+    --bundle-id) expected_bundle_id="${2:-}"; shift 2 ;;
     --help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -55,7 +57,8 @@ minimum_version="$(plutil -extract LSMinimumSystemVersion raw -o - "$app/Content
 bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")"
 [[ "$actual_version" == "$version" ]] || { echo "App version $actual_version != $version" >&2; exit 1; }
 [[ "$minimum_version" == "12.0" ]] || { echo "Minimum macOS version is not 12.0" >&2; exit 1; }
-[[ "$bundle_id" == "com.dohc.viewer" ]] || { echo "Unexpected bundle ID: $bundle_id" >&2; exit 1; }
+[[ "$expected_bundle_id" == "com.dohc.viewer" || "$expected_bundle_id" == "com.dohc.viewer.dev" ]] || exit 2
+[[ "$bundle_id" == "$expected_bundle_id" ]] || { echo "Unexpected bundle ID: $bundle_id" >&2; exit 1; }
 
 expected_lipo_arch="x86_64"
 [[ "$arch" == "arm64" ]] && expected_lipo_arch="arm64"
@@ -96,7 +99,7 @@ for details in "$app_sign_details" "$binary_sign_details" "$ffmpeg_sign_details"
     exit 1
   fi
 done
-printf '%s\n' "$app_sign_details" | grep -F 'Identifier=com.dohc.viewer' >/dev/null || {
+printf '%s\n' "$app_sign_details" | grep -Fx "Identifier=$expected_bundle_id" >/dev/null || {
   echo "App signature has the wrong identifier" >&2
   exit 1
 }

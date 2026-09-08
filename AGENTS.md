@@ -21,6 +21,14 @@
 15. Codex 和其他自动化 agent 在没有收到开发负责人明确版本指令时，只能把当前 semver 的 patch 位连续增加 1（即 `+0.0.1`），不得跳号，也不得根据改动规模自行提升 minor 或 major。minor（例如 `0.17.x -> 0.18.0`）及 major 版本只能按开发负责人明确指定的版本更新；提升 minor 或 major 时 patch 归零。
 16. 自动更新只接受固定镜像同 origin、精确版本目录下当前平台的 1-64 MiB asset，必须在 Rust 中有界读取并用应用内嵌 Ed25519/Minisign 公钥验签后安装。Tauri 的 `dangerousInsecureTransportProtocol` 只可为固定内网 HTTP 镜像显式开启，且只能连接，不得替代 origin、大小或签名 hard gate。镜像以只读 GET/HEAD 提供资产，从 GitHub 同步时必须先验证完整三平台集合、大小、SHA-256 和签名，再原子激活；失败继续提供上一完整版本。更新使用与其他长任务相同的 `TaskControl`，不能打断扫描/检查/导出。更新私钥只允许存在于受控离线备份和 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets；它不是 GitHub App private key，不得提交、打印或进入 artifact。
 
+### 2026-09-08 校对与正式发布补充
+
+用户明确要求在正式版 `1.0.2` 发布校对编辑与播放优化，取代之前仅开发版提供机标的限制。原人工标注功能继续保留，静止/缺失位置轨迹仍允许确认警告后标注。最新指令还要求可打开的数据完整加载：兼容 `.session_meta/manifest.json` 的新 MP4 记录；个别相机/帧或尺寸、帧号等质量问题不再卸载整条记录，主帧读取失败只暂停播放并保留数据供继续定位。只有未识别到任何视频/图像流时阻止空工作区加载。检查报告保留所有问题，导出 error 门禁不变。这覆盖旧的任一图像 issue 即阻断加载规则。
+
+新增源端写入例外：校对草稿先写应用本机目录；所有保留片段明确合格后，才在当前 episode 根目录首次创建 `bailian_annotation_reviewed.json`。后续编辑实时原子更新该文件，未修改机标字段保留，原 `bailian_annotation.json` 始终只读。复核结果带独立人工状态，后续修改会撤销对应片段合格状态。允许同目录的固定复核锁及专用 partial；这些应用管理文件不参与采集指纹或统计。禁止覆盖外部同名文件、源机标变更或并发修订冲突。此明确用户需求覆盖上文仅允许 `description.json` 的旧限制。复核内容不上传用户中心、不写人工标注记录，也不计入人工标注完成量。
+
+`1.0.2` 恢复正式应用身份 `com.dohc.viewer` 和正式更新通道，必须按既有三平台完整集合门禁发布，不能使用此前 Mac 开发版优先发布的例外。
+
 ## 2. 仓库结构
 
 ```text

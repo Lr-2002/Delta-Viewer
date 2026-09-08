@@ -7,6 +7,8 @@ mod error;
 mod export;
 mod identity;
 mod importer;
+mod machine_annotation;
+mod machine_review;
 mod media_stream_server;
 mod model;
 mod mp4_preview_cache;
@@ -177,6 +179,7 @@ async fn check_for_app_update(
 ) -> Result<AppUpdateInfo, String> {
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
+    require_stable_update_channel()?;
     updater::check(&app)
         .await
         .map_err(|error| error.to_string())
@@ -191,6 +194,7 @@ async fn install_app_update(
 ) -> Result<bool, String> {
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
+    require_stable_update_channel()?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     emit_task_start(
@@ -209,6 +213,15 @@ async fn install_app_update(
         app.restart();
     }
     Ok(false)
+}
+
+fn require_stable_update_channel() -> Result<(), String> {
+    if env!("CARGO_PKG_VERSION").contains("-dev.") {
+        return Err(
+            "DEVELOPMENT_UPDATE_DISABLED: 开发版不安装正式版更新，请使用开发版安装包升级".into(),
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -696,6 +709,55 @@ async fn load_episode_annotation(
             None => source::episode_fingerprint(&root, &AtomicBool::new(false))?,
         };
         annotations::load_annotation(&data_root, &root, &fingerprint)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn load_machine_annotation(
+    auth: State<'_, AuthState>,
+    source_path: String,
+) -> Result<Option<model::MachineAnnotation>, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    ensure_source_directory_responsive(&source_path).await?;
+    tauri::async_runtime::spawn_blocking(move || machine_annotation::load(Path::new(&source_path)))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn load_machine_review(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    source_path: String,
+) -> Result<machine_review::ReviewState, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    ensure_source_directory_responsive(&source_path).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        machine_review::load(&data_root, Path::new(&source_path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn save_machine_review(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    request: machine_review::SaveReviewRequest,
+) -> Result<machine_review::ReviewState, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    ensure_source_directory_responsive(&request.source_path).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        machine_review::save(&data_root, request, &user.username)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1340,6 +1402,9 @@ pub fn run() {
             delete_task_definition,
             suggest_trajectory_code,
             load_episode_annotation,
+            load_machine_annotation,
+            load_machine_review,
+            save_machine_review,
             save_episode_annotation,
             list_annotated_episodes,
             scan_source,

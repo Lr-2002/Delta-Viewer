@@ -7,9 +7,11 @@ usage() {
 }
 
 app=""
+expected_bundle_id="com.dohc.viewer"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --app) app="${2:-}"; shift 2 ;;
+    --bundle-id) expected_bundle_id="${2:-}"; shift 2 ;;
     --help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -34,7 +36,8 @@ done
 [[ -x "$main_binary" && -x "$ffmpeg" ]] || { echo "App executables are not executable" >&2; exit 1; }
 
 bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")"
-[[ "$bundle_id" == "com.dohc.viewer" ]] || { echo "Unexpected bundle ID: $bundle_id" >&2; exit 1; }
+[[ "$expected_bundle_id" == "com.dohc.viewer" || "$expected_bundle_id" == "com.dohc.viewer.dev" ]] || exit 2
+[[ "$bundle_id" == "$expected_bundle_id" ]] || { echo "Unexpected bundle ID: $bundle_id" >&2; exit 1; }
 
 preseal_ffmpeg_sha="$(shasum -a 256 "$ffmpeg" | awk '{print $1}')"
 manifest_ffmpeg_sha="$(jq -er '.sha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$manifest")"
