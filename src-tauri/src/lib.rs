@@ -7,6 +7,7 @@ mod error;
 mod export;
 mod identity;
 mod importer;
+mod machine_annotation;
 mod media_stream_server;
 mod model;
 mod mp4_preview_cache;
@@ -177,6 +178,7 @@ async fn check_for_app_update(
 ) -> Result<AppUpdateInfo, String> {
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
+    require_stable_update_channel()?;
     updater::check(&app)
         .await
         .map_err(|error| error.to_string())
@@ -191,6 +193,7 @@ async fn install_app_update(
 ) -> Result<bool, String> {
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
+    require_stable_update_channel()?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     emit_task_start(
@@ -209,6 +212,15 @@ async fn install_app_update(
         app.restart();
     }
     Ok(false)
+}
+
+fn require_stable_update_channel() -> Result<(), String> {
+    if env!("CARGO_PKG_VERSION").contains("-dev.") {
+        return Err(
+            "DEVELOPMENT_UPDATE_DISABLED: 开发版不安装正式版更新，请使用开发版安装包升级".into(),
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -700,6 +712,19 @@ async fn load_episode_annotation(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn load_machine_annotation(
+    auth: State<'_, AuthState>,
+    source_path: String,
+) -> Result<Option<model::MachineAnnotation>, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    ensure_source_directory_responsive(&source_path).await?;
+    tauri::async_runtime::spawn_blocking(move || machine_annotation::load(Path::new(&source_path)))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1340,6 +1365,7 @@ pub fn run() {
             delete_task_definition,
             suggest_trajectory_code,
             load_episode_annotation,
+            load_machine_annotation,
             save_episode_annotation,
             list_annotated_episodes,
             scan_source,

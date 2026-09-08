@@ -693,6 +693,31 @@ pub struct SkeletonSeries {
     pub frames: Vec<SkeletonFrame>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineAnnotation {
+    pub episode_id: String,
+    pub source_json: String,
+    pub boundary_method: Option<String>,
+    pub model: Option<String>,
+    pub completed_at: Option<String>,
+    pub validation_status: Option<String>,
+    pub frame_count: u64,
+    pub warnings: Vec<String>,
+    pub segments: Vec<MachineSegment>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineSegment {
+    pub segment_id: Option<String>,
+    pub label: String,
+    pub description: String,
+    pub start_frame: u64,
+    pub end_frame: u64,
+    pub attributes: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {

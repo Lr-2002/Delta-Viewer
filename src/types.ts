@@ -449,6 +449,27 @@ export interface EpisodeData {
   skeletonError: string | null;
 }
 
+export interface MachineSegment {
+  segmentId?: string | null;
+  label: string;
+  description: string;
+  startFrame: number;
+  endFrame: number;
+  attributes: Record<string, unknown>;
+}
+
+export interface MachineAnnotation {
+  episodeId: string;
+  sourceJson?: string;
+  boundaryMethod?: string | null;
+  model: string | null;
+  completedAt: string | null;
+  validationStatus: string | null;
+  frameCount: number;
+  warnings: string[];
+  segments: MachineSegment[];
+}
+
 export type Severity = "warning" | "error";
 
 export interface ValidationIssue {

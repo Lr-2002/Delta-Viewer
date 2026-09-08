@@ -26,6 +26,7 @@ import type {
   CreateTaskRequest,
   EpisodeAnnotation,
   EpisodeData,
+  MachineAnnotation,
   EpisodeValidationResult,
   ExportFormat,
   ExportRange,
@@ -61,6 +62,7 @@ import type {
 
 export const DEMO_ROOT = DEMO_EPISODE_ROOT;
 export const APP_VERSION = packageInfo.version;
+export const IS_DEVELOPMENT_EDITION = APP_VERSION.includes("-dev.");
 
 const SESSION_ACTIVATION_DEMO_SOURCE_ROOT = "demo://session-activation";
 const SESSION_ACTIVATION_DEMO_EPISODES = [
@@ -437,6 +439,27 @@ export async function loadEpisodeAnnotation(sourcePath: string): Promise<Episode
     return invoke<EpisodeAnnotation | null>("load_episode_annotation", { sourcePath });
   }
   return demoAnnotations.get(sourcePath) ?? null;
+}
+
+export async function loadMachineAnnotation(sourcePath: string): Promise<MachineAnnotation | null> {
+  if (isTauriRuntime()) return invoke<MachineAnnotation | null>("load_machine_annotation", { sourcePath });
+  demoActor();
+  const scenario = new URLSearchParams(window.location.search).get("machineAnnotation");
+  if (!scenario || scenario === "missing") return null;
+  if (scenario === "invalid") throw new Error("MACHINE_ANNOTATION_INVALID: 机标 JSON 格式无效");
+  return {
+    episodeId: sourcePath.split("/").at(-1) ?? "demo",
+    model: "Demo model",
+    completedAt: "2026-09-08T10:00:00+08:00",
+    validationStatus: "passed",
+    frameCount: scenario === "mismatch" ? 200 : 196,
+    warnings: [],
+    segments: [
+      { label: "phase_stand", description: "站立", startFrame: 0, endFrame: 59, attributes: { body_part: "whole_body" } },
+      { label: "phase_walk", description: "向前行走", startFrame: 60, endFrame: 119, attributes: { body_part: "whole_body" } },
+      { label: "phase_open", description: "右手打开门", startFrame: 120, endFrame: 195, attributes: { body_part: "right_hand", object_name: "门" } },
+    ],
+  };
 }
 
 const AUDIT_QUEUE_KEY = "dohc-viewer.pending-audits.v1";

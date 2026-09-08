@@ -31,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 import { AnnotationPanel } from "./components/AnnotationPanel";
+import { MachineAnnotationPanel } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
 import { BatchExportPanel } from "./components/BatchExportPanel";
 import { ChecksPanel } from "./components/ChecksPanel";
@@ -44,6 +45,7 @@ import { SupervisionDashboard } from "./components/SupervisionDashboard";
 import { TelemetryChart } from "./components/TelemetryChart";
 import {
   APP_VERSION,
+  IS_DEVELOPMENT_EDITION,
   DEMO_ROOT,
   cancelTask,
   checkForAppUpdate,
@@ -120,7 +122,7 @@ import type {
   WorkspaceMode,
 } from "./types";
 
-type View = "review" | "checks" | "export" | "batch";
+type View = "review" | "checks" | "export" | "batch" | "proofread";
 type EpisodeSourceState = "available" | "loading" | "error";
 type UpdatePhase = "idle" | "checking" | "available" | "current" | "downloading" | "failed";
 type EpisodeLoadResult = "loaded" | "confirmation_required" | "skipped";
@@ -301,6 +303,7 @@ function App() {
   const [currentFrame, setCurrentFrame] = useState(0);
   const [clipStartFrame, setClipStartFrame] = useState(0);
   const [clipEndFrame, setClipEndFrame] = useState(0);
+  const [machinePreviewRange, setMachinePreviewRange] = useState<ExportRange | null>(null);
   const [speed, setSpeed] = useState(1);
   const [fpsOverride, setFpsOverride] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -367,9 +370,11 @@ function App() {
   const primaryStream = primaryStreamName
     ? availableStreams.find((stream) => stream.name === primaryStreamName) ?? null
     : null;
+  const playbackStart = machinePreviewRange?.startFrame ?? clipStartFrame;
+  const playbackEnd = machinePreviewRange?.endFrame ?? clipEndFrame;
   const primaryPlaybackEndFrame = Math.min(
-    clipEndFrame,
-    primaryStream?.lastFrame ?? clipEndFrame,
+    playbackEnd,
+    primaryStream?.lastFrame ?? playbackEnd,
   );
   const playbackFps = fpsOverride ?? estimatedFps;
   const secondaryReadAheadStride = Math.max(1, Math.round(playbackFps / 10));
@@ -416,15 +421,15 @@ function App() {
     timelinePosition: number,
   ) => {
     if (streamName !== primaryStreamName || !primaryNativeClockRef.current) return;
-    const next = Math.max(clipStartFrame, Math.min(primaryPlaybackEndFrame, frameId));
-    const presentedPosition = Math.max(clipStartFrame, Math.min(primaryPlaybackEndFrame, timelinePosition));
+    const next = Math.max(playbackStart, Math.min(primaryPlaybackEndFrame, frameId));
+    const presentedPosition = Math.max(playbackStart, Math.min(primaryPlaybackEndFrame, timelinePosition));
     skeletonFramePresenterRef.current?.(presentedPosition);
     if (next !== frameRef.current) {
       frameRef.current = next;
       setCurrentFrame(next);
     }
     if (next >= primaryPlaybackEndFrame) setPlaying(false);
-  }, [clipStartFrame, primaryPlaybackEndFrame, primaryStreamName]);
+  }, [playbackStart, primaryPlaybackEndFrame, primaryStreamName]);
 
   function beginOperation(): OperationToken | null {
     const operation = operationScopeRef.current.begin();
@@ -461,6 +466,7 @@ function App() {
   }
 
   async function runAutomaticUpdate() {
+    if (IS_DEVELOPMENT_EDITION) return;
     if (operationScopeRef.current.current()) return;
     setUpdatePhase("checking");
     setUpdateError("");
@@ -484,6 +490,7 @@ function App() {
   }
 
   async function installAvailableUpdate() {
+    if (IS_DEVELOPMENT_EDITION) return;
     const owner = beginOperation();
     if (!owner) return;
     setUpdatePhase("downloading");
@@ -945,6 +952,7 @@ function App() {
     // Show read-only frames immediately, but mount draft editors only after
     // validation has cached the fingerprint and saved bounds are restored.
     setData(loaded);
+    setMachinePreviewRange(null);
     setReport(null);
     setAnnotation(null);
     setAnnotationReadyRoot(null);
@@ -1108,6 +1116,7 @@ function App() {
   }, [data, primaryStreamName]);
 
   function resetLoadedData() {
+    setMachinePreviewRange(null);
     settledFrameByStreamRef.current.clear();
     setAnnotationReadyRoot(null);
     setData(null);
@@ -1208,7 +1217,7 @@ function App() {
 
   function seekFrame(frame: number) {
     if (!data) return;
-    const next = Math.max(clipStartFrame, Math.min(clipEndFrame, Math.round(frame)));
+    const next = Math.max(playbackStart, Math.min(playbackEnd, Math.round(frame)));
     setPlaying(false);
     resetPlaybackPreparation();
     frameRef.current = next;
@@ -1229,7 +1238,7 @@ function App() {
     if (!playing) {
       const startFrame = playbackStartFrame(
         frameRef.current,
-        clipStartFrame,
+        playbackStart,
         primaryPlaybackEndFrame,
       );
       if (startFrame !== frameRef.current) {
@@ -1256,20 +1265,47 @@ function App() {
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
         moveFrame(1);
-      } else if (event.key === "[") {
+      } else if (event.key === "[" && view === "review" && !machinePreviewRange) {
         event.preventDefault();
         updateClipStart(frameRef.current);
-      } else if (event.key === "]") {
+      } else if (event.key === "]" && view === "review" && !machinePreviewRange) {
         event.preventDefault();
         updateClipEnd(frameRef.current);
       }
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [data, clipStartFrame, clipEndFrame, playing]);
+  }, [data, clipStartFrame, clipEndFrame, machinePreviewRange, playing, view]);
+
+  function previewMachineSegment(range: ExportRange, play: boolean) {
+    if (!data || busy) return;
+    const startFrame = Math.max(getMinFrame(data), range.startFrame);
+    const endFrame = Math.min(getMaxFrame(data), range.endFrame);
+    if (startFrame > endFrame) return;
+    setMachinePreviewRange({ startFrame, endFrame });
+    frameRef.current = startFrame;
+    setCurrentFrame(startFrame);
+    resetPlaybackPreparation();
+    setPlaying(play);
+  }
+
+  function exitMachinePreview() {
+    setMachinePreviewRange(null);
+    setPlaying(false);
+    const frame = clampPlaybackFrame(frameRef.current, clipStartFrame, clipEndFrame);
+    frameRef.current = frame;
+    setCurrentFrame(frame);
+    resetPlaybackPreparation();
+  }
+
+  function changeView(next: View) {
+    setPlaying(false);
+    if (machinePreviewRange) exitMachinePreview();
+    setView(next);
+  }
 
   function updateClipStart(value: number) {
-    if (!data) return;
+    if (!data || machinePreviewRange) return;
     const next = Math.max(getMinFrame(data), Math.min(Math.round(value), clipEndFrame));
     setClipStartFrame(next);
     if (currentFrame < next) {
@@ -1282,7 +1318,7 @@ function App() {
   }
 
   function updateClipEnd(value: number) {
-    if (!data) return;
+    if (!data || machinePreviewRange) return;
     const next = Math.min(getMaxFrame(data), Math.max(Math.round(value), clipStartFrame));
     setClipEndFrame(next);
     if (currentFrame > next) {
@@ -1324,7 +1360,7 @@ function App() {
   }
 
   function resetClipRange() {
-    if (!data) return;
+    if (!data || machinePreviewRange) return;
     const start = getMinFrame(data);
     const end = getMaxFrame(data);
     setClipStartFrame(start);
@@ -1578,6 +1614,7 @@ function App() {
 
   function locateIssue(issue: ValidationIssue) {
     if (!data) return;
+    setMachinePreviewRange(null);
     const location = resolveIssueLocation(data, issue);
     if (location.kind === "unavailable") {
       setNotice(location.message);
@@ -1697,7 +1734,7 @@ function App() {
         <div className="brand-lockup">
           <span className="brand-mark">D</span>
           <div>
-            <strong>DOHC Viewer</strong>
+            <strong>DOHC Viewer{IS_DEVELOPMENT_EDITION ? " Dev" : ""}</strong>
             <span>v{updateInfo?.currentVersion ?? APP_VERSION}</span>
           </div>
           <button
@@ -1718,7 +1755,7 @@ function App() {
         </div>
         <div className="topbar-actions">
           <StatusBadge status={status} />
-          {isManagedWorkspace && currentUser ? (
+          {isManagedWorkspace && currentUser && !IS_DEVELOPMENT_EDITION ? (
             <button
               className={`icon-button update-trigger${updatePhase === "failed" ? " update-failed" : ""}`}
               type="button"
@@ -1934,21 +1971,24 @@ function App() {
               <nav className="view-tabs" aria-label="工作区视图">
                 {data ? (
                   <>
-                    <button type="button" className={view === "review" ? "active" : ""} onClick={() => setView("review")}>
+                    <button type="button" className={view === "review" ? "active" : ""} onClick={() => changeView("review")}>
                       <Images size={17} />回放
                     </button>
-                    <button type="button" className={view === "checks" ? "active" : ""} onClick={() => setView("checks")}>
+                    <button type="button" className={view === "checks" ? "active" : ""} onClick={() => changeView("checks")}>
                       <ShieldCheck size={17} />检查
                       {report?.status === "warning" ? <span className="tab-alert" /> : null}
                     </button>
-                    <button type="button" className={view === "export" ? "active" : ""} onClick={() => setView("export")}>
+                    <button type="button" className={view === "export" ? "active" : ""} onClick={() => changeView("export")}>
                       <PackageOpen size={17} />导出
                     </button>
                   </>
                 ) : null}
-                <button type="button" className={view === "batch" ? "active" : ""} onClick={openBatchExport}>
+                <button type="button" className={view === "batch" ? "active" : ""} onClick={() => { if (machinePreviewRange) exitMachinePreview(); openBatchExport(); }}>
                   <ListChecks size={17} />批量
                 </button>
+                {data && IS_DEVELOPMENT_EDITION && <button type="button" className={view === "proofread" ? "active" : ""} onClick={() => changeView("proofread")}>
+                  <FileSearch size={17} />校对
+                </button>}
                 <span className="view-tab-spacer" />
                 {data ? (
                   <span className="loaded-label"><span className="source-dot" />{shortPath(data.summary.root, 52)}</span>
@@ -1974,19 +2014,19 @@ function App() {
                   onExport={() => void runBatchExport()}
                   onReveal={(path) => void revealExport(path)}
                 />
-              ) : !data ? null : view === "review" ? (
-                <div className="review-view">
+              ) : !data ? null : view === "review" || view === "proofread" ? (
+                <div className={`review-view${view === "proofread" ? " proofreading-view" : ""}`}>
                   <section className="camera-section">
                     <div className="section-heading compact-heading">
                       <div>
                         <span className="section-kicker">SYNCHRONIZED FRAMES</span>
-                        <h2>多路回放</h2>
+                        <h2>{view === "proofread" ? "机标校对" : "多路回放"}</h2>
                       </div>
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
                     </div>
-                    <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
-                      <div className={`camera-grid stream-count-${availableStreams.length}`}>
-                        {availableStreams.map((stream, index) => (
+                    <div className={`replay-visual-row${view !== "proofread" && (data.skeleton || data.skeletonError) ? " with-skeleton" : ""}`}>
+                      <div className={`camera-grid stream-count-${view === "proofread" ? 1 : availableStreams.length}`}>
+                        {availableStreams.filter((stream) => view !== "proofread" || stream.name === primaryStreamName).map((stream, index) => (
                           <FramePanel
                             key={stream.name}
                             root={data.summary.root}
@@ -2008,7 +2048,7 @@ function App() {
                               : secondaryReadAheadStride}
                             playbackEndFrame={stream.name === primaryStreamName
                               ? primaryPlaybackEndFrame
-                              : clipEndFrame}
+                              : playbackEnd}
                             playbackFps={playbackFps}
                             speed={speed}
                             className={`camera-${index}`}
@@ -2021,7 +2061,7 @@ function App() {
                           />
                         ))}
                       </div>
-                      <div className="skeleton-side-panel">
+                      {view !== "proofread" && <div className="skeleton-side-panel">
                         {data.skeleton ? (
                           <SkeletonViewer
                             skeleton={data.skeleton}
@@ -2039,9 +2079,9 @@ function App() {
                             <span>{data.skeletonError}</span>
                           </section>
                         ) : null}
-                      </div>
+                      </div>}
                     </div>
-                    {!playing ? (
+                    {!playing && view === "review" ? (
                       <FrameRenderProgress
                         frameId={currentFrame}
                         settled={frameRenderProgress.root === data.summary.root && frameRenderProgress.frameId === currentFrame
@@ -2050,14 +2090,31 @@ function App() {
                         total={availableStreams.length}
                       />
                     ) : null}
-                    {annotationReadyRoot === data.summary.root && <AnnotationPanel
+                    {view === "proofread" && <MachineAnnotationPanel
+                      key={`machine:${data.summary.root}`}
+                      data={data}
+                      annotation={annotation}
+                      currentFrame={currentFrame}
+                      previewing={machinePreviewRange !== null}
+                      busy={busy}
+                      onPreview={previewMachineSegment}
+                      onExitPreview={exitMachinePreview}
+                    />}
+                    {view === "proofread" && <div className="proofreading-transport">
+                      <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧" disabled={busy}><SkipBack size={17} /></button>
+                      <button className="play-button" type="button" onClick={togglePlayback} title={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"} disabled={busy}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
+                      <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧" disabled={busy}><SkipForward size={17} /></button>
+                      <input type="range" min={playbackStart} max={primaryPlaybackEndFrame} value={Math.min(currentFrame, primaryPlaybackEndFrame)} aria-label="校对播放帧" disabled={busy} onChange={(event) => seekFrame(event.currentTarget.valueAsNumber)} />
+                      <span>帧 {currentFrame}</span>
+                    </div>}
+                    {view === "review" && annotationReadyRoot === data.summary.root && <AnnotationPanel
                       key={data.summary.root}
                       sourcePath={data.summary.root}
                       tasks={tasks}
                       annotation={annotation}
                       currentUser={currentUser}
                       offlineMode={isOfflineWorkspace}
-                      busy={busy}
+                      busy={busy || machinePreviewRange !== null}
                       onTaskCreated={(task) => setTasks((current) => [...current, task])}
                       onTaskDeleted={(taskId) => {
                         setTasks((current) => current.filter((task) => task.id !== taskId));
@@ -2071,7 +2128,7 @@ function App() {
                       onNotice={setNotice}
                       onActivity={auditActivity}
                     />}
-                    {annotationReadyRoot === data.summary.root && <SegmentAnnotationEditor
+                    {view === "review" && annotationReadyRoot === data.summary.root && <SegmentAnnotationEditor
                       key={`${data.summary.root}:${selectedTaskTemplate?.id ?? "none"}`}
                       data={data}
                       annotation={annotation}
@@ -2082,7 +2139,7 @@ function App() {
                       maxFrame={maxFrame}
                       clipStartFrame={clipStartFrame}
                       clipEndFrame={clipEndFrame}
-                      busy={busy}
+                      busy={busy || machinePreviewRange !== null}
                       playbackControls={(
                         <>
                           <div className="transport-buttons">
@@ -2129,7 +2186,7 @@ function App() {
                     />}
                   </section>
 
-                  <section className="telemetry-section">
+                  {view === "review" && <section className="telemetry-section">
                     <div className="section-heading compact-heading">
                       <div>
                         <span className="section-kicker">STATE TELEMETRY</span>
@@ -2144,7 +2201,7 @@ function App() {
                       </div>
                     </div>
                     <TelemetryChart states={data.states} metric={metric} frameId={currentFrame} />
-                  </section>
+                  </section>}
                 </div>
               ) : view === "checks" ? (
                 <ChecksPanel

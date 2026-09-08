@@ -66,6 +66,101 @@ if (!browserExecutable) {
     await new Promise((resolveExit) => server.once("exit", resolveExit));
   });
 
+  test("machine annotations preview outside the human trim without changing saved bounds", async () => {
+    for (const viewport of [{ width: 1440, height: 920 }, { width: 960, height: 680 }, { width: 390, height: 844 }]) {
+      const context = await browser.newContext({ viewport });
+      const page = await context.newPage();
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+      page.on("requestfailed", (request) => errors.push(request.url()));
+      await registerDemoAccount(page, `${baseUrl}/?machineAnnotation=present`, `machine-${viewport.width}`);
+      const panel = page.getByRole("region", { name: "机标结果" });
+      assert.equal(await panel.count(), 0);
+      assert.equal(await page.locator(".episode-item.annotated").count(), 0);
+      await page.getByLabel("裁剪起始帧").fill("30");
+      await page.getByLabel("裁剪结束帧").fill("90");
+      const confirmation = acceptNextSaveConfirmation(page);
+      await page.getByRole("button", { name: "保存标注", exact: true }).click();
+      await confirmation;
+      await page.getByText("已保存 · r1", { exact: true }).waitFor();
+      await page.locator(".segment-list button").first().click();
+      await page.getByLabel("片段注解").fill("人工保留的动作");
+      const segmentConfirmation = acceptNextSaveConfirmation(page);
+      await page.getByRole("button", { name: "保存片段", exact: true }).click();
+      await segmentConfirmation;
+      await page.getByText("已保存 · r2", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "校对", exact: true }).click();
+      await panel.getByText("模型：Demo model").waitFor();
+      assert.equal(await panel.getByRole("listitem").count(), 3);
+      assert.equal(await page.locator(".segment-editor-embedded").count(), 0);
+      await page.waitForFunction(() => [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")].every((image) => image.naturalWidth > 0));
+      await panel.getByRole("button", { name: "定位机标片段 3" }).click();
+      await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent === "帧 120 / 195");
+      assert.equal(await page.getByRole("button", { name: "重新保存片段", exact: true }).count(), 0);
+      assert.match(await panel.locator(".machine-comparison").innerText(), /右手打开门/);
+      assert.equal(await page.locator(".camera-grid .frame-panel").count(), 1);
+      assert.deepEqual(await page.locator("[data-boundary-frame]").evaluateAll((nodes) => nodes.map((node) => Number(node.dataset.boundaryFrame))), [120, 195]);
+      await page.getByText("显示末帧 195", { exact: false }).waitFor();
+      await panel.getByRole("button", { name: "查看 JSON" }).click();
+      await page.getByRole("dialog", { name: "机标 JSON" }).waitFor();
+      await page.getByRole("button", { name: "关闭 JSON" }).click();
+      await panel.getByRole("button", { name: "选择机标片段 1" }).click();
+      await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent === "帧 0 / 195");
+      assert.deepEqual(await page.locator("[data-boundary-frame]").evaluateAll((nodes) => nodes.map((node) => Number(node.dataset.boundaryFrame))), [0, 60]);
+      await panel.getByRole("button", { name: "定位机标片段 3" }).click();
+      await page.waitForFunction(() => [...document.querySelectorAll(".machine-boundaries img[aria-hidden='false']")].filter((image) => image.naturalWidth > 0).length === 2);
+      const directory = resolve(root, "artifacts/machine-annotation");
+      mkdirSync(directory, { recursive: true });
+      await panel.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: resolve(directory, `comparison-${viewport.width}.png`), fullPage: true });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await panel.getByRole("button", { name: "播放机标片段 2" }).click();
+      await page.waitForFunction(() => {
+        const frame = Number(document.querySelector(".frame-counter")?.textContent?.match(/帧 (\d+)/)?.[1]);
+        return frame > 60 && frame <= 119;
+      });
+      await panel.getByRole("button", { name: "返回人工范围" }).click();
+      await page.getByRole("button", { name: "回放", exact: true }).click();
+      assert.equal(await panel.count(), 0);
+      assert.equal(await page.getByLabel("裁剪起始帧").inputValue(), "30");
+      assert.equal(await page.getByLabel("裁剪结束帧").inputValue(), "90");
+      const saved = await page.evaluate(async () => {
+        const backend = await import("/src/lib/backend.ts");
+        const item = await backend.loadEpisodeAnnotation(backend.DEMO_ROOT);
+        return { start: item?.clipStartFrame, end: item?.clipEndFrame, revision: item?.revision };
+      });
+      assert.deepEqual(saved, { start: 30, end: 90, revision: 2 });
+      await page.getByRole("button", { name: "检查", exact: true }).click();
+      await page.getByRole("button", { name: "导出", exact: true }).click();
+      await page.getByRole("button", { name: "批量", exact: true }).click();
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+  });
+
+  test("missing invalid and mismatched machine results do not block human annotation", async () => {
+    for (const scenario of ["missing", "invalid", "mismatch"]) {
+      const context = await browser.newContext({ viewport: { width: 960, height: 680 } });
+      const page = await context.newPage();
+      await registerDemoAccount(page, `${baseUrl}/?machineAnnotation=${scenario}`, `machine-${scenario}`);
+      await page.getByRole("button", { name: "保存标注", exact: true }).waitFor();
+      await page.getByRole("button", { name: "校对", exact: true }).click();
+      const panel = page.getByRole("region", { name: "机标结果" });
+      await panel.getByRole("button", { name: "重新读取机标" }).waitFor();
+      if (scenario === "missing") await panel.getByText("未发现 bailian_annotation.json").waitFor();
+      if (scenario === "invalid") await panel.getByRole("alert").waitFor();
+      if (scenario === "mismatch") {
+        await panel.getByText(/无法可靠对齐/).waitFor();
+        assert.equal(await panel.getByRole("button", { name: "播放机标片段 1" }).isDisabled(), true);
+      }
+      await page.getByRole("button", { name: "回放", exact: true }).click();
+      assert.equal(await page.getByRole("button", { name: "保存标注", exact: true }).isEnabled(), true);
+      await context.close();
+    }
+  });
+
   test("fixture v1 preserves the canonical streams and exact generated endpoint", async () => {
     assert.deepEqual(fixture, expectedFixture);
 

@@ -5,6 +5,25 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 1.0.2-dev.1 - 2026-09-08
+
+- Add a development-only Proofread workspace alongside Replay, Checks,
+  Export and Batch. Keep machine annotations out of the human annotation page.
+- Read per-episode bailian_annotation.json without modifying source files;
+  compare model segments with saved human annotations and preview media ranges.
+- Align exclusive source-video intervals with the primary playback timeline,
+  and report missing, malformed, legacy or mismatched machine metadata.
+- Match the requested proofreading layout with a main video, independent
+  start/end frame previews, a colored action strip, segment attributes and JSON.
+- Publish an Apple Silicon development DMG first at the user's request,
+  with ad-hoc sealing, mounted-install startup verification and checksums.
+- Distribute the development edition as DOHC Viewer Dev with the separate
+  com.dohc.viewer.dev application identity and local data directory.
+- Disable stable-update checks and installation in the development edition.
+  Stable 1.0.1 retains the previously released annotation optimizations.
+- Development builds remain unsigned and do not imply target-machine or
+  large-volume qualification.
+
 ## 0.17.67 - 2026-09-07
 
 - Restore saved trim boundaries before mounting annotation editors so stale drafts
