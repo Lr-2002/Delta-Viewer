@@ -5,6 +5,18 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 1.0.1 - 2026-09-08
+
+- Begin the user-requested stable release numbering at 1.0.1, retaining the
+  reviewed annotation and NAS playback improvements from 0.17.67.
+- Restore saved trim ranges on re-entry and mark episodes annotated only
+  after both task annotations and nonempty segments have been saved.
+- Keep experimental machine-annotation proofreading in the separate
+  development edition; the stable edition retains its existing workspace.
+- Installers remain explicitly UNSIGNED. Existing physical-device and
+  large-volume qualification gaps GAP-003/GAP-007 remain open; the version
+  numbering change does not assert that those checks have passed.
+
 ## 0.17.67 - 2026-09-07
 
 - Restore saved trim boundaries before mounting annotation editors so stale drafts
