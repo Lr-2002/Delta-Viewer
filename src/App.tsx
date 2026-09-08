@@ -141,15 +141,6 @@ function localDateInput(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-const UNAVAILABLE_FRAME_ISSUE_CODES = new Set([
-  "EMPTY_STREAM",
-  "INVALID_FRAME_FILENAME",
-  "DUPLICATE_FRAME_ID",
-  "FRAME_ID_MISMATCH",
-  "DECODE_FAILED",
-  "DIMENSION_MISMATCH",
-  "DUPLICATE_SEGMENT_NUMBER",
-]);
 const FRAME_JUMP_ISSUE_CODE = "STATE_FRAME_GAP";
 
 const METRICS: { key: MetricKey; label: string }[] = [
@@ -969,10 +960,10 @@ function App() {
     if (validated.report.status === "warning") auditActivity("validation_warning");
     if (validated.report.status === "error") auditActivity("validation_error");
     updateScannedEpisode(validated.summary);
-    if (hasUnavailableFrame(validated.report)) {
+    if (!validated.summary.streams.some((stream) => stream.frameCount > 0)) {
       resetLoadedData();
       throw new Error(
-        `FRAME_UNAVAILABLE: ${loaded.summary.name} 存在不可用图像帧，已阻止加载。请在左侧跳过该数据后继续。`,
+        `FRAME_UNAVAILABLE: ${loaded.summary.name} 未发现可读取的视频或图像，请检查数据文件是否完整。`,
       );
     }
 
@@ -983,8 +974,7 @@ function App() {
       minFrame: loadedMinFrame,
       maxFrame: loadedMaxFrame,
     };
-    // Static/missing position does not imply static video. Development
-    // operators may continue annotating after acknowledging tracking warnings.
+    // Quality findings remain visible without discarding readable camera data.
     if (annotationConfirmationWarnings(validated.report).length) {
       setPendingAnnotationConfirmation(candidate);
       setView("review");
@@ -1107,9 +1097,9 @@ function App() {
     if (streamName !== primaryStreamName) return;
     const episode = data.summary;
     const stream = data.summary.streams.find((candidate) => candidate.name === streamName);
-    const message = `FRAME_UNAVAILABLE: ${episode.name} 的 ${stream?.label ?? streamName} 帧 ${frameId} 不可用，已停止加载。请在左侧跳过该数据。`;
-    setEpisodeSourceStates((current) => ({ ...current, [data.summary.root]: "error" }));
-    resetLoadedData();
+    const message = `FRAME_UNAVAILABLE: ${episode.name} 的 ${stream?.label ?? streamName} 帧 ${frameId} 暂时无法读取，已暂停播放。数据仍保留，可定位其他帧继续查看。`;
+    setPlaying(false);
+    resetPlaybackPreparation();
     void reportFailure("load_frame", new Error(message), data.summary.root);
   }, [data, primaryStreamName]);
 
@@ -2680,10 +2670,6 @@ function ReleaseHistoryDialog({
       </section>
     </div>
   );
-}
-
-function hasUnavailableFrame(report: ValidationReport): boolean {
-  return report.issues.some((issue) => UNAVAILABLE_FRAME_ISSUE_CODES.has(issue.code));
 }
 
 function annotationConfirmationWarnings(report: ValidationReport): ValidationIssue[] {

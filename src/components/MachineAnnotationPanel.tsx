@@ -33,6 +33,7 @@ export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
   const [showJson, setShowJson] = useState(false);
   const [frame, setFrame] = useState(0);
   const [fps, setFps] = useState(30);
+  const [mediaFps, setMediaFps] = useState(30);
   const [playing, setPlaying] = useState(false);
   const [playRequest, setPlayRequest] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -94,7 +95,7 @@ export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
         setEdits(recovery.segments); persist(recovery.segments);
       }
       const source = await videoSource(root, "cam0");
-      if (active && source?.fps) setFps(source.fps);
+      if (active && source?.fps) { setFps(source.fps); setMediaFps(source.mediaFps || source.fps); }
     })().catch((reason) => { if (active) setError(String(reason)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; mounted.current = false; };
@@ -181,7 +182,7 @@ export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
       {active && <div className="machine-boundary-grid">
         {[{ name: "起始", sourceFrame: active.startFrame }, { name: "结束", sourceFrame: Math.min(active.endFrame + 1, result.frameCount - 1) }].map((boundaryItem) => <div key={boundaryItem.name} data-boundary-frame={timelineFrame(boundaryItem.sourceFrame)}>
           <FramePanel root={root} stream={primary} frameId={timelineFrame(boundaryItem.sourceFrame)} playbackFps={fps * mapping.step} playbackEndFrame={timelineFrame(result.frameCount - 1)} playing={false} readAheadEnabled={false} exactFrameSeek className="machine-boundary-frame" />
-          <p>{boundaryItem.name} · {boundaryItem.sourceFrame / fps < 3600 ? (boundaryItem.sourceFrame / fps).toFixed(3) : "--"} s · 第 {boundaryItem.name === "起始" ? active.startFrame : active.endFrame + 1} 帧{boundaryItem.name === "结束" ? `（不含）${active.endFrame + 1 === result.frameCount ? ` · 显示末帧 ${active.endFrame}` : ""}` : ""}</p>
+          <p>{boundaryItem.name} · {((boundaryItem.name === "起始" ? active.startFrame : active.endFrame + 1) / mediaFps).toFixed(3)} s · 第 {boundaryItem.name === "起始" ? active.startFrame : active.endFrame + 1} 帧{boundaryItem.name === "结束" ? `（不含）${active.endFrame + 1 === result.frameCount ? ` · 显示末帧 ${active.endFrame}` : ""}` : ""}</p>
         </div>)}
       </div>}
       <div className="machine-review" aria-label="人工复核">

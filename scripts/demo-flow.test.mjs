@@ -250,6 +250,28 @@ if (!browserExecutable) {
     await context.close();
   });
 
+  test("camera quality findings keep readable recordings loaded and preserve export errors", async () => {
+    for (const code of ["DIMENSION_MISMATCH", "DECODE_FAILED", "EMPTY_STREAM"]) {
+      const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+      const page = await context.newPage();
+      await registerDemoAccount(page, `${baseUrl}/?frameQualityIssue=${code}`, `quality-${code.toLowerCase()}`);
+      assert.equal(await page.locator(".camera-grid .frame-panel").count(), 5);
+      await page.getByLabel("裁剪起始帧").fill("30");
+      await page.getByLabel("裁剪结束帧").fill("90");
+      await page.getByRole("button", { name: "检查", exact: true }).click();
+      await page.getByText(code, { exact: true }).waitFor();
+      await page.getByRole("button", { name: "回放", exact: true }).click();
+      assert.equal(await page.locator(".camera-grid .frame-panel").count(), 5);
+      assert.equal(await page.getByLabel("裁剪结束帧").inputValue(), "90");
+      const status = await page.evaluate(async () => {
+        const backend = await import("/src/lib/backend.ts");
+        return (await backend.validateEpisode(backend.DEMO_ROOT, 1)).report.status;
+      });
+      assert.equal(status, "error");
+      await context.close();
+    }
+  });
+
   test("fixture v1 preserves the canonical streams and exact generated endpoint", async () => {
     assert.deepEqual(fixture, expectedFixture);
 

@@ -7,6 +7,11 @@ after `main` CI succeeds for a coordinated version change.
 
 ## 1.0.2 - 2026-09-08
 
+- Recognize new recordings whose MP4 manifest is stored in .session_meta,
+  including their actual state cadence and per-camera startup offsets. Preserve
+  readable recordings when quality checks flag individual streams or frames;
+  a failed primary frame pauses playback without clearing the workspace.
+- Keep health findings visible and preserve backend export validation gates.
 - Promote proofreading into the stable edition while retaining operator task,
   trim and segment annotation, including explicit tracking-warning continuation.
 - Align segment playback and boundary previews with source video frames,

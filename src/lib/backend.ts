@@ -957,6 +957,7 @@ export async function validateEpisode(path: string, operationId: number): Promis
   const fixture = await loadDemoFixture();
   const sessionActivationEpisode = sessionActivationDemoEpisode(path);
   const trajectoryScenario = new URLSearchParams(window.location.search).get("trajectoryWarning");
+  const frameQualityIssue = new URLSearchParams(window.location.search).get("frameQualityIssue");
   const report: ValidationReport = {
     formatVersion: 6,
     episodeRoot: path,
@@ -998,6 +999,10 @@ export async function validateEpisode(path: string, operationId: number): Promis
       status: "ok" as const,
     })),
   };
+  if (["DIMENSION_MISMATCH", "DECODE_FAILED", "EMPTY_STREAM"].includes(frameQualityIssue ?? "")) {
+    report.status = "error";
+    report.issues.push({ severity: "error", code: frameQualityIssue!, scope: "cam1", message: "Camera 1 quality finding", frameId: 30 });
+  }
   return {
     report,
     summary: sessionActivationEpisode

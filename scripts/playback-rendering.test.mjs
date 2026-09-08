@@ -60,7 +60,7 @@ async function addFrameDecodeControl(page) {
   });
 }
 
-test("keeps decoded tiles visible through delayed playback, ignores superseded failures, and clears current failures", async () => {
+test("keeps decoded tiles visible through delayed playback and retains the workspace after a failed frame", async () => {
   assert.ok(existsSync(browserPath), "Chromium is required; run `pnpm exec playwright-core install chromium`");
   const server = await createServer({
     root,
@@ -259,7 +259,11 @@ test("keeps decoded tiles visible through delayed playback, ignores superseded f
     await page.waitForFunction(() => (
       document.querySelector(".alert-error")?.textContent?.includes("FRAME_UNAVAILABLE")
     ));
-    assert.equal(await page.locator(".camera-grid").count(), 0);
+    assert.equal(await page.locator(".camera-grid").count(), 1);
+    assert.equal(await page.locator(".frame-panel").count(), 5);
+    await page.getByRole("button", { name: "上一帧", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 60 / 195"));
+    await page.waitForFunction(() => [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")].some((image) => image.alt === "Camera 0 frame 60"));
     const failureScreenshotPath = process.env.PLAYBACK_FAILURE_SCREENSHOT_PATH;
     if (failureScreenshotPath) await page.screenshot({ path: failureScreenshotPath, fullPage: true });
     assert.deepEqual(pageErrors, []);

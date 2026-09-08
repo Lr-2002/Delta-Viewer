@@ -372,7 +372,7 @@ fn read_mp4_frame(
         .get("fps")
         .and_then(|value| value.as_f64())
         .unwrap_or(60.0);
-    let relative_frame = frame_id.saturating_sub(manifest.timeline_start_frame);
+    let relative_frame = frame_id.saturating_sub(manifest.stream_start_frame(stream));
     let target_index =
         ((relative_frame as f64) * declared_fps / manifest.timeline_fps.max(1.0)).floor() as u64;
     let frame_count = stream_info
@@ -466,7 +466,7 @@ pub(crate) fn read_mp4_preview_batch(
     let segment_seconds = manifest.segment_seconds.unwrap_or(300.0).max(1.0);
     let timeline_fps = manifest.timeline_fps.max(1.0);
     let target_for = |timeline_frame: u64| {
-        let relative = timeline_frame.saturating_sub(manifest.timeline_start_frame);
+        let relative = timeline_frame.saturating_sub(manifest.stream_start_frame(stream));
         ((relative as f64) * fps / timeline_fps).floor() as u64
     };
 
@@ -593,10 +593,25 @@ struct Mp4Manifest {
     timeline_start_frame: u64,
     timeline_fps: f64,
     hybrid: bool,
+    stream_start_frames: BTreeMap<String, u64>,
+}
+
+impl Mp4Manifest {
+    fn stream_start_frame(&self, stream: &str) -> u64 {
+        self.stream_start_frames
+            .get(stream)
+            .copied()
+            .unwrap_or(self.timeline_start_frame)
+    }
 }
 
 fn read_mp4_manifest(root: &Path) -> AppResult<Option<Mp4Manifest>> {
-    let path = root.join("manifest.json");
+    let root_path = root.join("manifest.json");
+    let nested_path = root.join(".session_meta/manifest.json");
+    let nested = !is_regular_file(&root_path)
+        && is_regular_directory(&root.join(".session_meta"))
+        && is_regular_file(&nested_path);
+    let path = if nested { nested_path } else { root_path };
     if !is_regular_file(&path) {
         return Ok(None);
     }
@@ -611,6 +626,11 @@ fn read_mp4_manifest(root: &Path) -> AppResult<Option<Mp4Manifest>> {
         .and_then(|item| item.as_object())
         .cloned()
         .ok_or_else(|| AppError::Message("MP4 manifest.json 缺少 streams".into()))?;
+    let (timeline_fps, stream_start_frames) = if nested {
+        recording_timeline(root, &streams)?
+    } else {
+        (if hybrid { 30.0 } else { 60.0 }, BTreeMap::new())
+    };
     Ok(Some(Mp4Manifest {
         segment_seconds: value.get("segment_seconds").and_then(|item| item.as_f64()),
         streams,
@@ -619,9 +639,64 @@ fn read_mp4_manifest(root: &Path) -> AppResult<Option<Mp4Manifest>> {
         } else {
             0
         },
-        timeline_fps: if hybrid { 30.0 } else { 60.0 },
+        timeline_fps,
         hybrid,
+        stream_start_frames,
     }))
+}
+
+// New recording manifests moved under .session_meta. Their state cadence is
+// independent of camera FPS, and startup batches may contain no encoded frames.
+fn recording_timeline(
+    root: &Path,
+    streams: &serde_json::Map<String, serde_json::Value>,
+) -> AppResult<(f64, BTreeMap<String, u64>)> {
+    let nominal = streams
+        .values()
+        .filter_map(|info| info["fps"].as_f64())
+        .filter(|fps| fps.is_finite() && *fps > 0.0)
+        .fold(30.0_f64, f64::max);
+    let path = root.join("states.jsonl");
+    if !is_regular_file(&path) {
+        return Ok((nominal, BTreeMap::new()));
+    }
+    let mut first = None;
+    let mut last = None;
+    let mut starts = BTreeMap::new();
+    for line in BufReader::new(File::open(path)?).lines().take(128) {
+        let line = line?;
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let Some(frame) = value
+            .get("batch_id")
+            .or_else(|| value.get("frame_id"))
+            .and_then(|item| item.as_u64())
+        else {
+            continue;
+        };
+        if let Some(time) = value["capture_time_ns"].as_i64() {
+            first.get_or_insert((frame, time));
+            last = Some((frame, time));
+        }
+        for stream in STREAM_NAMES {
+            if value["availability"][stream].as_bool() == Some(true) {
+                starts.entry(stream.into()).or_insert(frame);
+            }
+        }
+    }
+    let measured = first.zip(last).and_then(|((a, start), (b, end))| {
+        (b > a && end > start).then(|| (b - a) as f64 * 1e9 / (end as i128 - start as i128) as f64)
+    });
+    let fps = measured
+        .and_then(|rate| {
+            [15.0_f64, 24.0, 25.0, 30.0, 50.0, 60.0, 90.0, 120.0]
+                .into_iter()
+                .min_by(|a, b| (a - rate).abs().total_cmp(&(b - rate).abs()))
+                .filter(|fps| (fps - rate).abs() / fps < 0.1)
+        })
+        .unwrap_or(nominal);
+    Ok((fps, starts))
 }
 
 fn hybrid_timeline_start_frame(root: &Path) -> Option<u64> {
@@ -713,7 +788,7 @@ pub(crate) fn video_source(
         fps,
         media_fps,
         segment_seconds: manifest.segment_seconds.unwrap_or(300.0).max(1.0),
-        start_frame: manifest.timeline_start_frame,
+        start_frame: manifest.stream_start_frame(stream),
         paths,
     })
 }
@@ -932,9 +1007,9 @@ fn mp4_stream_summary(root: &Path, stream_name: &str, manifest: &Mp4Manifest) ->
                 .map(|metadata| metadata.len())
                 .sum()
         });
-    let first_frame = (frame_count > 0).then_some(manifest.timeline_start_frame);
+    let first_frame = (frame_count > 0).then_some(manifest.stream_start_frame(stream_name));
     let last_frame = mp4_stream_last_timeline_frame(
-        manifest.timeline_start_frame,
+        manifest.stream_start_frame(stream_name),
         manifest.timeline_fps,
         fps,
         frame_count,
@@ -1541,6 +1616,96 @@ mod tests {
             Some(10_526)
         );
         assert_eq!(mp4_stream_last_timeline_frame(0, 60.0, 60.0, 0), None);
+    }
+
+    #[test]
+    fn nested_recording_manifest_loads_all_streams_without_treating_mp4_as_empty_jpeg() {
+        let root = test_output("nested-mp4");
+        fs::create_dir_all(root.join(".session_meta")).unwrap();
+        let mut streams = serde_json::Map::new();
+        for name in crate::model::STREAM_NAMES {
+            let slow = name == "cam1" || name == "cam2";
+            fs::create_dir_all(root.join(name)).unwrap();
+            fs::write(
+                root.join(name).join(format!("{name}-00000.mp4")),
+                b"fixture media",
+            )
+            .unwrap();
+            streams.insert(name.into(), serde_json::json!({"fps":if slow {15} else {30},"frame_count":if slow {3} else {7},"width":320,"height":180,"segments":[{"path":format!("{name}/{name}-00000.mp4")}]}));
+        }
+        fs::write(root.join(".session_meta/manifest.json"), serde_json::to_vec(&serde_json::json!({"storage_format":"h264-split-mp4-v1","segment_seconds":300,"streams":streams})).unwrap()).unwrap();
+        let states = (0..8).map(|batch| serde_json::json!({"batch_id":batch,"capture_time_ns":1_000_000_000_i64+batch*33_333_333,"pose":null,"availability":{"cam0":batch>0,"cam1":batch>0&&batch%2==0,"cam2":batch>0&&batch%2==0,"t265_left":batch>0,"t265_right":batch>0}}).to_string()).collect::<Vec<_>>().join("\n");
+        fs::write(root.join("states.jsonl"), states).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let before = episode_fingerprint(&root, &cancelled).unwrap();
+        let preview = load_episode_preview(&root, None, &cancelled).unwrap();
+        let loaded = load_episode(&root, None, &cancelled).unwrap();
+        assert_eq!(loaded.states.len(), 8);
+        for (index, stream) in loaded.summary.streams.iter().enumerate() {
+            assert!(stream.frame_count > 0);
+            assert_eq!(
+                preview.summary.streams[index].frame_count,
+                stream.frame_count
+            );
+            assert_eq!(
+                stream.first_frame,
+                Some(if index == 1 || index == 2 { 2 } else { 1 })
+            );
+            assert_eq!(stream.last_frame, Some(7));
+        }
+        assert!(super::is_mp4_episode(&root));
+        let report = crate::validation::validate_episode(&root, None, &cancelled).unwrap();
+        assert!(report
+            .issues
+            .iter()
+            .all(|issue| issue.code != "EMPTY_STREAM" && issue.code != "COUNT_MISMATCH"));
+        assert!(!root.join("manifest.json").exists());
+        assert_eq!(episode_fingerprint(&root, &cancelled).unwrap(), before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly selected NAS recording; reads source only"]
+    fn loads_selected_nested_mp4_recording_and_decodes_each_camera() {
+        let root = PathBuf::from(std::env::var_os("DOHC_NESTED_MP4_SAMPLE_ROOT").unwrap());
+        let cancelled = AtomicBool::new(false);
+        let before = episode_fingerprint(&root, &cancelled).unwrap();
+        let data = load_episode(&root, None, &cancelled).unwrap();
+        let report = crate::validation::validate_episode(&root, None, &cancelled).unwrap();
+        assert!(report
+            .issues
+            .iter()
+            .all(|issue| issue.code != "EMPTY_STREAM"));
+        assert_eq!(data.summary.streams.len(), 5);
+        let mut videos = std::collections::BTreeMap::new();
+        for stream in &data.summary.streams {
+            assert!(stream.frame_count > 0);
+            let source = video_source(&root, &stream.name, None).unwrap();
+            for frame in [stream.first_frame.unwrap(), stream.last_frame.unwrap()] {
+                let (_, bytes) = read_frame(&root, &stream.name, frame, None).unwrap();
+                assert!(image::load_from_memory(&bytes).is_ok());
+            }
+            println!(
+                "{}: {} frames, timeline {:?}..{:?}, {} fps",
+                stream.name,
+                stream.frame_count,
+                stream.first_frame,
+                stream.last_frame,
+                source.media_fps
+            );
+            videos.insert(stream.name.clone(), source);
+        }
+        if let Some(path) = std::env::var_os("DOHC_NESTED_MP4_EVIDENCE") {
+            fs::write(
+                path,
+                serde_json::to_vec(
+                    &serde_json::json!({"data":data,"report":report,"videos":videos}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(episode_fingerprint(&root, &cancelled).unwrap(), before);
     }
 
     #[test]

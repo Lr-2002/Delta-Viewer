@@ -1,5 +1,15 @@
 # Proofreading 1.0.2
 
+The same release supports new recording layouts with the MP4 manifest under
+`.session_meta`. It reads the original stream declarations, measures state batch
+cadence from a bounded prefix and uses per-camera availability to locate startup
+offsets. Quality findings no longer discard readable streams or the loaded
+workspace. A primary-frame failure pauses playback and allows another seek;
+export validation remains enforced independently. The nested-layout regression
+loads all five streams without creating a replacement manifest. A selected NAS
+recording was also checked by decoding each camera's first and last frame and
+confirming the capture fingerprint stayed unchanged.
+
 The proofreading player uses zero-based Camera 0 video frames independently of
 state samples and manual annotation trims. The backend can expose a 60 Hz frame
 address for a 30 FPS MP4, so only frame requests use the integer stream mapping.
