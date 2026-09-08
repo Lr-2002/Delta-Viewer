@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Code, Crosshair, LoaderCircle, Play, RefreshCw, X } from "lucide-react";
-import { loadMachineAnnotation } from "../lib/backend";
-import { machineSegmentRange, machineTimelineMapping } from "../lib/machine-annotation";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { Check, Code, LoaderCircle, Play, RefreshCw, Trash2, Undo2, X } from "lucide-react";
+import { loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
+import { adjustReviewBoundary, machineTimelineMapping } from "../lib/machine-annotation";
 import { FramePanel } from "./FramePanel";
-import type { EpisodeAnnotation, EpisodeData, ExportRange, MachineAnnotation } from "../types";
+import { ProofreadPlayer } from "./ProofreadPlayer";
+import type { EpisodeAnnotation, EpisodeData, ExportRange, MachineAnnotation, MachineReview, MachineSegment, ReviewSegment } from "../types";
 
 interface Props {
   data: EpisodeData;
@@ -14,107 +15,217 @@ interface Props {
   onPreview: (range: ExportRange, play: boolean) => void;
   onExitPreview: () => void;
 }
-
 const COLORS = ["#087e79", "#5489a3", "#b3914b", "#797895", "#628969"];
 const BODY_PARTS: Record<string, string> = { whole_body: "全身", full_body: "全身", body: "全身", left_hand: "左手", right_hand: "右手", both_hands: "双手" };
-function attribute(value: unknown) {
-  return value == null || value === "" ? "未记录" : typeof value === "string" ? BODY_PARTS[value] ?? value : JSON.stringify(value);
-}
+const saves = new Map<string, Promise<void>>();
 
-export function MachineAnnotationPanel({ data, annotation, currentFrame, previewing, busy, onPreview, onExitPreview }: Props) {
+export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
+  const root = data.summary.root;
   const [result, setResult] = useState<MachineAnnotation | null>(null);
+  const [review, setReview] = useState<MachineReview | null>(null);
+  const [edits, setEdits] = useState<ReviewSegment[]>([]);
   const [error, setError] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
   const [selected, setSelected] = useState(0);
   const [showJson, setShowJson] = useState(false);
+  const [frame, setFrame] = useState(0);
+  const [fps, setFps] = useState(30);
+  const [playing, setPlaying] = useState(false);
+  const [playRequest, setPlayRequest] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const mounted = useRef(true);
+  const stateRef = useRef<MachineReview | null>(null);
+  const pending = useRef<ReviewSegment[] | null>(null);
+  const running = useRef(false);
+  const editsRef = useRef(edits);
+  editsRef.current = edits;
+  const recoveryKey = `dohc.machine-review.pending:${root}`;
+
+  function persist(next: ReviewSegment[]) {
+    pending.current = next;
+    if (running.current || !stateRef.current) return;
+    running.current = true;
+    setSaving(true);
+    setSaveError("");
+    const job = (async () => {
+      try {
+        while (pending.current && stateRef.current) {
+          const snapshot = pending.current;
+          pending.current = null;
+          const state = stateRef.current;
+          const saved = await saveMachineReview(root, state.sourceHash, state.revision, snapshot);
+          stateRef.current = saved;
+          if (mounted.current) setReview(saved);
+          if (!pending.current) localStorage.removeItem(recoveryKey);
+        }
+      } catch (reason) {
+        if (mounted.current) setSaveError(String(reason));
+      } finally {
+        running.current = false;
+        if (mounted.current) setSaving(false);
+      }
+    })();
+    saves.set(root, job);
+  }
+
   useEffect(() => {
+    mounted.current = true;
     let active = true;
-    setLoading(true);
-    setError("");
-    setResult(null);
-    setSelected(0);
-    setShowJson(false);
-    void loadMachineAnnotation(data.summary.root).then((loaded) => {
-      if (active) setResult(loaded);
-    }).catch((reason) => {
-      if (active) setError(reason instanceof Error ? reason.message : String(reason));
-    }).finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [data.summary.root, revision]);
+    setLoading(true); setError(""); setPlaying(false);
+    void (async () => {
+      await saves.get(root);
+      const loaded = await loadMachineAnnotation(root);
+      if (!active) return;
+      setResult(loaded);
+      if (!loaded) return;
+      const state = await loadMachineReview(root);
+      if (!active) return;
+      stateRef.current = state;
+      setReview(state); setEdits(state.segments);
+      setSelected(state.segments.find((item) => !item.deleted)?.sourceIndex ?? 0);
+      setFrame(state.segments.find((item) => !item.deleted)?.startFrame ?? 0);
+      const raw = localStorage.getItem(recoveryKey);
+      if (raw) {
+        const recovery = JSON.parse(raw) as { sourceHash: string; segments: ReviewSegment[] };
+        if (recovery.sourceHash !== state.sourceHash) throw new Error("待保存草稿与原机标不匹配，请先处理草稿冲突");
+        setEdits(recovery.segments); persist(recovery.segments);
+      }
+      const source = await videoSource(root, "cam0");
+      if (active && source?.fps) setFps(source.fps);
+    })().catch((reason) => { if (active) setError(String(reason)); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; mounted.current = false; };
+  }, [root, revision]);
+
   const primary = data.summary.streams.find((stream) => stream.name === "cam0");
   const mapping = useMemo(() => result ? machineTimelineMapping(result, primary) : null, [result, primary]);
-  const rows = useMemo(() => result?.segments.map((segment) => ({
-    ...segment, range: machineSegmentRange(segment, mapping?.offset ?? 0, mapping?.step ?? 1),
-  })) ?? [], [result, mapping]);
-  const current = mapping?.error ? [] : rows.filter(({ range }) => currentFrame >= range.startFrame && currentFrame <= range.endFrame);
-  const activeIndex = rows[selected] && current.includes(rows[selected]) ? selected : current.length ? rows.indexOf(current[0]) : selected;
-  const active = rows[activeIndex];
-  const human = annotation?.segments.filter((segment) => currentFrame >= segment.startFrame && currentFrame <= segment.endFrame) ?? [];
+  const originals = useMemo(() => new Map(result?.segments.map((segment, index) => [segment.sourceIndex ?? index, segment])), [result]);
+  const rows = useMemo(() => edits.filter((segment) => !segment.deleted).sort((a, b) => a.startFrame - b.startFrame || a.sourceIndex - b.sourceIndex), [edits]);
+  const active = rows.find((segment) => segment.sourceIndex === selected) ?? rows[0];
+  const current = rows.filter((segment) => frame >= segment.startFrame && frame <= segment.endFrame);
+  const timelineFrame = (sourceFrame: number) => (mapping?.offset ?? 0) + sourceFrame * (mapping?.step ?? 1);
+  const human = annotation?.segments.filter((segment) => timelineFrame(frame) >= segment.startFrame && timelineFrame(frame) <= segment.endFrame) ?? [];
+  const valid = result && primary && mapping && !mapping.error && !error;
+  const canEdit = Boolean(valid && review && !busy && !loading);
+  const approved = rows.filter((segment) => segment.decision === "approved").length;
+  const gaps: { start: number; end: number }[] = [];
+  let covered = 0;
+  for (const segment of rows) { if (segment.startFrame > covered) gaps.push({ start: covered, end: segment.startFrame }); covered = Math.max(covered, segment.endFrame + 1); }
+  if (result && covered < result.frameCount) gaps.push({ start: covered, end: result.frameCount });
+
+  function change(next: ReviewSegment[]) {
+    setEdits(next); editsRef.current = next; setPlaying(false);
+    try { localStorage.setItem(recoveryKey, JSON.stringify({ sourceHash: stateRef.current?.sourceHash, segments: next })); }
+    catch { setSaveError("本机应急草稿无法保存，请保持此页打开直到保存完成"); }
+    persist(next);
+  }
+  function edit(patch: Partial<ReviewSegment>, invalidate = true) {
+    if (!active || !canEdit) return;
+    change(editsRef.current.map((segment) => segment.sourceIndex === active.sourceIndex
+      ? { ...segment, ...patch, decision: invalidate ? "pending" : patch.decision ?? segment.decision } : segment));
+  }
+  function boundary(kind: "startFrame" | "endFrame", value: number) {
+    if (!active || !result || !canEdit) return;
+    const updated = adjustReviewBoundary(editsRef.current, active.sourceIndex, kind, value, result.frameCount);
+    if (updated === editsRef.current) return;
+    change(updated); setFrame(updated.find((item) => item.sourceIndex === active.sourceIndex)![kind]);
+  }
+  const choose = useCallback((sourceIndex: number, play = false) => {
+    const segment = rows.find((item) => item.sourceIndex === sourceIndex);
+    if (!segment) return;
+    setSelected(sourceIndex); setFrame(segment.startFrame); setPlaying(false);
+    setPlayRequest(play ? performance.now() : 0);
+  }, [rows]);
   useEffect(() => {
+    if (!playRequest) return;
+    const id = requestAnimationFrame(() => setPlaying(true));
+    return () => cancelAnimationFrame(id);
+  }, [playRequest]);
+  useEffect(() => {
+    if (!playing || !current.length) return;
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-source-index="${current[0].sourceIndex}"]`);
     const list = listRef.current;
-    const row = list?.children[activeIndex] as HTMLElement | undefined;
-    if (!list || !row) return;
-    if (row.offsetTop < list.scrollTop || row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = row.offsetTop;
-  }, [activeIndex]);
-  const choose = (index: number, play = false) => {
-    setSelected(index);
-    onPreview(rows[index].range, play);
-  };
-  const attributes = active?.attributes ?? {};
-  const lastBoundary = Boolean(result && active && active.endFrame + 1 >= result.frameCount);
-  const endPreviewFrame = active ? lastBoundary ? active.range.endFrame : active.range.endFrame + 1 : 0;
-  return <>
+    if (row && list && (row.offsetTop < list.scrollTop || row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight)) list.scrollTop = row.offsetTop;
+  }, [current[0]?.sourceIndex, playing]);
+
+  return <div className="review-view proofreading-view"><section className="camera-section">
+    <div className="section-heading compact-heading"><h2>机标校对</h2><span className="frame-counter">帧 {frame} / {result ? result.frameCount - 1 : "--"}</span></div>
+    {valid && <ProofreadPlayer root={root} stream={primary} offset={mapping.offset} step={mapping.step} frameCount={result.frameCount}
+      frame={frame} start={active?.startFrame ?? 0} end={active?.endFrame ?? result.frameCount - 1} playing={playing} onFrame={setFrame} onPlaying={setPlaying} />}
     <section className="machine-annotation" aria-label="机标结果">
-      <header className="machine-heading">
-        <strong>动作片段</strong><span className="machine-episode">{result?.episodeId ?? data.summary.root.split(/[\\/]/).pop()}</span>
-        <span className="machine-status">{result ? `${result.segments.length} 段` : ""}</span>
-        <button className="icon-button" type="button" title="查看 JSON" aria-label="查看 JSON" disabled={!result} onClick={() => setShowJson(!showJson)}><Code size={15} /></button>
-        <button className="icon-button" type="button" title="重新读取机标" aria-label="重新读取机标" disabled={loading || busy || previewing} onClick={() => setRevision(revision + 1)}><RefreshCw size={15} /></button>
+      <header className="machine-heading"><strong>动作片段</strong><span className="machine-episode">{result?.episodeId ?? data.summary.name}</span><span className="machine-status">{rows.length} 段</span>
+        <button className="icon-button" title="查看 JSON" aria-label="查看 JSON" disabled={!result} onClick={() => setShowJson(true)}><Code size={15} /></button>
+        <button className="icon-button" title="重新读取机标" aria-label="重新读取机标" disabled={loading || saving || busy} onClick={() => setRevision(revision + 1)}><RefreshCw size={15} /></button>
       </header>
-      {loading ? <p className="machine-message" role="status"><LoaderCircle size={15} className="spin" />正在读取机标</p>
-        : error ? <p className="machine-message" role="alert">{error}</p>
-          : !result ? <p className="machine-message">未发现 bailian_annotation.json</p>
-            : <>
-              <div className="machine-metadata"><span>模型：{result.model ?? "未记录"}</span><span>{result.validationStatus === "passed" ? "结构与规则校验通过" : "机标未通过或未校验"} · 未经人工复核</span></div>
-              {result.warnings.map((warning) => <p className="machine-message" role="status" key={warning}>{warning}</p>)}
-              {mapping?.error && <p className="machine-message" role="alert">{mapping.error}</p>}
-              <div className="machine-action-strip" aria-label="动作分段条">
-                {rows.map((segment, index) => <button key={index} type="button" title={`${index + 1}. ${segment.description || segment.label} [${segment.startFrame}, ${segment.endFrame + 1})`} aria-label={`选择机标片段 ${index + 1}`} aria-pressed={index === activeIndex} disabled={busy || Boolean(mapping?.error)} onClick={() => choose(index)} style={{ left: `${100 * segment.startFrame / result.frameCount}%`, width: `${100 * (segment.endFrame - segment.startFrame + 1) / result.frameCount}%`, background: COLORS[index % COLORS.length] }} />)}
-              </div>
-              <div ref={listRef} className="machine-segment-list" role="list">
-                {rows.map((segment, index) => <div role="listitem" className={`machine-segment${!mapping?.error && index === activeIndex ? " active" : ""}`} key={`${index}-${segment.startFrame}`}>
-                  <button type="button" className="machine-segment-description" aria-label={`定位机标片段 ${index + 1}`} aria-pressed={index === activeIndex} disabled={busy || Boolean(mapping?.error)} onClick={() => choose(index)}>
-                    <strong>{index + 1}. {segment.description || segment.label}</strong>
-                    <span><em>{attribute(segment.attributes.body_part)}</em> · {segment.label}</span>
-                    <small>帧 [{segment.startFrame}, {segment.endFrame + 1})</small>
-                  </button>
-                  <button className="icon-button" type="button" title={`播放机标片段 ${index + 1}`} aria-label={`播放机标片段 ${index + 1}`} disabled={busy || Boolean(mapping?.error)} onClick={() => choose(index, true)}><Play size={15} /></button>
-                </div>)}
-              </div>
-              {!rows.length && <p className="machine-message">机标结果为空</p>}
-              <div className="machine-comparison">
-                <div><span>当前帧机标</span><strong>{current.map((segment) => segment.description || segment.label).join("；") || "无对应片段"}</strong></div>
-                <div><span>已保存人工标注</span><strong>{human.map((segment) => segment.note || segment.title).join("；") || "无对应片段"}</strong></div>
-              </div>
-              {previewing && <button className="button button-secondary" type="button" onClick={onExitPreview}><Crosshair size={14} />返回人工范围</button>}
-            </>}
+      {loading && <p role="status" className="machine-message"><LoaderCircle size={15} />正在读取机标</p>}
+      {error && <p role="alert" className="machine-message">{error}</p>}
+      {!loading && !error && !result && <p className="machine-message">未发现 bailian_annotation.json</p>}
+      {result && <>
+        <div className="machine-metadata"><span>模型：{result.model ?? "未记录"}</span><span>{result.validationStatus === "passed" ? "结构与规则校验通过" : "机标未通过或未校验"}</span><span>人工合格 {approved} / {rows.length}</span></div>
+        {result.warnings.map((warning) => <p className="machine-message" key={warning}>{warning}</p>)}
+        {mapping?.error && <p role="alert">{mapping.error}</p>}
+        <div className="machine-action-strip" aria-label="动作分段条">
+          {gaps.map((gap) => <span className="machine-gap" key={gap.start} title={`未标注 [${gap.start}, ${gap.end})`} style={{ left: `${gap.start / result.frameCount * 100}%`, width: `${(gap.end - gap.start) / result.frameCount * 100}%` }} />)}
+          <StripSegments rows={rows} frameCount={result.frameCount} selected={active?.sourceIndex} disabled={!canEdit} onChoose={choose} />
+          <i className="machine-playhead" style={{ left: `${frame / result.frameCount * 100}%` }} />
+        </div>
+        {gaps.length > 0 && <p className="machine-gap-label">未标注：{gaps.map((gap) => `[${gap.start}, ${gap.end})`).join("、")}</p>}
+        <SegmentList rows={rows} selected={active?.sourceIndex} disabled={!canEdit} originals={originals} listRef={listRef} onChoose={choose} />
+        <div className="machine-comparison"><div><span>当前帧机标</span><strong>{current.map((segment) => segment.description).join("；") || "无对应片段"}</strong></div><div><span>已保存人工标注</span><strong>{human.map((segment) => segment.note || segment.title).join("；") || "无对应片段"}</strong></div></div>
+      </>}
     </section>
-    {active && primary && mapping && !mapping.error && <section className="machine-boundaries" aria-label="片段边界">
-      <div className="machine-boundary-grid">
-        {[{ name: "起始", frame: active.range.startFrame, label: `第 ${active.startFrame} 帧` }, { name: "结束", frame: endPreviewFrame, label: `第 ${active.endFrame + 1} 帧（不含）${lastBoundary ? ` · 显示末帧 ${active.endFrame}` : ""}` }].map((boundary) => <div key={boundary.name} data-boundary-frame={boundary.frame}>
-          <FramePanel root={data.summary.root} stream={primary} frameId={boundary.frame} playbackEndFrame={primary.lastFrame ?? boundary.frame} playing={false} nativePlaybackEnabled={false} readAheadEnabled={false} className="machine-boundary-frame" />
-          <p>{boundary.name} · 时间戳缺失 · {boundary.label}</p>
+    {valid && <section className="machine-boundaries" aria-label="片段边界">
+      {active && <div className="machine-boundary-grid">
+        {[{ name: "起始", sourceFrame: active.startFrame }, { name: "结束", sourceFrame: Math.min(active.endFrame + 1, result.frameCount - 1) }].map((boundaryItem) => <div key={boundaryItem.name} data-boundary-frame={timelineFrame(boundaryItem.sourceFrame)}>
+          <FramePanel root={root} stream={primary} frameId={timelineFrame(boundaryItem.sourceFrame)} playbackFps={fps * mapping.step} playbackEndFrame={timelineFrame(result.frameCount - 1)} playing={false} readAheadEnabled={false} exactFrameSeek className="machine-boundary-frame" />
+          <p>{boundaryItem.name} · {boundaryItem.sourceFrame / fps < 3600 ? (boundaryItem.sourceFrame / fps).toFixed(3) : "--"} s · 第 {boundaryItem.name === "起始" ? active.startFrame : active.endFrame + 1} 帧{boundaryItem.name === "结束" ? `（不含）${active.endFrame + 1 === result.frameCount ? ` · 显示末帧 ${active.endFrame}` : ""}` : ""}</p>
         </div>)}
+      </div>}
+      <div className="machine-review" aria-label="人工复核">
+        <header className="machine-heading"><strong>人工复核</strong><span className="machine-status" role="status">{saving ? "正在保存…" : saveError ? "保存失败" : review?.published ? "复核 JSON 已保存" : "草稿已保存"}</span></header>
+        {saveError && <div role="alert" className="machine-message">{saveError}<button className="icon-button" aria-label="重试保存复核" title="重试保存复核" onClick={() => persist(editsRef.current)}><RefreshCw size={15} /></button></div>}
+        {active ? <>
+          <label>动作描述<textarea aria-label="复核动作描述" value={active.description} disabled={!canEdit} onChange={(event) => edit({ description: event.currentTarget.value })} /></label>
+          <div className="machine-review-bounds">
+            <label>起始帧<input aria-label="复核起始帧" type="number" value={active.startFrame} min={0} max={active.endFrame} disabled={!canEdit} onChange={(event) => boundary("startFrame", event.currentTarget.valueAsNumber)} /></label>
+            <label>结束帧（不含）<input aria-label="复核结束帧" type="number" value={active.endFrame + 1} min={active.startFrame + 1} max={result.frameCount} disabled={!canEdit} onChange={(event) => boundary("endFrame", event.currentTarget.valueAsNumber - 1)} /></label>
+          </div>
+          <input className="machine-boundary-slider" aria-label="微调起始帧" type="range" min={0} max={active.endFrame} step={1} value={active.startFrame} onChange={(event) => boundary("startFrame", event.currentTarget.valueAsNumber)} disabled={!canEdit} />
+          <input className="machine-boundary-slider" aria-label="微调结束帧" type="range" min={active.startFrame + 1} max={result.frameCount} step={1} value={active.endFrame + 1} onChange={(event) => boundary("endFrame", event.currentTarget.valueAsNumber - 1)} disabled={!canEdit} />
+          <footer className="machine-review-actions">
+            <button className="button button-secondary" aria-pressed={active.decision === "approved"} disabled={!canEdit} onClick={() => edit({ decision: "approved" }, false)}><Check size={16} />合格</button>
+            <button className="button button-secondary" aria-pressed={active.decision === "rejected"} disabled={!canEdit} onClick={() => edit({ decision: "rejected" }, false)}><X size={16} />不合格</button>
+            <button className="icon-button" aria-label="删除当前片段" title="删除当前片段" disabled={!canEdit} onClick={() => { edit({ deleted: true }); setSelected(rows.find((segment) => segment.sourceIndex !== active.sourceIndex)?.sourceIndex ?? -1); }}><Trash2 size={16} /></button>
+          </footer>
+        </> : <p>没有保留的片段</p>}
+        {edits.some((segment) => segment.deleted) && <button className="button button-secondary" disabled={!canEdit} onClick={() => change(edits.map((segment) => segment.deleted ? { ...segment, deleted: false, decision: "pending" } : segment))}><Undo2 size={15} />恢复删除的片段</button>}
       </div>
-      <dl className="machine-attributes">
-        {[["Segment", active.segmentId], ["部位", attributes.body_part], ["物体", attributes.object_name ?? attributes.object], ["颜色", attributes.color ?? attributes.object_color], ["来源", attributes.source_name ?? attributes.source], ["目标", attributes.target_name ?? attributes.target], ["边界依据", result?.boundaryMethod]].map(([label, value]) => <div key={String(label)}><dt>{String(label)}</dt><dd>{attribute(value)}</dd></div>)}
-      </dl>
     </section>}
-    {showJson && result && <dialog className="machine-json" aria-label="机标 JSON" ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={() => setShowJson(false)}>
-        <header className="machine-heading"><strong>bailian_annotation.json</strong><button autoFocus className="icon-button" type="button" title="关闭 JSON" aria-label="关闭 JSON" onClick={() => setShowJson(false)}><X size={16} /></button></header>
-        <pre>{result.sourceJson ?? JSON.stringify(result, null, 2)}</pre>
-    </dialog>}
-  </>;
+    {showJson && result && <dialog className="machine-json" aria-label="机标 JSON" ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={() => setShowJson(false)}><header className="machine-heading"><strong>bailian_annotation.json</strong><button autoFocus className="icon-button" aria-label="关闭 JSON" title="关闭 JSON" onClick={() => setShowJson(false)}><X size={16} /></button></header><pre>{result.sourceJson ?? JSON.stringify(result, null, 2)}</pre></dialog>}
+  </section></div>;
 }
+
+interface SegmentControlsProps {
+  rows: ReviewSegment[];
+  selected: number | undefined;
+  disabled: boolean;
+  onChoose: (sourceIndex: number, play?: boolean) => void;
+}
+const StripSegments = memo(function StripSegments({ rows, frameCount, selected, disabled, onChoose }: SegmentControlsProps & { frameCount: number }) {
+  return rows.map((segment, index) => <button key={segment.sourceIndex} type="button" title={`${segment.description} [${segment.startFrame}, ${segment.endFrame + 1})`} aria-label={`选择机标片段 ${index + 1}`} aria-pressed={segment.sourceIndex === selected} disabled={disabled} onClick={() => onChoose(segment.sourceIndex)} style={{ left: `${segment.startFrame / frameCount * 100}%`, width: `${(segment.endFrame + 1 - segment.startFrame) / frameCount * 100}%`, background: COLORS[segment.sourceIndex % COLORS.length] }} />);
+});
+const SegmentList = memo(function SegmentList({ rows, selected, disabled, onChoose, originals, listRef }: SegmentControlsProps & { originals: Map<number, MachineSegment>; listRef: RefObject<HTMLDivElement | null> }) {
+  return <div className="machine-segment-list" role="list" ref={listRef}>
+    {rows.map((segment, index) => <div role="listitem" data-source-index={segment.sourceIndex} className={`machine-segment${segment.sourceIndex === selected ? " active" : ""}`} key={segment.sourceIndex}>
+      <button className="machine-segment-description" aria-label={`定位机标片段 ${index + 1}`} disabled={disabled} onClick={() => onChoose(segment.sourceIndex)}>
+        <strong>{index + 1}. {segment.description || originals.get(segment.sourceIndex)?.label}</strong>
+        <span><em>{BODY_PARTS[String(originals.get(segment.sourceIndex)?.attributes.body_part)] ?? String(originals.get(segment.sourceIndex)?.attributes.body_part ?? "未记录")}</em> · {originals.get(segment.sourceIndex)?.label}</span>
+        <small>帧 [{segment.startFrame}, {segment.endFrame + 1}) · {segment.decision === "approved" ? "合格" : segment.decision === "rejected" ? "不合格" : "待复核"}</small>
+      </button>
+      <button className="icon-button" title={`播放机标片段 ${index + 1}`} aria-label={`播放机标片段 ${index + 1}`} disabled={disabled} onClick={() => onChoose(segment.sourceIndex, true)}><Play size={15} /></button>
+    </div>)}
+  </div>;
+});

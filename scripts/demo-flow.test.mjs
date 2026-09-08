@@ -163,7 +163,6 @@ if (!browserExecutable) {
         const frame = Number(document.querySelector(".frame-counter")?.textContent?.match(/帧 (\d+)/)?.[1]);
         return frame > 60 && frame <= 119;
       });
-      await panel.getByRole("button", { name: "返回人工范围" }).click();
       await page.getByRole("button", { name: "回放", exact: true }).click();
       assert.equal(await panel.count(), 0);
       assert.equal(await page.getByLabel("裁剪起始帧").inputValue(), "30");
@@ -202,6 +201,53 @@ if (!browserExecutable) {
       assert.equal(await page.getByRole("button", { name: "保存标注", exact: true }).isEnabled(), true);
       await context.close();
     }
+  });
+
+  test("proofreading edits autosave, survive reentry, and publish only after all retained segments pass", async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    const page = await context.newPage();
+    await registerDemoAccount(page, `${baseUrl}/?machineAnnotation=present`, "human-review");
+    await page.getByRole("button", { name: "校对", exact: true }).click();
+    const state = () => page.evaluate(async () => {
+      const backend = await import("/src/lib/backend.ts");
+      return backend.loadMachineReview(backend.DEMO_ROOT);
+    });
+    await page.getByLabel("复核动作描述").fill("Corrected action");
+    await page.getByLabel("复核结束帧", { exact: true }).fill("65");
+    await page.getByRole("button", { name: "不合格", exact: true }).click();
+    await page.getByText("草稿已保存", { exact: true }).waitFor();
+    let saved = await state();
+    assert.equal(saved.published, false);
+    assert.equal(saved.segments[0].description, "Corrected action");
+    assert.equal(saved.segments[0].endFrame, 64);
+    assert.equal(saved.segments[1].startFrame, 65);
+    assert.equal(saved.segments[0].decision, "rejected");
+    assert.equal(await page.locator(".machine-gap").count(), 0);
+    await page.getByRole("button", { name: "回放", exact: true }).click();
+    await page.getByRole("button", { name: "校对", exact: true }).click();
+    await page.getByLabel("复核动作描述").waitFor();
+    assert.equal(await page.getByLabel("复核动作描述").inputValue(), "Corrected action");
+    assert.equal(await page.getByLabel("复核结束帧", { exact: true }).inputValue(), "65");
+    await page.getByRole("button", { name: "合格", exact: true }).click();
+    await page.getByRole("button", { name: "定位机标片段 2" }).click();
+    await page.getByRole("button", { name: "删除当前片段", exact: true }).click();
+    assert.equal(await page.locator(".machine-segment").count(), 2);
+    assert.equal(await page.locator(".machine-gap").count(), 1);
+    await page.getByRole("button", { name: "定位机标片段 2" }).click();
+    await page.getByRole("button", { name: "合格", exact: true }).click();
+    await page.getByText("复核 JSON 已保存", { exact: true }).waitFor();
+    saved = await state();
+    assert.equal(saved.published, true);
+    assert.equal(saved.segments.filter((segment) => segment.deleted).length, 1);
+    await page.getByLabel("复核动作描述").fill("Later change");
+    await page.getByText("复核 JSON 已保存", { exact: true }).waitFor();
+    saved = await state();
+    assert.equal(saved.segments[2].description, "Later change");
+    assert.equal(saved.segments[2].decision, "pending");
+    await page.getByRole("button", { name: "恢复删除的片段" }).click();
+    assert.equal(await page.locator(".machine-segment").count(), 3);
+    assert.equal(await page.locator(".machine-gap").count(), 0);
+    await context.close();
   });
 
   test("fixture v1 preserves the canonical streams and exact generated endpoint", async () => {

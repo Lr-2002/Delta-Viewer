@@ -450,6 +450,7 @@ export interface EpisodeData {
 }
 
 export interface MachineSegment {
+  sourceIndex?: number;
   segmentId?: string | null;
   label: string;
   description: string;
@@ -459,6 +460,7 @@ export interface MachineSegment {
 }
 
 export interface MachineAnnotation {
+  sourceHash?: string;
   episodeId: string;
   sourceJson?: string;
   boundaryMethod?: string | null;
@@ -468,6 +470,25 @@ export interface MachineAnnotation {
   frameCount: number;
   warnings: string[];
   segments: MachineSegment[];
+}
+
+export interface ReviewSegment {
+  sourceIndex: number;
+  startFrame: number;
+  endFrame: number;
+  description: string;
+  deleted: boolean;
+  decision: "pending" | "approved" | "rejected";
+}
+
+export interface MachineReview {
+  sourceHash: string;
+  revision: number;
+  segments: ReviewSegment[];
+  published: boolean;
+  outputHash: string | null;
+  updatedAtMs: number;
+  reviewer: string;
 }
 
 export type Severity = "warning" | "error";

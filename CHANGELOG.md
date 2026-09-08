@@ -5,6 +5,36 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 1.0.2 - 2026-09-08
+
+- Promote proofreading into the stable edition while retaining operator task,
+  trim and segment annotation, including explicit tracking-warning continuation.
+- Align segment playback and boundary previews with source video frames,
+  independent of state counts; sample inside each frame to avoid preceding-frame
+  seeks. Coalesce rapid seeks and keep segment lists stable during playback.
+- Display true annotation gaps, adjust shared boundaries without creating gaps,
+  and support description edits, frame fine-tuning, deletion and restoration.
+- Autosave per-segment review decisions locally. Create a separate
+  bailian_annotation_reviewed.json only after all retained segments pass, then
+  update it atomically while preserving untouched machine fields and reporting
+  pending/rejected decisions after further edits. Preserve the original JSON.
+- Protect saves with source/output hashes, revisions, cross-process locks and
+  interrupted-write recovery. Keep proofreading out of manual completion counts.
+- Ship the complete UNSIGNED Windows, macOS arm64 and Ubuntu installer set on
+  the stable update channel. Existing GAP-003/GAP-007 qualification limits remain.
+
+## 1.0.1 - 2026-09-08
+
+- Begin the user-requested stable release numbering at 1.0.1, retaining the
+  reviewed annotation and NAS playback improvements from 0.17.67.
+- Restore saved trim ranges on re-entry and mark episodes annotated only
+  after both task annotations and nonempty segments have been saved.
+- Keep experimental machine-annotation proofreading in the separate
+  development edition; the stable edition retains its existing workspace.
+- Installers remain explicitly UNSIGNED. Existing physical-device and
+  large-volume qualification gaps GAP-003/GAP-007 remain open; the version
+  numbering change does not assert that those checks have passed.
+
 ## 1.0.2-dev.2 - 2026-09-08
 
 - Restore operator annotation for readable videos whose position tracking is

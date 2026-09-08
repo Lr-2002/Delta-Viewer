@@ -50,7 +50,20 @@ fn invalid(message: &str) -> AppError {
 pub fn load(root: &Path) -> AppResult<Option<MachineAnnotation>> {
     let root = fs::canonicalize(root)?;
     let path = root.join("bailian_annotation.json");
-    let metadata = match fs::symlink_metadata(&path) {
+    let Some(bytes) = read_bytes(&path)? else {
+        return Ok(None);
+    };
+    parse(
+        &bytes,
+        root.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default(),
+    )
+    .map(Some)
+}
+
+pub(crate) fn read_bytes(path: &Path) -> AppResult<Option<Vec<u8>>> {
+    let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -70,7 +83,7 @@ pub fn load(root: &Path) -> AppResult<Option<MachineAnnotation>> {
         use std::os::windows::fs::OpenOptionsExt;
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let file = options.open(&path)?;
+    let file = options.open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > MAX_BYTES {
         return Err(invalid("机标文件类型或大小无效"));
@@ -90,13 +103,7 @@ pub fn load(root: &Path) -> AppResult<Option<MachineAnnotation>> {
     if bytes.len() as u64 > MAX_BYTES {
         return Err(invalid("机标文件超过 8 MiB"));
     }
-    parse(
-        &bytes,
-        root.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default(),
-    )
-    .map(Some)
+    Ok(Some(bytes))
 }
 
 fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
@@ -140,7 +147,7 @@ fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
         warnings.push("旧机标未声明帧号起点，暂按 0 起始解读。".into());
     }
     let mut segments = Vec::new();
-    for annotation in episode.annotations {
+    for (source_index, annotation) in episode.annotations.into_iter().enumerate() {
         let start = annotation.start_frame.checked_sub(base);
         let end = annotation
             .end_frame
@@ -152,6 +159,7 @@ fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
             return Err(invalid("机标片段为空、倒序或超出视频帧数"));
         }
         segments.push(MachineSegment {
+            source_index,
             segment_id: annotation.segment_id,
             label: annotation.label_code,
             description: annotation
@@ -177,6 +185,7 @@ fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
         warnings.push("机标尚未通过模型流水线校验。".into());
     }
     Ok(MachineAnnotation {
+        source_hash: blake3::hash(bytes).to_hex().to_string(),
         episode_id: episode.episode_id,
         source_json: String::from_utf8_lossy(bytes).into_owned(),
         boundary_method: quality_string("boundary_method"),

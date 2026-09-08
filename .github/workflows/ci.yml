@@ -83,6 +83,11 @@ jobs:
       - name: Run release workflow regression coverage
         run: pnpm check:release-scripts
 
+      - name: Run proofreading frame and interaction regressions
+        env:
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
+        run: pnpm test:proofreading
+
       - name: Run shared release gate (including issue-location regression)
         run: pnpm check
 

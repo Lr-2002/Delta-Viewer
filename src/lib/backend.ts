@@ -462,6 +462,33 @@ export async function loadMachineAnnotation(sourcePath: string): Promise<Machine
   };
 }
 
+const demoMachineReviews = new Map<string, import("../types").MachineReview>();
+export async function loadMachineReview(sourcePath: string): Promise<import("../types").MachineReview> {
+  if (isTauriRuntime()) return invoke("load_machine_review", { sourcePath });
+  demoActor();
+  const saved = demoMachineReviews.get(sourcePath);
+  if (saved) return structuredClone(saved);
+  const annotation = await loadMachineAnnotation(sourcePath);
+  if (!annotation) throw new Error("未找到机标");
+  return { sourceHash: annotation.sourceHash ?? "demo-machine", revision: 0, published: false, outputHash: null,
+    updatedAtMs: 0, reviewer: "", segments: annotation.segments.map((segment, sourceIndex) => ({
+      sourceIndex, startFrame: segment.startFrame, endFrame: segment.endFrame,
+      description: segment.description, deleted: false, decision: "pending",
+    })) };
+}
+
+export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[]): Promise<import("../types").MachineReview> {
+  if (isTauriRuntime()) return invoke("save_machine_review", { request: { sourcePath, sourceHash, expectedRevision, segments } });
+  demoActor();
+  const state = await loadMachineReview(sourcePath);
+  if (state.revision !== expectedRevision || state.sourceHash !== sourceHash) throw new Error("复核保存冲突");
+  const retained = segments.filter((segment) => !segment.deleted);
+  const published = state.published || (retained.length > 0 && retained.every((segment) => segment.decision === "approved"));
+  const next = { ...state, revision: state.revision + 1, segments: structuredClone(segments), published, updatedAtMs: Date.now(), reviewer: "demo" };
+  demoMachineReviews.set(sourcePath, next);
+  return structuredClone(next);
+}
+
 const AUDIT_QUEUE_KEY = "dohc-viewer.pending-audits.v1";
 type AuditRequestInput = Omit<AnnotationAuditRequest, "eventId"> & { eventId?: string };
 

@@ -7,7 +7,7 @@ DOHC Viewer 的源数据工作流只通过操作系统已经挂载或映射为�
 - 审计仅上传事件 ID、操作类型、task ID、trajectory code、revision 和开始/结束/操作时间，账号由 token 推导。
 - 不上传源路径、episode ID、描述、片段文本、图像、状态、检查结果、报告或 hash。
 - 驾驶舱中的 episode 完成量、耗时和趋势来自审计白名单；片段数和覆盖帧数只从管理员本机选择的标注 JSON 汇总。JSON、CSV 和打印 HTML 运营报表同样排除源路径、图像、状态、片段内容、原始数据、报告和 hash。
-- JPEG、`states.jsonl`、骨架和其他采集文件只读；正常界面直接读取源路径，不在 app-local-data 自动复制 episode。保存标注是唯一写入例外，只原子更新当前 episode 根级 `description.json`；导出只写用户选择的导出目录。
+- JPEG、`states.jsonl`、骨架和原机标 `bailian_annotation.json` 只读；不自动复制 episode。人工标注只更新根级 `description.json`。正式版 `1.0.2` 新增经用户批准的校对写入例外：所有保留片段合格后首次创建 `bailian_annotation_reviewed.json`，后续编辑原子更新并记录最新人工判定；此前仅保存本机草稿。复核锁/partial 和结果不参与采集指纹，不上传用户中心；原文件或并发修改冲突时拒绝覆盖。导出只写用户选择的导出目录。
 - 独立 formal/development stress 仍保留完整导入、目标端大小和 BLAKE3 回读，用于验证导入器和大容量数据链路；这不是正常用户流程。
 - 正式输出使用 partial 加同文件系统原子发布，不覆盖已有结果。
 - 统一管理模式本地登录后才会从固定公网镜像 `http://39.155.172.162:17879` 和固定局域网镜像 `http://10.1.11.200:17879` 读取 `latest.json` 及当前平台更新资产；发现更新后以两个 32 KiB Range 样本并行测速，选择更快的可用完整下载路径。离线模式不执行更新请求。客户端不访问 GitHub，请求不附带账号、源路径、标注、报告、hash 或遥测。镜像断开或更新失败不影响核心数据工作流。

@@ -1045,6 +1045,7 @@ fn collect_indexed_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<I
             || is_platform_metadata_file_name(entry.file_name())
             || crate::episode_metadata::is_description_path(root, entry.path())
             || crate::episode_metadata::is_description_partial_path(root, entry.path())
+            || crate::machine_review::is_review_path(root, entry.path())
         {
             continue;
         }

@@ -151,8 +151,6 @@ const UNAVAILABLE_FRAME_ISSUE_CODES = new Set([
   "DUPLICATE_SEGMENT_NUMBER",
 ]);
 const FRAME_JUMP_ISSUE_CODE = "STATE_FRAME_GAP";
-const STATIC_TRAJECTORY_ISSUE_CODE = "TRAJECTORY_STATIC";
-const UNAVAILABLE_TRAJECTORY_ISSUE_CODE = "TRAJECTORY_POSITION_UNAVAILABLE";
 
 const METRICS: { key: MetricKey; label: string }[] = [
   { key: "position", label: "位置" },
@@ -987,7 +985,6 @@ function App() {
     };
     // Static/missing position does not imply static video. Development
     // operators may continue annotating after acknowledging tracking warnings.
-    if (!IS_DEVELOPMENT_EDITION && hasUnusableTrajectory(validated.report)) return "skipped";
     if (annotationConfirmationWarnings(validated.report).length) {
       setPendingAnnotationConfirmation(candidate);
       setView("review");
@@ -1253,7 +1250,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (!data) return;
+    if (!data || view === "proofread") return;
     const handleShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
@@ -1987,7 +1984,7 @@ function App() {
                 <button type="button" className={view === "batch" ? "active" : ""} onClick={() => { if (machinePreviewRange) exitMachinePreview(); openBatchExport(); }}>
                   <ListChecks size={17} />批量
                 </button>
-                {data && IS_DEVELOPMENT_EDITION && <button type="button" className={view === "proofread" ? "active" : ""} onClick={() => changeView("proofread")}>
+                {data && <button type="button" className={view === "proofread" ? "active" : ""} onClick={() => changeView("proofread")}>
                   <FileSearch size={17} />校对
                 </button>}
                 <span className="view-tab-spacer" />
@@ -2015,19 +2012,23 @@ function App() {
                   onExport={() => void runBatchExport()}
                   onReveal={(path) => void revealExport(path)}
                 />
-              ) : !data ? null : view === "review" || view === "proofread" ? (
-                <div className={`review-view${view === "proofread" ? " proofreading-view" : ""}`}>
+              ) : !data ? null : view === "proofread" ? (
+                <MachineAnnotationPanel key={`machine:${data.summary.root}`} data={data} annotation={annotation}
+                  currentFrame={currentFrame} previewing={machinePreviewRange !== null} busy={busy}
+                  onPreview={previewMachineSegment} onExitPreview={exitMachinePreview} />
+              ) : view === "review" ? (
+                <div className="review-view">
                   <section className="camera-section">
                     <div className="section-heading compact-heading">
                       <div>
                         <span className="section-kicker">SYNCHRONIZED FRAMES</span>
-                        <h2>{view === "proofread" ? "机标校对" : "多路回放"}</h2>
+                        <h2>多路回放</h2>
                       </div>
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
                     </div>
-                    <div className={`replay-visual-row${view !== "proofread" && (data.skeleton || data.skeletonError) ? " with-skeleton" : ""}`}>
-                      <div className={`camera-grid stream-count-${view === "proofread" ? 1 : availableStreams.length}`}>
-                        {availableStreams.filter((stream) => view !== "proofread" || stream.name === primaryStreamName).map((stream, index) => (
+                    <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
+                      <div className={`camera-grid stream-count-${availableStreams.length}`}>
+                        {availableStreams.map((stream, index) => (
                           <FramePanel
                             key={stream.name}
                             root={data.summary.root}
@@ -2062,7 +2063,7 @@ function App() {
                           />
                         ))}
                       </div>
-                      {view !== "proofread" && <div className="skeleton-side-panel">
+                      <div className="skeleton-side-panel">
                         {data.skeleton ? (
                           <SkeletonViewer
                             skeleton={data.skeleton}
@@ -2080,7 +2081,7 @@ function App() {
                             <span>{data.skeletonError}</span>
                           </section>
                         ) : null}
-                      </div>}
+                      </div>
                     </div>
                     {!playing && view === "review" ? (
                       <FrameRenderProgress
@@ -2091,23 +2092,6 @@ function App() {
                         total={availableStreams.length}
                       />
                     ) : null}
-                    {view === "proofread" && <MachineAnnotationPanel
-                      key={`machine:${data.summary.root}`}
-                      data={data}
-                      annotation={annotation}
-                      currentFrame={currentFrame}
-                      previewing={machinePreviewRange !== null}
-                      busy={busy}
-                      onPreview={previewMachineSegment}
-                      onExitPreview={exitMachinePreview}
-                    />}
-                    {view === "proofread" && <div className="proofreading-transport">
-                      <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧" disabled={busy}><SkipBack size={17} /></button>
-                      <button className="play-button" type="button" onClick={togglePlayback} title={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"} disabled={busy}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
-                      <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧" disabled={busy}><SkipForward size={17} /></button>
-                      <input type="range" min={playbackStart} max={primaryPlaybackEndFrame} value={Math.min(currentFrame, primaryPlaybackEndFrame)} aria-label="校对播放帧" disabled={busy} onChange={(event) => seekFrame(event.currentTarget.valueAsNumber)} />
-                      <span>帧 {currentFrame}</span>
-                    </div>}
                     {view === "review" && annotationReadyRoot === data.summary.root && <AnnotationPanel
                       key={data.summary.root}
                       sourcePath={data.summary.root}
@@ -2700,13 +2684,6 @@ function ReleaseHistoryDialog({
 
 function hasUnavailableFrame(report: ValidationReport): boolean {
   return report.issues.some((issue) => UNAVAILABLE_FRAME_ISSUE_CODES.has(issue.code));
-}
-
-function hasUnusableTrajectory(report: ValidationReport): boolean {
-  return report.issues.some((issue) => (
-    issue.code === STATIC_TRAJECTORY_ISSUE_CODE
-    || issue.code === UNAVAILABLE_TRAJECTORY_ISSUE_CODE
-  ));
 }
 
 function annotationConfirmationWarnings(report: ValidationReport): ValidationIssue[] {

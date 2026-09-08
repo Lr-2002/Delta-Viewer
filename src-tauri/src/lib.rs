@@ -8,6 +8,7 @@ mod export;
 mod identity;
 mod importer;
 mod machine_annotation;
+mod machine_review;
 mod media_stream_server;
 mod model;
 mod mp4_preview_cache;
@@ -728,6 +729,42 @@ async fn load_machine_annotation(
 }
 
 #[tauri::command]
+async fn load_machine_review(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    source_path: String,
+) -> Result<machine_review::ReviewState, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    ensure_source_directory_responsive(&source_path).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        machine_review::load(&data_root, Path::new(&source_path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn save_machine_review(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    request: machine_review::SaveReviewRequest,
+) -> Result<machine_review::ReviewState, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    ensure_source_directory_responsive(&request.source_path).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        machine_review::save(&data_root, request, &user.username)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn save_episode_annotation(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -1366,6 +1403,8 @@ pub fn run() {
             suggest_trajectory_code,
             load_episode_annotation,
             load_machine_annotation,
+            load_machine_review,
+            save_machine_review,
             save_episode_annotation,
             list_annotated_episodes,
             scan_source,
