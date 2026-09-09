@@ -42,6 +42,17 @@
   .proofreading-view .machine-annotation { grid-column: 2; grid-row: 2 / 5; margin-top: 0; }
   .proofreading-view .machine-segment-list { max-height: 610px; }
   .proofreading-view .machine-comparison { grid-template-columns: minmax(0, 1fr); }
+  .proofreading-view.has-skeleton .replay-visual-row { grid-column: 1 / -1; }
+  .proofreading-view.has-skeleton .machine-annotation { grid-row: 3 / 5; }
+  .proofreading-view.has-skeleton .camera-0 { max-height: 420px; }
+}
+.proofreading-view .skeleton-side-panel > .skeleton-viewer { height: 100%; min-height: 260px; border: 0; border-radius: 0; }
+.proofreading-view .skeleton-heading { flex-wrap: wrap; }
+.proofreading-view .skeleton-heading > span { display: none; }
+.proofreading-view .skeleton-viewer footer { overflow-wrap: anywhere; }
+@media (max-width: 1200px) {
+  .proofreading-view .replay-visual-row.with-skeleton { grid-template-columns: minmax(0, 1fr); }
+  .proofreading-view .skeleton-side-panel > .skeleton-viewer { height: 320px; min-height: 320px; }
 }
 .machine-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .machine-source-picker { display: flex; align-items: center; gap: 10px; margin: 12px 0; font-size: 12px; }

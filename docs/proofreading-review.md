@@ -1,4 +1,4 @@
-# Proofreading 1.0.2
+# Proofreading 1.0.4
 
 ## Flash Compatibility
 
@@ -9,7 +9,14 @@ another result. Explicit selection is restricted to these two ordinary files.
 Both schema v3 and v4 support object attributes and `T`/`value` attribute arrays.
 Chinese `attributes_zh` action descriptions take precedence when available.
 Editing patches that same language and preserves the other language, attribute
-order, unknown fields and task metadata. Pipeline issues remain visible.
+order, unknown fields and task metadata. Pipeline status and model-generated
+warnings are omitted from the workspace; the original JSON retains them.
+
+Available episode skeletons appear alongside the proofreading video and stack
+below it on narrow windows. Seeking, segment selection and playback share the
+video-to-backend frame mapping, including offsets and differing state cadence.
+Orbit controls remain available. Missing skeletons take no space; unreadable
+skeletons show a local error without blocking video or editing.
 
 Flash drafts, pending-write journals and locks are independent of the original
 source. Approved Flash results use

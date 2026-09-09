@@ -169,9 +169,10 @@ function MachineAnnotationEditor({ data, annotation, busy, sourceName, onSourceB
     if (row && list && (row.offsetTop < list.scrollTop || row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight)) list.scrollTop = row.offsetTop;
   }, [current[0]?.sourceIndex, playing]);
 
-  return <div className="review-view proofreading-view"><section className="camera-section">
+  return <div className={`review-view proofreading-view${data.skeleton || data.skeletonError ? " has-skeleton" : ""}`}><section className="camera-section">
     <div className="section-heading compact-heading"><h2>机标校对</h2><span className="frame-counter">帧 {frame} / {result ? result.frameCount - 1 : "--"}</span></div>
     {valid && <ProofreadPlayer root={root} stream={primary} offset={mapping.offset} step={mapping.step} frameCount={result.frameCount}
+      skeleton={data.skeleton} skeletonError={data.skeletonError}
       frame={frame} start={active?.startFrame ?? 0} end={active?.endFrame ?? result.frameCount - 1} playing={playing} onFrame={setFrame} onPlaying={setPlaying} />}
     <section className="machine-annotation" aria-label="机标结果">
       <header className="machine-heading"><strong>动作片段</strong><span className="machine-episode">{result?.episodeId ?? data.summary.name}</span><span className="machine-status">{rows.length} 段</span>
@@ -182,8 +183,7 @@ function MachineAnnotationEditor({ data, annotation, busy, sourceName, onSourceB
       {error && <p role="alert" className="machine-message">{error}</p>}
       {!loading && !error && !result && <p className="machine-message">未发现 {sourceName ?? "bailian_annotation.json / bailian_annotation.qwen3.8-flash.json"}</p>}
       {result && <>
-        <div className="machine-metadata"><span>模型：{result.model ?? "未记录"}</span><span>{result.validationStatus === "passed" ? "结构与规则校验通过" : "机标未通过或未校验"}</span><span>人工合格 {approved} / {rows.length}</span></div>
-        {result.warnings.map((warning) => <p className="machine-message" key={warning}>{warning}</p>)}
+        <div className="machine-metadata"><span>模型：{result.model ?? "未记录"}</span><span>人工合格 {approved} / {rows.length}</span></div>
         {mapping?.error && <p role="alert">{mapping.error}</p>}
         <div className="machine-action-strip" aria-label="动作分段条">
           {gaps.map((gap) => <span className="machine-gap" key={gap.start} title={`未标注 [${gap.start}, ${gap.end})`} style={{ left: `${gap.start / result.frameCount * 100}%`, width: `${(gap.end - gap.start) / result.frameCount * 100}%` }} />)}

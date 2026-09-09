@@ -5,6 +5,12 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 1.0.4 - 2026-09-09
+
+- Show synchronized, interactive episode skeletons alongside proofreading video.
+- Remove model pipeline status and generated warning paragraphs from the
+  proofreading workspace while preserving source JSON and operational errors.
+
 ## 1.0.3 - 2026-09-09
 
 - Read Qwen 3.8 Flash schema v4 results with bilingual T/value attribute arrays,
