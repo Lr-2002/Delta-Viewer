@@ -19,6 +19,13 @@ test("shared boundaries stay continuous and never collapse their neighbours", ()
   const gap = adjustReviewBoundary(segments, 3, "startFrame", 209, 221);
   assert.equal(gap[2].endFrame, 194);
   assert.equal(gap[3].startFrame, 209);
+  const acrossGap = adjustReviewBoundary(segments, 3, "startFrame", 150, 221);
+  assert.equal(acrossGap[3].startFrame, 195);
+  assert.equal(acrossGap[2].endFrame, 194);
+  const afterDeletion = segments.map((item) => item.sourceIndex === 1 ? { ...item, deleted: true } : item);
+  const expanded = adjustReviewBoundary(afterDeletion, 0, "endFrame", 219, 221);
+  assert.equal(expanded[0].endFrame, 112);
+  assert.equal(expanded[2].startFrame, 113);
 });
 import type { MachineAnnotation, StreamSummary } from "../src/types.ts";
 

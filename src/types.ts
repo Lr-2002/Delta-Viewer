@@ -460,6 +460,7 @@ export interface MachineSegment {
 }
 
 export interface MachineAnnotation {
+  sourceName?: string;
   sourceHash?: string;
   episodeId: string;
   sourceJson?: string;
@@ -482,6 +483,10 @@ export interface ReviewSegment {
 }
 
 export interface MachineReview {
+  workflowVersion?: number;
+  status?: "pending" | "approved" | "rejected";
+  versionId?: string;
+  previousVersionId?: string;
   sourceHash: string;
   revision: number;
   segments: ReviewSegment[];

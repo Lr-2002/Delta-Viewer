@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import packageInfo from "../../package.json";
+import { createAuditFlusher } from "./audit-flush";
 import {
   createDemoSkeleton,
   createDemoStates,
@@ -441,13 +442,14 @@ export async function loadEpisodeAnnotation(sourcePath: string): Promise<Episode
   return demoAnnotations.get(sourcePath) ?? null;
 }
 
-export async function loadMachineAnnotation(sourcePath: string): Promise<MachineAnnotation | null> {
-  if (isTauriRuntime()) return invoke<MachineAnnotation | null>("load_machine_annotation", { sourcePath });
+export async function loadMachineAnnotation(sourcePath: string, sourceName?: string): Promise<MachineAnnotation | null> {
+  if (isTauriRuntime()) return invoke<MachineAnnotation | null>("load_machine_annotation", { sourcePath, sourceName });
   demoActor();
   const scenario = new URLSearchParams(window.location.search).get("machineAnnotation");
   if (!scenario || scenario === "missing") return null;
   if (scenario === "invalid") throw new Error("MACHINE_ANNOTATION_INVALID: 机标 JSON 格式无效");
   return {
+    sourceName: sourceName ?? "bailian_annotation.json",
     episodeId: sourcePath.split("/").at(-1) ?? "demo",
     model: "Demo model",
     completedAt: "2026-09-08T10:00:00+08:00",
@@ -463,12 +465,12 @@ export async function loadMachineAnnotation(sourcePath: string): Promise<Machine
 }
 
 const demoMachineReviews = new Map<string, import("../types").MachineReview>();
-export async function loadMachineReview(sourcePath: string): Promise<import("../types").MachineReview> {
-  if (isTauriRuntime()) return invoke("load_machine_review", { sourcePath });
+export async function loadMachineReview(sourcePath: string, sourceName?: string): Promise<import("../types").MachineReview> {
+  if (isTauriRuntime()) return invoke("load_machine_review", { sourcePath, sourceName });
   demoActor();
-  const saved = demoMachineReviews.get(sourcePath);
+  const saved = demoMachineReviews.get(`${sourcePath}:${sourceName ?? "bailian_annotation.json"}`);
   if (saved) return structuredClone(saved);
-  const annotation = await loadMachineAnnotation(sourcePath);
+  const annotation = await loadMachineAnnotation(sourcePath, sourceName);
   if (!annotation) throw new Error("未找到机标");
   return { sourceHash: annotation.sourceHash ?? "demo-machine", revision: 0, published: false, outputHash: null,
     updatedAtMs: 0, reviewer: "", segments: annotation.segments.map((segment, sourceIndex) => ({
@@ -477,15 +479,16 @@ export async function loadMachineReview(sourcePath: string): Promise<import("../
     })) };
 }
 
-export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[]): Promise<import("../types").MachineReview> {
-  if (isTauriRuntime()) return invoke("save_machine_review", { request: { sourcePath, sourceHash, expectedRevision, segments } });
+export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending"): Promise<import("../types").MachineReview> {
+  if (isTauriRuntime()) return invoke("save_machine_review", { request: { sourcePath, sourceHash, expectedRevision, segments, sourceName, status } });
   demoActor();
-  const state = await loadMachineReview(sourcePath);
+  const state = await loadMachineReview(sourcePath, sourceName);
   if (state.revision !== expectedRevision || state.sourceHash !== sourceHash) throw new Error("复核保存冲突");
   const retained = segments.filter((segment) => !segment.deleted);
-  const published = state.published || (retained.length > 0 && retained.every((segment) => segment.decision === "approved"));
-  const next = { ...state, revision: state.revision + 1, segments: structuredClone(segments), published, updatedAtMs: Date.now(), reviewer: "demo" };
-  demoMachineReviews.set(sourcePath, next);
+  if (status === "approved" && !retained.length) throw new Error("没有保留片段，不能通过质检");
+  const next = { ...state, workflowVersion: 2, status, versionId: crypto.randomUUID(), previousVersionId: state.versionId ?? "", revision: state.revision + 1,
+    segments: segments.map((item) => ({ ...item, decision: item.deleted ? "pending" as const : status })), published: true, updatedAtMs: Date.now(), reviewer: "demo" };
+  demoMachineReviews.set(`${sourcePath}:${sourceName ?? "bailian_annotation.json"}`, next);
   return structuredClone(next);
 }
 
@@ -503,19 +506,14 @@ export async function recordAnnotationAudit(input: AuditRequestInput): Promise<v
   }
 }
 
+const flushAuditQueue = createAuditFlusher(
+  readAnnotationAuditQueue,
+  writeAnnotationAuditQueue,
+  (request) => invoke<void>("record_annotation_audit", { request }),
+);
+
 export async function flushPendingAnnotationAudits(): Promise<number> {
-  if (!isTauriRuntime()) return 0;
-  const queue = readAnnotationAuditQueue();
-  const pending: AnnotationAuditRequest[] = [];
-  for (const request of queue) {
-    try {
-      await invoke("record_annotation_audit", { request });
-    } catch {
-      pending.push(request);
-    }
-  }
-  writeAnnotationAuditQueue(pending);
-  return pending.length;
+  return isTauriRuntime() ? flushAuditQueue() : 0;
 }
 
 export function pendingAnnotationAuditCount(): number {

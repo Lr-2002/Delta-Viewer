@@ -23,8 +23,11 @@ export function adjustReviewBoundary(segments: ReviewSegment[], sourceIndex: num
   if (!active || !Number.isSafeInteger(value)) return segments;
   const neighbours = segments.filter((segment) => !segment.deleted && segment.sourceIndex !== sourceIndex &&
     (kind === "startFrame" ? segment.endFrame + 1 === active.startFrame : segment.startFrame === active.endFrame + 1));
-  const min = kind === "startFrame" ? Math.max(0, ...neighbours.map((item) => item.startFrame + 1)) : active.startFrame;
-  const max = kind === "endFrame" ? Math.min(frameCount - 1, ...neighbours.map((item) => item.endFrame - 1)) : active.endFrame;
+  const separated = segments.filter((segment) => !segment.deleted && segment.sourceIndex !== sourceIndex && !neighbours.includes(segment));
+  const min = kind === "startFrame" ? Math.max(0, ...neighbours.map((item) => item.startFrame + 1),
+    ...separated.filter((item) => item.endFrame < active.startFrame).map((item) => item.endFrame + 1)) : active.startFrame;
+  const max = kind === "endFrame" ? Math.min(frameCount - 1, ...neighbours.map((item) => item.endFrame - 1),
+    ...separated.filter((item) => item.startFrame > active.endFrame).map((item) => item.startFrame - 1)) : active.endFrame;
   const next = Math.max(min, Math.min(max, value));
   if (next === active[kind]) return segments;
   return segments.map((segment) => {

@@ -9,6 +9,15 @@ use std::path::Path;
 
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SEGMENTS: usize = 2000;
+pub const DEFAULT_SOURCE: &str = "bailian_annotation.json";
+pub const FLASH_SOURCE: &str = "bailian_annotation.qwen3.8-flash.json";
+
+pub(crate) fn validate_source_name(name: &str) -> AppResult<()> {
+    if ![DEFAULT_SOURCE, FLASH_SOURCE].contains(&name) {
+        return Err(invalid("不支持的机标文件名"));
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 struct Document {
@@ -40,16 +49,107 @@ struct Annotation {
     start_frame: u64,
     end_frame: u64,
     #[serde(default)]
-    attributes: BTreeMap<String, Value>,
+    attributes: Value,
+    #[serde(default)]
+    attributes_zh: Value,
+}
+
+fn attributes_map(value: &Value) -> AppResult<BTreeMap<String, Value>> {
+    match value {
+        Value::Null => Ok(BTreeMap::new()),
+        Value::Object(values) => Ok(values.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+        Value::Array(values) => {
+            let mut result = BTreeMap::new();
+            for entry in values {
+                let key = entry
+                    .get("T")
+                    .and_then(Value::as_str)
+                    .filter(|key| !key.is_empty())
+                    .ok_or_else(|| invalid("机标属性缺少 T 名称"))?;
+                let value = entry
+                    .get("value")
+                    .ok_or_else(|| invalid("机标属性缺少 value"))?;
+                if result.insert(key.into(), value.clone()).is_some() {
+                    return Err(invalid("机标属性名称重复，无法确定对应字段"));
+                }
+            }
+            Ok(result)
+        }
+        _ => Err(invalid("机标属性必须为对象或 T/value 数组")),
+    }
+}
+
+pub(crate) fn description_field(annotation: &Value) -> AppResult<(&'static str, &'static str)> {
+    let zh = attributes_map(&annotation["attributes_zh"])?;
+    if zh
+        .get("动作描述")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
+    {
+        Ok(("attributes_zh", "动作描述"))
+    } else if attributes_map(&annotation["attributes"])?
+        .get("semantic_description")
+        .and_then(Value::as_str)
+        .is_some_and(has_chinese)
+    {
+        Ok(("attributes", "semantic_description"))
+    } else {
+        Ok(("attributes_zh", "动作描述"))
+    }
+}
+
+fn has_chinese(text: &str) -> bool {
+    text.chars()
+        .any(|character| ('\u{3400}'..='\u{9fff}').contains(&character))
+}
+
+pub(crate) fn patch_description(annotation: &mut Value, description: &str) -> AppResult<()> {
+    let (field, key) = description_field(annotation)?;
+    let attributes = &mut annotation[field];
+    if let Some(entries) = attributes.as_array_mut() {
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry["T"].as_str() == Some(key))
+        {
+            entry["value"] = description.into();
+        } else {
+            entries.push(serde_json::json!({"T":key,"value":description}));
+        }
+    } else {
+        if attributes.is_null() {
+            *attributes = serde_json::json!({});
+        }
+        attributes[key] = description.into();
+    }
+    Ok(())
 }
 
 fn invalid(message: &str) -> AppError {
     AppError::Message(format!("MACHINE_ANNOTATION_INVALID: {message}"))
 }
 
+#[cfg(test)]
 pub fn load(root: &Path) -> AppResult<Option<MachineAnnotation>> {
+    load_selected(root, Some(DEFAULT_SOURCE))
+}
+
+pub fn load_selected(
+    root: &Path,
+    source_name: Option<&str>,
+) -> AppResult<Option<MachineAnnotation>> {
     let root = fs::canonicalize(root)?;
-    let path = root.join("bailian_annotation.json");
+    let name = match source_name {
+        Some(name) => {
+            validate_source_name(name)?;
+            name
+        }
+        None => match fs::symlink_metadata(root.join(FLASH_SOURCE)) {
+            Ok(_) => FLASH_SOURCE,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => DEFAULT_SOURCE,
+            Err(error) => return Err(error.into()),
+        },
+    };
+    let path = root.join(name);
     let Some(bytes) = read_bytes(&path)? else {
         return Ok(None);
     };
@@ -59,7 +159,10 @@ pub fn load(root: &Path) -> AppResult<Option<MachineAnnotation>> {
             .and_then(|name| name.to_str())
             .unwrap_or_default(),
     )
-    .map(Some)
+    .map(|mut annotation| {
+        annotation.source_name = name.into();
+        Some(annotation)
+    })
 }
 
 pub(crate) fn read_bytes(path: &Path) -> AppResult<Option<Vec<u8>>> {
@@ -110,8 +213,8 @@ fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
     let document: Document =
         serde_json::from_slice(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes))
             .map_err(|error| invalid(&format!("机标 JSON 格式无效：{error}")))?;
-    if document.schema_version != 3 {
-        return Err(invalid("不支持的机标版本，当前支持 schema_version 3"));
+    if ![3, 4].contains(&document.schema_version) {
+        return Err(invalid("不支持的机标版本，当前支持 schema_version 3、4"));
     }
     let mut matches = document
         .episode_results
@@ -158,19 +261,28 @@ fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
         if start > end || end >= episode.media.frame_count {
             return Err(invalid("机标片段为空、倒序或超出视频帧数"));
         }
+        let attributes = attributes_map(&annotation.attributes)?;
+        let attributes_zh = attributes_map(&annotation.attributes_zh)?;
+        let description = attributes_zh
+            .get("动作描述")
+            .and_then(Value::as_str)
+            .filter(|text| has_chinese(text))
+            .or_else(|| {
+                attributes
+                    .get("semantic_description")
+                    .and_then(Value::as_str)
+                    .filter(|text| has_chinese(text))
+            })
+            .unwrap_or_default()
+            .to_owned();
         segments.push(MachineSegment {
             source_index,
             segment_id: annotation.segment_id,
             label: annotation.label_code,
-            description: annotation
-                .attributes
-                .get("semantic_description")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .into(),
+            description,
             start_frame: start,
             end_frame: end,
-            attributes: annotation.attributes,
+            attributes,
         });
     }
     segments.sort_by_key(|segment| (segment.start_frame, segment.end_frame));
@@ -184,7 +296,11 @@ fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
     if quality_string("validation_status").as_deref() != Some("passed") {
         warnings.push("机标尚未通过模型流水线校验。".into());
     }
+    if let Some(issues) = episode.quality.get("issues").and_then(Value::as_array) {
+        warnings.extend(issues.iter().filter_map(Value::as_str).map(String::from));
+    }
     Ok(MachineAnnotation {
+        source_name: DEFAULT_SOURCE.into(),
         source_hash: blake3::hash(bytes).to_hex().to_string(),
         episode_id: episode.episode_id,
         source_json: String::from_utf8_lossy(bytes).into_owned(),
@@ -211,6 +327,33 @@ mod tests {
         }]})
     }
     #[test]
+    fn reads_v4_bilingual_attributes_and_preserves_raw_json() {
+        let mut document = fixture();
+        document["schema_version"] = 4.into();
+        let episode = &mut document["episode_results"][0];
+        episode["quality"] = serde_json::json!({"model":"qwen3.8-flash","validation_status":"needs_review","issues":["Check posture"]});
+        episode["annotations"][0]["attributes"] = serde_json::json!([
+            {"T":"semantic_description","value":"Standing","confidence":0.9},
+            {"T":"body_part","value":"双手"}
+        ]);
+        episode["annotations"][0]["attributes_zh"] =
+            serde_json::json!([{"T":"动作描述","value":"静止状态"}]);
+        let bytes = serde_json::to_vec(&document).unwrap();
+        let result = parse(&bytes, "sample").unwrap();
+        assert_eq!(result.segments[0].description, "静止状态");
+        assert_eq!(result.segments[0].attributes["body_part"], "双手");
+        assert_eq!(result.segments[0].end_frame, 22);
+        assert_eq!(result.source_json.as_bytes(), bytes);
+        assert!(result.warnings.contains(&"Check posture".into()));
+        let attrs = &mut document["episode_results"][0]["annotations"][0]["attributes"];
+        attrs
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"T":"body_part","value":"other"}));
+        assert!(parse(&serde_json::to_vec(&document).unwrap(), "sample").is_err());
+        assert!(validate_source_name("../bailian_annotation.json").is_err());
+    }
+    #[test]
     fn normalizes_exclusive_intervals_without_shared_boundary() {
         let mut source = fixture();
         source["episode_results"][0]["annotations"][0]["segment_id"] = "seg_test".into();
@@ -228,7 +371,7 @@ mod tests {
         assert_eq!(result.segments[1].start_frame, 23);
         assert_eq!(result.segments[1].end_frame, 29);
         assert!(result.warnings.is_empty());
-        assert_eq!(result.segments[0].description, "Standing");
+        assert_eq!(result.segments[0].description, "");
     }
     #[test]
     fn rejects_wrong_episode_unsupported_schema_and_invalid_ranges() {
@@ -298,7 +441,10 @@ mod tests {
     #[ignore = "Requires an explicitly selected private NAS episode"]
     fn reads_selected_nas_machine_annotation() {
         let path = std::env::var("DOHC_MACHINE_SAMPLE_ROOT").unwrap();
-        let result = load(Path::new(&path)).unwrap().unwrap();
+        let source_name = std::env::var("DOHC_MACHINE_SOURCE_NAME").ok();
+        let result = load_selected(Path::new(&path), source_name.as_deref())
+            .unwrap()
+            .unwrap();
         assert!(!result.segments.is_empty());
         println!(
             "Read {} segments, {} source frames, {} warnings",

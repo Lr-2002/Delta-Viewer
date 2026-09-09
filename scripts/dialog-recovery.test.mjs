@@ -336,7 +336,6 @@ if (!browserExecutable && requireBrowser) {
       await page.goto(baseUrl, { waitUntil: "networkidle" });
       await page.locator(".app-shell").waitFor();
       await page.locator(".topbar-actions .button-secondary").click();
-      await page.getByRole("button", { name: "仍要标注" }).click();
       await page.locator(".view-tabs").waitFor();
       await page.locator(".camera-grid img").first().waitFor();
 

@@ -3,7 +3,43 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
-## Unreleased
+## 1.0.8 - 2026-09-09
+
+- Restore selected-segment playback in unified proofreading: stop at the selected
+  end, restart from its beginning, and follow boundary edits and segment changes.
+- Preserve full-timeline paused seeking while restricting continuous playback
+  to the active segment, using the existing five-camera and skeleton clock.
+
+## 1.0.7 - 2026-09-09
+
+- Merge playback and proofreading into the default proofreading workspace,
+  preserving the five-camera grid, skeleton, telemetry and existing playback controls.
+- Replace manual annotation and segment creation with the review timeline and
+  action segments, connected to the existing playback clock and autosave writer.
+- Load readable recordings directly without a quality-warning confirmation screen.
+
+## 1.0.6 - 2026-09-09
+
+- 校对工作区默认打开，回放与校对导航顺序调整；仅展示 cam0 与三维骨架。
+- 支持 3.8 Max/Flash 中文机标，片段边界可在统一时间轴两端拖动并实时生成 review 文件。
+- 删除、描述、边界和整条通过/不通过均写入唯一版本号的复核 JSON；保存失败保留草稿并阻止误跳下一条。
+
+
+
+## 1.0.4 - 2026-09-09
+
+- Show synchronized, interactive episode skeletons alongside proofreading video.
+- Remove model pipeline status and generated warning paragraphs from the
+  proofreading workspace while preserving source JSON and operational errors.
+
+## 1.0.3 - 2026-09-09
+
+- Read Qwen 3.8 Flash schema v4 results with bilingual T/value attribute arrays,
+  while retaining schema v3 object attributes and original frame conventions.
+- Select Flash or original machine annotations in proofreading. Prefer Flash
+  automatically when present and keep source-specific drafts and reviewed files.
+- Show Chinese action descriptions and pipeline issues. Preserve bilingual
+  attributes, task metadata and unknown fields when saving human corrections.
 
 ## 1.0.2 - 2026-09-08
 
@@ -1023,3 +1059,4 @@ after `main` CI succeeds for a coordinated version change.
   validation, synchronized playback, and telemetry charts.
 - Added MCAP, HDF5, and LeRobot v2.1 adapters with real-sample readback tests.
 - Added Windows 10 NSIS configuration, offline WebView2 setup, and FFmpeg staging.
+

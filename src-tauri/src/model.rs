@@ -696,6 +696,7 @@ pub struct SkeletonSeries {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineAnnotation {
+    pub source_name: String,
     pub source_hash: String,
     pub episode_id: String,
     pub source_json: String,
