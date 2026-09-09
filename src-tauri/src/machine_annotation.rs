@@ -87,9 +87,20 @@ pub(crate) fn description_field(annotation: &Value) -> AppResult<(&'static str, 
         .is_some_and(|text| !text.is_empty())
     {
         Ok(("attributes_zh", "动作描述"))
-    } else {
+    } else if attributes_map(&annotation["attributes"])?
+        .get("semantic_description")
+        .and_then(Value::as_str)
+        .is_some_and(has_chinese)
+    {
         Ok(("attributes", "semantic_description"))
+    } else {
+        Ok(("attributes_zh", "动作描述"))
     }
+}
+
+fn has_chinese(text: &str) -> bool {
+    text.chars()
+        .any(|character| ('\u{3400}'..='\u{9fff}').contains(&character))
 }
 
 pub(crate) fn patch_description(annotation: &mut Value, description: &str) -> AppResult<()> {
@@ -255,11 +266,12 @@ fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
         let description = attributes_zh
             .get("动作描述")
             .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
+            .filter(|text| has_chinese(text))
             .or_else(|| {
                 attributes
                     .get("semantic_description")
                     .and_then(Value::as_str)
+                    .filter(|text| has_chinese(text))
             })
             .unwrap_or_default()
             .to_owned();
@@ -359,7 +371,7 @@ mod tests {
         assert_eq!(result.segments[1].start_frame, 23);
         assert_eq!(result.segments[1].end_frame, 29);
         assert!(result.warnings.is_empty());
-        assert_eq!(result.segments[0].description, "Standing");
+        assert_eq!(result.segments[0].description, "");
     }
     #[test]
     fn rejects_wrong_episode_unsupported_schema_and_invalid_ranges() {

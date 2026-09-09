@@ -33,6 +33,7 @@ import {
 import { AnnotationPanel } from "./components/AnnotationPanel";
 import { MachineAnnotationPanel } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
+import { AuditSyncNotice } from "./components/AuditSyncNotice";
 import { BatchExportPanel } from "./components/BatchExportPanel";
 import { ChecksPanel } from "./components/ChecksPanel";
 import { ExportPanel } from "./components/ExportPanel";
@@ -287,7 +288,9 @@ function App() {
   const [batchExportFormat, setBatchExportFormat] = useState<ExportFormat>("mcap");
   const [batchExportResult, setBatchExportResult] = useState<BatchExportResult | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
-  const [view, setView] = useState<View>("review");
+  const [view, setView] = useState<View>("proofread");
+  const reviewUnsaved = useRef(false);
+  const handleReviewUnsaved = useCallback((value: boolean) => { reviewUnsaved.current = value; }, []);
   const [metric, setMetric] = useState<MetricKey>("position");
   const [currentFrame, setCurrentFrame] = useState(0);
   const [clipStartFrame, setClipStartFrame] = useState(0);
@@ -301,6 +304,7 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [auditUploadPending, setAuditUploadPending] = useState(false);
+  const [auditUploadError, setAuditUploadError] = useState("");
   const [currentOperationError, setCurrentOperationError] = useState(false);
   const [operationErrors, setOperationErrors] = useState<OperationErrorRecord[]>([]);
   const workspaceMode = authStatus?.workspaceMode ?? null;
@@ -533,7 +537,10 @@ function App() {
       setAssignedActivityDate(date);
       void flushPendingAnnotationAudits()
         .then((remaining) => setAuditUploadPending(remaining > 0))
-        .catch(() => setAuditUploadPending(true));
+        .catch((reason) => {
+          setAuditUploadPending(true);
+          setAuditUploadError(toMessage(reason));
+        });
       void Promise.all([listAssignedTaskDefinitions(), getAssignedTasks(), getAssignedSourceRoot(), getAssignedTaskActivity(date)])
         .then(async ([definitions, assignments, assignedRoot, activity]) => {
           setTasks(definitions);
@@ -728,6 +735,7 @@ function App() {
   }, [availableStreams, data, playbackFps, playing, primaryPlaybackEndFrame, primarySourceFps, primaryStreamName, speed]);
 
   async function openSource(path: string, autoLoad = false, assignment = assignedTasks) {
+    if (reviewUnsaved.current) { setNotice("请等待 review 保存完成；保存失败时请先重试。"); return; }
     const owner = beginOperation();
     if (!owner) return;
     resetOperationFeedback(owner);
@@ -786,6 +794,7 @@ function App() {
   }
 
   async function chooseSource() {
+    if (reviewUnsaved.current) { setNotice("请等待 review 保存完成；保存失败时请先重试。"); return; }
     if (sourcePickerOpenRef.current || operationScopeRef.current.current()) return;
     sourcePickerOpenRef.current = true;
     try {
@@ -831,10 +840,10 @@ function App() {
     force = false,
     restoreFocus = false,
   ) {
-    if (episodeLoadInFlight.current || operationScopeRef.current.current()) return;
+    if (episodeLoadInFlight.current || operationScopeRef.current.current() || reviewUnsaved.current) return;
     selectEpisode(episode);
     if (!force && data && report && loadedEpisodeSourceRoot === episode.root) {
-      changeView("review");
+      changeView("proofread");
       return;
     }
     const owner = beginOperation();
@@ -862,6 +871,7 @@ function App() {
   }
 
   function selectEpisode(episode: EpisodeSummary) {
+    if (reviewUnsaved.current) { setNotice("请等待 review 保存完成；保存失败时请先重试。"); return; }
     if (pendingAnnotationConfirmation?.data.summary.root !== episode.root) {
       setPendingAnnotationConfirmation(null);
     }
@@ -953,7 +963,7 @@ function App() {
     setClipEndFrame(loadedMaxFrame);
     setCurrentFrame(loadedMinFrame);
     frameRef.current = loadedMinFrame;
-    setView("review");
+    setView("proofread");
 
     const validated = await validateEpisode(root, owner.id);
     ensureOperationActive(owner);
@@ -977,7 +987,7 @@ function App() {
     // Quality findings remain visible without discarding readable camera data.
     if (annotationConfirmationWarnings(validated.report).length) {
       setPendingAnnotationConfirmation(candidate);
-      setView("review");
+      setView("proofread");
       return "confirmation_required";
     }
 
@@ -1005,7 +1015,7 @@ function App() {
     frameRef.current = frame;
     setPlaying(false);
     setAnnotationReadyRoot(candidate.data.summary.root);
-    setView("review");
+    setView("proofread");
   }
 
   function handleLoadResult(episode: EpisodeSummary, result: EpisodeLoadResult) {
@@ -1057,6 +1067,7 @@ function App() {
   }
 
   function skipEpisode(episode: EpisodeSummary, loadNext = false, reason = "") {
+    if (reviewUnsaved.current) return;
     const nextRoot = loadNext ? nextAvailableEpisodeRoot(episode.root) : null;
     setSkippedEpisodeRoots((current) => ({ ...current, [episode.root]: true }));
     if (pendingAnnotationConfirmation?.data.summary.root === episode.root) {
@@ -1143,7 +1154,7 @@ function App() {
     setBatchExportResult(null);
     setBatchLoading(false);
     batchSelectionInitialized.current = false;
-    setView("review");
+    setView("proofread");
     setError("");
     setNotice("");
     setUpdateInfo(null);
@@ -1163,6 +1174,7 @@ function App() {
   }
 
   async function logout() {
+    if (reviewUnsaved.current) return;
     if (operationScopeRef.current.current()) return;
     try {
       await logoutLocalAccount();
@@ -1180,6 +1192,7 @@ function App() {
   }
 
   async function chooseWorkspaceMode() {
+    if (reviewUnsaved.current) return;
     if (operationScopeRef.current.current()) return;
     try {
       const status = await clearWorkspaceMode();
@@ -1265,18 +1278,6 @@ function App() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, [data, clipStartFrame, clipEndFrame, machinePreviewRange, playing, view]);
 
-  function previewMachineSegment(range: ExportRange, play: boolean) {
-    if (!data || busy) return;
-    const startFrame = Math.max(getMinFrame(data), range.startFrame);
-    const endFrame = Math.min(getMaxFrame(data), range.endFrame);
-    if (startFrame > endFrame) return;
-    setMachinePreviewRange({ startFrame, endFrame });
-    frameRef.current = startFrame;
-    setCurrentFrame(startFrame);
-    resetPlaybackPreparation();
-    setPlaying(play);
-  }
-
   function exitMachinePreview() {
     setMachinePreviewRange(null);
     setPlaying(false);
@@ -1287,6 +1288,7 @@ function App() {
   }
 
   function changeView(next: View) {
+    if (reviewUnsaved.current) { setNotice("请等待 review 保存完成；保存失败时请先重试。"); return; }
     setPlaying(false);
     if (machinePreviewRange) exitMachinePreview();
     setView(next);
@@ -1340,10 +1342,7 @@ function App() {
       occurredAtMs: Date.now(),
     }).then(() => flushPendingAnnotationAudits()).then((remaining) => setAuditUploadPending(remaining > 0)).catch((reason) => {
       setAuditUploadPending(true);
-      if (action !== "user_center_unavailable") {
-        void recordAnnotationAudit({ taskId: "", trajectoryCode: "", action: "user_center_unavailable", occurredAtMs: Date.now() }).catch(() => undefined);
-      }
-      setError(`本地操作已保留，但监管记录尚未上传：${reason instanceof Error ? reason.message : String(reason)}`);
+      setAuditUploadError(toMessage(reason));
     });
   }
 
@@ -1454,6 +1453,7 @@ function App() {
   }
 
   function openBatchExport() {
+    if (reviewUnsaved.current) return;
     setPlaying(false);
     setView("batch");
     void refreshAnnotatedEpisodeList();
@@ -1866,11 +1866,9 @@ function App() {
           </span>
         </div>
       ) : null}
-      {auditUploadPending ? (
-        <div className="alert-banner alert-notice" role="status">
-          <CircleAlert size={17} />
-          <span>本地未上传：标注与草稿仍保留在当前电脑，恢复用户中心连接后的下一次操作会重新建立监管活动。</span>
-        </div>
+      {auditUploadPending && authStatus?.currentUser ? (
+        <AuditSyncNotice key={authStatus.currentUser.username} username={authStatus.currentUser.username}
+          error={auditUploadError} onError={setAuditUploadError} onPendingChange={setAuditUploadPending} />
       ) : null}
       {error ? (
         <div className="alert-banner alert-error" role="alert">
@@ -1959,8 +1957,8 @@ function App() {
               <nav className="view-tabs" aria-label="工作区视图">
                 {data ? (
                   <>
-                    <button type="button" className={view === "review" ? "active" : ""} onClick={() => changeView("review")}>
-                      <Images size={17} />回放
+                    <button type="button" className={view === "proofread" ? "active" : ""} onClick={() => changeView("proofread")}>
+                      <FileSearch size={17} />校对
                     </button>
                     <button type="button" className={view === "checks" ? "active" : ""} onClick={() => changeView("checks")}>
                       <ShieldCheck size={17} />检查
@@ -1974,8 +1972,8 @@ function App() {
                 <button type="button" className={view === "batch" ? "active" : ""} onClick={() => { if (machinePreviewRange) exitMachinePreview(); openBatchExport(); }}>
                   <ListChecks size={17} />批量
                 </button>
-                {data && <button type="button" className={view === "proofread" ? "active" : ""} onClick={() => changeView("proofread")}>
-                  <FileSearch size={17} />校对
+                {data && <button type="button" className={view === "review" ? "active" : ""} onClick={() => changeView("review")}>
+                  <Images size={17} />回放
                 </button>}
                 <span className="view-tab-spacer" />
                 {data ? (
@@ -2003,9 +2001,12 @@ function App() {
                   onReveal={(path) => void revealExport(path)}
                 />
               ) : !data ? null : view === "proofread" ? (
-                <MachineAnnotationPanel key={`machine:${data.summary.root}`} data={data} annotation={annotation}
-                  currentFrame={currentFrame} previewing={machinePreviewRange !== null} busy={busy}
-                  onPreview={previewMachineSegment} onExitPreview={exitMachinePreview} />
+                <MachineAnnotationPanel key={`machine:${data.summary.root}`} data={data} busy={busy}
+                  onUnsavedChange={handleReviewUnsaved} onComplete={(status) => {
+                    const nextRoot = nextAvailableEpisodeRoot(data.summary.root);
+                    setNotice(`${data.summary.name} 质检${status === "approved" ? "通过" : "不通过"}，review 已保存。${nextRoot ? "正在载入下一条。" : "已是最后一条。"}`);
+                    if (nextRoot) setQueuedEpisodeRoot(nextRoot);
+                  }} />
               ) : view === "review" ? (
                 <div className="review-view">
                   <section className="camera-section">

@@ -12,5 +12,5 @@ if ((window as any).__proofSkeleton) {
 }
 
 createRoot(document.getElementById("root")!).render(<MachineAnnotationPanel
-  data={(window as any).__proofData} annotation={null} busy={false}
-  currentFrame={0} previewing={false} onPreview={() => {}} onExitPreview={() => {}} />);
+  data={(window as any).__proofData} busy={false}
+  onComplete={(status) => { (window as any).__proofCompletion = status; }} />);

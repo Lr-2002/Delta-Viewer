@@ -1,9 +1,17 @@
-# DOHC Viewer Changelog
+﻿# DOHC Viewer Changelog
 
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
+
+## 1.0.5 - 2026-09-09
+
+- 校对工作区默认打开，回放与校对导航顺序调整；仅展示 cam0 与三维骨架。
+- 支持 3.8 Max/Flash 中文机标，片段边界可在统一时间轴两端拖动并实时生成 review 文件。
+- 删除、描述、边界和整条通过/不通过均写入唯一版本号的复核 JSON；保存失败保留草稿并阻止误跳下一条。
+
+
 
 ## 1.0.4 - 2026-09-09
 
@@ -1038,3 +1046,4 @@ after `main` CI succeeds for a coordinated version change.
   validation, synchronized playback, and telemetry charts.
 - Added MCAP, HDF5, and LeRobot v2.1 adapters with real-sample readback tests.
 - Added Windows 10 NSIS configuration, offline WebView2 setup, and FFmpeg staging.
+

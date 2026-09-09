@@ -483,6 +483,10 @@ export interface ReviewSegment {
 }
 
 export interface MachineReview {
+  workflowVersion?: number;
+  status?: "pending" | "approved" | "rejected";
+  versionId?: string;
+  previousVersionId?: string;
   sourceHash: string;
   revision: number;
   segments: ReviewSegment[];

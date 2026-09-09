@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { FramePanel } from "./FramePanel";
 import { SkeletonViewer } from "./SkeletonViewer";
-import type { SkeletonSeries, StreamSummary } from "../types";
+import { ReviewTimeline } from "./ReviewTimeline";
+import type { ReviewSegment, SkeletonSeries, StreamSummary } from "../types";
 
 interface Props {
   root: string;
@@ -18,9 +19,14 @@ interface Props {
   onPlaying: (playing: boolean) => void;
   skeleton?: SkeletonSeries | null;
   skeletonError?: string | null;
+  segments: ReviewSegment[];
+  selected?: number;
+  editable: boolean;
+  onBoundary: (kind: "startFrame" | "endFrame", value: number) => void;
+  onChoose: (sourceIndex: number) => void;
 }
 
-export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame, start, end, playing, onFrame, onPlaying, skeleton, skeletonError }: Props) {
+export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame, start, end, playing, onFrame, onPlaying, skeleton, skeletonError, segments, selected, editable, onBoundary, onChoose }: Props) {
   const [fps, setFps] = useState(30);
   const nativeClock = useRef(false);
   const settled = useRef(-1);
@@ -69,27 +75,28 @@ export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame,
     return () => window.removeEventListener("keydown", shortcut);
   }, [frameCount]);
   const seek = (next: number) => { onPlaying(false); onFrame(Math.max(0, Math.min(frameCount - 1, next))); };
-  return <>
-    <div className={`replay-visual-row${skeleton || skeletonError ? " with-skeleton" : ""}`}><div className="camera-grid stream-count-1">
+  return <div className="quality-player">
+    <div className="quality-camera">
       <FramePanel root={root} stream={stream} frameId={offset + frame * step} isPrimary playing={playing} exactFrameSeek
         nativePlaybackEnabled={playing} playbackFps={fps * step} playbackEndFrame={offset + end * step}
         readAheadEnabled={playing} readAheadStride={step} readAheadFrames={12} className="camera-0"
         onSourceFpsChange={sourceFps} onNativeClockChange={clockChanged}
         onFrameSettled={frameSettled} onFramePresented={framePresented} />
     </div>
-      {(skeleton || skeletonError) && <div className="skeleton-side-panel">
-        {skeleton ? <SkeletonViewer skeleton={skeleton} frameId={offset + frame * step}
-          timelineStartFrame={offset} timelineEndFrame={offset + (frameCount - 1) * step} playing={playing} />
-          : <section className="skeleton-load-error" aria-label="骨架数据"><strong>骨架数据不可用</strong><span>{skeletonError}</span></section>}
-      </div>}
-    </div>
     <div className="proofreading-transport">
       <button className="icon-button" title="上一帧" aria-label="上一帧" onClick={() => seek(frame - 1)}><SkipBack size={17} /></button>
       <button className="play-button" title={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"} onClick={() => { if (!playing && (frame < start || frame >= end)) onFrame(start); onPlaying(!playing); }}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
       <button className="icon-button" title="下一帧" aria-label="下一帧" onClick={() => seek(frame + 1)}><SkipForward size={17} /></button>
-      <input type="range" min={0} max={frameCount - 1} step={1} value={frame} aria-label="校对播放帧" onChange={(event) => seek(event.currentTarget.valueAsNumber)} />
+      <span className="quality-transport-spacer" />
       <input className="proofread-frame-input" aria-label="当前视频帧" type="number" min={0} max={frameCount - 1} value={frame} onChange={(event) => { if (Number.isInteger(event.currentTarget.valueAsNumber)) seek(event.currentTarget.valueAsNumber); }} />
       <span>/ {frameCount - 1}</span>
     </div>
-  </>;
+    <ReviewTimeline frame={frame} frameCount={frameCount} start={start} end={end} editable={editable}
+      segments={segments} selected={selected} onSeek={seek} onBoundary={onBoundary} onChoose={onChoose} />
+    {(skeleton || skeletonError) && <div className="skeleton-side-panel">
+      {skeleton ? <SkeletonViewer skeleton={skeleton} frameId={offset + frame * step}
+        timelineStartFrame={offset} timelineEndFrame={offset + (frameCount - 1) * step} playing={playing} />
+        : <section className="skeleton-load-error" aria-label="骨架数据"><strong>骨架数据不可用</strong><span>{skeletonError}</span></section>}
+    </div>}
+  </div>;
 }
