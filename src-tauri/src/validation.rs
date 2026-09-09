@@ -809,6 +809,17 @@ pub fn persist_background_report(
     id_hasher.update(report.episode_root.as_bytes());
     id_hasher.update(&[0]);
     id_hasher.update(fingerprint.as_bytes());
+    // A source fingerprint can produce different findings after a retry or a
+    // validator update. Keep those reports separate without overwriting history.
+    id_hasher.update(&serde_json::to_vec(&(
+        report.parsed_state_count,
+        report.image_validation_mode,
+        &report.image_sample_percentages,
+        &report.status,
+        report.checked_files,
+        &report.issues,
+        &report.streams,
+    ))?);
     let report_id = id_hasher.finalize().to_hex().to_string();
     let output = reports_dir.join(format!(
         "{source_stem}.health-v{}-{}.json",
@@ -1390,6 +1401,32 @@ mod tests {
         assert_eq!(first.output_path, second.output_path);
         assert_eq!(fs::read_dir(&reports).unwrap().count(), 1);
 
+        let mut changed = report.clone();
+        changed.image_validation_mode = ImageValidationMode::Full;
+        changed.image_sample_percentages.clear();
+        changed.checked_files = 16;
+        let full =
+            persist_background_report(&mut changed, "warning-fingerprint", &reports, &cancelled)
+                .unwrap()
+                .unwrap();
+        assert_ne!(first.output_path, full.output_path);
+        changed.image_validation_mode = report.image_validation_mode;
+        changed.image_sample_percentages = report.image_sample_percentages.clone();
+        changed.checked_files = report.checked_files;
+        changed.issues[0].message = "更新后的检查结果".into();
+        let updated =
+            persist_background_report(&mut changed, "warning-fingerprint", &reports, &cancelled)
+                .unwrap()
+                .unwrap();
+        assert_ne!(first.output_path, updated.output_path);
+        changed.elapsed_ms += 100;
+        let repeated =
+            persist_background_report(&mut changed, "warning-fingerprint", &reports, &cancelled)
+                .unwrap()
+                .unwrap();
+        assert_eq!(updated.output_path, repeated.output_path);
+        assert_eq!(fs::read_dir(&reports).unwrap().count(), 3);
+
         let mut tampered = decoded;
         tampered.issues[0].message = "被篡改的警告".into();
         fs::write(
@@ -1412,7 +1449,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_ne!(first.output_path, error.output_path);
-        assert_eq!(fs::read_dir(&reports).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(&reports).unwrap().count(), 4);
 
         report.status = "ok".into();
         report.auto_report_path = None;
@@ -1422,7 +1459,7 @@ mod tests {
                 .is_none()
         );
         assert!(report.auto_report_path.is_none());
-        assert_eq!(fs::read_dir(&reports).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(&reports).unwrap().count(), 4);
 
         fs::remove_dir_all(root).unwrap();
     }
