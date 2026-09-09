@@ -3,6 +3,14 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.7 - 2026-09-09
+
+- Merge playback and proofreading into the default proofreading workspace,
+  preserving the five-camera grid, skeleton, telemetry and existing playback controls.
+- Replace manual annotation and segment creation with the review timeline and
+  action segments, connected to the existing playback clock and autosave writer.
+- Load readable recordings directly without a quality-warning confirmation screen.
+
 ## 1.0.6 - 2026-09-09
 
 - 校对工作区默认打开，回放与校对导航顺序调整；仅展示 cam0 与三维骨架。

@@ -1,4 +1,17 @@
-# Proofreading 1.0.4
+# Proofreading 1.0.7
+
+## Unified Workspace
+
+Playback and proofreading now share the default proofreading tab. The original
+five-camera grid, adjacent skeleton, frame-render progress, telemetry, speed
+and FPS controls remain. Manual annotation and segment creation are replaced
+with the machine-review timeline and action segments. UI frame conversion
+connects those controls to the existing playback clock; decoder, buffering and
+skeleton presenter implementations are unchanged. Old human trim metadata does
+not limit proofreading playback. Missing machine JSON still permits seeking.
+
+Readable recordings load directly without a quality-warning confirmation page.
+Existing quality reports and export validation remain available.
 
 ## Flash Compatibility
 
@@ -19,9 +32,8 @@ Orbit controls remain available. Missing skeletons take no space; unreadable
 skeletons show a local error without blocking video or editing.
 
 Flash drafts, pending-write journals and locks are independent of the original
-source. Approved Flash results use
-`bailian_annotation.qwen3.8-flash_reviewed.json`; original results continue to
-use `bailian_annotation_reviewed.json`. Neither source file is modified.
+source. Flash results use `review.3.8flash.json`; original results use
+`review.3.8max.json`. Neither source file is modified.
 Changing source waits for autosave; a failed save must be resolved before
 switching. Browser recovery drafts also use a separate Flash key.
 
@@ -50,10 +62,11 @@ callbacks avoid rebuilding the native clock. Memoized segment lists and colored
 strip entries do not reconcile on every presented frame. Buffering still follows
 the native media clock; these changes cannot guarantee a NAS throughput floor.
 
-Edits and per-segment decisions are saved locally with revision checks. The first
-source-side reviewed JSON requires at least one retained segment and approval of
-all retained segments. Subsequent edits update it with the new pending/rejected
-decisions. The output clones the entire original document, patches the selected
+Every edit writes the reviewed JSON with revision checks and a unique version
+ID linked to the previous version. Whole-episode approval/rejection saves before
+advancing to the next episode. Subsequent edits return the result to pending.
+Failed writes retain recovery drafts and prevent navigation. The output clones
+the entire original document, patches the selected
 episode by original annotation index, synchronizes linked segment boundaries and
 deletions, preserves unknown fields, and adds `_human_review` provenance. It never
 rewrites the original machine JSON or contributes to manual completion metrics.
@@ -80,9 +93,10 @@ fingerprints and statistics.
   rapidly scrubs, and verifies that playback does not mutate the segment list.
   Both presentation-callback and legacy media-clock paths run. Screenshots at
   1440/960/390 px and timing evidence stay in ignored artifacts.
-- `pnpm test:demo-flow` covers per-segment review autosave and reentry, deletion,
-  restoration, approval gating, subsequent edits, missing/invalid results and
-  preservation of the original operator annotation workflow.
+- `node --test scripts/unified-proofreading.test.mjs` covers five-camera seeking,
+  skeleton interaction, direct warning loading, review autosave/reload, missing
+  machine JSON, and responsive layout. Older demo tests for manual annotation
+  panels describe the removed workflow.
 
 Synthetic/browser evidence does not replace real SD-card, large-volume or
 target-machine qualification. Existing GAP-003/GAP-007 remain applicable.

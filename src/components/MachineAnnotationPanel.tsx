@@ -1,8 +1,9 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, RefreshCw, Trash2, Undo2, X } from "lucide-react";
 import { loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
 import { adjustReviewBoundary, machineTimelineMapping } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
+import { ReviewTimeline } from "./ReviewTimeline";
 import type { EpisodeData, MachineAnnotation, MachineReview, ReviewSegment } from "../types";
 
 interface Props {
@@ -10,6 +11,12 @@ interface Props {
   busy: boolean;
   onComplete?: (status: "approved" | "rejected") => void;
   onUnsavedChange?: (unsaved: boolean) => void;
+  playback?: {
+    frame: number;
+    onSeek: (frame: number) => void;
+    onPause: () => void;
+    controls: ReactNode;
+  };
 }
 type Status = "pending" | "approved" | "rejected";
 type Snapshot = { segments: ReviewSegment[]; status: Status };
@@ -18,16 +25,16 @@ const saves = new Map<string, Promise<boolean>>();
 export function MachineAnnotationPanel(props: Props) {
   const [sourceName, setSourceName] = useState("");
   const [sourceBusy, setSourceBusy] = useState(false);
-  return <div className="quality-workspace">
+  return <div className={`quality-workspace${props.playback ? " quality-embedded" : ""}`}>
     <label className="machine-source-picker">机标来源<select aria-label="机标来源" value={sourceName} disabled={props.busy || sourceBusy}
-      onChange={(event) => setSourceName(event.currentTarget.value)}>
+      onChange={(event) => { props.playback?.onPause(); setSourceName(event.currentTarget.value); }}>
       <option value="">自动（优先 Flash）</option><option value="bailian_annotation.json">3.8 Max</option><option value="bailian_annotation.qwen3.8-flash.json">3.8 Flash</option>
     </select></label>
     <MachineAnnotationEditor {...props} key={`${props.data.summary.root}:${sourceName}`} sourceName={sourceName || undefined} onSourceBusy={setSourceBusy} />
   </div>;
 }
 
-function MachineAnnotationEditor({ data, busy, sourceName, onSourceBusy, onComplete, onUnsavedChange }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void }) {
+function MachineAnnotationEditor({ data, busy, sourceName, onSourceBusy, onComplete, onUnsavedChange, playback }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void }) {
   const root = data.summary.root;
   const [result, setResult] = useState<MachineAnnotation | null>(null);
   const [review, setReview] = useState<MachineReview | null>(null);
@@ -132,39 +139,55 @@ function MachineAnnotationEditor({ data, busy, sourceName, onSourceBusy, onCompl
   const valid = result && primary && mapping && !mapping.error && !error;
   const canEdit = Boolean(valid && review && !busy && !loading && !finishing);
   const outputName = loadedSource.current === "bailian_annotation.qwen3.8-flash.json" ? "review.3.8flash.json" : "review.3.8max.json";
+  const seek = useCallback((next: number) => {
+    setFrame(next); setPlaying(false);
+    if (mapping && !mapping.error) playback?.onSeek(mapping.offset + next * mapping.step);
+  }, [mapping, playback?.onSeek]);
+  const visibleFrame = playback && result && mapping && !mapping.error
+    ? Math.max(0, Math.min(result.frameCount - 1, Math.floor((playback.frame - mapping.offset) / mapping.step))) : frame;
 
   function change(next: ReviewSegment[]) {
     if (!canEdit || finishLock.current) return;
     setEdits(next); editsRef.current = next; setPlaying(false);
+    playback?.onPause();
     void persist({ segments: next, status: "pending" });
   }
   function boundary(kind: "startFrame" | "endFrame", value: number) {
     if (!active || !result || !canEdit) return;
     const updated = adjustReviewBoundary(editsRef.current, active.sourceIndex, kind, value, result.frameCount);
     if (updated === editsRef.current) return;
-    change(updated); setFrame(updated.find((item) => item.sourceIndex === active.sourceIndex)![kind]);
+    change(updated); seek(updated.find((item) => item.sourceIndex === active.sourceIndex)![kind]);
   }
   const choose = useCallback((sourceIndex: number) => {
     const segment = rows.find((item) => item.sourceIndex === sourceIndex);
     if (!segment) return;
-    setSelected(sourceIndex); setFrame(segment.startFrame); setPlaying(false);
-  }, [rows]);
+    setSelected(sourceIndex); seek(segment.startFrame);
+  }, [rows, seek]);
   async function finish(status: "approved" | "rejected") {
     if (!canEdit || finishLock.current) return;
     finishLock.current = true; setFinishing(true); setPlaying(false);
+    playback?.onPause();
     const saved = await persist({ segments: editsRef.current, status });
     finishLock.current = false; setFinishing(false);
     if (saved) { onUnsavedChange?.(false); onComplete?.(status); }
   }
 
   return <div className="quality-review proofreading-view">
-    <section className="quality-media" aria-label="视频与骨架">
+    {playback ? <section className="quality-timeline" aria-label="校对时间轴">
+      <div className="proofreading-transport">{playback.controls}</div>
+      {valid && <ReviewTimeline frame={visibleFrame} frameCount={result.frameCount} start={active?.startFrame ?? 0}
+        end={active?.endFrame ?? result.frameCount - 1} editable={canEdit && Boolean(active)} segments={rows}
+        selected={active?.sourceIndex} onSeek={seek} onBoundary={boundary} onChoose={choose} />}
+      {!valid && primary?.firstFrame !== null && primary?.lastFrame !== null && primary && <input
+        className="machine-boundary-slider" type="range" aria-label="校对播放帧" min={primary.firstFrame} max={primary.lastFrame}
+        value={playback.frame} onChange={(event) => playback.onSeek(event.currentTarget.valueAsNumber)} />}
+    </section> : <section className="quality-media" aria-label="视频与骨架">
       <header className="quality-heading"><h2>机标校对</h2><span className="frame-counter">帧 {frame} / {result ? result.frameCount - 1 : "--"}</span></header>
       {valid && <ProofreadPlayer root={root} stream={primary} offset={mapping.offset} step={mapping.step} frameCount={result.frameCount}
         skeleton={data.skeleton} skeletonError={data.skeletonError} segments={rows} selected={active?.sourceIndex}
         editable={canEdit && Boolean(active)} onBoundary={boundary} onChoose={choose}
         frame={frame} start={active?.startFrame ?? 0} end={active?.endFrame ?? result.frameCount - 1} playing={playing} onFrame={setFrame} onPlaying={setPlaying} />}
-    </section>
+    </section>}
     <section className="quality-inspector" aria-label="机标结果">
       <header className="machine-heading"><h2>动作片段</h2><span className="machine-status">{rows.length} 段</span>
         <button className="icon-button" title="查看原始 JSON" aria-label="查看 JSON" disabled={!result} onClick={() => setShowJson(true)}><Code size={15} /></button>

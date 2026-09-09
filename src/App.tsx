@@ -30,7 +30,6 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { AnnotationPanel } from "./components/AnnotationPanel";
 import { MachineAnnotationPanel } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
 import { AuditSyncNotice } from "./components/AuditSyncNotice";
@@ -40,7 +39,6 @@ import { ExportPanel } from "./components/ExportPanel";
 import { FramePanel } from "./components/FramePanel";
 import { ProgressStrip } from "./components/ProgressStrip";
 import { PersonalTaskPanel } from "./components/PersonalTaskPanel";
-import { SegmentAnnotationEditor } from "./components/SegmentAnnotationEditor";
 import { SkeletonViewer } from "./components/SkeletonViewer";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
 import { TelemetryChart } from "./components/TelemetryChart";
@@ -126,7 +124,7 @@ import type {
 type View = "review" | "checks" | "export" | "batch" | "proofread";
 type EpisodeSourceState = "available" | "loading" | "error";
 type UpdatePhase = "idle" | "checking" | "available" | "current" | "downloading" | "failed";
-type EpisodeLoadResult = "loaded" | "confirmation_required" | "skipped";
+type EpisodeLoadResult = "loaded" | "skipped";
 
 interface PendingAnnotationConfirmation {
   data: EpisodeData;
@@ -142,7 +140,6 @@ function localDateInput(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-const FRAME_JUMP_ISSUE_CODE = "STATE_FRAME_GAP";
 
 const METRICS: { key: MetricKey; label: string }[] = [
   { key: "position", label: "位置" },
@@ -275,7 +272,6 @@ function App() {
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeSummary | null>(null);
   const [episodeSourceStates, setEpisodeSourceStates] = useState<Record<string, EpisodeSourceState>>({});
   const [skippedEpisodeRoots, setSkippedEpisodeRoots] = useState<Record<string, true>>({});
-  const [pendingAnnotationConfirmation, setPendingAnnotationConfirmation] = useState<PendingAnnotationConfirmation | null>(null);
   const [queuedEpisodeRoot, setQueuedEpisodeRoot] = useState<string | null>(null);
   const [loadedEpisodeSourceRoot, setLoadedEpisodeSourceRoot] = useState<string | null>(null);
   const [data, setData] = useState<EpisodeData | null>(null);
@@ -363,8 +359,9 @@ function App() {
   const primaryStream = primaryStreamName
     ? availableStreams.find((stream) => stream.name === primaryStreamName) ?? null
     : null;
-  const playbackStart = machinePreviewRange?.startFrame ?? clipStartFrame;
-  const playbackEnd = machinePreviewRange?.endFrame ?? clipEndFrame;
+  const proofreading = view === "proofread" || view === "review";
+  const playbackStart = proofreading && data ? getMinFrame(data) : machinePreviewRange?.startFrame ?? clipStartFrame;
+  const playbackEnd = proofreading && data ? getMaxFrame(data) : machinePreviewRange?.endFrame ?? clipEndFrame;
   const primaryPlaybackEndFrame = Math.min(
     playbackEnd,
     primaryStream?.lastFrame ?? playbackEnd,
@@ -757,7 +754,6 @@ function App() {
       setScan(visibleResult);
       void refreshAnnotationTags();
       setSkippedEpisodeRoots({});
-      setPendingAnnotationConfirmation(null);
       setQueuedEpisodeRoot(null);
       setEpisodeSourceStates(Object.fromEntries(
         visibleResult.episodes.map((episode) => [episode.root, "available" as const]),
@@ -872,9 +868,6 @@ function App() {
 
   function selectEpisode(episode: EpisodeSummary) {
     if (reviewUnsaved.current) { setNotice("请等待 review 保存完成；保存失败时请先重试。"); return; }
-    if (pendingAnnotationConfirmation?.data.summary.root !== episode.root) {
-      setPendingAnnotationConfirmation(null);
-    }
     setSelectedEpisode(episode);
     if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
   }
@@ -985,11 +978,6 @@ function App() {
       maxFrame: loadedMaxFrame,
     };
     // Quality findings remain visible without discarding readable camera data.
-    if (annotationConfirmationWarnings(validated.report).length) {
-      setPendingAnnotationConfirmation(candidate);
-      setView("proofread");
-      return "confirmation_required";
-    }
 
     const savedAnnotation = await loadEpisodeAnnotation(root);
     ensureOperationActive(owner);
@@ -1028,51 +1016,14 @@ function App() {
       setNotice(`已从源目录只读载入：${episode.name}`);
       return;
     }
-    if (result === "confirmation_required") {
-      setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "available" }));
-      setNotice(`发现数据警告：${episode.name}。请确认是否进入标注。`);
-      return;
-    }
     skipEpisode(episode, true, "检测到不可用或静止轨迹，不进入标注。");
   }
 
-  async function confirmAnnotationAfterWarning() {
-    const candidate = pendingAnnotationConfirmation;
-    if (!candidate || operationScopeRef.current.current()) return;
-    const owner = beginOperation();
-    if (!owner) return;
-    const focusRestoreToken = ++episodeFocusRestoreToken.current;
-    setPendingAnnotationConfirmation(null);
-    resetOperationFeedback(owner);
-    try {
-      const savedAnnotation = await loadEpisodeAnnotation(candidate.data.summary.root);
-      ensureOperationActive(owner);
-      applyLoadedEpisode(candidate, savedAnnotation);
-      setEpisodeSourceStates((current) => ({ ...current, [candidate.data.summary.root]: "available" }));
-      setNotice(`已确认数据警告，进入标注：${candidate.data.summary.name}`);
-    } catch (reason) {
-      setEpisodeSourceStates((current) => ({ ...current, [candidate.data.summary.root]: "error" }));
-      await reportFailure("load_episode", reason, candidate.data.summary.root, owner);
-    } finally {
-      finishOperation(owner);
-      restoreEpisodeFocus(candidate.sourceEpisodeRoot, focusRestoreToken);
-    }
-  }
-
-  function skipPendingAnnotation() {
-    const candidate = pendingAnnotationConfirmation;
-    if (!candidate) return;
-    setPendingAnnotationConfirmation(null);
-    skipEpisode(candidate.data.summary, true, "未进入标注。");
-  }
 
   function skipEpisode(episode: EpisodeSummary, loadNext = false, reason = "") {
     if (reviewUnsaved.current) return;
     const nextRoot = loadNext ? nextAvailableEpisodeRoot(episode.root) : null;
     setSkippedEpisodeRoots((current) => ({ ...current, [episode.root]: true }));
-    if (pendingAnnotationConfirmation?.data.summary.root === episode.root) {
-      setPendingAnnotationConfirmation(null);
-    }
     if (selectedEpisode?.root === episode.root) {
       setSelectedEpisode(null);
       resetLoadedData();
@@ -1140,7 +1091,6 @@ function App() {
     setSelectedEpisode(null);
     setEpisodeSourceStates({});
     setSkippedEpisodeRoots({});
-    setPendingAnnotationConfirmation(null);
     setQueuedEpisodeRoot(null);
     setOperationErrors([]);
     setHistoryOpen(false);
@@ -1253,10 +1203,10 @@ function App() {
   }
 
   useEffect(() => {
-    if (!data || view === "proofread") return;
+    if (!data) return;
     const handleShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (document.querySelector("dialog[open]") || target?.closest("input, textarea, select, button, [contenteditable='true']")) return;
       if (event.code === "Space") {
         event.preventDefault();
         togglePlayback();
@@ -1320,18 +1270,6 @@ function App() {
     auditActivity("clip_changed");
   }
 
-  function restoreClipRange(startFrame: number, endFrame: number) {
-    if (!data) return;
-    const start = Math.max(getMinFrame(data), Math.min(getMaxFrame(data), startFrame));
-    const end = Math.max(start, Math.min(getMaxFrame(data), endFrame));
-    setClipStartFrame(start);
-    setClipEndFrame(end);
-    const frame = clampPlaybackFrame(frameRef.current, start, end);
-    frameRef.current = frame;
-    setCurrentFrame(frame);
-    setPlaying(false);
-    setExportResult(null);
-  }
 
   function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "") {
     if (authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
@@ -1346,17 +1284,6 @@ function App() {
     });
   }
 
-  function resetClipRange() {
-    if (!data || machinePreviewRange) return;
-    const start = getMinFrame(data);
-    const end = getMaxFrame(data);
-    setClipStartFrame(start);
-    setClipEndFrame(end);
-    const next = Math.max(start, Math.min(currentFrame, end));
-    frameRef.current = next;
-    setCurrentFrame(next);
-    setExportResult(null);
-  }
 
   async function runExport() {
     if (!data || operationScopeRef.current.current()) return;
@@ -1442,15 +1369,6 @@ function App() {
     }
   }
 
-  function handleAnnotationSaved(saved: EpisodeAnnotation) {
-    setAnnotation(saved);
-    setAnnotationTags((current) => ({ ...current, [saved.episodeRoot]: saved }));
-    setAnnotatedEpisodes((current) => {
-      const next = current.filter((item) => item.annotation.episodeRoot !== saved.episodeRoot);
-      return [{ annotation: saved, sourceAvailable: true }, ...next];
-    });
-    if (isManagedWorkspace && authStatus?.currentUser?.role === "operator") void refreshAssignedActivity(assignedActivityDate);
-  }
 
   function openBatchExport() {
     if (reviewUnsaved.current) return;
@@ -1651,7 +1569,6 @@ function App() {
   const episodeActions = useRef({ select: selectEpisode, load: loadEpisodeForReview, skip: skipEpisode });
   episodeActions.current = { select: selectEpisode, load: loadEpisodeForReview, skip: skipEpisode };
   const skippedEpisodeCount = (scan?.episodes.length ?? 0) - visibleEpisodes.length;
-  const selectedTaskTemplate = tasks.find((task) => task.id === (selectedTaskId ?? annotation?.taskId)) ?? null;
 
   useEffect(() => {
     if (!selectedEpisode) return;
@@ -1945,19 +1862,12 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {pendingAnnotationConfirmation ? (
-            <AnnotationWarningGate
-              episode={pendingAnnotationConfirmation.data.summary}
-              warnings={annotationConfirmationWarnings(pendingAnnotationConfirmation.report)}
-              onContinue={() => void confirmAnnotationAfterWarning()}
-              onSkip={skipPendingAnnotation}
-            />
-          ) : data || view === "batch" ? (
+          {data || view === "batch" ? (
             <>
               <nav className="view-tabs" aria-label="工作区视图">
                 {data ? (
                   <>
-                    <button type="button" className={view === "proofread" ? "active" : ""} onClick={() => changeView("proofread")}>
+                    <button type="button" className={proofreading ? "active" : ""} onClick={() => changeView("proofread")}>
                       <FileSearch size={17} />校对
                     </button>
                     <button type="button" className={view === "checks" ? "active" : ""} onClick={() => changeView("checks")}>
@@ -1972,9 +1882,6 @@ function App() {
                 <button type="button" className={view === "batch" ? "active" : ""} onClick={() => { if (machinePreviewRange) exitMachinePreview(); openBatchExport(); }}>
                   <ListChecks size={17} />批量
                 </button>
-                {data && <button type="button" className={view === "review" ? "active" : ""} onClick={() => changeView("review")}>
-                  <Images size={17} />回放
-                </button>}
                 <span className="view-tab-spacer" />
                 {data ? (
                   <span className="loaded-label"><span className="source-dot" />{shortPath(data.summary.root, 52)}</span>
@@ -2000,14 +1907,7 @@ function App() {
                   onExport={() => void runBatchExport()}
                   onReveal={(path) => void revealExport(path)}
                 />
-              ) : !data ? null : view === "proofread" ? (
-                <MachineAnnotationPanel key={`machine:${data.summary.root}`} data={data} busy={busy}
-                  onUnsavedChange={handleReviewUnsaved} onComplete={(status) => {
-                    const nextRoot = nextAvailableEpisodeRoot(data.summary.root);
-                    setNotice(`${data.summary.name} 质检${status === "approved" ? "通过" : "不通过"}，review 已保存。${nextRoot ? "正在载入下一条。" : "已是最后一条。"}`);
-                    if (nextRoot) setQueuedEpisodeRoot(nextRoot);
-                  }} />
-              ) : view === "review" ? (
+              ) : !data ? null : view === "proofread" || view === "review" ? (
                 <div className="review-view">
                   <section className="camera-section">
                     <div className="section-heading compact-heading">
@@ -2074,7 +1974,7 @@ function App() {
                         ) : null}
                       </div>
                     </div>
-                    {!playing && view === "review" ? (
+                    {!playing ? (
                       <FrameRenderProgress
                         frameId={currentFrame}
                         settled={frameRenderProgress.root === data.summary.root && frameRenderProgress.frameId === currentFrame
@@ -2083,41 +1983,9 @@ function App() {
                         total={availableStreams.length}
                       />
                     ) : null}
-                    {view === "review" && annotationReadyRoot === data.summary.root && <AnnotationPanel
-                      key={data.summary.root}
-                      sourcePath={data.summary.root}
-                      tasks={tasks}
-                      annotation={annotation}
-                      currentUser={currentUser}
-                      offlineMode={isOfflineWorkspace}
-                      busy={busy || machinePreviewRange !== null}
-                      onTaskCreated={(task) => setTasks((current) => [...current, task])}
-                      onTaskDeleted={(taskId) => {
-                        setTasks((current) => current.filter((task) => task.id !== taskId));
-                        setSelectedTaskId((current) => current === taskId ? null : current);
-                        setAnnotation((current) => (current?.taskId === taskId ? null : current));
-                      }}
-                      onTaskSelected={setSelectedTaskId}
-                      onTasksImported={setTasks}
-                      onSaved={handleAnnotationSaved}
-                      onError={setError}
-                      onNotice={setNotice}
-                      onActivity={auditActivity}
-                    />}
-                    {view === "review" && annotationReadyRoot === data.summary.root && <SegmentAnnotationEditor
-                      key={`${data.summary.root}:${selectedTaskTemplate?.id ?? "none"}`}
-                      data={data}
-                      annotation={annotation}
-                      templateTaskId={selectedTaskTemplate?.id ?? null}
-                      templateSegments={selectedTaskTemplate?.defaultSegments ?? []}
-                      currentFrame={currentFrame}
-                      minFrame={minFrame}
-                      maxFrame={maxFrame}
-                      clipStartFrame={clipStartFrame}
-                      clipEndFrame={clipEndFrame}
-                      busy={busy || machinePreviewRange !== null}
-                      playbackControls={(
-                        <>
+                    <MachineAnnotationPanel key={`machine:${data.summary.root}`} data={data} busy={busy || annotationReadyRoot !== data.summary.root}
+                      playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), controls: (
+<>
                           <div className="transport-buttons">
                             <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧"><SkipBack size={17} /></button>
                             <button className="play-button" type="button" onClick={togglePlayback} title={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
@@ -2138,31 +2006,14 @@ function App() {
                             </select>
                           </label>
                         </>
-                      )}
-                      onClipStartChange={updateClipStart}
-                      onClipEndChange={updateClipEnd}
-                      onClipRestore={restoreClipRange}
-                      onClipReset={resetClipRange}
-                      onSaved={handleAnnotationSaved}
-                      onCompleted={(saved) => {
-                        const nextRoot = nextAvailableEpisodeRoot(saved.episodeRoot);
-                        if (nextRoot) {
-                          setQueuedEpisodeRoot(nextRoot);
-                          setNotice(`已完成 ${saved.trajectoryCode}，正在进入下一条任务。`);
-                        } else {
-                          setNotice(`已完成 ${saved.trajectoryCode}，当前分配队列已处理完毕。`);
-                        }
-                      }}
-                      onError={setError}
-                      onNotice={setNotice}
-                      onActivity={auditActivity}
-                      onFrameChange={(frame) => {
-                        seekFrame(Math.max(minFrame, Math.min(maxFrame, frame)));
-                      }}
-                    />}
+                      ) }}
+                      onUnsavedChange={handleReviewUnsaved} onComplete={(status) => {
+                        const nextRoot = nextAvailableEpisodeRoot(data.summary.root);
+                        setNotice(`${data.summary.name} 质检${status === "approved" ? "通过" : "不通过"}，review 已保存。${nextRoot ? "正在载入下一条。" : "已是最后一条。"}`);
+                        if (nextRoot) setQueuedEpisodeRoot(nextRoot);
+                      }} />
                   </section>
-
-                  {view === "review" && <section className="telemetry-section">
+                  <section className="telemetry-section">
                     <div className="section-heading compact-heading">
                       <div>
                         <span className="section-kicker">STATE TELEMETRY</span>
@@ -2177,7 +2028,7 @@ function App() {
                       </div>
                     </div>
                     <TelemetryChart states={data.states} metric={metric} frameId={currentFrame} />
-                  </section>}
+                  </section>
                 </div>
               ) : view === "checks" ? (
                 <ChecksPanel
@@ -2280,42 +2131,6 @@ function EmptyWorkspace({
   );
 }
 
-function AnnotationWarningGate({
-  episode,
-  warnings,
-  onContinue,
-  onSkip,
-}: {
-  episode: EpisodeSummary;
-  warnings: ValidationIssue[];
-  onContinue: () => void;
-  onSkip: () => void;
-}) {
-  return (
-    <section className="annotation-warning-gate" aria-label="标注前数据警告">
-      <header>
-        <CircleAlert size={22} aria-hidden="true" />
-        <div>
-          <span className="section-kicker">ANNOTATION REVIEW</span>
-          <h2>发现数据警告</h2>
-          <p>{episode.name} 存在 {warnings.length} 项警告。确定要进入标注吗？</p>
-        </div>
-      </header>
-      <div className="annotation-warning-list">
-        {warnings.map((issue, index) => (
-          <article key={`${issue.code}-${issue.scope}-${issue.frameId ?? "global"}-${index}`}>
-            <div><code>{issue.code}</code><span>{issue.scope}</span>{issue.frameId !== null ? <span>帧 {issue.frameId}</span> : null}</div>
-            <p>{issue.message}</p>
-          </article>
-        ))}
-      </div>
-      <footer>
-        <button className="button button-secondary" type="button" onClick={onSkip}>不标注，跳到下一条</button>
-        <button className="button button-primary" type="button" onClick={onContinue}>仍要标注</button>
-      </footer>
-    </section>
-  );
-}
 
 // Keep the NAS catalog out of the per-frame video render work. Action refs
 // retain current application state without invalidating every row on a tick.
@@ -2673,11 +2488,6 @@ function ReleaseHistoryDialog({
   );
 }
 
-function annotationConfirmationWarnings(report: ValidationReport): ValidationIssue[] {
-  return report.issues.filter((issue) => (
-    issue.severity === "warning" && issue.code !== FRAME_JUMP_ISSUE_CODE
-  ));
-}
 
 function exportFormatLabel(format: ExportFormat): string {
   return format === "mcap" ? "MCAP" : format === "hdf5" ? "HDF5" : "LeRobot v2.1";
