@@ -203,6 +203,27 @@ if (!browserExecutable) {
     }
   });
 
+  test("proofreading source switching keeps Flash and original drafts separate", async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    try {
+      const page = await context.newPage();
+      await registerDemoAccount(page, `${baseUrl}/?machineAnnotation=present`, "flash-review");
+      await page.getByRole("button", { name: "校对", exact: true }).click();
+      const picker = page.getByLabel("机标来源", { exact: true });
+      await picker.selectOption("bailian_annotation.qwen3.8-flash.json");
+      await page.getByLabel("复核动作描述").fill("Flash corrected action");
+      await page.waitForFunction(() => document.querySelector("select[aria-label='机标来源']")?.disabled === false);
+      await picker.selectOption("bailian_annotation.json");
+      await page.waitForFunction(() => document.querySelector("textarea[aria-label='复核动作描述']")?.value === "站立");
+      await page.getByLabel("复核动作描述").fill("Max corrected action");
+      await page.waitForFunction(() => document.querySelector("select[aria-label='机标来源']")?.disabled === false);
+      await picker.selectOption("bailian_annotation.qwen3.8-flash.json");
+      await page.waitForFunction(() => document.querySelector("textarea[aria-label='复核动作描述']")?.value === "Flash corrected action");
+      await page.getByRole("button", { name: "查看 JSON", exact: true }).click();
+      await page.getByRole("dialog").getByText("bailian_annotation.qwen3.8-flash.json", { exact: true }).waitFor();
+    } finally { await context.close(); }
+  });
+
   test("proofreading edits autosave, survive reentry, and publish only after all retained segments pass", async () => {
     const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
     const page = await context.newPage();

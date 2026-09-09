@@ -5,6 +5,15 @@ after `main` CI succeeds for a coordinated version change.
 
 ## Unreleased
 
+## 1.0.3 - 2026-09-09
+
+- Read Qwen 3.8 Flash schema v4 results with bilingual T/value attribute arrays,
+  while retaining schema v3 object attributes and original frame conventions.
+- Select Flash or original machine annotations in proofreading. Prefer Flash
+  automatically when present and keep source-specific drafts and reviewed files.
+- Show Chinese action descriptions and pipeline issues. Preserve bilingual
+  attributes, task metadata and unknown fields when saving human corrections.
+
 ## 1.0.2 - 2026-09-08
 
 - Recognize new recordings whose MP4 manifest is stored in .session_meta,

@@ -44,6 +44,9 @@
   .proofreading-view .machine-comparison { grid-template-columns: minmax(0, 1fr); }
 }
 .machine-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.machine-source-picker { display: flex; align-items: center; gap: 10px; margin: 12px 0; font-size: 12px; }
+.machine-source-picker select { min-width: 0; max-width: 100%; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: inherit; }
+.machine-json .machine-heading strong { min-width: 0; overflow-wrap: anywhere; }
 .machine-disclosure { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 4px 0; font-size: 13px; }
 .machine-status { flex: 1; font-size: 11px; color: var(--muted); }
 .machine-message { display: flex; gap: 6px; align-items: center; margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }

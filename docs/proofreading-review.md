@@ -1,5 +1,25 @@
 # Proofreading 1.0.2
 
+## Flash Compatibility
+
+The source selector supports `bailian_annotation.json` and
+`bailian_annotation.qwen3.8-flash.json`. Automatic selection prefers Flash when
+present; an invalid Flash file produces an error instead of silently selecting
+another result. Explicit selection is restricted to these two ordinary files.
+Both schema v3 and v4 support object attributes and `T`/`value` attribute arrays.
+Chinese `attributes_zh` action descriptions take precedence when available.
+Editing patches that same language and preserves the other language, attribute
+order, unknown fields and task metadata. Pipeline issues remain visible.
+
+Flash drafts, pending-write journals and locks are independent of the original
+source. Approved Flash results use
+`bailian_annotation.qwen3.8-flash_reviewed.json`; original results continue to
+use `bailian_annotation_reviewed.json`. Neither source file is modified.
+Changing source waits for autosave; a failed save must be resolved before
+switching. Browser recovery drafts also use a separate Flash key.
+
+## Playback and Saving
+
 The same release supports new recording layouts with the MP4 manifest under
 `.session_meta`. It reads the original stream declarations, measures state batch
 cadence from a bounded prefix and uses per-camera availability to locate startup

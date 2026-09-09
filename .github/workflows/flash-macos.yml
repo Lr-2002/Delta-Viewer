@@ -1,0 +1,68 @@
+name: Flash compatibility macOS build
+
+on:
+  push:
+    branches: [codex/flash-compatibility-1.0.3]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flash-macos
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
+        with:
+          version: 10.12.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: '1.97.1'
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          workspaces: './src-tauri -> target'
+          key: release-aarch64-apple-darwin
+          cache-bin: 'false'
+          cache-all-crates: 'false'
+          cache-workspace-crates: 'false'
+          save-if: 'false'
+      - run: pnpm install --frozen-lockfile
+      - name: Verify application identity and frame mapping
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; import assert from "node:assert/strict"; const p=JSON.parse(fs.readFileSync("package.json")); const c=JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json")); assert.equal(p.version,"1.0.3"); assert.equal(c.version,p.version); assert.equal(c.identifier,"com.dohc.viewer");'
+          node --test --experimental-strip-types scripts/machine-annotation.test.ts
+      - name: Build reviewed portable FFmpeg
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2 --output "$RUNNER_TEMP/ffmpeg.tar.gz"
+          bash scripts/build-ffmpeg-macos.sh --source-archive "$RUNNER_TEMP/ffmpeg.tar.gz" --expected-source-sha256 9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7 --source-url https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2 --source-revision 38b88335f99e76ed89ff3c93f877fdefce736c13 --build-id ffmpeg-8.1.2-dohc-minimal-lgpl
+      - name: Build and seal app
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '12.0'
+        run: |
+          set -euo pipefail
+          pnpm tauri build --ci --target aarch64-apple-darwin --bundles app --no-sign
+          app='src-tauri/target/aarch64-apple-darwin/release/bundle/macos/DOHC Viewer.app'
+          bash scripts/seal-macos-app-adhoc.sh --app "$app"
+          mkdir -p src-tauri/target/aarch64-apple-darwin/release/bundle/dmg
+          bash scripts/make-dmg.sh --app "$app" --output src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/Viewer-Flash.dmg
+      - name: Verify mounted app resources and startup
+        run: |
+          bash scripts/verify-release-macos.sh --target aarch64-apple-darwin --arch arm64 --version 1.0.3 --tag v1.0.3 --commit "$GITHUB_SHA" --output "$RUNNER_TEMP/flash-assets"
+          cd "$RUNNER_TEMP/flash-assets"
+          shasum -a 256 *.dmg > SHA256SUMS.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: flash-macos-arm64
+          path: ${{ runner.temp }}/flash-assets/*
+          if-no-files-found: error
+          retention-days: 30

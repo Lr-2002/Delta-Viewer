@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const OUTPUT: &str = "bailian_annotation_reviewed.json";
+pub const FLASH_OUTPUT: &str = "bailian_annotation.qwen3.8-flash_reviewed.json";
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -39,6 +40,7 @@ pub struct ReviewState {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveReviewRequest {
     pub source_path: String,
+    pub source_name: Option<String>,
     pub source_hash: String,
     pub expected_revision: u64,
     pub segments: Vec<ReviewSegment>,
@@ -48,8 +50,26 @@ fn failure(message: &str) -> AppError {
     AppError::Message(format!("MACHINE_REVIEW: {message}"))
 }
 
+#[cfg(test)]
 fn source(root: &Path) -> AppResult<MachineAnnotation> {
     machine_annotation::load(root)?.ok_or_else(|| failure("未找到机标文件"))
+}
+
+fn output_name(annotation: &MachineAnnotation) -> &'static str {
+    if annotation.source_name == machine_annotation::FLASH_SOURCE {
+        FLASH_OUTPUT
+    } else {
+        OUTPUT
+    }
+}
+
+fn selected_draft_path(data_root: &Path, root: &Path, annotation: &MachineAnnotation) -> PathBuf {
+    let path = draft_path(data_root, root);
+    if annotation.source_name == machine_annotation::FLASH_SOURCE {
+        path.with_extension("qwen3.8-flash.json")
+    } else {
+        path
+    }
 }
 
 fn draft_path(data_root: &Path, root: &Path) -> PathBuf {
@@ -87,16 +107,16 @@ fn load_inner(
     root: &Path,
     annotation: &MachineAnnotation,
 ) -> AppResult<ReviewState> {
-    let draft = machine_annotation::read_bytes(&draft_path(data_root, root))?
+    let draft_path = selected_draft_path(data_root, root, annotation);
+    let draft = machine_annotation::read_bytes(&draft_path)?
         .map(|bytes| serde_json::from_slice::<ReviewState>(&bytes))
         .transpose()?;
-    let output = machine_annotation::read_bytes(&root.join(OUTPUT))?;
+    let output = machine_annotation::read_bytes(&root.join(output_name(annotation)))?;
     let output_hash = output
         .as_ref()
         .map(|bytes| blake3::hash(bytes).to_hex().to_string());
     // A committed NAS write can outlive a failed local draft update.
-    if let Some(bytes) =
-        machine_annotation::read_bytes(&draft_path(data_root, root).with_extension("pending.json"))?
+    if let Some(bytes) = machine_annotation::read_bytes(&draft_path.with_extension("pending.json"))?
     {
         let pending: ReviewState = serde_json::from_slice(&bytes)?;
         if pending.source_hash == annotation.source_hash
@@ -140,10 +160,23 @@ fn load_inner(
     Ok(initial(annotation))
 }
 
+#[cfg(test)]
 pub fn load(data_root: &Path, root: &Path) -> AppResult<ReviewState> {
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
     let root = root.canonicalize()?;
     load_inner(data_root, &root, &source(&root)?)
+}
+
+pub fn load_selected(
+    data_root: &Path,
+    root: &Path,
+    source_name: Option<&str>,
+) -> AppResult<ReviewState> {
+    let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
+    let root = root.canonicalize()?;
+    let annotation = machine_annotation::load_selected(&root, source_name)?
+        .ok_or_else(|| failure("未找到机标文件"))?;
+    load_inner(data_root, &root, &annotation)
 }
 
 fn validate(annotation: &MachineAnnotation, edits: &[ReviewSegment]) -> AppResult<()> {
@@ -222,10 +255,7 @@ fn reviewed_document(annotation: &MachineAnnotation, state: &ReviewState) -> App
             value["end_frame"] = json!(edit.end_frame + base + u64::from(exclusive));
         }
         if edit.description != original.description {
-            if !value["attributes"].is_object() {
-                value["attributes"] = json!({});
-            }
-            value["attributes"]["semantic_description"] = json!(edit.description);
+            machine_annotation::patch_description(&mut value, &edit.description)?;
         }
         patched.push(value);
     }
@@ -332,10 +362,17 @@ pub fn save(
 ) -> AppResult<ReviewState> {
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
     let root = Path::new(&request.source_path).canonicalize()?;
-    let draft = draft_path(data_root, &root);
+    let annotation = machine_annotation::load_selected(
+        &root,
+        request
+            .source_name
+            .as_deref()
+            .or(Some(machine_annotation::DEFAULT_SOURCE)),
+    )?
+    .ok_or_else(|| failure("未找到机标文件"))?;
+    let draft = selected_draft_path(data_root, &root, &annotation);
     fs::create_dir_all(draft.parent().ok_or_else(|| failure("草稿目录无效"))?)?;
     let _draft_lock = lock_file(&draft.with_extension("lock"))?;
-    let annotation = source(&root)?;
     let current = load_inner(data_root, &root, &annotation)?;
     if request.source_hash != annotation.source_hash
         || request.expected_revision != current.revision
@@ -361,10 +398,11 @@ pub fn save(
         ..current
     };
     if state.published {
-        let lock_path = root.join(".bailian_annotation_reviewed.lock");
+        let output = output_name(&annotation);
+        let lock_path = root.join(format!(".{}.lock", output.trim_end_matches(".json")));
         let _output_lock = lock_file(&lock_path)?;
         let result = (|| -> AppResult<String> {
-            let actual = machine_annotation::read_bytes(&root.join(OUTPUT))?
+            let actual = machine_annotation::read_bytes(&root.join(output))?
                 .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
             if actual != state.output_hash {
                 return Err(failure("复核结果已改变，拒绝覆盖"));
@@ -380,7 +418,7 @@ pub fn save(
                 &draft.with_extension("pending.json"),
                 &serde_json::to_value(pending)?,
             )?;
-            atomic_json(&root.join(OUTPUT), &document)
+            atomic_json(&root.join(output), &document)
         })();
         state.output_hash = Some(result?);
     }
@@ -429,6 +467,9 @@ pub fn is_review_path(root: &Path, path: &Path) -> bool {
             .and_then(|name| name.to_str())
             .is_some_and(|name| {
                 name == OUTPUT
+                    || name == FLASH_OUTPUT
+                    || name == ".bailian_annotation.qwen3.8-flash_reviewed.lock"
+                    || name.starts_with(".bailian_annotation.qwen3.8-flash_reviewed.json.partial-")
                     || name == ".bailian_annotation_reviewed.lock"
                     || name.starts_with(".bailian_annotation_reviewed.json.partial-")
             })
@@ -486,6 +527,7 @@ mod tests {
                 &self.local,
                 SaveReviewRequest {
                     source_path: self.root.to_string_lossy().into(),
+                    source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
                     source_hash: state.source_hash.clone(),
                     expected_revision: state.revision,
                     segments: state.segments.clone(),
@@ -501,6 +543,158 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.temp);
         }
+    }
+
+    #[test]
+    fn flash_source_is_selected_and_reviewed_independently_with_bilingual_fields_preserved() {
+        let fixture = Fixture::new(0, true);
+        let mut document: Value = serde_json::from_slice(&fixture.original).unwrap();
+        document["schema_version"] = 4.into();
+        for value in document["episode_results"][0]["annotations"]
+            .as_array_mut()
+            .unwrap()
+        {
+            value["attributes"] = json!([
+                {"T":"semantic_description","value":"Standing","extra":"keep"},
+                {"T":"body_part","value":"双手"}
+            ]);
+            value["attributes_zh"] = json!([
+                {"T":"动作描述","value":"静止状态","extra":42},
+                {"T":"身体部位","value":"双手"}
+            ]);
+            value["task"] =
+                json!({"description":"Make bed","description_zh":"整理床铺","direction":"正向"});
+        }
+        let raw = serde_json::to_vec(&document).unwrap();
+        fs::write(fixture.root.join(machine_annotation::FLASH_SOURCE), &raw).unwrap();
+        let annotation = machine_annotation::load_selected(&fixture.root, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(annotation.source_name, machine_annotation::FLASH_SOURCE);
+        let mut flash = load_selected(&fixture.local, &fixture.root, None).unwrap();
+        flash.segments[0].description = "双手整理被子".into();
+        flash.segments[0].end_frame = 7;
+        flash.segments[1].start_frame = 8;
+        flash.segments[2].deleted = true;
+        let save_flash = |state: &ReviewState| {
+            save(
+                &fixture.local,
+                SaveReviewRequest {
+                    source_path: fixture.root.to_string_lossy().into(),
+                    source_name: Some(machine_annotation::FLASH_SOURCE.into()),
+                    source_hash: state.source_hash.clone(),
+                    expected_revision: state.revision,
+                    segments: state.segments.clone(),
+                },
+                "reviewer",
+            )
+            .unwrap()
+        };
+        flash = save_flash(&flash);
+        assert!(!fixture.root.join(FLASH_OUTPUT).exists());
+        assert_eq!(load(&fixture.local, &fixture.root).unwrap().revision, 0);
+        for segment in &mut flash.segments {
+            segment.decision = "approved".into();
+        }
+        flash = save_flash(&flash);
+        let output: Value =
+            serde_json::from_slice(&fs::read(fixture.root.join(FLASH_OUTPUT)).unwrap()).unwrap();
+        let mut expected = document.clone();
+        let episode = &mut expected["episode_results"][0];
+        episode["annotations"][0]["attributes_zh"][0]["value"] = "双手整理被子".into();
+        for key in ["annotations", "segments"] {
+            episode[key][0]["end_frame"] = 8.into();
+            episode[key][1]["start_frame"] = 8.into();
+            episode[key].as_array_mut().unwrap().pop();
+        }
+        episode["annotation_count"] = 2.into();
+        let mut actual = output;
+        actual.as_object_mut().unwrap().remove("_human_review");
+        assert_eq!(actual, expected);
+        let mut original_review = load(&fixture.local, &fixture.root).unwrap();
+        for segment in &mut original_review.segments {
+            segment.decision = "approved".into();
+        }
+        fixture.save(&original_review).unwrap();
+        assert!(fixture.root.join(OUTPUT).exists());
+        assert_eq!(
+            load_selected(
+                &fixture.local,
+                &fixture.root,
+                Some(machine_annotation::FLASH_SOURCE)
+            )
+            .unwrap()
+            .revision,
+            flash.revision
+        );
+        assert_eq!(
+            fs::read(fixture.root.join(machine_annotation::FLASH_SOURCE)).unwrap(),
+            raw
+        );
+        assert_eq!(
+            fs::read(fixture.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            fixture.original
+        );
+        assert!(is_review_path(
+            &fixture.root,
+            &fixture.root.join(FLASH_OUTPUT)
+        ));
+    }
+
+    #[test]
+    #[ignore = "Requires a private Flash sample; writes only to a temporary fixture"]
+    fn selected_flash_sample_roundtrips_in_a_temporary_directory() {
+        let path = PathBuf::from(std::env::var("DOHC_MACHINE_SAMPLE_ROOT").unwrap());
+        let source_bytes =
+            machine_annotation::read_bytes(&path.join(machine_annotation::FLASH_SOURCE))
+                .unwrap()
+                .unwrap();
+        let loaded =
+            machine_annotation::load_selected(&path, Some(machine_annotation::FLASH_SOURCE))
+                .unwrap()
+                .unwrap();
+        let fixture = Fixture::new(0, true);
+        let root = fixture.temp.join(path.file_name().unwrap());
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join(machine_annotation::FLASH_SOURCE), &source_bytes).unwrap();
+        let mut state = load_selected(&fixture.local, &root, None).unwrap();
+        assert_eq!(state.segments.len(), loaded.segments.len());
+        for segment in &mut state.segments {
+            segment.decision = "approved".into();
+        }
+        save(
+            &fixture.local,
+            SaveReviewRequest {
+                source_path: root.to_string_lossy().into(),
+                source_name: Some(machine_annotation::FLASH_SOURCE.into()),
+                source_hash: state.source_hash.clone(),
+                expected_revision: 0,
+                segments: state.segments,
+            },
+            "fixture-reviewer",
+        )
+        .unwrap();
+        let mut output: Value =
+            serde_json::from_slice(&fs::read(root.join(FLASH_OUTPUT)).unwrap()).unwrap();
+        output.as_object_mut().unwrap().remove("_human_review");
+        assert_eq!(
+            output,
+            serde_json::from_slice::<Value>(&source_bytes).unwrap()
+        );
+        assert_eq!(
+            fs::read(path.join(machine_annotation::FLASH_SOURCE)).unwrap(),
+            source_bytes
+        );
+        let preview =
+            crate::source::load_episode_preview(&path, None, &AtomicBool::new(false)).unwrap();
+        let stream = preview
+            .summary
+            .streams
+            .iter()
+            .find(|stream| stream.name == "cam0")
+            .unwrap();
+        assert_eq!(loaded.frame_count, stream.frame_count);
+        println!("Flash sample: {} segments, {} frames, camera range {:?}..{:?}, temporary roundtrip preserved every source field", loaded.segments.len(), loaded.frame_count, stream.first_frame, stream.last_frame);
     }
 
     #[test]

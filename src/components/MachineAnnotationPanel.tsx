@@ -19,7 +19,21 @@ const COLORS = ["#087e79", "#5489a3", "#b3914b", "#797895", "#628969"];
 const BODY_PARTS: Record<string, string> = { whole_body: "全身", full_body: "全身", body: "全身", left_hand: "左手", right_hand: "右手", both_hands: "双手" };
 const saves = new Map<string, Promise<void>>();
 
-export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
+export function MachineAnnotationPanel(props: Props) {
+  const [sourceName, setSourceName] = useState("");
+  const [sourceBusy, setSourceBusy] = useState(false);
+  return <>
+    <label className="machine-source-picker">机标来源<select aria-label="机标来源" value={sourceName} disabled={props.busy || sourceBusy}
+      onChange={(event) => setSourceName(event.currentTarget.value)}>
+      <option value="">自动（优先 Flash）</option>
+      <option value="bailian_annotation.json">原机标 / Max</option>
+      <option value="bailian_annotation.qwen3.8-flash.json">3.8 Flash</option>
+    </select></label>
+    <MachineAnnotationEditor {...props} key={`${props.data.summary.root}:${sourceName}`} sourceName={sourceName || undefined} onSourceBusy={setSourceBusy} />
+  </>;
+}
+
+function MachineAnnotationEditor({ data, annotation, busy, sourceName, onSourceBusy }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void }) {
   const root = data.summary.root;
   const [result, setResult] = useState<MachineAnnotation | null>(null);
   const [review, setReview] = useState<MachineReview | null>(null);
@@ -43,7 +57,9 @@ export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
   const running = useRef(false);
   const editsRef = useRef(edits);
   editsRef.current = edits;
-  const recoveryKey = `dohc.machine-review.pending:${root}`;
+  const loadedSource = useRef(sourceName);
+  const recoveryKey = () => `dohc.machine-review.pending:${root}${loadedSource.current === "bailian_annotation.qwen3.8-flash.json" ? ":qwen3.8-flash" : ""}`;
+  useEffect(() => { onSourceBusy(loading || saving || Boolean(saveError)); }, [loading, saving, saveError, onSourceBusy]);
 
   function persist(next: ReviewSegment[]) {
     pending.current = next;
@@ -57,10 +73,10 @@ export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
           const snapshot = pending.current;
           pending.current = null;
           const state = stateRef.current;
-          const saved = await saveMachineReview(root, state.sourceHash, state.revision, snapshot);
+          const saved = await saveMachineReview(root, state.sourceHash, state.revision, snapshot, loadedSource.current);
           stateRef.current = saved;
           if (mounted.current) setReview(saved);
-          if (!pending.current) localStorage.removeItem(recoveryKey);
+          if (!pending.current) localStorage.removeItem(recoveryKey());
         }
       } catch (reason) {
         if (mounted.current) setSaveError(String(reason));
@@ -78,17 +94,18 @@ export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
     setLoading(true); setError(""); setPlaying(false);
     void (async () => {
       await saves.get(root);
-      const loaded = await loadMachineAnnotation(root);
+      const loaded = await loadMachineAnnotation(root, sourceName);
       if (!active) return;
       setResult(loaded);
       if (!loaded) return;
-      const state = await loadMachineReview(root);
+      loadedSource.current = loaded.sourceName ?? sourceName;
+      const state = await loadMachineReview(root, loadedSource.current);
       if (!active) return;
       stateRef.current = state;
       setReview(state); setEdits(state.segments);
       setSelected(state.segments.find((item) => !item.deleted)?.sourceIndex ?? 0);
       setFrame(state.segments.find((item) => !item.deleted)?.startFrame ?? 0);
-      const raw = localStorage.getItem(recoveryKey);
+      const raw = localStorage.getItem(recoveryKey());
       if (raw) {
         const recovery = JSON.parse(raw) as { sourceHash: string; segments: ReviewSegment[] };
         if (recovery.sourceHash !== state.sourceHash) throw new Error("待保存草稿与原机标不匹配，请先处理草稿冲突");
@@ -119,7 +136,7 @@ export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
 
   function change(next: ReviewSegment[]) {
     setEdits(next); editsRef.current = next; setPlaying(false);
-    try { localStorage.setItem(recoveryKey, JSON.stringify({ sourceHash: stateRef.current?.sourceHash, segments: next })); }
+    try { localStorage.setItem(recoveryKey(), JSON.stringify({ sourceHash: stateRef.current?.sourceHash, segments: next })); }
     catch { setSaveError("本机应急草稿无法保存，请保持此页打开直到保存完成"); }
     persist(next);
   }
@@ -163,7 +180,7 @@ export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
       </header>
       {loading && <p role="status" className="machine-message"><LoaderCircle size={15} />正在读取机标</p>}
       {error && <p role="alert" className="machine-message">{error}</p>}
-      {!loading && !error && !result && <p className="machine-message">未发现 bailian_annotation.json</p>}
+      {!loading && !error && !result && <p className="machine-message">未发现 {sourceName ?? "bailian_annotation.json / bailian_annotation.qwen3.8-flash.json"}</p>}
       {result && <>
         <div className="machine-metadata"><span>模型：{result.model ?? "未记录"}</span><span>{result.validationStatus === "passed" ? "结构与规则校验通过" : "机标未通过或未校验"}</span><span>人工合格 {approved} / {rows.length}</span></div>
         {result.warnings.map((warning) => <p className="machine-message" key={warning}>{warning}</p>)}
@@ -205,7 +222,7 @@ export function MachineAnnotationPanel({ data, annotation, busy }: Props) {
         {edits.some((segment) => segment.deleted) && <button className="button button-secondary" disabled={!canEdit} onClick={() => change(edits.map((segment) => segment.deleted ? { ...segment, deleted: false, decision: "pending" } : segment))}><Undo2 size={15} />恢复删除的片段</button>}
       </div>
     </section>}
-    {showJson && result && <dialog className="machine-json" aria-label="机标 JSON" ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={() => setShowJson(false)}><header className="machine-heading"><strong>bailian_annotation.json</strong><button autoFocus className="icon-button" aria-label="关闭 JSON" title="关闭 JSON" onClick={() => setShowJson(false)}><X size={16} /></button></header><pre>{result.sourceJson ?? JSON.stringify(result, null, 2)}</pre></dialog>}
+    {showJson && result && <dialog className="machine-json" aria-label="机标 JSON" ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={() => setShowJson(false)}><header className="machine-heading"><strong>{result.sourceName ?? "bailian_annotation.json"}</strong><button autoFocus className="icon-button" aria-label="关闭 JSON" title="关闭 JSON" onClick={() => setShowJson(false)}><X size={16} /></button></header><pre>{result.sourceJson ?? JSON.stringify(result, null, 2)}</pre></dialog>}
   </section></div>;
 }
 

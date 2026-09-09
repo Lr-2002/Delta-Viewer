@@ -460,6 +460,7 @@ export interface MachineSegment {
 }
 
 export interface MachineAnnotation {
+  sourceName?: string;
   sourceHash?: string;
   episodeId: string;
   sourceJson?: string;

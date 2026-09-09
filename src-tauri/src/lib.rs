@@ -719,13 +719,16 @@ async fn load_episode_annotation(
 async fn load_machine_annotation(
     auth: State<'_, AuthState>,
     source_path: String,
+    source_name: Option<String>,
 ) -> Result<Option<model::MachineAnnotation>, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     ensure_source_directory_responsive(&source_path).await?;
-    tauri::async_runtime::spawn_blocking(move || machine_annotation::load(Path::new(&source_path)))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        machine_annotation::load_selected(Path::new(&source_path), source_name.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -733,12 +736,13 @@ async fn load_machine_review(
     app: AppHandle,
     auth: State<'_, AuthState>,
     source_path: String,
+    source_name: Option<String>,
 ) -> Result<machine_review::ReviewState, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
     ensure_source_directory_responsive(&source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
-        machine_review::load(&data_root, Path::new(&source_path))
+        machine_review::load_selected(&data_root, Path::new(&source_path), source_name.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
