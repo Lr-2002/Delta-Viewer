@@ -491,7 +491,7 @@ try {
   await page.locator(".view-tabs button").filter({ hasText: "导出" }).click();
   assert.equal(await page.locator(".export-button").isDisabled(), true);
   assert.match(await page.locator(".export-heading .status-mark").innerText(), /等待检查/);
-  await page.locator(".view-tabs button").filter({ hasText: "回放" }).click();
+  await page.locator(".view-tabs button").filter({ hasText: "校对" }).click();
   assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.validateEpisode), 1);
   await cancel.click();
   await page.waitForFunction(() => !document.querySelector(".progress-strip"));

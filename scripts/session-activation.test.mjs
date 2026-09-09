@@ -145,8 +145,6 @@ async function openActivationScenario() {
   await inputs.nth(2).fill("Passphrase123");
   await inputs.nth(3).fill("Passphrase123");
   await page.locator("form button[type=submit]").click();
-  await page.getByRole("button", { name: "仍要标注" }).click();
-
   await page.locator(sessionSelector("session-a")).waitFor();
   await page.waitForFunction(() => document.querySelector(".loaded-label")?.textContent?.includes("session-a"));
   await waitForEnabled(page, "session-b");
@@ -155,12 +153,7 @@ async function openActivationScenario() {
 }
 
 async function continuePendingAnnotation(page, episodeName) {
-  await page.waitForFunction((name) => (
-    Boolean(document.querySelector(".annotation-warning-gate"))
-      || Boolean(document.querySelector(".loaded-label")?.textContent?.includes(name))
-  ), episodeName);
-  const button = page.getByRole("button", { name: "仍要标注" });
-  if (await button.count()) await button.click();
+  await page.waitForFunction((name) => Boolean(document.querySelector(".loaded-label")?.textContent?.includes(name)), episodeName);
 }
 
 function sessionSelector(name) {
