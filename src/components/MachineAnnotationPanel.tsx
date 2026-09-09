@@ -4,7 +4,7 @@ import { loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../
 import { adjustReviewBoundary, machineTimelineMapping } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
-import type { EpisodeData, MachineAnnotation, MachineReview, ReviewSegment } from "../types";
+import type { EpisodeData, ExportRange, MachineAnnotation, MachineReview, ReviewSegment } from "../types";
 
 interface Props {
   data: EpisodeData;
@@ -15,6 +15,7 @@ interface Props {
     frame: number;
     onSeek: (frame: number) => void;
     onPause: () => void;
+    onRangeChange: (range: ExportRange | null) => void;
     controls: ReactNode;
   };
 }
@@ -138,6 +139,13 @@ function MachineAnnotationEditor({ data, busy, sourceName, onSourceBusy, onCompl
   const active = rows.find((segment) => segment.sourceIndex === selected) ?? rows[0];
   const valid = result && primary && mapping && !mapping.error && !error;
   const canEdit = Boolean(valid && review && !busy && !loading && !finishing);
+  const onRangeChange = playback?.onRangeChange;
+  const rangeStart = valid && active && !loading ? mapping.offset + active.startFrame * mapping.step : null;
+  const rangeEnd = valid && active && !loading ? mapping.offset + (active.endFrame + 1) * mapping.step - 1 : null;
+  useEffect(() => {
+    onRangeChange?.(rangeStart !== null && rangeEnd !== null ? { startFrame: rangeStart, endFrame: rangeEnd } : null);
+    return () => onRangeChange?.(null);
+  }, [onRangeChange, rangeStart, rangeEnd]);
   const outputName = loadedSource.current === "bailian_annotation.qwen3.8-flash.json" ? "review.3.8flash.json" : "review.3.8max.json";
   const seek = useCallback((next: number) => {
     setFrame(next); setPlaying(false);

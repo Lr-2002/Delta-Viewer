@@ -360,8 +360,8 @@ function App() {
     ? availableStreams.find((stream) => stream.name === primaryStreamName) ?? null
     : null;
   const proofreading = view === "proofread" || view === "review";
-  const playbackStart = proofreading && data ? getMinFrame(data) : machinePreviewRange?.startFrame ?? clipStartFrame;
-  const playbackEnd = proofreading && data ? getMaxFrame(data) : machinePreviewRange?.endFrame ?? clipEndFrame;
+  const playbackStart = machinePreviewRange?.startFrame ?? (proofreading && data ? getMinFrame(data) : clipStartFrame);
+  const playbackEnd = machinePreviewRange?.endFrame ?? (proofreading && data ? getMaxFrame(data) : clipEndFrame);
   const primaryPlaybackEndFrame = Math.min(
     playbackEnd,
     primaryStream?.lastFrame ?? playbackEnd,
@@ -1168,7 +1168,8 @@ function App() {
 
   function seekFrame(frame: number) {
     if (!data) return;
-    const next = Math.max(playbackStart, Math.min(playbackEnd, Math.round(frame)));
+    const next = Math.max(proofreading ? getMinFrame(data) : playbackStart,
+      Math.min(proofreading ? getMaxFrame(data) : playbackEnd, Math.round(frame)));
     setPlaying(false);
     resetPlaybackPreparation();
     frameRef.current = next;
@@ -1984,7 +1985,7 @@ function App() {
                       />
                     ) : null}
                     <MachineAnnotationPanel key={`machine:${data.summary.root}`} data={data} busy={busy || annotationReadyRoot !== data.summary.root}
-                      playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), controls: (
+                      playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onRangeChange: setMachinePreviewRange, controls: (
 <>
                           <div className="transport-buttons">
                             <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧"><SkipBack size={17} /></button>

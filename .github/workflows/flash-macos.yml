@@ -39,7 +39,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Verify application identity and frame mapping
         run: |
-          node --input-type=module -e 'import fs from "node:fs"; import assert from "node:assert/strict"; const p=JSON.parse(fs.readFileSync("package.json")); const c=JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json")); assert.equal(p.version,"1.0.7"); assert.equal(c.version,p.version); assert.equal(c.identifier,"com.dohc.viewer");'
+          node --input-type=module -e 'import fs from "node:fs"; import assert from "node:assert/strict"; const p=JSON.parse(fs.readFileSync("package.json")); const c=JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json")); assert.equal(p.version,"1.0.8"); assert.equal(c.version,p.version); assert.equal(c.identifier,"com.dohc.viewer");'
           node --test --experimental-strip-types scripts/machine-annotation.test.ts
       - name: Build reviewed portable FFmpeg
         run: |
@@ -57,7 +57,7 @@ jobs:
           bash scripts/make-dmg.sh --app "$app" --output src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/Viewer-Flash.dmg
       - name: Verify mounted app resources and startup
         run: |
-          bash scripts/verify-release-macos.sh --target aarch64-apple-darwin --arch arm64 --version 1.0.7 --tag v1.0.7 --commit "$GITHUB_SHA" --output "$RUNNER_TEMP/flash-assets"
+          bash scripts/verify-release-macos.sh --target aarch64-apple-darwin --arch arm64 --version 1.0.8 --tag v1.0.8 --commit "$GITHUB_SHA" --output "$RUNNER_TEMP/flash-assets"
           cd "$RUNNER_TEMP/flash-assets"
           shasum -a 256 *.dmg > SHA256SUMS.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

@@ -3,6 +3,13 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.8 - 2026-09-09
+
+- Restore selected-segment playback in unified proofreading: stop at the selected
+  end, restart from its beginning, and follow boundary edits and segment changes.
+- Preserve full-timeline paused seeking while restricting continuous playback
+  to the active segment, using the existing five-camera and skeleton clock.
+
 ## 1.0.7 - 2026-09-09
 
 - Merge playback and proofreading into the default proofreading workspace,

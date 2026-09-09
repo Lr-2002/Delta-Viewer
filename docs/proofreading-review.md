@@ -1,4 +1,9 @@
-# Proofreading 1.0.7
+# Proofreading 1.0.8
+
+Selected action segments set the existing player's continuous-playback bounds.
+Playback stops at the selected end and restarts at its beginning. Boundary
+edits, deletion and source changes refresh or clear the bounds; paused seeking
+remains available across the recording. No decoder or clock is duplicated.
 
 ## Unified Workspace
 

@@ -83,6 +83,48 @@ test("unified proofreading keeps five cameras and skeleton, autosaves edits and 
   }
 });
 
+test("selected segments stop at their end, replay from their start and follow edited boundaries", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  try {
+    await open(page, "machineAnnotation=present");
+    await page.getByRole("button", { name: "定位机标片段 2" }).click();
+    await page.getByLabel("播放速度").selectOption("2");
+    const waitFrame = (frame) => page.waitForFunction((value) => document.querySelector(".frame-counter").textContent === `帧 ${value} / 195`, frame);
+    await waitFrame(60);
+    await page.getByRole("button", { name: "播放", exact: true }).click();
+    await waitFrame(119);
+    await page.getByRole("button", { name: "播放", exact: true }).waitFor();
+    await page.waitForTimeout(250);
+    assert.equal(await page.getByLabel("校对播放帧").inputValue(), "119");
+    await page.getByRole("button", { name: "播放", exact: true }).click();
+    await page.waitForFunction(() => {
+      const frame = Number(document.querySelector('[aria-label="校对播放帧"]').value);
+      return frame >= 60 && frame < 119;
+    });
+    await page.getByRole("button", { name: "定位机标片段 3" }).click();
+    await waitFrame(120);
+    await page.getByRole("button", { name: "播放", exact: true }).waitFor();
+    await page.getByRole("button", { name: "定位机标片段 2" }).click();
+    await page.getByLabel("复核结束帧", { exact: true }).fill("90");
+    await waitFrame(89);
+    await page.getByRole("button", { name: "播放", exact: true }).click();
+    await page.waitForFunction(() => Number(document.querySelector('[aria-label="校对播放帧"]').value) < 89);
+    await waitFrame(89);
+    await page.getByRole("button", { name: "播放", exact: true }).waitFor();
+    await page.getByLabel("校对播放帧").fill("150");
+    await waitFrame(150);
+    await page.getByRole("button", { name: "播放", exact: true }).click();
+    await page.waitForFunction(() => Number(document.querySelector('[aria-label="校对播放帧"]').value) < 90);
+    await page.getByRole("button", { name: "定位机标片段 2" }).click();
+    await page.getByRole("button", { name: "删除机标片段 2", exact: true }).click();
+    await page.getByRole("button", { name: "定位机标片段 2" }).click();
+    await waitFrame(90);
+    await page.getByRole("button", { name: "播放", exact: true }).click();
+    await waitFrame(195);
+    await page.getByRole("button", { name: "播放", exact: true }).waitFor();
+  } finally { await page.close(); }
+});
+
 test("unified layout fits desktop and mobile with a visible interactive skeleton", async () => {
   const page = await browser.newPage();
   await open(page, "machineAnnotation=present");
