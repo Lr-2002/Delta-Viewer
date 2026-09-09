@@ -1,9 +1,11 @@
-﻿# DOHC Viewer Changelog
+# DOHC Viewer Changelog
 
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
-## Unreleased
+## 1.0.6 - 2026-09-09
+
+- 补丁版本：修复监管审计记录断线补传、检查报告回读去重冲突，并改善会话失效后的恢复提示。
 
 ## 1.0.5 - 2026-09-09
 
