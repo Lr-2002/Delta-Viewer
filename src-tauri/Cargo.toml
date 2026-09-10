@@ -1,6 +1,6 @@
 [package]
 name = "dohc-viewer"
-version = "1.0.8"
+version = "1.0.18"
 description = "Inspect and export DOHC recordings from removable media"
 authors = ["DOHC"]
 edition = "2021"
@@ -41,6 +41,7 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2.5.4"
 thiserror = "2"
+time = { version = "0.3", features = ["formatting"] }
 walkdir = "2"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]

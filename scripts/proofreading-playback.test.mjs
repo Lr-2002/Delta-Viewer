@@ -171,6 +171,8 @@ for (const callback of [true, false]) test(`proofreading uses actual video frame
   assert.equal(await page.evaluate(() => window.__proofCompletion), undefined);
   await page.evaluate(() => { window.__proofFailSave = false; });
   await page.getByRole("button", { name: "不通过", exact: true }).click();
+  await page.getByRole("button", { name: "镜头遮挡", exact: true }).click();
+  await page.getByRole("button", { name: "确认不通过", exact: true }).click();
   await page.waitForFunction(() => window.__proofCompletion === "rejected");
   assert.equal(await page.evaluate(() => window.__proofReview.status), "rejected");
   assert.ok(await page.evaluate(() => window.__proofReview.versionId));

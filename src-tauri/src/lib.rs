@@ -611,9 +611,11 @@ fn get_assigned_source_root(
     app: AppHandle,
     auth: State<'_, AuthState>,
 ) -> Result<Option<String>, String> {
-    auth.require_managed_user()
+    let user = auth
+        .require_managed_user()
         .map_err(|error| error.to_string())?;
-    assigned_source::load(&app_data_root(&app)?).map_err(|error| error.to_string())
+    assigned_source::load_for_user(&app_data_root(&app)?, &user.username)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -622,10 +624,15 @@ fn set_assigned_source_root(
     auth: State<'_, AuthState>,
     source_path: String,
 ) -> Result<String, String> {
-    auth.require_managed_user()
+    let user = auth
+        .require_managed_user()
         .map_err(|error| error.to_string())?;
-    assigned_source::save(&app_data_root(&app)?, Path::new(&source_path))
-        .map_err(|error| error.to_string())
+    assigned_source::save_for_user(
+        &app_data_root(&app)?,
+        &user.username,
+        Path::new(&source_path),
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -761,7 +768,25 @@ async fn save_machine_review(
     let data_root = app_data_root(&app)?;
     ensure_source_directory_responsive(&request.source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
-        machine_review::save(&data_root, request, &user.username)
+        machine_review::save_for_user(&data_root, request, &user.display_name, &user.username)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_my_machine_reviews(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    source_paths: Vec<String>,
+) -> Result<Vec<machine_review::AccountReview>, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        machine_review::list_account_reviews(&data_root, &source_paths, &user.username)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1409,6 +1434,7 @@ pub fn run() {
             load_machine_annotation,
             load_machine_review,
             save_machine_review,
+            list_my_machine_reviews,
             save_episode_annotation,
             list_annotated_episodes,
             scan_source,

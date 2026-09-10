@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type RefObject } from "react";
 import {
   Activity,
   BookOpenText,
@@ -19,6 +19,8 @@ import {
   Pause,
   Play,
   PackageOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   RefreshCw,
   RotateCcw,
@@ -62,6 +64,7 @@ import {
   installAppUpdate,
   isTauriRuntime,
   listAnnotatedEpisodes,
+  listMyMachineReviews,
   listOperationErrors,
   listTaskDefinitions,
   listAssignedTaskDefinitions,
@@ -157,6 +160,11 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.0.15": "新增不通过原因选择和自定义原因，审核记录清理冗余字段，统一唯一修订编号与中文修改摘要，修复时间轴相邻片段同色。",
+  "1.0.13": "补丁：收紧四区工作台布局，缩小状态图，优化右侧片段滚动和审核操作区，让更多内容在当前窗口可见。",
+  "1.0.12": "补丁：将人工审核结论写入数据根目录 session.json，修复删除片段输出和网络目录复核保存。",
+  "1.0.10": "补丁：新增片段与分帧，完善空格、方向键和 Enter 操作，区分片段/全局播放，并压缩状态图和右侧编辑栏。",
+  "1.0.9": "补丁：调整四区回放布局，支持目录收起，人工复核输出 description.json 并记录 QC。",
   "0.17.64": "优化 NAS 上逐帧 JPEG 数据的播放：缩短中间定位后的主画面预缓冲，并为四路小画面增加有界网络预读。",
   "0.17.61": "五路 MP4 分别使用持续原生播放器，修复 Camera 1/2 首次播放需暂停后重试的问题。",
   "0.17.60": "重构监管工作台视觉层级与状态反馈，强化运营指标、异常告警和窄窗口可读性。",
@@ -279,12 +287,14 @@ function App() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>("mcap");
   const [exportResult, setExportResult] = useState<ExportResult | null>(null);
   const [annotationTags, setAnnotationTags] = useState<Record<string, EpisodeAnnotation>>({});
+  const [reviewedEpisodes, setReviewedEpisodes] = useState<Record<string, "pending" | "approved" | "rejected">>({});
   const [annotatedEpisodes, setAnnotatedEpisodes] = useState<AnnotatedEpisodeSummary[]>([]);
   const [batchSelectedIds, setBatchSelectedIds] = useState<string[]>([]);
   const [batchExportFormat, setBatchExportFormat] = useState<ExportFormat>("mcap");
   const [batchExportResult, setBatchExportResult] = useState<BatchExportResult | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [view, setView] = useState<View>("proofread");
+  const [pendingSourceRestore, setPendingSourceRestore] = useState<string | null>(null);
   const reviewUnsaved = useRef(false);
   const handleReviewUnsaved = useCallback((value: boolean) => { reviewUnsaved.current = value; }, []);
   const [metric, setMetric] = useState<MetricKey>("position");
@@ -314,6 +324,10 @@ function App() {
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("idle");
   const [updateError, setUpdateError] = useState("");
   const [updateErrorVisible, setUpdateErrorVisible] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("dohc.sidebar.collapsed") === "1");
+  const [sidebarScale, setSidebarScale] = useState(() => Number(localStorage.getItem("dohc.sidebar.scale") ?? "1"));
+  useEffect(() => { localStorage.setItem("dohc.sidebar.collapsed", sidebarCollapsed ? "1" : "0"); }, [sidebarCollapsed]);
+  useEffect(() => { localStorage.setItem("dohc.sidebar.scale", String(sidebarScale)); }, [sidebarScale]);
 
   useEffect(() => {
     let active = true;
@@ -360,8 +374,10 @@ function App() {
     ? availableStreams.find((stream) => stream.name === primaryStreamName) ?? null
     : null;
   const proofreading = view === "proofread" || view === "review";
-  const playbackStart = machinePreviewRange?.startFrame ?? (proofreading && data ? getMinFrame(data) : clipStartFrame);
-  const playbackEnd = machinePreviewRange?.endFrame ?? (proofreading && data ? getMaxFrame(data) : clipEndFrame);
+  // Segment playback is temporary; global play explicitly clears this range.
+  const segmentPlaying = Boolean(machinePreviewRange);
+  const playbackStart = segmentPlaying ? machinePreviewRange!.startFrame : (proofreading && data ? getMinFrame(data) : clipStartFrame);
+  const playbackEnd = segmentPlaying ? machinePreviewRange!.endFrame : (proofreading && data ? getMaxFrame(data) : clipEndFrame);
   const primaryPlaybackEndFrame = Math.min(
     playbackEnd,
     primaryStream?.lastFrame ?? playbackEnd,
@@ -522,6 +538,7 @@ function App() {
 
   useEffect(() => {
     if (!workspaceActive || (isManagedWorkspace && !authStatus?.currentUser)) {
+      setPendingSourceRestore(null);
       setTasks([]);
       setAssignedTasks([]);
       setAssignedSourceRootState(null);
@@ -538,19 +555,17 @@ function App() {
           setAuditUploadPending(true);
           setAuditUploadError(toMessage(reason));
         });
-      void Promise.all([listAssignedTaskDefinitions(), getAssignedTasks(), getAssignedSourceRoot(), getAssignedTaskActivity(date)])
-        .then(async ([definitions, assignments, assignedRoot, activity]) => {
-          setTasks(definitions);
-          setAssignedTasks(assignments);
-          setAssignedSourceRootState(assignedRoot);
-          setAssignedActivity(activity);
-          // A missing assignment is a valid preview state. Keep the configured
-          // source visible so operators can inspect and demonstrate the data;
-          // active assignments still control the work queue and default task.
-          if (assignedRoot) await openSource(assignedRoot, true, assignments);
-        })
-        .catch((reason) => setError(`无法加载已分配任务：${toMessage(reason)}`));
-      return;
+      let active = true;
+      const failed = (reason: unknown) => { if (active) setError(`无法加载已分配任务：${toMessage(reason)}`); };
+      void listAssignedTaskDefinitions().then((value) => { if (active) setTasks(value); }).catch(failed);
+      void getAssignedTasks().then((value) => { if (active) setAssignedTasks(value); }).catch(failed);
+      void getAssignedTaskActivity(date).then((value) => { if (active) setAssignedActivity(value); }).catch(failed);
+      void getAssignedSourceRoot().then((root) => {
+        if (!active) return;
+        setAssignedSourceRootState(root);
+        setPendingSourceRestore(root);
+      }).catch((reason) => { if (active) setError(`无法恢复数据目录：${toMessage(reason)}`); });
+      return () => { active = false; };
     }
     setAssignedTasks([]);
     setAssignedSourceRootState(null);
@@ -558,6 +573,14 @@ function App() {
     void listTaskDefinitions().then(setTasks)
       .catch((reason) => setError(`无法加载任务目录：${toMessage(reason)}`));
   }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
+
+  useEffect(() => {
+    if (!pendingSourceRestore || !workspaceActive || !authStatus?.currentUser
+      || busy || operationScopeRef.current.current()) return;
+    const root = pendingSourceRestore;
+    setPendingSourceRestore(null);
+    void openSource(root, true);
+  }, [pendingSourceRestore, busy, workspaceActive, authStatus?.currentUser?.username]);
 
   async function refreshAssignedActivity(date: string) {
     if (!isManagedWorkspace || authStatus?.currentUser?.role !== "operator") return;
@@ -732,7 +755,7 @@ function App() {
   }, [availableStreams, data, playbackFps, playing, primaryPlaybackEndFrame, primarySourceFps, primaryStreamName, speed]);
 
   async function openSource(path: string, autoLoad = false, assignment = assignedTasks) {
-    if (reviewUnsaved.current) { setNotice("请等待 review 保存完成；保存失败时请先重试。"); return; }
+    if (reviewUnsaved.current) { setNotice("正在保存当前修改，请稍候。"); return; }
     const owner = beginOperation();
     if (!owner) return;
     resetOperationFeedback(owner);
@@ -790,7 +813,7 @@ function App() {
   }
 
   async function chooseSource() {
-    if (reviewUnsaved.current) { setNotice("请等待 review 保存完成；保存失败时请先重试。"); return; }
+    if (reviewUnsaved.current) { setNotice("正在保存当前修改，请稍候。"); return; }
     if (sourcePickerOpenRef.current || operationScopeRef.current.current()) return;
     sourcePickerOpenRef.current = true;
     try {
@@ -867,7 +890,7 @@ function App() {
   }
 
   function selectEpisode(episode: EpisodeSummary) {
-    if (reviewUnsaved.current) { setNotice("请等待 review 保存完成；保存失败时请先重试。"); return; }
+    if (reviewUnsaved.current) { setNotice("正在保存当前修改，请稍候。"); return; }
     setSelectedEpisode(episode);
     if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
   }
@@ -1066,6 +1089,7 @@ function App() {
   }, [data, primaryStreamName]);
 
   function resetLoadedData() {
+    reviewUnsaved.current = false;
     setMachinePreviewRange(null);
     settledFrameByStreamRef.current.clear();
     setAnnotationReadyRoot(null);
@@ -1083,6 +1107,7 @@ function App() {
   }
 
   function resetWorkspaceData() {
+    setReviewedEpisodes({});
     episodeFocusRestoreToken.current += 1;
     setEpisodeFocusRestoreRequest(null);
     resetLoadedData();
@@ -1174,6 +1199,7 @@ function App() {
     resetPlaybackPreparation();
     frameRef.current = next;
     setCurrentFrame(next);
+    if (proofreading) setMachinePreviewRange(null);
   }
 
   function moveFrame(delta: number) {
@@ -1206,6 +1232,7 @@ function App() {
   useEffect(() => {
     if (!data) return;
     const handleShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       if (document.querySelector("dialog[open]") || target?.closest("input, textarea, select, button, [contenteditable='true']")) return;
       if (event.code === "Space") {
@@ -1237,9 +1264,21 @@ function App() {
     setCurrentFrame(frame);
     resetPlaybackPreparation();
   }
+  function playGlobal() {
+    if (!data) return;
+    setMachinePreviewRange(null);
+    const frame = playbackStartFrame(frameRef.current, getMinFrame(data), primaryStream?.lastFrame ?? getMaxFrame(data));
+    frameRef.current = frame; setCurrentFrame(frame); resetPlaybackPreparation();
+    setPlaying(true);
+  }
+
+  function playSegment(range: ExportRange) {
+    frameRef.current = range.startFrame; setCurrentFrame(range.startFrame);
+    setMachinePreviewRange(range); resetPlaybackPreparation(); setPlaying(true);
+  }
 
   function changeView(next: View) {
-    if (reviewUnsaved.current) { setNotice("请等待 review 保存完成；保存失败时请先重试。"); return; }
+    if (reviewUnsaved.current) { setNotice("正在保存当前修改，请稍候。"); return; }
     setPlaying(false);
     if (machinePreviewRange) exitMachinePreview();
     setView(next);
@@ -1563,9 +1602,23 @@ function App() {
     () => statusForRange(report, clipRange),
     [clipEndFrame, clipStartFrame, report],
   );
+  useEffect(() => {
+    let active = true;
+    setReviewedEpisodes({});
+    if (!authStatus?.currentUser || !scan) return;
+    void listMyMachineReviews(scan.episodes.map((episode) => episode.root)).then((records) => {
+      if (!active) return;
+      setReviewedEpisodes((current) => ({
+        ...Object.fromEntries(records.map((record) => [record.sourcePath, record.status])),
+        ...current,
+      }));
+    }).catch((reason) => { if (active) setNotice(`账号审核记录读取失败，可重新加载目录重试：${toMessage(reason)}`); });
+    return () => { active = false; };
+  }, [authStatus?.currentUser?.username, scan]);
+
   const visibleEpisodes = useMemo(
-    () => scan?.episodes.filter((episode) => !skippedEpisodeRoots[episode.root]) ?? [],
-    [scan?.episodes, skippedEpisodeRoots],
+    () => scan?.episodes.filter((episode) => (!skippedEpisodeRoots[episode.root] || Boolean(reviewedEpisodes[episode.root]))) ?? [],
+    [scan?.episodes, skippedEpisodeRoots, reviewedEpisodes],
   );
   const episodeActions = useRef({ select: selectEpisode, load: loadEpisodeForReview, skip: skipEpisode });
   episodeActions.current = { select: selectEpisode, load: loadEpisodeForReview, skip: skipEpisode };
@@ -1806,14 +1859,17 @@ function App() {
         </div>
       ) : null}
 
-      <div className="workspace">
-        <aside className="sidebar">
+      <div className={`workspace${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`}>
+        <aside className="sidebar" style={{ "--sidebar-scale": sidebarScale } as CSSProperties}>
           <div className="sidebar-heading">
             <div>
               <span className="section-kicker">SOURCE</span>
               <h1>记录</h1>
             </div>
             <div className="sidebar-heading-actions">
+              <button className="icon-button" type="button" onClick={() => setSidebarCollapsed((value) => !value)} title={sidebarCollapsed ? "展开目录" : "收起目录"} aria-label={sidebarCollapsed ? "展开目录" : "收起目录"}>
+                {sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+              </button>
               {skippedEpisodeCount ? (
                 <button className="icon-button" type="button" onClick={restoreSkippedEpisodes} disabled={busy} title="恢复跳过的数据" aria-label="恢复跳过的数据">
                   <RotateCcw size={17} />
@@ -1831,6 +1887,7 @@ function App() {
               </button>
             </div>
           </div>
+          {!sidebarCollapsed ? <label className="sidebar-zoom">目录缩放<input type="range" min="0.85" max="1.15" step="0.05" value={sidebarScale} onChange={(event) => setSidebarScale(event.currentTarget.valueAsNumber)} /></label> : null}
           <div className="sidebar-path" title={sourcePath}>{sourcePath ? shortPath(sourcePath, 38) : "等待 SD 卡"}</div>
           {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
           <div className="episode-list">
@@ -1838,7 +1895,7 @@ function App() {
               visibleEpisodes.map((episode) => <EpisodeListRow
                 key={episode.root} episode={episode} selected={selectedEpisode?.root === episode.root}
                 sourceState={episodeSourceStates[episode.root] ?? "available"}
-                savedAnnotation={annotationTags[episode.root]} busy={busy}
+                savedAnnotation={annotationTags[episode.root]} reviewStatus={reviewedEpisodes[episode.root]} busy={busy}
                 actions={episodeActions} buttonRefs={episodeButtonRefs}
               />)
             ) : skippedEpisodeCount ? (
@@ -1909,7 +1966,7 @@ function App() {
                   onReveal={(path) => void revealExport(path)}
                 />
               ) : !data ? null : view === "proofread" || view === "review" ? (
-                <div className="review-view">
+                <div className="review-view review-main-grid">
                   <section className="camera-section">
                     <div className="section-heading compact-heading">
                       <div>
@@ -1984,12 +2041,13 @@ function App() {
                         total={availableStreams.length}
                       />
                     ) : null}
-                    <MachineAnnotationPanel key={`machine:${data.summary.root}`} data={data} busy={busy || annotationReadyRoot !== data.summary.root}
-                      playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onRangeChange: setMachinePreviewRange, controls: (
+                  </section>
+                    <MachineAnnotationPanel username={authStatus.currentUser?.username ?? ""} key={`machine:${data.summary.root}`} data={data} busy={busy || annotationReadyRoot !== data.summary.root}
+                      playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onPlay: playSegment, onToggle: togglePlayback, controls: (
 <>
                           <div className="transport-buttons">
                             <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧"><SkipBack size={17} /></button>
-                            <button className="play-button" type="button" onClick={togglePlayback} title={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
+                            <button className="play-button" type="button" onClick={() => { if (playing && !machinePreviewRange) setPlaying(false); else playGlobal(); }} title={playing && !machinePreviewRange ? "暂停" : "全局播放"} aria-label={playing && !machinePreviewRange ? "暂停" : "全局播放"}>{playing && !machinePreviewRange ? <Pause size={17} /> : <Play size={17} />}</button>
                             <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧"><SkipForward size={17} /></button>
                           </div>
                           <span className="segment-frame-readout">帧 {currentFrame} / {maxFrame}</span>
@@ -2008,12 +2066,16 @@ function App() {
                           </label>
                         </>
                       ) }}
+                      onReviewSaved={(saved) => {
+                        setReviewedEpisodes((current) => saved.status === "approved" || saved.status === "rejected" || current[data.summary.root]
+                          ? { ...current, [data.summary.root]: saved.status ?? "pending" } : current);
+                      }}
                       onUnsavedChange={handleReviewUnsaved} onComplete={(status) => {
                         const nextRoot = nextAvailableEpisodeRoot(data.summary.root);
                         setNotice(`${data.summary.name} 质检${status === "approved" ? "通过" : "不通过"}，review 已保存。${nextRoot ? "正在载入下一条。" : "已是最后一条。"}`);
+                        setReviewedEpisodes((current) => ({ ...current, [data.summary.root]: status }));
                         if (nextRoot) setQueuedEpisodeRoot(nextRoot);
                       }} />
-                  </section>
                   <section className="telemetry-section">
                     <div className="section-heading compact-heading">
                       <div>
@@ -2136,12 +2198,13 @@ function EmptyWorkspace({
 // Keep the NAS catalog out of the per-frame video render work. Action refs
 // retain current application state without invalidating every row on a tick.
 const EpisodeListRow = memo(function EpisodeListRow({
-  episode, selected, sourceState, savedAnnotation, busy, actions, buttonRefs,
+  episode, selected, sourceState, savedAnnotation, reviewStatus, busy, actions, buttonRefs,
 }: {
   episode: EpisodeSummary;
   selected: boolean;
   sourceState: EpisodeSourceState;
   savedAnnotation?: EpisodeAnnotation;
+  reviewStatus?: "pending" | "approved" | "rejected";
   busy: boolean;
   actions: RefObject<{
     select: (episode: EpisodeSummary) => void;
@@ -2177,6 +2240,7 @@ const EpisodeListRow = memo(function EpisodeListRow({
         {completed && savedAnnotation ? <span className="episode-annotation-tag"
           title={`已标注 · ${savedAnnotation.trajectoryCode} · r${savedAnnotation.revision}`}
           aria-label="已标注">已标注</span> : null}
+        {reviewStatus ? <span className="episode-annotation-tag" aria-label="已审核">我已审·{reviewStatus === "pending" ? "待复审" : reviewStatus === "approved" ? "通过" : "不通过"}</span> : null}
         <EpisodeSourceMark state={sourceState} /><ChevronRight size={15} />
       </span>
       <span className="episode-item-meta">{episode.indexed
@@ -2471,7 +2535,7 @@ function ReleaseHistoryDialog({
                 <time dateTime={release.date}>{release.date}</time>
               </div>
               <p className="version-history-summary">
-                {RELEASE_SUMMARIES_ZH[release.version] ?? "此版本没有中文更新摘要。"}
+                {RELEASE_SUMMARIES_ZH[release.version] ?? (release.notes.filter((note) => /[\u3400-\u9fff]/.test(note)).join("；") || "此版本没有中文更新摘要。")}
               </p>
               {release.notes.length ? (
                 <details className="version-history-details">
