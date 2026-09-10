@@ -1507,9 +1507,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .review-main-grid .frame-resolution { display: none; }
 }
 @media (max-width: 760px) {
+  .topbar { flex-wrap: wrap; padding-block: 8px; }
+  .brand-lockup { flex: 1 0 100%; }
+  .topbar-actions { flex-wrap: wrap; }
   .review-main-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "replay" "editor" "telemetry"; grid-template-rows: auto; }
   .review-main-grid > .quality-workspace { border-left: 0; padding-left: 0; }
-  .review-main-grid .camera-grid { height: 260px; }
+  .review-main-grid .camera-grid { height: auto; }
   .review-main-grid > .quality-workspace { overflow: visible; background: transparent; }
   .review-main-grid .quality-inspector .machine-segment-list { max-height: 260px; }
 }

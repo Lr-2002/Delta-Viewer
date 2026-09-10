@@ -266,6 +266,18 @@ test("unified layout fits desktop and mobile with a visible interactive skeleton
     await page.mouse.up();
     assert.notEqual((await pixels()).hash, before.hash);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    assert.ok(await page.locator(".camera-grid").evaluate((grid) => {
+      const bounds = grid.getBoundingClientRect();
+      const frames = [...grid.querySelectorAll(".frame-panel")].map((item) => item.getBoundingClientRect());
+      return frames.every((frame, index) => frame.bottom <= bounds.bottom + 1
+        && frames.slice(index + 1).every((other) => frame.right <= other.left + 1
+          || other.right <= frame.left + 1 || frame.bottom <= other.top + 1 || other.bottom <= frame.top + 1));
+    }), "camera frames stay within the grid without overlapping");
+    if (width <= 760) {
+      const brand = await page.locator(".brand-lockup").boundingBox();
+      const actions = await page.locator(".topbar-actions").boundingBox();
+      assert.ok(actions.y >= brand.y + brand.height, "mobile toolbar leaves room for the brand");
+    }
     if (width >= 1440) {
       const replay = await page.locator(".camera-section").boundingBox();
       const telemetry = await page.locator(".telemetry-section").boundingBox();

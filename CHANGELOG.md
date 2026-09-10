@@ -9,6 +9,7 @@ after `main` CI succeeds for a coordinated version change.
 - 人工修改保存到 description.json，根 session.json 记录审核结论、原因、署名及唯一修订；保留原始机标和采集字段。
 - 持久保存各账号审核关联和上次目录，恢复应急草稿，重试时保留人工内容并备份被替换的结果；兼容已挂载 CIFS 的网络目录保存。
 - 修复自动模式遗漏 .session_meta 内 Flash 机标的问题，并拒绝链接或异常机标路径。
+- 修复窄窗口五路画面与顶部按钮重叠，增加画面边界和工具栏布局回归。
 - 通过既有流水线发布完整 Windows x64、macOS arm64、Ubuntu x64 UNSIGNED 安装器和签名更新包；可信发布者签名、实卡及大容量验收缺口保持开放。
 
 ## 1.0.17 - 2026-09-10
