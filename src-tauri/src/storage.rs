@@ -608,6 +608,7 @@ fn platform_volume_details(path: &Path) -> (String, Option<String>, String) {
 #[derive(Debug, Eq, PartialEq)]
 struct LinuxMountInfo {
     device: String,
+    root: PathBuf,
     mount_point: PathBuf,
     filesystem: String,
     source: String,
@@ -651,6 +652,7 @@ fn parse_linux_mountinfo(contents: &str) -> Vec<LinuxMountInfo> {
             }
             Some(LinuxMountInfo {
                 device: mount_fields[2].to_string(),
+                root: decode_mountinfo_path(mount_fields[3]),
                 mount_point: decode_mountinfo_path(mount_fields[4]),
                 filesystem: filesystem_fields.next()?.to_string(),
                 source: filesystem_fields
@@ -671,6 +673,94 @@ fn linux_mount_for_path<'a>(
         .iter()
         .filter(|mount| path.starts_with(&mount.mount_point))
         .max_by_key(|mount| mount.mount_point.components().count())
+}
+
+// GVFS SMB cannot reopen a file for read/write. Use an existing kernel mount
+// of the same share for review transactions, which require real file locks.
+pub(crate) fn review_write_root(path: &Path) -> AppResult<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::net::ToSocketAddrs;
+        let mounts = parse_linux_mountinfo(&fs::read_to_string("/proc/self/mountinfo")?);
+        let Some(mount) = linux_mount_for_path(path, &mounts) else {
+            return Ok(path.to_path_buf());
+        };
+        if mount.filesystem != "fuse.gvfsd-fuse" {
+            return Ok(path.to_path_buf());
+        }
+        let candidate = native_smb_path(path, &mounts, |left, right| {
+            if left.eq_ignore_ascii_case(right) {
+                return true;
+            }
+            let Ok(left) = (left, 445).to_socket_addrs() else {
+                return false;
+            };
+            let Ok(right) = (right, 445).to_socket_addrs() else {
+                return false;
+            };
+            let right: Vec<_> = right.map(|address| address.ip()).collect();
+            left.into_iter()
+                .any(|address| right.contains(&address.ip()))
+        });
+        let Some(candidate) = candidate else {
+            return Err(AppError::Message(
+                "REVIEW_NATIVE_MOUNT_REQUIRED: 当前 GVFS 网络目录不支持复核文件锁，请将同一 SMB 共享挂载为 CIFS 后重试；待保存草稿已保留".into(),
+            ));
+        };
+        let resolved = candidate.canonicalize()?;
+        if resolved != candidate {
+            return Err(AppError::Message(
+                "REVIEW_MOUNT_MISMATCH: 复核写入目录不能经过符号链接".into(),
+            ));
+        }
+        Ok(resolved)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(path.to_path_buf())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn native_smb_path(
+    path: &Path,
+    mounts: &[LinuxMountInfo],
+    same_server: impl Fn(&str, &str) -> bool,
+) -> Option<PathBuf> {
+    let gvfs = linux_mount_for_path(path, mounts)?;
+    if gvfs.filesystem != "fuse.gvfsd-fuse" {
+        return None;
+    }
+    let mut components = path.strip_prefix(&gvfs.mount_point).ok()?.components();
+    let descriptor = components
+        .next()?
+        .as_os_str()
+        .to_str()?
+        .strip_prefix("smb-share:")?;
+    let fields: std::collections::BTreeMap<_, _> = descriptor
+        .split(',')
+        .filter_map(|field| field.split_once('='))
+        .collect();
+    let server = *fields.get("server")?;
+    let share = *fields.get("share")?;
+    if fields.get("port").is_some_and(|port| *port != "445") {
+        return None;
+    }
+    let relative = components.as_path();
+    if relative
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    mounts.iter().find_map(|mount| {
+        if !matches!(mount.filesystem.as_str(), "cifs" | "smb3") || mount.root != Path::new("/") {
+            return None;
+        }
+        let (host, mounted_share) = mount.source.strip_prefix("//")?.split_once('/')?;
+        if !share.eq_ignore_ascii_case(mounted_share) || !same_server(server, host) {
+            return None;
+        }
+        Some(mount.mount_point.join(relative))
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -778,6 +868,34 @@ mod tests {
     }
 
     #[test]
+    fn gvfs_review_mapping_requires_the_same_server_share_and_full_mount() {
+        let mounts = super::parse_linux_mountinfo(
+            "1 0 0:1 / /run/user/1000/gvfs rw - fuse.gvfsd-fuse gvfsd-fuse rw\n\
+             2 0 0:2 / /mnt/team\\040data rw - cifs //10.1.40.2/Datasets rw\n",
+        );
+        let path = PathBuf::from(
+            "/run/user/1000/gvfs/smb-share:server=nas.local,share=datasets/Task/sample",
+        );
+        let same = |left: &str, right: &str| left == "nas.local" && right == "10.1.40.2";
+        assert_eq!(
+            super::native_smb_path(&path, &mounts, same),
+            Some(PathBuf::from("/mnt/team data/Task/sample"))
+        );
+        assert!(super::native_smb_path(&path, &mounts, |_, _| false).is_none());
+        for path in [
+            "/run/user/1000/gvfs/smb-share:server=nas.local,share=private/Task/sample",
+            "/run/user/1000/gvfs/smb-share:server=nas.local,share=datasets,port=1445/Task/sample",
+            "/run/user/1000/gvfs/smb-share:server=nas.local,share=datasets/../sample",
+            "/tmp/smb-share:server=nas.local,share=datasets/Task/sample",
+        ] {
+            assert!(super::native_smb_path(PathBuf::from(path).as_path(), &mounts, same).is_none());
+        }
+        let mut partial_mount = mounts;
+        partial_mount[1].root = PathBuf::from("/other-directory");
+        assert!(super::native_smb_path(&path, &partial_mount, same).is_none());
+    }
+
+    #[test]
     fn parses_linux_mountinfo_and_selects_the_deepest_mount() {
         let mounts = super::parse_linux_mountinfo(
             "36 25 0:32 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
@@ -799,6 +917,7 @@ mod tests {
     fn classifies_linux_network_mounts_as_remote() {
         let mount = super::LinuxMountInfo {
             device: "0:42".into(),
+            root: PathBuf::from("/"),
             mount_point: PathBuf::from("/mnt/team"),
             filesystem: "nfs4".into(),
             source: "server:/records".into(),
@@ -807,6 +926,7 @@ mod tests {
 
         let gvfs_smb = super::LinuxMountInfo {
             device: "0:77".into(),
+            root: PathBuf::from("/"),
             mount_point: PathBuf::from("/run/user/1000/gvfs"),
             filesystem: "fuse.gvfsd-fuse".into(),
             source: "gvfsd-fuse".into(),

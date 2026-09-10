@@ -93,6 +93,7 @@ struct IndexedFile {
     relative: String,
     len: u64,
     modified_ns: u128,
+    content_fingerprint: Option<blake3::Hash>,
 }
 
 impl EpisodeIndex {
@@ -1105,6 +1106,7 @@ fn collect_segment_indexed_files(
             relative: entry.file_name().to_string_lossy().into_owned(),
             len: metadata.len(),
             modified_ns,
+            content_fingerprint: None,
         });
     }
     files.sort_by(|left, right| left.relative.cmp(&right.relative));
@@ -1139,11 +1141,39 @@ fn collect_indexed_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<I
             .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
+        // Review QC is mutable, while capture fields in session.json must still
+        // invalidate the source identity if they change.
+        let content_fingerprint = if relative == "session.json" {
+            let bytes = crate::machine_annotation::read_bytes(entry.path())?;
+            let document = bytes
+                .as_deref()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
+            if let Some(serde_json::Value::Object(mut fields)) = document {
+                fields.remove("qc");
+                fields.remove("reviewerName");
+                fields.remove("reviewerUsername");
+                fields.remove("qcReviewers");
+                fields.remove("reviewedAt");
+                fields.remove("revision");
+                fields.remove("appVersion");
+                fields.remove("decision");
+                fields.remove("deleted");
+                if fields.is_empty() {
+                    continue;
+                }
+                Some(blake3::hash(&serde_json::to_vec(&fields)?))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         files.push(IndexedFile {
             path: entry.path().to_path_buf(),
             relative,
             len: metadata.len(),
             modified_ns,
+            content_fingerprint,
         });
     }
     files.sort_by(|left, right| left.relative.cmp(&right.relative));
@@ -1155,8 +1185,12 @@ fn fingerprint_indexed_files(files: &[IndexedFile]) -> String {
     for path in files {
         hasher.update(path.relative.as_bytes());
         hasher.update(&[0]);
-        hasher.update(&path.len.to_le_bytes());
-        hasher.update(&path.modified_ns.to_le_bytes());
+        if let Some(fingerprint) = path.content_fingerprint {
+            hasher.update(fingerprint.as_bytes());
+        } else {
+            hasher.update(&path.len.to_le_bytes());
+            hasher.update(&path.modified_ns.to_le_bytes());
+        }
     }
     hasher.finalize().to_hex().to_string()
 }

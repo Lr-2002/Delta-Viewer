@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "dohc-viewer"
-version = "1.0.8"
+version = "1.0.18"
 dependencies = [
  "arrow-array",
  "base64 0.22.1",
@@ -1074,6 +1074,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-updater",
  "thiserror 2.0.19",
+ "time",
  "walkdir",
  "windows-sys 0.61.2",
 ]

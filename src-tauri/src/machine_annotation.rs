@@ -138,19 +138,17 @@ pub fn load_selected(
     source_name: Option<&str>,
 ) -> AppResult<Option<MachineAnnotation>> {
     let root = fs::canonicalize(root)?;
-    let name = match source_name {
+    let (name, bytes) = match source_name {
         Some(name) => {
             validate_source_name(name)?;
-            name
+            (name, read_source_bytes(&root, name)?)
         }
-        None => match fs::symlink_metadata(root.join(FLASH_SOURCE)) {
-            Ok(_) => FLASH_SOURCE,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => DEFAULT_SOURCE,
-            Err(error) => return Err(error.into()),
+        None => match read_source_bytes(&root, FLASH_SOURCE)? {
+            Some(bytes) => (FLASH_SOURCE, Some(bytes)),
+            None => (DEFAULT_SOURCE, read_source_bytes(&root, DEFAULT_SOURCE)?),
         },
     };
-    let path = root.join(name);
-    let Some(bytes) = read_bytes(&path)? else {
+    let Some(bytes) = bytes else {
         return Ok(None);
     };
     parse(
@@ -163,6 +161,23 @@ pub fn load_selected(
         annotation.source_name = name.into();
         Some(annotation)
     })
+}
+
+fn read_source_bytes(root: &Path, name: &str) -> AppResult<Option<Vec<u8>>> {
+    let directory = root.join(".session_meta");
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_dir() || directory.canonicalize()? != directory {
+                return Err(invalid("机标元数据目录不能是符号链接或非目录文件"));
+            }
+            if let Some(bytes) = read_bytes(&directory.join(name))? {
+                return Ok(Some(bytes));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    read_bytes(&root.join(name))
 }
 
 pub(crate) fn read_bytes(path: &Path) -> AppResult<Option<Vec<u8>>> {
@@ -210,6 +225,14 @@ pub(crate) fn read_bytes(path: &Path) -> AppResult<Option<Vec<u8>>> {
 }
 
 fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
+    parse_document(bytes, episode_name, false)
+}
+
+pub(crate) fn parse_human(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
+    parse_document(bytes, episode_name, true)
+}
+
+fn parse_document(bytes: &[u8], episode_name: &str, human: bool) -> AppResult<MachineAnnotation> {
     let document: Document =
         serde_json::from_slice(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes))
             .map_err(|error| invalid(&format!("机标 JSON 格式无效：{error}")))?;
@@ -266,12 +289,12 @@ fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
         let description = attributes_zh
             .get("动作描述")
             .and_then(Value::as_str)
-            .filter(|text| has_chinese(text))
+            .filter(|text| human || has_chinese(text))
             .or_else(|| {
                 attributes
                     .get("semantic_description")
                     .and_then(Value::as_str)
-                    .filter(|text| has_chinese(text))
+                    .filter(|text| human || has_chinese(text))
             })
             .unwrap_or_default()
             .to_owned();
@@ -437,6 +460,52 @@ mod tests {
         assert!(load(&root).is_err());
         fs::remove_dir_all(temp).unwrap();
     }
+    #[test]
+    fn automatic_selection_prefers_metadata_flash_and_preserves_root_fallback() {
+        let temp = std::env::temp_dir().join(format!(
+            "dohc-machine-selection-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp.join("sample");
+        let metadata = root.join(".session_meta");
+        fs::create_dir_all(&metadata).unwrap();
+        let bytes = serde_json::to_vec(&fixture()).unwrap();
+        fs::write(root.join(DEFAULT_SOURCE), &bytes).unwrap();
+        let mut flash = fixture();
+        flash["schema_version"] = 4.into();
+        let flash_bytes = serde_json::to_vec(&flash).unwrap();
+        fs::write(metadata.join(FLASH_SOURCE), &flash_bytes).unwrap();
+        let selected = load_selected(&root, None).unwrap().unwrap();
+        assert_eq!(selected.source_name, FLASH_SOURCE);
+        assert_eq!(selected.source_json.as_bytes(), flash_bytes);
+        assert_eq!(load(&root).unwrap().unwrap().source_json.as_bytes(), bytes);
+        fs::write(metadata.join(FLASH_SOURCE), b"invalid json").unwrap();
+        assert!(load_selected(&root, None).is_err());
+        fs::remove_file(metadata.join(FLASH_SOURCE)).unwrap();
+        assert_eq!(
+            load_selected(&root, None).unwrap().unwrap().source_name,
+            DEFAULT_SOURCE
+        );
+        fs::write(root.join(FLASH_SOURCE), &flash_bytes).unwrap();
+        assert_eq!(
+            load_selected(&root, None).unwrap().unwrap().source_name,
+            FLASH_SOURCE
+        );
+        fs::remove_dir_all(&metadata).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&root, &metadata).unwrap();
+            assert!(load_selected(&root, None).is_err());
+            fs::remove_file(&metadata).unwrap();
+        }
+        fs::write(&metadata, b"not a directory").unwrap();
+        assert!(load_selected(&root, None).is_err());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
     #[test]
     #[ignore = "Requires an explicitly selected private NAS episode"]
     fn reads_selected_nas_machine_annotation() {

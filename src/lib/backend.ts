@@ -465,6 +465,13 @@ export async function loadMachineAnnotation(sourcePath: string, sourceName?: str
 }
 
 const demoMachineReviews = new Map<string, import("../types").MachineReview>();
+export async function listMyMachineReviews(sourcePaths: string[]): Promise<import("../types").AccountReview[]> {
+  if (isTauriRuntime()) return invoke("list_my_machine_reviews", { sourcePaths });
+  const user = demoActor();
+  const records = JSON.parse(localStorage.getItem(`dohc.demo.account-reviews:${user.username}`) ?? "{}") as Record<string, import("../types").AccountReview>;
+  return sourcePaths.flatMap((root) => records[root] ? [records[root]] : []);
+}
+
 export async function loadMachineReview(sourcePath: string, sourceName?: string): Promise<import("../types").MachineReview> {
   if (isTauriRuntime()) return invoke("load_machine_review", { sourcePath, sourceName });
   demoActor();
@@ -479,17 +486,50 @@ export async function loadMachineReview(sourcePath: string, sourceName?: string)
     })) };
 }
 
-export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending"): Promise<import("../types").MachineReview> {
-  if (isTauriRuntime()) return invoke("save_machine_review", { request: { sourcePath, sourceHash, expectedRevision, segments, sourceName, status } });
+export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending", rejectionReason?: string): Promise<import("../types").MachineReview> {
+  if (isTauriRuntime()) return invoke("save_machine_review", { request: { sourcePath, sourceHash, expectedRevision, segments, sourceName, status, rejectionReason } });
   demoActor();
   const state = await loadMachineReview(sourcePath, sourceName);
-  if (state.revision !== expectedRevision || state.sourceHash !== sourceHash) throw new Error("复核保存冲突");
+  // The latest explicit human snapshot wins, with a new revision of the stored result.
   const retained = segments.filter((segment) => !segment.deleted);
+  const reason = status === "rejected" ? rejectionReason?.trim() ?? "" : "";
+  if (status === "rejected" && !["骨架抖动", "镜头污渍", "镜头遮挡", "动作错误", "画面过曝"].includes(reason)
+    && !(reason.startsWith("其他原因：") && reason.slice(5).trim() && [...reason.slice(5).trim()].length <= 1000)) throw new Error("请选择不通过原因；其他原因需填写 1 至 1000 字");
   if (status === "approved" && !retained.length) throw new Error("没有保留片段，不能通过质检");
-  const next = { ...state, workflowVersion: 2, status, versionId: crypto.randomUUID(), previousVersionId: state.versionId ?? "", revision: state.revision + 1,
+  const versionId = crypto.randomUUID().replaceAll("-", "");
+  const old = new Map(state.segments.map((item) => [item.sourceIndex, item]));
+  const counts = [0, 0, 0, 0, 0];
+  for (const item of segments) {
+    const before = old.get(item.sourceIndex);
+    if (!before) { if (!item.deleted) counts[0]++; }
+    else if (item.deleted && !before.deleted) counts[1]++;
+    else if (!item.deleted) {
+      if (before.deleted) counts[2]++;
+      if (before.startFrame !== item.startFrame || before.endFrame !== item.endFrame) counts[3]++;
+      if (before.description !== item.description) counts[4]++;
+    }
+  }
+  const changes = ["新增片段", "删除片段", "恢复片段", "调整帧数", "修改描述"].flatMap((action, index) => counts[index] ? [`${action} ${counts[index]} 段`] : []);
+  if (status === "rejected") changes.push(`审核不通过：${reason}`);
+  else if (status === "approved") changes.push("审核通过");
+  else if (state.status && state.status !== status) changes.push("改为待审核");
+  if (!changes.length) changes.push("保存待审核记录");
+  const changeSummary = changes.join("；");
+  const next = { ...state, workflowVersion: 4, status, versionId, previousVersionId: state.versionId ?? "", revision: state.revision + 1,
+    rejectionReason: reason, changeSummary, revisionLabel: `${versionId} · ${changeSummary}`, appVersion: APP_VERSION,
     segments: segments.map((item) => ({ ...item, decision: item.deleted ? "pending" as const : status })), published: true, updatedAtMs: Date.now(), reviewer: "demo" };
-  demoMachineReviews.set(`${sourcePath}:${sourceName ?? "bailian_annotation.json"}`, next);
-  return structuredClone(next);
+  const user = demoActor();
+  const key = `dohc.demo.account-reviews:${user.username}`;
+  const records = JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, import("../types").AccountReview>;
+  if (status !== "pending" || records[sourcePath]) {
+    records[sourcePath] = { sourcePath, username: user.username, reviewerName: user.displayName,
+      status, rejectionReason: reason, revision: next.revisionLabel, updatedAtMs: next.updatedAtMs };
+    localStorage.setItem(key, JSON.stringify(records));
+  }
+  next.reviewer = user.displayName;
+  const saved = { ...next, reviewerUsername: user.username };
+  demoMachineReviews.set(`${sourcePath}:${sourceName ?? "bailian_annotation.json"}`, saved);
+  return structuredClone(saved);
 }
 
 const AUDIT_QUEUE_KEY = "dohc-viewer.pending-audits.v1";

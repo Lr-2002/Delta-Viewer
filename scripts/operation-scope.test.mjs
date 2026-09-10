@@ -14,7 +14,7 @@ before(async () => {
     appType: "custom",
     logLevel: "error",
     optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true },
+    server: { middlewareMode: true, watch: null },
   });
   ({ OperationScope } = await server.ssrLoadModule("/src/lib/operationScope.ts"));
 });
