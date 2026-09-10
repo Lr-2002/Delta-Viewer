@@ -206,8 +206,13 @@ if (!browserExecutable && requireBrowser) {
             case "install_app_update":
               return false;
             case "list_task_definitions":
+            case "list_assigned_task_definitions":
+            case "get_assigned_tasks":
+            case "list_my_machine_reviews":
             case "list_operation_errors":
               return [];
+            case "get_assigned_task_activity":
+              return { date: args.date, events: [] };
             case "list_annotated_episodes":
               return [
                 annotatedEpisode("episode-success", "task-001", "/source/episode-success"),
