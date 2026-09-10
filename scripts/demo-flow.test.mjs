@@ -495,7 +495,7 @@ if (!browserExecutable) {
       assert.ok(layout.visiblePixels > 100, `blank skeleton canvas at ${viewport.width}px`);
       assert.ok(layout.bonePixels > 20, `missing skeleton bones at ${viewport.width}px`);
       assert.ok(layout.boneBounds.height > layout.boneBounds.width, `skeleton is not upright at ${viewport.width}px: ${JSON.stringify(layout.boneBounds)}`);
-      if (viewport.width > 760) {
+      if (viewport.width > 1100) {
         assert.ok(layout.skeleton.left >= layout.camera.right - 0.5, JSON.stringify(layout));
         assert.ok(Math.abs(layout.skeleton.top - layout.camera.top) < 0.5, JSON.stringify(layout));
       } else {
