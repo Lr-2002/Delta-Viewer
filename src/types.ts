@@ -482,7 +482,21 @@ export interface ReviewSegment {
   decision: "pending" | "approved" | "rejected";
 }
 
+export interface AccountReview {
+  sourcePath: string;
+  username: string;
+  reviewerName: string;
+  status: "pending" | "approved" | "rejected";
+  rejectionReason: string;
+  revision: string;
+  updatedAtMs: number;
+}
+
 export interface MachineReview {
+  reviewerUsername?: string;
+  rejectionReason?: string;
+  revisionLabel?: string;
+  changeSummary?: string;
   workflowVersion?: number;
   status?: "pending" | "approved" | "rejected";
   versionId?: string;

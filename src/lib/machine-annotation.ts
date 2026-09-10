@@ -37,3 +37,49 @@ export function adjustReviewBoundary(segments: ReviewSegment[], sourceIndex: num
     return segment;
   });
 }
+
+export function splitReviewSegment(segments: ReviewSegment[], sourceIndex: number, frame: number): ReviewSegment[] {
+  const active = segments.find((item) => item.sourceIndex === sourceIndex && !item.deleted);
+  if (!active || !Number.isSafeInteger(frame) || frame <= active.startFrame || frame > active.endFrame) return segments;
+  const nextIndex = Math.max(-1, ...segments.map((item) => item.sourceIndex)) + 1;
+  return [...segments.map((item) => item === active ? { ...item, endFrame: frame - 1, decision: "pending" as const } : item),
+    { ...active, sourceIndex: nextIndex, startFrame: frame, decision: "pending" }];
+}
+
+export function deleteReviewSegment(segments: ReviewSegment[], sourceIndex: number): ReviewSegment[] {
+  const removed = segments.find((item) => item.sourceIndex === sourceIndex && !item.deleted);
+  if (!removed) return segments;
+  const retained = segments.filter((item) => !item.deleted && item !== removed);
+  const previous = retained.filter((item) => item.endFrame < removed.startFrame).sort((a, b) => b.endFrame - a.endFrame)[0];
+  const following = retained.filter((item) => item.startFrame > removed.endFrame).sort((a, b) => a.startFrame - b.startFrame)[0];
+  return segments.map((item) => {
+    if (item === removed) return { ...item, deleted: true, decision: "pending" };
+    if (item === following) return { ...item, startFrame: previous ? previous.endFrame + 1 : removed.startFrame, decision: "pending" };
+    return item;
+  });
+}
+
+export function restoreReviewSegments(segments: ReviewSegment[]): ReviewSegment[] {
+  let next = segments.map((item) => ({ ...item }));
+  const removed = segments.filter((item) => item.deleted).sort((a, b) => b.startFrame - a.startFrame);
+  for (const item of removed) {
+    next = next.map((current) => {
+      if (current.sourceIndex === item.sourceIndex) return { ...current, deleted: false, decision: "pending" };
+      if (!current.deleted && current.startFrame <= item.endFrame && current.endFrame > item.endFrame) {
+        return { ...current, startFrame: item.endFrame + 1, decision: "pending" };
+      }
+      return current;
+    });
+  }
+  return next;
+}
+
+export function addReviewSegment(segments: ReviewSegment[], frame: number, frameCount: number): ReviewSegment[] {
+  if (!Number.isSafeInteger(frame) || frame < 0 || frame >= frameCount) return segments;
+  const containing = segments.find((item) => !item.deleted && item.startFrame <= frame && frame <= item.endFrame);
+  if (containing) {
+    return splitReviewSegment(segments, containing.sourceIndex, Math.max(containing.startFrame + 1, frame));
+  }
+  const nextIndex = Math.max(-1, ...segments.map((item) => item.sourceIndex)) + 1;
+  return [...segments, { sourceIndex: nextIndex, startFrame: frame, endFrame: frame, description: "", deleted: false, decision: "pending" }];
+}

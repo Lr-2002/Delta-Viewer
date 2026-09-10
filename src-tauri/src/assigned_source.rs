@@ -18,6 +18,25 @@ struct AssignedSourceRecord {
     source_root: String,
 }
 
+pub fn load_for_user(data_root: &Path, username: &str) -> AppResult<Option<String>> {
+    let own = load(&account_directory(data_root, username))?;
+    if own.is_some() {
+        Ok(own)
+    } else {
+        load(data_root)
+    }
+}
+
+pub fn save_for_user(data_root: &Path, username: &str, source_root: &Path) -> AppResult<String> {
+    save(&account_directory(data_root, username), source_root)
+}
+
+fn account_directory(data_root: &Path, username: &str) -> PathBuf {
+    data_root
+        .join("account-workspaces")
+        .join(blake3::hash(username.as_bytes()).to_hex().as_str())
+}
+
 pub fn load(data_root: &Path) -> AppResult<Option<String>> {
     let path = record_path(data_root);
     let metadata = match fs::symlink_metadata(&path) {
@@ -95,6 +114,22 @@ mod tests {
     use super::{load, save};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn restores_each_accounts_own_directory_after_another_account_switches() {
+        let root = std::env::temp_dir().join(format!("dohc-account-root-{}", super::unix_nanos()));
+        let a = root.join("a");
+        let b = root.join("b");
+        let data = root.join("data");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        let alice = super::save_for_user(&data, "alice", &a).unwrap();
+        let bob = super::save_for_user(&data, "bob", &b).unwrap();
+        assert_eq!(super::load_for_user(&data, "alice").unwrap(), Some(alice));
+        assert_eq!(super::load_for_user(&data, "bob").unwrap(), Some(bob));
+        assert_eq!(super::load_for_user(&data, "new").unwrap(), None);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn stores_and_replaces_only_the_local_mounted_root() {
