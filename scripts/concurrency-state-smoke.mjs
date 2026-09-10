@@ -335,8 +335,13 @@ try {
           case "install_app_update":
             return false;
           case "list_task_definitions":
+          case "list_assigned_task_definitions":
+          case "get_assigned_tasks":
+          case "list_my_machine_reviews":
           case "list_operation_errors":
             return [];
+          case "get_assigned_task_activity":
+            return { date: args.date, events: [] };
           case "record_operation_error":
             return {
               formatVersion: 1,
@@ -399,7 +404,7 @@ try {
   console.log("browser-smoke: app and progress listener loaded");
 
   const chooseSource = page.locator(".topbar-actions button.button-secondary");
-  const rescan = page.locator(".sidebar-heading .icon-button");
+  const rescan = page.getByRole("button", { name: "重新扫描", exact: true });
   assert.equal(await chooseSource.isDisabled(), false);
   assert.equal(await rescan.isDisabled(), false);
 
@@ -451,7 +456,7 @@ try {
   await cancel.click();
   await page.waitForFunction((operationId) => window.__concurrencyMock.calls.cancelOperationIds.includes(operationId), stagedLoad.operationId);
   await page.waitForFunction(() => !document.querySelector(".progress-strip"));
-  await page.waitForFunction(() => document.querySelector(".sidebar-heading .icon-button")?.disabled === false);
+  await page.waitForFunction(() => document.querySelector('[aria-label="重新扫描"]')?.disabled === false);
   assert.equal(await page.locator(".episode-source-state").filter({ hasText: "读取中" }).count(), 0);
   assert.ok(await page.locator(".episode-source-state").filter({ hasText: "可用" }).count() > 0);
   assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.loadEpisode), 1);
@@ -464,7 +469,7 @@ try {
   await page.evaluate(() => window.__concurrencyMock.rejectActiveTask("已有任务正在运行，请先等待或取消当前任务"));
   await page.locator(".alert-error").waitFor();
   assert.match(await page.locator(".alert-error").innerText(), /已有任务正在运行/);
-  await page.waitForFunction(() => document.querySelector(".sidebar-heading .icon-button")?.disabled === false);
+  await page.waitForFunction(() => document.querySelector('[aria-label="重新扫描"]')?.disabled === false);
   console.log("browser-smoke: native rejection restores controls and shows an owned error");
 
   await rescan.click();
