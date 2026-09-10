@@ -594,7 +594,7 @@ Codex 不得自行跳过 patch，也不得因功能大小、兼容性或发布�
 
 1. 保持 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 的 semver 一致。
 2. 每次 Release 必须在 `CHANGELOG.md` 新增唯一、带合法日期且至少包含一条具体变更的当前版本条目；当前版本必须是第一条带日期的版本记录，`Unreleased` 或 `TBD` 不能替代。GitHub Release 正文必须直接展示该条目，不能只放 commit compare 链接。同步更新 PRD 实现状态。
-3. 至少运行 `pnpm check:full`；平台包变更还要运行相应 bundle 检查，并确认私有数据、staged FFmpeg、报告和构建产物未暂存。
+3. 至少运行 `pnpm check:full`；标准私有样例不是硬性前置。平台包变更还要运行相应 bundle 检查，并确认私有数据、staged FFmpeg、报告和构建产物未暂存。
 4. 在非 `main` 分支或本地工作区整理全部改动；将代码、修复、文档、CI、配置、版本号和 Changelog 合并为一个 release-ready commit 后，才可一次性推送或合并到 `main`。不得创建独立的功能 commit 或独立的 release commit。
 5. CI 成功后由 `release.yml` 自动创建 annotated `vX.Y.Z` tag；不要手工创建、移动或覆盖版本 tag。
 6. 确认 annotated tag 精确指向该 `main` commit 后，才可开始下一个版本；一个 tag 不得覆盖多个 commit，一个 commit 也不得复用旧版本 tag。

@@ -353,7 +353,7 @@ segments/
 
 ### 7.3 已知样例基线
 
-本地私有样例位于 `data/raw/2026-07-13_07-34-12`，不进入 Git：
+历史基准样例 `data/raw/2026-07-13_07-34-12` 不进入 Git，也不再作为发布检查的前置条件；如另有外部夹具，可单独运行真实样例测试：
 
 - 981 个文件，80,531,730 字节。
 - 196 条状态记录。
@@ -744,7 +744,7 @@ exFAT 上线测试至少包括：连续写入目标最长记录时长、接近�
 ### 12.6 可重复验证与依赖证据
 
 - 快速检查必须统一执行前端 production build、Rust format、Clippy warnings-as-errors 和常规 Rust tests。
-- 完整检查必须额外运行真实样例导入/hash、健康检查、三个 adapter 生成与内部回读，以及 Tauri debug application build。
+- 完整检查运行通用门禁和 Tauri debug application build；真实样例导入/hash 与三 adapter 回读在具备外部 fixture 时可选执行，不是发布硬性前置。
 - 每次检查必须生成 schemaVersion=1 的本机 JSON 报告，记录应用版本、Git 状态、工具版本、各命令 exit code 和耗时；报告和本地构建产物不进入 Git。
 - FFmpeg staging 必须在复制前验证期望 SHA-256、目标架构、`mpeg4` encoder、非 `--enable-nonfree` 构建、HTTPS 来源、build ID 和许可证输入。
 - bundle 必须包含 FFmpeg 二进制、合并许可证和 provenance manifest，并在构建前回读 hash；标记为非可移植的依赖只能进入显式 local-debug 包。

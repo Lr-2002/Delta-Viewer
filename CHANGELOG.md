@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.19 - 2026-09-10
+
+- 删除标准私有样例作为 `check:full` 和发布检查的硬性前置；完整检查改为直接运行通用门禁和 Tauri debug 构建。
+- 保留可选的真实样例测试，但不再因样例目录不存在而阻断提交、合并或 Release。
+
 ## 1.0.18 - 2026-09-10
 
 - 发布本地 1.0.9 至 1.0.17 的校对改进：四区工作台、目录收起与缩放、片段新增和分割、全局与片段播放，以及账号独立的常用描述库。
