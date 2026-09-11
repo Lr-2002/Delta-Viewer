@@ -152,8 +152,8 @@ pnpm update-mirror:install
 
 `pnpm check` 是快速门禁，包含前端 production build、operation ownership 与
 issue-locate 回归 fixtures、Rust format、Clippy `-D warnings` 和常规 Rust
-tests。`check:full` 额外运行两个私有样例测试和
-Tauri debug no-bundle build；`check:bundle` 再生成当前平台 unsigned debug
+tests。`check:full` 额外运行 Tauri debug no-bundle build，不要求私有样例；
+`check:bundle` 再生成当前平台 unsigned debug
 bundle；macOS 无头环境使用 `scripts/make-dmg.sh` 生成内容等价的 DMG，Linux
 生成并检查 `.deb` 内的主程序和资源。`check:linux` 在任意开发平台静态验证
 deb 依赖/安装门禁、AppStream metadata 和 Tauri 资源配置；该命令不在 CI/CD 中运行。三者均通过 `scripts/release-check.mjs` 写入 ignored 的
@@ -184,15 +184,19 @@ pnpm tauri build --debug --no-bundle
 
 ## 5. 私有样例与测试数据
 
-真实样例路径：
+标准私有样例已删除，之后开发、提交、审核和发布均不要求提供或寻找该样例。
+常规自动化检查使用自包含测试数据。下述路径和基线仅为历史记录，相关 ignored 测试
+只在另行取得匹配数据时自愿运行，不作为任何常规发布门禁。
+
+历史样例路径：
 
 ```text
 data/raw/2026-07-13_07-34-12
 ```
 
-它应包含 981 个文件和 80,531,730 字节，但被 `.gitignore` 排除。不要移动、重写或“修复”此目录。测试输出必须写入测试专属临时目录，并只清理本次测试创建的明确路径。
+历史数据包含 981 个文件和 80,531,730 字节，并被 `.gitignore` 排除。若另行提供数据，不要移动、重写或“修复”源目录。测试输出必须写入测试专属临时目录，并只清理本次测试创建的明确路径。
 
-完整 smoke test：
+可选历史样例 smoke test（不属于 `check:full`）：
 
 ```bash
 export DOHC_SAMPLE_ROOT="$PWD/data/raw/2026-07-13_07-34-12"
@@ -457,7 +461,6 @@ Windows 正式构建只能在 Windows x64 构建机完成。macOS 构建成功�
 
 ```powershell
 pnpm install --frozen-lockfile
-$env:DOHC_SAMPLE_ROOT = "C:\path\to\2026-07-13_07-34-12"
 .\scripts\stage-ffmpeg.ps1 `
   -Source C:\path\to\ffmpeg.exe `
   -ExpectedSha256 $FfmpegSha256 `

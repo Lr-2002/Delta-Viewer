@@ -37,15 +37,6 @@ const cargoCheckEnvironment = {
   TAURI_CONFIG: JSON.stringify({ bundle: { resources: [] } }),
 };
 
-async function pathExists(target) {
-  try {
-    await access(target, fsConstants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function usage() {
   console.log(`Usage: node scripts/release-check.mjs [options]
 
@@ -742,21 +733,12 @@ async function main() {
     );
 
     if (options.profile === "full") {
-      const ffmpegManifest = path.join(root, "src-tauri/resources/ffmpeg-manifest.json");
-      if (await pathExists(ffmpegManifest)) {
-        await runCommand(
-          report,
-          "Tauri debug application build",
-          commands.pnpm,
-          pnpmArguments(["tauri", "build", "--debug", "--no-bundle", "--ci"]),
-        );
-      } else {
-        report.checks.push({
-          name: "Tauri debug application build",
-          status: "skipped",
-          detail: "FFmpeg resources are not staged; platform packaging supplies them in CI",
-        });
-      }
+      await runCommand(
+        report,
+        "Tauri debug application build",
+        commands.pnpm,
+        pnpmArguments(["tauri", "build", "--debug", "--no-bundle", "--ci"]),
+      );
     }
 
     if (options.bundle) {
