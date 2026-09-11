@@ -93,6 +93,22 @@ impl AuthState {
             .ok_or_else(|| AppError::Message("AUTH_REQUIRED: 请重新登录用户中心账号".into()))
     }
 
+    pub(crate) fn managed_session(&self) -> AppResult<(UserIdentity, String)> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| AppError::Message("用户中心登录会话不可用".into()))?;
+        if session.workspace_mode != Some(WorkspaceMode::Managed) {
+            return Err(AppError::Message("MANAGED_MODE_REQUIRED".into()));
+        }
+        match (&session.current_user, &session.user_center_token) {
+            (Some(user), Some(token)) => Ok((user.clone(), token.clone())),
+            _ => Err(AppError::Message(
+                "AUTH_REQUIRED: 请重新登录用户中心账号".into(),
+            )),
+        }
+    }
+
     pub(crate) fn set_workspace_mode(&self, mode: Option<WorkspaceMode>) -> AppResult<()> {
         let mut session = self
             .session
@@ -203,5 +219,37 @@ mod tests {
             role: None,
         })
         .is_err());
+    }
+
+    #[test]
+    fn managed_snapshot_keeps_identity_and_token_together_during_account_changes() {
+        let state = AuthState::default();
+        state
+            .set_workspace_mode(Some(WorkspaceMode::Managed))
+            .unwrap();
+        let writer = state.clone();
+        let thread = std::thread::spawn(move || {
+            for index in 0..1000 {
+                let username = format!("reviewer{index}");
+                writer
+                    .set_managed_session(
+                        UserIdentity {
+                            username: username.clone(),
+                            display_name: username.clone(),
+                            role: Some("operator".into()),
+                        },
+                        username,
+                    )
+                    .unwrap();
+            }
+        });
+        for _ in 0..1000 {
+            if let Ok((user, token)) = state.managed_session() {
+                assert_eq!(user.username, token);
+            }
+        }
+        thread.join().unwrap();
+        logout_account(&state).unwrap();
+        assert!(state.managed_session().is_err());
     }
 }

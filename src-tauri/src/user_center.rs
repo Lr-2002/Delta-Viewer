@@ -311,7 +311,7 @@ pub async fn review_audit(
     service_id: &str,
     events: serde_json::Value,
 ) -> AppResult<serde_json::Value> {
-    let user = state.require_managed_user()?;
+    let (user, token) = state.managed_session()?;
     let config = load_config(data_root)?;
     if user.username != username
         || user.role.as_deref() != Some("operator")
@@ -321,7 +321,7 @@ pub async fn review_audit(
     }
     let response = client_for(&config)?
         .post(endpoint(&config, "api/v1/review/events")?)
-        .bearer_auth(state.managed_token()?)
+        .bearer_auth(token)
         .json(&serde_json::json!({ "events": events }))
         .send()
         .await
@@ -340,7 +340,8 @@ pub async fn review_dashboard(
     state: &AuthState,
     query: std::collections::BTreeMap<String, String>,
 ) -> AppResult<serde_json::Value> {
-    if state.require_managed_user()?.role.as_deref() != Some("admin") {
+    let (user, token) = state.managed_session()?;
+    if user.role.as_deref() != Some("admin") {
         return Err(AppError::Message("ADMIN_REQUIRED".into()));
     }
     let config = load_config(data_root)?;
@@ -359,7 +360,7 @@ pub async fn review_dashboard(
     url.query_pairs_mut().extend_pairs(query);
     let response = client
         .get(url)
-        .bearer_auth(state.managed_token()?)
+        .bearer_auth(token)
         .send()
         .await
         .map_err(user_center_request_error)?;
