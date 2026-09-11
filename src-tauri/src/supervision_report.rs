@@ -3,7 +3,7 @@ use crate::model::SupervisionReportExportResult;
 use crate::storage;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 const MAX_REPORT_BYTES: usize = 16 * 1024 * 1024;
@@ -26,7 +26,18 @@ pub fn export_reviewed_sessions(
             "REVIEW_EXPORT_DESTINATION_INVALID: 源目录或目标目录无效".into(),
         ));
     }
-    let mut stack = vec![PathBuf::from(source_root)];
+    let source_root = fs::canonicalize(source_root)?;
+    let destination_parent = fs::canonicalize(destination_parent)?;
+    if destination_parent.starts_with(&source_root) {
+        return Err(AppError::Message(
+            "REVIEW_EXPORT_DESTINATION_INVALID: 导出目录不能位于源目录内".into(),
+        ));
+    }
+    let bundle = destination_parent.join(format!("dohc-reviewed-{status}-{generated_at_ms}"));
+    fs::create_dir(&bundle)?;
+    let data_dir = bundle.join("sessions");
+    fs::create_dir(&data_dir)?;
+    let mut stack = vec![source_root.clone()];
     let mut records = Vec::new();
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir)? {
@@ -49,11 +60,18 @@ pub fn export_reviewed_sessions(
             if !matches {
                 continue;
             }
+            let session_root = path.parent().unwrap_or(&path);
             let relative = path
-                .strip_prefix(source_root)
+                .strip_prefix(&source_root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
+            let target_root = data_dir.join(
+                session_root
+                    .strip_prefix(&source_root)
+                    .unwrap_or(session_root),
+            );
+            copy_tree(session_root, &target_root)?;
             records.push(serde_json::json!({ "session": relative, "qc": qc, "reviewerName": value.get("reviewerName"), "reviewerUsername": value.get("reviewerUsername"), "reviewedAt": value.get("reviewedAt") }));
         }
     }
@@ -61,14 +79,41 @@ pub fn export_reviewed_sessions(
     let content = serde_json::to_string_pretty(
         &serde_json::json!({ "status": status, "source": source_root.file_name().and_then(|v| v.to_str()).unwrap_or("source"), "count": records.len(), "sessions": records }),
     )?;
-    export(
-        destination_parent,
+    let result = export(
+        &bundle,
         "task",
         "json",
         report_date,
         generated_at_ms,
         &content,
-    )
+    )?;
+    Ok(result)
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> AppResult<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = destination.join(entry.file_name());
+        if from.is_dir() {
+            copy_tree(&from, &to)?;
+            continue;
+        }
+        if !from.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&from)?;
+        let mut file = OpenOptions::new().create_new(true).write(true).open(&to)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        if fs::metadata(&to)?.len() != bytes.len() as u64 {
+            return Err(AppError::Message(
+                "REVIEW_EXPORT_VERIFY_FAILED: 数据回读不一致".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn export(
