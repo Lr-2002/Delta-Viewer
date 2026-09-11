@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
-import { loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
+import { listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
 import { recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { addReviewSegment, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
@@ -36,11 +36,14 @@ function labelLibraryKey(username: string) {
 
 export function MachineAnnotationPanel(props: Props) {
   const [sourceName, setSourceName] = useState("");
+  const [sourceOptions, setSourceOptions] = useState<string[]>([]);
   const [sourceBusy, setSourceBusy] = useState(false);
+  useEffect(() => { void listMachineAnnotationSources(props.data.summary.root).then(setSourceOptions).catch(() => setSourceOptions([])); }, [props.data.summary.root]);
+  const label = (name: string) => name === "description.json" ? "人工结果（description.json）" : name.replace(/^bailian_annotation\.json$/, "百炼 3.8 Max").replace(/^bailian_annotation\.qwen3\.8-flash\.json$/, "百炼 3.8 Flash");
   return <div className={`quality-workspace${props.playback ? " quality-embedded" : ""}`}>
     <label className="machine-source-picker">机标来源<select aria-label="机标来源" value={sourceName} disabled={props.busy || sourceBusy}
       onChange={(event) => { props.playback?.onPause(); setSourceName(event.currentTarget.value); recordReviewInteraction("source", { sourceName: event.currentTarget.value || "auto" }); }}>
-      <option value="">自动（优先 Flash）</option><option value="bailian_annotation.json">3.8 Max</option><option value="bailian_annotation.qwen3.8-flash.json">3.8 Flash</option>
+      <option value="">自动（优先 Flash）</option>{sourceOptions.map((name) => <option key={name} value={name}>{label(name)}</option>)}
     </select></label>
     <MachineAnnotationEditor {...props} key={`${props.username}:${props.data.summary.root}:${sourceName}`} sourceName={sourceName || undefined} onSourceBusy={setSourceBusy} />
   </div>;

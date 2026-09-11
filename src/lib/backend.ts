@@ -495,6 +495,10 @@ export async function loadMachineAnnotation(sourcePath: string, sourceName?: str
     ],
   };
 }
+export async function listMachineAnnotationSources(sourcePath: string): Promise<string[]> {
+  if (isTauriRuntime()) return invoke<string[]>("list_machine_annotation_sources", { sourcePath });
+  return ["description.json", "bailian_annotation.json", "bailian_annotation.qwen3.8-flash.json"];
+}
 
 const demoMachineReviews = new Map<string, import("../types").MachineReview>();
 export async function listMyMachineReviews(sourcePaths: string[]): Promise<import("../types").AccountReview[]> {

@@ -838,6 +838,20 @@ async fn load_episode_annotation(
 }
 
 #[tauri::command]
+async fn list_machine_annotation_sources(
+    auth: State<'_, AuthState>,
+    source_path: String,
+) -> Result<Vec<String>, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        machine_annotation::list_sources(Path::new(&source_path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn load_machine_annotation(
     auth: State<'_, AuthState>,
     source_path: String,
@@ -1552,6 +1566,7 @@ pub fn run() {
             suggest_trajectory_code,
             load_episode_annotation,
             load_machine_annotation,
+            list_machine_annotation_sources,
             load_machine_review,
             save_machine_review,
             list_my_machine_reviews,

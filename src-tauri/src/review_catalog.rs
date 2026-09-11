@@ -143,7 +143,22 @@ fn skip(entry: &walkdir::DirEntry) -> bool {
     matches!(
         entry.file_name().to_str(),
         Some(".session_meta" | "@eaDir" | ".git")
-    )
+    ) || (entry.file_type().is_dir()
+        && matches!(
+            entry.file_name().to_str(),
+            Some(
+                "cam0"
+                    | "cam1"
+                    | "cam2"
+                    | "t265_left"
+                    | "t265_right"
+                    | "frames"
+                    | "images"
+                    | "videos"
+                    | "video"
+                    | "media"
+            )
+        ))
 }
 
 pub fn scan(
@@ -366,6 +381,12 @@ fn timing(root: &Path, cancelled: &AtomicBool) -> AppResult<(u64, f64, String)> 
             }
         }
     }
+    // Fast path for legacy JPEG sessions: read only the bounded states file instead
+    // of indexing every image in the episode. This keeps the admin overview quick.
+    if let Some((frames, start, end)) = quick_states_timing(root, cancelled)? {
+        let seconds = (end - start) as f64 / 1e9;
+        return Ok((frames, seconds, "采集时间戳（states.jsonl，估算）".into()));
+    }
     let summary = source::scan_episode(root, None, cancelled)?;
     let camera = summary
         .streams
@@ -389,6 +410,39 @@ fn timing(root: &Path, cancelled: &AtomicBool) -> AppResult<(u64, f64, String)> 
         seconds * summary.state_count as f64 / (summary.state_count - 1) as f64,
         "采集时间戳（含末帧，估算）".into(),
     ))
+}
+
+fn quick_states_timing(
+    root: &Path,
+    cancelled: &AtomicBool,
+) -> AppResult<Option<(u64, i128, i128)>> {
+    let path = root.join("states.jsonl");
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let lines = std::io::BufRead::lines(std::io::BufReader::new(file));
+    let mut first = None;
+    let mut last = None;
+    let mut count = 0u64;
+    for line in lines {
+        check(cancelled)?;
+        let value: Value = match line?.parse() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let timestamp = value["capture_time_ns"].as_i64().map(i128::from);
+        if let Some(timestamp) = timestamp {
+            first.get_or_insert(timestamp);
+            last = Some(timestamp);
+            count += 1;
+        }
+    }
+    Ok(first
+        .zip(last)
+        .filter(|(start, end)| *end > *start && count > 1)
+        .map(|(start, end)| (count, start, end)))
 }
 
 fn effective(root: &Path, frames: u64, seconds: f64) -> AppResult<f64> {

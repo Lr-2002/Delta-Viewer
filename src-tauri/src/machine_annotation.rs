@@ -13,10 +13,36 @@ pub const DEFAULT_SOURCE: &str = "bailian_annotation.json";
 pub const FLASH_SOURCE: &str = "bailian_annotation.qwen3.8-flash.json";
 
 pub(crate) fn validate_source_name(name: &str) -> AppResult<()> {
-    if ![DEFAULT_SOURCE, FLASH_SOURCE].contains(&name) {
+    let valid = name == "description.json"
+        || (name.starts_with("bailian") && name.ends_with(".json") && !name.contains(['/', '\\']));
+    if !valid {
         return Err(invalid("不支持的机标文件名"));
     }
     Ok(())
+}
+
+pub fn list_sources(root: &Path) -> AppResult<Vec<String>> {
+    let mut names = Vec::new();
+    for directory in [root.to_path_buf(), root.join(".session_meta")] {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type()?.is_file()
+                && (name == "description.json"
+                    || (name.starts_with("bailian") && name.ends_with(".json")))
+            {
+                validate_source_name(&name)?;
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names.sort_by_key(|name| (name != "description.json", name.clone()));
+    Ok(names)
 }
 
 #[derive(Deserialize)]
@@ -151,7 +177,7 @@ pub fn load_selected(
     let Some(bytes) = bytes else {
         return Ok(None);
     };
-    parse(
+    parse_or_human(
         &bytes,
         root.file_name()
             .and_then(|name| name.to_str())
@@ -161,6 +187,74 @@ pub fn load_selected(
         annotation.source_name = name.into();
         Some(annotation)
     })
+}
+
+fn parse_or_human(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
+    match parse(bytes, episode_name) {
+        Ok(value) => Ok(value),
+        Err(original) => {
+            let document: Value =
+                serde_json::from_slice(bytes).map_err(|_| invalid("人工结果 JSON 格式无效"))?;
+            let episode = document["episode_results"]
+                .as_array()
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .find(|item| item["episode_id"].as_str() == Some(episode_name))
+                        .or_else(|| (items.len() == 1).then_some(&items[0]))
+                })
+                .ok_or(original)?;
+            let media = episode["media"]["frame_count"]
+                .as_u64()
+                .ok_or_else(|| invalid("人工结果缺少视频帧数"))?;
+            let segments = document["_human_review"]["segments"]
+                .as_array()
+                .or_else(|| episode["annotations"].as_array())
+                .ok_or_else(|| invalid("人工结果缺少片段"))?;
+            let mut result = MachineAnnotation {
+                source_name: String::new(),
+                episode_id: episode_name.into(),
+                model: Some("人工结果".into()),
+                completed_at: None,
+                validation_status: Some("human".into()),
+                frame_count: media,
+                warnings: Vec::new(),
+                segments: Vec::new(),
+                source_hash: blake3::hash(bytes).to_hex().to_string(),
+                source_json: String::from_utf8_lossy(bytes).into_owned(),
+                boundary_method: None,
+            };
+            for (index, item) in segments.iter().enumerate() {
+                result.segments.push(MachineSegment {
+                    source_index: index,
+                    segment_id: item["segment_id"].as_str().map(str::to_owned),
+                    label: item["label_code"].as_str().unwrap_or("human").into(),
+                    description: item["description"]
+                        .as_str()
+                        .or(item["attributes_zh"]["动作描述"].as_str())
+                        .unwrap_or("")
+                        .into(),
+                    start_frame: item["start_frame"]
+                        .as_u64()
+                        .or(item["startFrame"].as_u64())
+                        .unwrap_or_default(),
+                    end_frame: item["end_frame"]
+                        .as_u64()
+                        .or(item["endFrame"].as_u64())
+                        .unwrap_or_default(),
+                    attributes: item["attributes"]
+                        .as_object()
+                        .map(|map| {
+                            map.iter()
+                                .map(|(key, value)| (key.clone(), value.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                });
+            }
+            Ok(result)
+        }
+    }
 }
 
 fn read_source_bytes(root: &Path, name: &str) -> AppResult<Option<Vec<u8>>> {
