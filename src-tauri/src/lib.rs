@@ -13,6 +13,7 @@ mod media_stream_server;
 mod model;
 mod mp4_preview_cache;
 mod operation_history;
+mod review_catalog;
 mod segment_bin;
 mod skeleton;
 mod source;
@@ -416,6 +417,90 @@ async fn export_supervision_report(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn scan_reviewed_sessions(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    cache: State<'_, review_catalog::ReviewCatalogCache>,
+    source_root: String,
+    operation_id: u64,
+) -> Result<review_catalog::ReviewCatalog, String> {
+    let user = auth.require_managed_user().map_err(|e| e.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED".into());
+    }
+    *cache.0.lock().map_err(|e| e.to_string())? = None;
+    ensure_source_directory_responsive(&source_root).await?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let catalog = tauri::async_runtime::spawn_blocking(move || {
+        let _task = task;
+        review_catalog::scan(Path::new(&source_root), &cancelled, &mut |_, path| {
+            emit_task_start(
+                &app,
+                operation_id,
+                "review-scan",
+                "扫描 QC 和人工时长",
+                path,
+            )
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    *cache.0.lock().map_err(|e| e.to_string())? = Some((user.username, catalog.clone()));
+    Ok(catalog)
+}
+
+#[tauri::command]
+async fn export_reviewed_sessions(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    cache: State<'_, review_catalog::ReviewCatalogCache>,
+    scan_id: String,
+    destination_parent: String,
+    operation_id: u64,
+) -> Result<review_catalog::ReviewExport, String> {
+    let user = auth.require_managed_user().map_err(|e| e.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账号".into());
+    }
+    let catalog = cache
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .as_ref()
+        .filter(|(username, value)| username == &user.username && value.scan_id == scan_id)
+        .map(|(_, value)| value.clone())
+        .ok_or("请先扫描源目录")?;
+    ensure_source_directory_responsive(&catalog.source_root).await?;
+    ensure_source_directory_responsive(&destination_parent).await?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = task;
+        review_catalog::export(
+            &catalog,
+            Path::new(&destination_parent),
+            &cancelled,
+            &mut |_, path| {
+                emit_task_start(
+                    &app,
+                    operation_id,
+                    "review-export",
+                    "核验并复制通过数据",
+                    path,
+                )
+            },
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1426,6 +1511,7 @@ pub fn run() {
         .manage(SourceIndexCache::default())
         .manage(Mp4PreviewCache::default())
         .manage(media_stream_server)
+        .manage(review_catalog::ReviewCatalogCache::default())
         .invoke_handler(tauri::generate_handler![
             get_auth_status,
             select_workspace_mode,
@@ -1444,6 +1530,8 @@ pub fn run() {
             batch_create_supervision_accounts,
             set_supervision_account_status,
             export_supervision_report,
+            export_reviewed_sessions,
+            scan_reviewed_sessions,
             set_supervision_assigned_tasks,
             update_operations_alert,
             transfer_supervision_assignment,

@@ -17,6 +17,11 @@ import {
 import {
   batchCreateSupervisionAccounts,
   chooseDirectory,
+  exportReviewedSessions,
+  scanReviewedSessions,
+  cancelTask,
+  onTaskProgress,
+  type ReviewedCatalog,
   exportSupervisionReport,
   getReviewDashboard,
   isTauriRuntime,
@@ -89,6 +94,22 @@ export function SupervisionDashboard({
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<ReviewEvent | null>(null);
+  const [sourcePath, setSourcePath] = useState("");
+  const [catalog, setCatalog] = useState<ReviewedCatalog | null>(null);
+  const [catalogFilter, setCatalogFilter] = useState("all");
+  const [catalogPage, setCatalogPage] = useState(0);
+  const [catalogProgress, setCatalogProgress] = useState("");
+  const catalogOperation = useRef<number | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+    void onTaskProgress((progress) => {
+      if (progress.operationId === catalogOperation.current) setCatalogProgress(`${progress.phase}：${progress.currentPath}`);
+    }).then((unlisten) => { if (disposed) unlisten(); else cleanup = unlisten; });
+    return () => { disposed = true; cleanup?.(); };
+  }, []);
+  const seconds = (value: number | null) => value === null ? "未计入" : `${Math.floor(value / 3600)} 时 ${Math.floor(value % 3600 / 60)} 分 ${(value % 60).toFixed(2)} 秒`;
+  const catalogRows = catalog?.rows.filter((row) => catalogFilter === "all" || (catalogFilter === "error" ? Boolean(row.error) : row.status === catalogFilter)) ?? [];
   const [account, setAccount] = useState({
     username: "",
     displayName: "",
@@ -261,6 +282,33 @@ export function SupervisionDashboard({
     } finally {
       setBusy("");
     }
+  }
+  async function exportReviewed() {
+    if (!catalog || catalogOperation.current) return;
+    setBusy("reviewed-export"); setError(""); setNotice("");
+    try {
+      const destination = await chooseDirectory("选择集中导出目录");
+      if (!destination) return;
+      const operationId = Date.now(); catalogOperation.current = operationId;
+      const result = await exportReviewedSessions(catalog.scanId, destination, operationId);
+      setNotice(`已导出 ${result.sessions} 条通过数据：${result.outputPath}`);
+    } catch (reason) { setError(String(reason)); } finally { setBusy(""); catalogOperation.current = null; setCatalogProgress(""); }
+  }
+  async function chooseReviewSource() {
+    setBusy("reviewed-choose"); setError("");
+    try {
+      const selectedPath = await chooseDirectory("选择包含 session 的数据根目录");
+      if (selectedPath) { setSourcePath(selectedPath); setCatalog(null); setNotice(""); }
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+  async function scanReviewed() {
+    if (!sourcePath.trim() || catalogOperation.current) return;
+    const operationId = Date.now(); catalogOperation.current = operationId;
+    setBusy("reviewed-scan"); setCatalog(null); setNotice(""); setError(""); setCatalogPage(0);
+    try { setCatalog(await scanReviewedSessions(sourcePath.trim(), operationId)); }
+    catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); catalogOperation.current = null; setCatalogProgress(""); }
   }
   async function createAccount(event: React.FormEvent) {
     event.preventDefault();
@@ -447,6 +495,27 @@ export function SupervisionDashboard({
                 交互操作<strong>{totals.operations}</strong>
               </span>
             </div>
+          </section>
+          <section className="review-decision-overview">
+            <h2>已通过 / 不通过总览</h2>
+            <p>选择数据根目录并扫描，以各条数据的 QC 和已保存人工裁剪结果为准。每条数据只计一次。</p>
+            <div className="review-export-controls">
+              <label className="review-source-path">数据根目录<input aria-label="数据根目录" placeholder="选择或输入本机 / 已挂载共享目录" value={sourcePath} disabled={Boolean(busy)} onChange={(event) => { setSourcePath(event.target.value); setCatalog(null); setNotice(""); }} /></label>
+              <button className="button button-secondary" disabled={Boolean(busy)} onClick={() => void chooseReviewSource()}>选择路径</button>
+              <button className="button button-primary" disabled={Boolean(busy) || !sourcePath.trim()} onClick={() => void scanReviewed()}>{busy === "reviewed-scan" ? "正在扫描…" : "扫描总览"}</button>
+              <button className="button button-secondary" disabled={Boolean(busy) || !catalog?.approved || Boolean(catalog.rows.some((row) => row.status === "approved" && row.error))} onClick={() => void exportReviewed()}><Download size={16} />导出通过数据</button>
+              {(busy === "reviewed-scan" || busy === "reviewed-export") && <button className="button button-secondary" onClick={() => { if (catalogOperation.current) void cancelTask(catalogOperation.current); }}>取消操作</button>}
+            </div>
+            {catalogProgress && <p role="status" className="review-scan-progress">{catalogProgress}</p>}
+            {catalog && <>
+              <p>扫描目录：{catalog.sourceRoot} · 扫描时间：{time(catalog.scannedAtMs)}</p>
+              <div className="review-catalog-counts"><span>全部 {catalog.rows.length} 条</span><span>通过 {catalog.approved} 条</span><span>不通过 {catalog.rejected} 条</span><span>待审核 {catalog.pending} 条</span><span>存在异常 {catalog.errors} 条</span></div>
+              <dl className="review-duration-totals"><div><dt>原始数据总时长</dt><dd>{seconds(catalog.originalSeconds)}</dd><small>{catalog.unknownOriginal} 条时长未知，未计入</small></div><div><dt>通过数据原始时长</dt><dd>{seconds(catalog.approvedOriginalSeconds)}</dd><small>{catalog.rows.filter((row) => row.status === "approved" && row.originalSeconds === null).length} 条时长未知，未计入</small></div><div><dt>通过数据有效总时长</dt><dd>{seconds(catalog.effectiveSeconds)}</dd><small>{catalog.unknownEffective} 条无法核验，未计入</small></div></dl>
+              <p>有效时长按人工保留片段合并重叠后计算；导出保留完整源数据和人工裁剪记录。通过数据存在异常时，请处理后重新扫描。</p>
+              <label>数据状态<select aria-label="数据状态筛选" value={catalogFilter} onChange={(event) => { setCatalogFilter(event.target.value); setCatalogPage(0); }}><option value="all">全部数据</option><option value="approved">通过</option><option value="rejected">不通过</option><option value="pending">待审核</option><option value="error">存在异常</option></select></label>
+              <div className="review-table-wrap"><table aria-label="数据扫描明细"><thead><tr><th>相对路径</th><th>QC 结论</th><th>审核人</th><th>原始时长</th><th>有效时长</th><th>时长依据 / 异常</th></tr></thead><tbody>{catalogRows.slice(catalogPage * 50, catalogPage * 50 + 50).map((row) => <tr key={row.path}><td>{row.path}</td><td>{row.qc || "待审核"}</td><td>{row.reviewer || "--"}</td><td>{seconds(row.originalSeconds)}</td><td>{row.status === "approved" ? seconds(row.effectiveSeconds) : "--"}</td><td>{row.error || row.timingSource}</td></tr>)}</tbody></table></div>
+              <div className="review-pagination"><button disabled={!catalogPage} onClick={() => setCatalogPage(catalogPage - 1)}>上一页数据</button><span>{catalogRows.length} 条 · 第 {catalogPage + 1} 页</span><button disabled={(catalogPage + 1) * 50 >= catalogRows.length} onClick={() => setCatalogPage(catalogPage + 1)}>下一页数据</button></div>
+            </>}
           </section>
           <h2>账号审核进度</h2>
           <div className="review-table-wrap">

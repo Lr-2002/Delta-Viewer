@@ -708,6 +708,27 @@ export async function exportSupervisionReport(
   });
 }
 
+export interface ReviewedCatalog {
+  scanId: string; sourceRoot: string; scannedAtMs: number;
+  approved: number; rejected: number; pending: number; errors: number;
+  originalSeconds: number; approvedOriginalSeconds: number; effectiveSeconds: number;
+  unknownOriginal: number; unknownEffective: number;
+  rows: { path: string; status: string; reviewer: string; qc: string; originalSeconds: number | null; effectiveSeconds: number | null; timingSource: string; error: string }[];
+}
+export async function scanReviewedSessions(sourceRoot: string, operationId: number): Promise<ReviewedCatalog> {
+  if (isTauriRuntime()) return invoke("scan_reviewed_sessions", { sourceRoot, operationId });
+  return { scanId: "demo-review-scan", sourceRoot, scannedAtMs: Date.now(), approved: 1, rejected: 1, pending: 1, errors: 1, originalSeconds: 180, approvedOriginalSeconds: 100, effectiveSeconds: 65, unknownOriginal: 1, unknownEffective: 0,
+    rows: [
+      { path: "task/session-001", status: "approved", reviewer: "审核员甲", qc: "通过", originalSeconds: 100, effectiveSeconds: 65, timingSource: "Camera 0 帧数 / FPS", error: "" },
+      { path: "task/session-002", status: "rejected", reviewer: "审核员乙", qc: "不通过：镜头遮挡", originalSeconds: 80, effectiveSeconds: null, timingSource: "Camera 0 帧数 / FPS", error: "" },
+      { path: "task/session-003", status: "pending", reviewer: "", qc: "待审核", originalSeconds: null, effectiveSeconds: null, timingSource: "", error: "缺少原始时间戳或帧率" },
+    ] };
+}
+export async function exportReviewedSessions(scanId: string, destinationParent: string, operationId: number): Promise<{outputPath: string; sessions: number; totalBytes: number}> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览不能复制本机数据，请使用桌面 Viewer");
+  return invoke("export_reviewed_sessions", { scanId, destinationParent, operationId });
+}
+
 export async function scanSource(path: string, operationId: number): Promise<ScanResult> {
   if (isTauriRuntime()) return invoke<ScanResult>("scan_source", { path, operationId });
   if (isSessionActivationDemoScenario()) {

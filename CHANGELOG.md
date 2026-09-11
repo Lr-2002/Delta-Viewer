@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.22 - 2026-09-11
+
+- 监管账号可选择或输入数据根目录，先递归扫描全部 session 的根级 QC，再查看通过、不通过、待审核及异常数据明细；修改路径后旧扫描失效。
+- 总览显示原始数据总时长、通过数据原始时长及人工裁剪后的有效总时长；人工保留片段合并重叠、排除删除段，未知时长单独提示，多个相机不重复累加。
+- 扫描后可另选目标目录，集中导出全部已通过 session 的完整数据和人工裁剪记录。导出前后复核 QC、裁剪及源文件变化，逐文件校验大小和 BLAKE3 回读，支持取消，失败清理 partial，不覆盖已有输出。
+
 ## 1.0.21 - 2026-09-11
 
 - 管理员工作区改为审核总览、实时行为、逐条审核记录和账号管理，移除原标注分配、抽检、导入及标注报表入口。
