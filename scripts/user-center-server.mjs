@@ -16,6 +16,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { openReviewAuditStore } from "./review-audit-store.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CONFIG_PATH = path.join(repositoryRoot, "user-center.config.json");
@@ -64,7 +65,6 @@ const AUDIT_ACTIONS = new Set([
   "annotation_ended", "episode_opened", "source_unavailable",
   "annotation_save_failed", "validation_warning", "validation_error",
   "user_center_unavailable",
-  "playback_seek", "label_library_added", "label_library_deleted",
 ]);
 
 function parseArguments(argv) {
@@ -525,12 +525,12 @@ function sendHtml(response, status, body) {
   response.end(bytes);
 }
 
-async function parseJsonBody(request) {
+async function parseJsonBody(request, maxBytes = MAX_JSON_BYTES) {
   const chunks = [];
   let total = 0;
   for await (const chunk of request) {
     total += chunk.length;
-    if (total > MAX_JSON_BYTES) throw new Error("请求体过大");
+    if (total > maxBytes) throw new Error("请求体过大");
     chunks.push(chunk);
   }
   try {
@@ -620,7 +620,7 @@ function availableAssignmentStart(users, excludedUsername, task, quantity) {
 }
 
 function auditEvent(body, user) {
-  const allowedFields = new Set(["eventId", "taskId", "trajectoryCode", "action", "occurredAtMs", "detail"]);
+  const allowedFields = new Set(["eventId", "taskId", "trajectoryCode", "action", "occurredAtMs"]);
   if (!body || typeof body !== "object" || Array.isArray(body)
     || Object.keys(body).some((field) => !allowedFields.has(field))) {
     throw new Error("AUDIT_FIELD_INVALID: 监管 payload 只能包含白名单字段");
@@ -629,8 +629,7 @@ function auditEvent(body, user) {
   if (!AUDIT_ACTIONS.has(action)) throw new Error("AUDIT_ACTION_INVALID: 行为类型无效");
   const taskId = String(body.taskId ?? "");
   const trajectoryCode = String(body.trajectoryCode ?? "");
-  const detail = String(body.detail ?? "");
-  if (taskId.length > 100 || trajectoryCode.length > 100 || detail.length > 500) throw new Error("AUDIT_FIELD_INVALID: 监管字段无效");
+  if (taskId.length > 100 || trajectoryCode.length > 100) throw new Error("AUDIT_FIELD_INVALID: 监管字段无效");
   const occurredAtMs = Number(body.occurredAtMs);
   if (!Number.isSafeInteger(occurredAtMs) || Math.abs(nowMs() - occurredAtMs) > 86_400_000) {
     throw new Error("AUDIT_TIME_INVALID: 行为时间无效");
@@ -649,7 +648,6 @@ function auditEvent(body, user) {
     action,
     occurredAtMs,
     receivedAtMs: nowMs(),
-    detail,
   };
 }
 
@@ -993,6 +991,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
   const attempts = new Map();
   const registrations = new Map();
   const auditEventIds = new Set((await readAuditEvents(dataRoot)).map((event) => event.eventId));
+  const reviewAudit = openReviewAuditStore(dataRoot);
   let stateMutationTail = Promise.resolve();
 
   async function writeState(state) {
@@ -1048,6 +1047,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             OPERATOR_SELF_REGISTRATION_CAPABILITY,
             OPERATOR_PROFILE_CAPABILITY,
             OPERATIONS_COCKPIT_CAPABILITY,
+            "reviewSupervisionV1",
           ],
         });
       }
@@ -1207,6 +1207,18 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             && event.occurredAtMs >= range.startMs && event.occurredAtMs < range.endMs)
           .slice(-500).reverse();
         return sendJson(response, 200, { date: range.date, events });
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/review/events") {
+        const session = authorize(request);
+        if (!session || session.user.role !== "operator") return sendJson(response, 403, { error: "REVIEWER_REQUIRED" });
+        const body = await parseJsonBody(request, 256 * 1024);
+        return sendJson(response, 200, reviewAudit.append(session.user, body.events));
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/admin/reviews") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        const state = await readState(dataRoot);
+        return sendJson(response, 200, reviewAudit.query(Object.fromEntries(url.searchParams), state.users));
       }
       if (request.method === "POST" && url.pathname === "/api/v1/audit/events") {
         const session = authorize(request);
@@ -1608,6 +1620,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       if (!server) return;
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       server = undefined;
+      reviewAudit.close();
     },
     configuration,
     clientConfigPath: initialized.clientConfigPath,

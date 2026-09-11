@@ -207,6 +207,38 @@ export async function getSupervisionDashboard(): Promise<SupervisionDashboardDat
   throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
 }
 
+export async function sendReviewAudit(username: string, serviceId: string, events: import("./review-audit-types").ReviewAuditEvent[]): Promise<{ eventIds: string[] }> {
+  if (isTauriRuntime()) return invoke("record_review_audit", { username, serviceId, events });
+  const user = demoActor();
+  if (user.username !== username) throw new Error("REVIEW_AUDIT_ACCOUNT_MISMATCH");
+  const stored = JSON.parse(localStorage.getItem("dohc.demo.review-events") ?? "[]") as import("./review-audit-types").ReviewEvent[];
+  for (const event of events) if (!stored.some((row) => row.eventId === event.eventId && row.username === username)) stored.push({ ...event, username, displayName: user.displayName, receivedAtMs: Date.now(), id: stored.length + 1 });
+  localStorage.setItem("dohc.demo.review-events", JSON.stringify(stored));
+  return { eventIds: events.map((event) => event.eventId) };
+}
+
+export async function getReviewDashboard(query: Record<string, string> = {}): Promise<import("./review-audit-types").ReviewDashboardData> {
+  if (isTauriRuntime()) return invoke("get_review_dashboard", { query });
+  const stored = JSON.parse(localStorage.getItem("dohc.demo.review-events") ?? "[]") as import("./review-audit-types").ReviewEvent[];
+  const events = stored.filter((row) => (!query.username || row.username === query.username) && (!query.sessionId || row.sessionId === query.sessionId) && (!query.action || row.action === query.action) && (!query.fromMs || row.occurredAtMs >= Number(query.fromMs)) && (!query.toMs || row.occurredAtMs <= Number(query.toMs))).reverse();
+  const names = [...new Set(stored.map((row) => row.username))];
+  const users = names.map((username) => {
+    const mine = events.filter((event) => event.username === username);
+    const finished = mine.filter((event) => event.action === "approved" || event.action === "rejected");
+    return { username, displayName: stored.find((row) => row.username === username)!.displayName, accountStatus: "active", online: true,
+      operations: mine.length, approved: mine.filter((row) => row.action === "approved").length, rejected: mine.filter((row) => row.action === "rejected").length,
+      seeks: mine.filter((row) => row.action === "seek").length, labelsAdded: mine.filter((row) => row.action === "label_add").length, labelsDeleted: mine.filter((row) => row.action === "label_delete").length,
+      averageMs: finished.length ? finished.reduce((sum, row) => sum + row.elapsedMs, 0) / finished.length : null, lastActivityAtMs: mine[0]?.occurredAtMs ?? null };
+  });
+  const sessions = [...new Set(events.map((row) => row.sessionId))].map((sessionId) => {
+    const mine = events.filter((row) => row.sessionId === sessionId);
+    const decision = mine.find((row) => ["approved", "rejected", "saved"].includes(row.action));
+    return { username: mine[0].username, sessionId, episodeKey: mine[0].episodeKey, episodeName: mine[0].episodeName, loadedAtMs: Math.min(...mine.map((row) => row.occurredAtMs - row.elapsedMs)), lastActivityAtMs: mine[0].occurredAtMs, operations: mine.length, durationMs: decision && decision.action !== "saved" ? decision.elapsedMs : null, status: (decision?.action === "approved" || decision?.action === "rejected" ? decision.action : "pending") as "approved" | "rejected" | "pending" };
+  });
+  const page = events.filter((row) => !query.before || row.id < Number(query.before));
+  return { events: page.slice(0, 100), users, sessions, nextSessionBefore: null, nextBefore: page.length > 100 ? page[99].id : null, total: events.length, generatedAtMs: Date.now() };
+}
+
 export async function batchCreateSupervisionAccounts(accounts: BatchAccountInput[]): Promise<SupervisionAccount[]> {
   if (isTauriRuntime()) return invoke<SupervisionAccount[]>("batch_create_supervision_accounts", { accounts });
   throw new Error("SUPERVISOR_REQUIRED: 批量账号只能在桌面监管端创建");

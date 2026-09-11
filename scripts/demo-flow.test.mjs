@@ -328,37 +328,45 @@ if (!browserExecutable) {
     await context.close();
   });
 
-  test("operations cockpit answers progress, assignment, alert, quality and report questions", async () => {
+  test("review supervision shows account activity, live events and exports without annotation tools", async () => {
     const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
     const page = await context.newPage();
     const errors = [];
     page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
     page.on("pageerror", (error) => errors.push(error.message));
+    await page.addInitScript(() => {
+      if (localStorage.getItem("dohc.demo.review-events")) return;
+      const now = Date.now(), sessionId = crypto.randomUUID();
+      localStorage.setItem("dohc.demo.review-events", JSON.stringify(["loaded", "seek", "label_add", "approved"].map((action, index) => ({
+        eventId: crypto.randomUUID(), id: index + 1, sessionId, episodeKey: "a".repeat(64), episodeName: "审核样例-001", username: "alice", displayName: "审核员甲", action,
+        occurredAtMs: now - 42000 + index * 14000, receivedAtMs: now, elapsedMs: index * 14000,
+        details: action === "label_add" ? { value: "拿起杯子" } : action === "seek" ? { frameFrom: 12, frameTo: 90, mediaTimeMs: 3000 } : {},
+      }))));
+    });
     await page.goto(`${baseUrl}/?demoScenario=operations-cockpit`, { waitUntil: "networkidle" });
-    await page.getByRole("heading", { name: "任务运营驾驶舱" }).waitFor();
-    await page.getByText("今日每小时完成量").waitFor();
-    await page.getByText("可能停滞", { exact: true }).first().waitFor();
-    await page.getByRole("button", { name: "任务分配" }).click();
-    const batch = page.locator(".batch-assignment");
-    await batch.getByText("批量任务分配").waitFor();
-    await batch.getByRole("button", { name: /整文件夹一键分配/ }).waitFor();
-    await batch.getByRole("button", { name: /按任务分配数量/ }).click();
-    const taskChecks = batch.locator('.batch-task-picker input[type="checkbox"]');
-    await taskChecks.nth(0).check();
-    await taskChecks.nth(1).check();
-    assert.equal(await taskChecks.evaluateAll((inputs) => inputs.filter((input) => input.checked).length), 2);
-    const today = new Date();
-    const localToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    const deadlineInput = batch.locator('input[type="datetime-local"]');
-    await deadlineInput.fill(`${localToday}T18:00`);
-    assert.equal(await deadlineInput.inputValue(), `${localToday}T18:00`);
-    await page.getByText("当前已分配区间").waitFor();
-    await page.getByRole("button", { name: /异常中心/ }).click();
-    await page.getByText("确认并备注").waitFor();
-    await page.getByRole("button", { name: "质量管理" }).click();
-    await page.getByText("保存复核结果").waitFor();
-    await page.getByRole("button", { name: "报表" }).click();
-    await page.getByText("导出 JSON").waitFor();
+    await page.getByRole("heading", { name: "审核监管", exact: true }).waitFor();
+    for (const name of ["任务分配", "质量管理", "报表", "标注导入"]) assert.equal(await page.getByRole("button", { name, exact: true }).count(), 0);
+    await page.getByRole("button", { name: "审核记录", exact: true }).click();
+    await page.getByRole("cell", { name: "0 分 42 秒", exact: true }).waitFor();
+    await page.getByRole("button", { name: "实时行为", exact: true }).click();
+    await page.getByLabel("操作筛选").selectOption("label_add");
+    await page.getByRole("button", { name: "内容: 拿起杯子", exact: true }).click();
+    await page.getByRole("dialog", { name: "审核操作明细" }).waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog", { name: "审核操作明细" }).waitFor({ state: "detached" });
+    const download = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出审核事件" }).click();
+    assert.equal((await download).suggestedFilename(), "review-events.csv");
+    await page.getByLabel("操作筛选").selectOption("");
+    await page.evaluate(() => {
+      const rows = JSON.parse(localStorage.getItem("dohc.demo.review-events"));
+      rows.push({ ...rows[0], eventId: crypto.randomUUID(), id: 5, action: "label_delete", details: { value: "实时新增的删除记录" }, occurredAtMs: Date.now() });
+      localStorage.setItem("dohc.demo.review-events", JSON.stringify(rows));
+    });
+    await page.getByRole("button", { name: "内容: 实时新增的删除记录", exact: true }).waitFor();
+    await page.screenshot({ path: "artifacts/review-supervision-desktop.png", fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: "artifacts/review-supervision-mobile.png", fullPage: true });
     const layout = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth }));
     assert.ok(layout.scrollWidth <= layout.viewportWidth, JSON.stringify(layout));
     assert.deepEqual(errors, []);

@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
-import { loadMachineAnnotation, loadMachineReview, saveMachineReview, recordAnnotationAudit } from "../lib/backend";
+import { loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
+import { recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { addReviewSegment, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
@@ -38,7 +39,7 @@ export function MachineAnnotationPanel(props: Props) {
   const [sourceBusy, setSourceBusy] = useState(false);
   return <div className={`quality-workspace${props.playback ? " quality-embedded" : ""}`}>
     <label className="machine-source-picker">机标来源<select aria-label="机标来源" value={sourceName} disabled={props.busy || sourceBusy}
-      onChange={(event) => { props.playback?.onPause(); setSourceName(event.currentTarget.value); }}>
+      onChange={(event) => { props.playback?.onPause(); setSourceName(event.currentTarget.value); recordReviewInteraction("source", { sourceName: event.currentTarget.value || "auto" }); }}>
       <option value="">自动（优先 Flash）</option><option value="bailian_annotation.json">3.8 Max</option><option value="bailian_annotation.qwen3.8-flash.json">3.8 Flash</option>
     </select></label>
     <MachineAnnotationEditor {...props} key={`${props.username}:${props.data.summary.root}:${sourceName}`} sourceName={sourceName || undefined} onSourceBusy={setSourceBusy} />
@@ -137,8 +138,10 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
           const next = pending.current;
           pending.current = null;
           const state = stateRef.current;
+          const audit = reviewAuditRecorder(root);
           try {
             const saved = await saveMachineReview(root, state.sourceHash, state.revision, next.segments, loadedSource.current, next.status, next.rejectionReason);
+            audit(saved.status === "approved" ? "approved" : saved.status === "rejected" ? "rejected" : "saved", { revision: saved.revisionLabel ?? String(saved.revision), reason: saved.rejectionReason ?? "" });
             stateRef.current = saved;
             if (mounted.current) { setReview(saved); onReviewSaved?.(saved); }
             if (!pending.current) {
@@ -148,7 +151,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
               } catch { /* The committed review is already durable. */ }
               if (mounted.current) setRecoveryError("");
             }
-          } catch (reason) { pending.current ??= next; throw reason; }
+          } catch (reason) { audit("save_failed", { reason: "审核写入失败，等待重试" }); pending.current ??= next; throw reason; }
         }
         return true;
       } catch (reason) {
@@ -217,17 +220,25 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
 
   function change(next: ReviewSegment[]) {
     if (!canEdit || finishLock.current) return;
+    for (const item of next) {
+      const old = editsRef.current.find((row) => row.sourceIndex === item.sourceIndex);
+      if (!old || old.description !== item.description || old.startFrame !== item.startFrame || old.endFrame !== item.endFrame || old.deleted !== item.deleted) {
+        recordReviewInteraction("segment_edit", { segmentIndex: item.sourceIndex, startFrame: item.startFrame, endFrame: item.endFrame, before: old?.description ?? "", after: item.description, value: !old ? "新增片段" : item.deleted ? "删除片段" : old.deleted ? "恢复片段" : "修改片段" }, root);
+      }
+    }
     setEdits(next); editsRef.current = next; setPlaying(false);
     playback?.onPause();
     void persist({ segments: next, status: "pending" });
   }
   function saveLabelLibrary(next: LabelLibraryItem[]) {
-    setLabelLibrary(next);
     try {
       localStorage.setItem(labelLibraryStorageKey, JSON.stringify(next));
+      setLabelLibrary(next);
       setLabelLibraryError("");
+      return true;
     } catch {
       setLabelLibraryError("标签库保存失败");
+      return false;
     }
   }
   function addCurrentDescriptionToLibrary() {
@@ -238,15 +249,20 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       setLabelLibraryOpen(true);
       return;
     }
-    saveLabelLibrary([
-      { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text, createdAt: Date.now() },
+    const label = { id: crypto.randomUUID(), text, createdAt: Date.now() };
+    const saved = saveLabelLibrary([
+      label,
       ...labelLibrary,
     ].slice(0, LABEL_LIBRARY_LIMIT));
-    void recordAnnotationAudit({ action: "label_library_added", taskId: "", trajectoryCode: "", occurredAtMs: Date.now(), detail: text });
+    if (saved) {
+      recordReviewInteraction("label_add", { value: text, labelId: label.id }, root);
+      for (const removed of labelLibrary.slice(LABEL_LIBRARY_LIMIT - 1)) recordReviewInteraction("label_delete", { value: removed.text, labelId: removed.id, reason: "标签库容量上限" }, root);
+    }
     setLabelLibraryOpen(true);
   }
   function applyLibraryLabel(text: string) {
     if (!canEdit || !active) return;
+    recordReviewInteraction("label_apply", { value: text, segmentIndex: active.sourceIndex }, root);
     change(editsRef.current.map((item) => item.sourceIndex === active.sourceIndex
       ? { ...item, description: text, decision: "pending" }
       : item));
@@ -254,8 +270,8 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   }
   function deleteLibraryLabel(id: string) {
     const removed = labelLibrary.find((item) => item.id === id);
-    saveLabelLibrary(labelLibrary.filter((item) => item.id !== id));
-    if (removed) void recordAnnotationAudit({ action: "label_library_deleted", taskId: "", trajectoryCode: "", occurredAtMs: Date.now(), detail: removed.text });
+    const saved = saveLabelLibrary(labelLibrary.filter((item) => item.id !== id));
+    if (saved && removed) recordReviewInteraction("label_delete", { value: removed.text, labelId: id }, root);
   }
   function boundary(kind: "startFrame" | "endFrame", value: number) {
     if (!active || !result || !canEdit) return;
@@ -266,6 +282,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const choose = useCallback((sourceIndex: number) => {
     const segment = rows.find((item) => item.sourceIndex === sourceIndex);
     if (!segment) return;
+    recordReviewInteraction("segment_select", { segmentIndex: sourceIndex, startFrame: segment.startFrame, endFrame: segment.endFrame }, root);
     setSelected(sourceIndex); seek(segment.startFrame);
     if (playback && mapping && !mapping.error) playback.onPlay({ startFrame: mapping.offset + segment.startFrame * mapping.step, endFrame: mapping.offset + (segment.endFrame + 1) * mapping.step - 1 });
   }, [rows, seek, playback?.onPlay, mapping]);
@@ -275,6 +292,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       const target = event.target as HTMLElement | null;
       if (target?.closest("textarea, select, [contenteditable='true'], .sidebar, .view-tabs, .label-library") || target?.matches("input:not([type='range'])")) return;
       if (event.code === "Space") {
+        if (!event.repeat) recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation();
         if (!event.repeat) { if (playback) playback.onToggle(); else setPlaying((value) => !value); }
         return;
@@ -282,14 +300,17 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       if (!canEdit || !rows.length) return;
       if (target?.closest("button") && !target.closest(".machine-segment-description, .review-span, .review-edge") && event.key === "Enter") return;
       if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation();
         const index = Math.max(0, rows.findIndex((item) => item.sourceIndex === active?.sourceIndex));
         const next = rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))];
         if (next) choose(next.sourceIndex);
       } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation();
         if (active) boundary(boundaryFocus.current, active[boundaryFocus.current] + (event.key === "ArrowLeft" ? -1 : 1));
       } else if (event.key === "Enter" && !event.repeat) {
+        recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation(); void finish("approved");
       }
     };

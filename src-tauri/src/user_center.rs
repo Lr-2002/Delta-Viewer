@@ -294,7 +294,6 @@ pub async fn record_annotation_audit(
             "trajectoryCode": request.trajectory_code,
             "action": request.action,
             "occurredAtMs": request.occurred_at_ms,
-            "detail": request.detail,
         }))
         .send()
         .await
@@ -303,6 +302,74 @@ pub async fn record_annotation_audit(
         return Err(AppError::Message(remote_error(response).await));
     }
     Ok(())
+}
+
+pub async fn review_audit(
+    data_root: &Path,
+    state: &AuthState,
+    username: &str,
+    service_id: &str,
+    events: serde_json::Value,
+) -> AppResult<serde_json::Value> {
+    let user = state.require_managed_user()?;
+    let config = load_config(data_root)?;
+    if user.username != username
+        || user.role.as_deref() != Some("operator")
+        || config.service_id != service_id
+    {
+        return Err(AppError::Message("REVIEW_AUDIT_ACCOUNT_MISMATCH".into()));
+    }
+    let response = client_for(&config)?
+        .post(endpoint(&config, "api/v1/review/events")?)
+        .bearer_auth(state.managed_token()?)
+        .json(&serde_json::json!({ "events": events }))
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(error.to_string()))
+}
+
+pub async fn review_dashboard(
+    data_root: &Path,
+    state: &AuthState,
+    query: std::collections::BTreeMap<String, String>,
+) -> AppResult<serde_json::Value> {
+    if state.require_managed_user()?.role.as_deref() != Some("admin") {
+        return Err(AppError::Message("ADMIN_REQUIRED".into()));
+    }
+    let config = load_config(data_root)?;
+    let client = client_for(&config)?;
+    if !request_health(&client, &config)
+        .await?
+        .capabilities
+        .iter()
+        .any(|cap| cap == "reviewSupervisionV1")
+    {
+        return Err(AppError::Message(
+            "请先将用户中心服务升级至 1.0.21，以启用审核监管".into(),
+        ));
+    }
+    let mut url = endpoint(&config, "api/v1/admin/reviews")?;
+    url.query_pairs_mut().extend_pairs(query);
+    let response = client
+        .get(url)
+        .bearer_auth(state.managed_token()?)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(error.to_string()))
 }
 
 pub async fn assigned_tasks(data_root: &Path, state: &AuthState) -> AppResult<Vec<AssignedTask>> {

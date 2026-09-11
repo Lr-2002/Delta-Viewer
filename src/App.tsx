@@ -43,6 +43,7 @@ import { ProgressStrip } from "./components/ProgressStrip";
 import { PersonalTaskPanel } from "./components/PersonalTaskPanel";
 import { SkeletonViewer } from "./components/SkeletonViewer";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
+import { beginReviewAudit, configureReviewAudit, endReviewAudit, observeReviewInteractions, recordReviewInteraction, recordReviewSeek, updateReviewFrame } from "./lib/review-audit";
 import { TelemetryChart } from "./components/TelemetryChart";
 import {
   APP_VERSION,
@@ -1152,6 +1153,7 @@ function App() {
     if (reviewUnsaved.current) return;
     if (operationScopeRef.current.current()) return;
     try {
+      endReviewAudit();
       await logoutLocalAccount();
       resetWorkspaceData();
       setAuthStatus((current) => current ? { ...current, currentUser: null } : current);
@@ -1197,9 +1199,9 @@ function App() {
       Math.min(proofreading ? getMaxFrame(data) : playbackEnd, Math.round(frame)));
     setPlaying(false);
     resetPlaybackPreparation();
+    recordReviewSeek(next, Math.round(next / estimatedFps * 1000), frameRef.current);
     frameRef.current = next;
     setCurrentFrame(next);
-    auditActivity("playback_seek", undefined, undefined, `帧 ${next}`);
     if (proofreading) setMachinePreviewRange(null);
   }
 
@@ -1312,14 +1314,13 @@ function App() {
   }
 
 
-  function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "", detail = "") {
+  function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "") {
     if (authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
     void recordAnnotationAudit({
       taskId,
       trajectoryCode,
       action,
       occurredAtMs: Date.now(),
-      detail,
     }).then(() => flushPendingAnnotationAudits()).then((remaining) => setAuditUploadPending(remaining > 0)).catch((reason) => {
       setAuditUploadPending(true);
       setAuditUploadError(toMessage(reason));
@@ -1641,6 +1642,26 @@ function App() {
     if (definition) setSelectedTaskId(definition.id);
   }, [assignedEpisodeTasks, selectedEpisode?.root, tasks]);
 
+  useEffect(() => {
+    const user = authStatus?.currentUser;
+    if (!user || user.role === "admin") return;
+    return configureReviewAudit(user.username, authStatus?.userCenter.serviceId ?? "demo");
+  }, [authStatus?.currentUser?.username, authStatus?.userCenter.serviceId]);
+  useEffect(() => {
+    if (!data || !authStatus?.currentUser || authStatus.currentUser.role === "admin") return;
+    return beginReviewAudit(data.summary.root, data.summary.name);
+  }, [data?.summary.root, authStatus?.currentUser?.username]);
+  useEffect(() => observeReviewInteractions(), []);
+  useEffect(() => { updateReviewFrame(currentFrame); }, [currentFrame]);
+  useEffect(() => { recordReviewInteraction(playing ? "play" : "pause", { frameTo: currentFrame }); }, [playing]);
+  useEffect(() => { recordReviewInteraction("view", { value: view }); }, [view]);
+  const [reviewAuditError, setReviewAuditError] = useState("");
+  useEffect(() => {
+    const listener = (event: Event) => setReviewAuditError((event as CustomEvent<string>).detail);
+    window.addEventListener("review-audit-status", listener);
+    return () => window.removeEventListener("review-audit-status", listener);
+  }, []);
+
   if (!authStatus) {
     return (
       <main className="auth-shell auth-loading">
@@ -1925,6 +1946,7 @@ function App() {
         </aside>
 
         <main className="main-content">
+          {reviewAuditError && <p role="alert" className="review-audit-error">{reviewAuditError}</p>}
           {data || view === "batch" ? (
             <>
               <nav className="view-tabs" aria-label="工作区视图">
