@@ -3,10 +3,73 @@ use crate::model::SupervisionReportExportResult;
 use crate::storage;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const MAX_REPORT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Re-scan every nested session.json and export only records whose root QC is finalized.
+pub fn export_reviewed_sessions(
+    source_root: &Path,
+    destination_parent: &Path,
+    status: &str,
+    report_date: &str,
+    generated_at_ms: u64,
+) -> AppResult<SupervisionReportExportResult> {
+    if !matches!(status, "approved" | "rejected") || generated_at_ms == 0 {
+        return Err(AppError::Message(
+            "REVIEW_EXPORT_INVALID: 审核状态无效".into(),
+        ));
+    }
+    if !source_root.is_dir() || !destination_parent.is_dir() {
+        return Err(AppError::Message(
+            "REVIEW_EXPORT_DESTINATION_INVALID: 源目录或目标目录无效".into(),
+        ));
+    }
+    let mut stack = vec![PathBuf::from(source_root)];
+    let mut records = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.file_name().and_then(|n| n.to_str()) != Some("session.json") {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else { continue };
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            let qc = value.get("qc").and_then(|v| v.as_str()).unwrap_or("");
+            let matches = (status == "approved" && qc == "通过")
+                || (status == "rejected" && qc.starts_with("不通过"));
+            if !matches {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(source_root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            records.push(serde_json::json!({ "session": relative, "qc": qc, "reviewerName": value.get("reviewerName"), "reviewerUsername": value.get("reviewerUsername"), "reviewedAt": value.get("reviewedAt") }));
+        }
+    }
+    records.sort_by(|a, b| a["session"].as_str().cmp(&b["session"].as_str()));
+    let content = serde_json::to_string_pretty(
+        &serde_json::json!({ "status": status, "source": source_root.file_name().and_then(|v| v.to_str()).unwrap_or("source"), "count": records.len(), "sessions": records }),
+    )?;
+    export(
+        destination_parent,
+        "task",
+        "json",
+        report_date,
+        generated_at_ms,
+        &content,
+    )
+}
 
 pub fn export(
     destination_parent: &Path,

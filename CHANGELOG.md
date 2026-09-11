@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.22 - 2026-09-11
+
+- 监管账号增加全部通过/不通过结论总览，并支持选择结论、扫描目录下全部 session.json 的 qc 记录后集中导出验证结果。
+
 ## 1.0.21 - 2026-09-11
 
 - 管理员工作区改为审核总览、实时行为、逐条审核记录和账号管理，移除原标注分配、抽检、导入及标注报表入口。

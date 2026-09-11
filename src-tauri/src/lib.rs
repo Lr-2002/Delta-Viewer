@@ -419,6 +419,33 @@ async fn export_supervision_report(
 }
 
 #[tauri::command]
+async fn export_reviewed_sessions(
+    auth: State<'_, AuthState>,
+    source_root: String,
+    destination_parent: String,
+    status: String,
+    report_date: String,
+    generated_at_ms: u64,
+) -> Result<SupervisionReportExportResult, String> {
+    let user = auth.require_managed_user().map_err(|e| e.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账号".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        supervision_report::export_reviewed_sessions(
+            Path::new(&source_root),
+            Path::new(&destination_parent),
+            &status,
+            &report_date,
+            generated_at_ms,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn set_supervision_assigned_tasks(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -1444,6 +1471,7 @@ pub fn run() {
             batch_create_supervision_accounts,
             set_supervision_account_status,
             export_supervision_report,
+            export_reviewed_sessions,
             set_supervision_assigned_tasks,
             update_operations_alert,
             transfer_supervision_assignment,

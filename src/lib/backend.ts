@@ -708,6 +708,12 @@ export async function exportSupervisionReport(
   });
 }
 
+export async function exportReviewedSessions(sourceRoot: string, destinationParent: string, status: "approved" | "rejected"): Promise<SupervisionReportExportResult> {
+  const reportDate = new Date().toISOString().slice(0, 10);
+  if (!isTauriRuntime()) return { outputPath: `${destinationParent}/dohc-reviewed-${status}-${reportDate}.json`, totalBytes: 0, elapsedMs: 0 };
+  return invoke<SupervisionReportExportResult>("export_reviewed_sessions", { sourceRoot, destinationParent, status, reportDate, generatedAtMs: Date.now() });
+}
+
 export async function scanSource(path: string, operationId: number): Promise<ScanResult> {
   if (isTauriRuntime()) return invoke<ScanResult>("scan_source", { path, operationId });
   if (isSessionActivationDemoScenario()) {

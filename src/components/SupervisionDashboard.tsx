@@ -17,6 +17,7 @@ import {
 import {
   batchCreateSupervisionAccounts,
   chooseDirectory,
+  exportReviewedSessions,
   exportSupervisionReport,
   getReviewDashboard,
   isTauriRuntime,
@@ -89,6 +90,7 @@ export function SupervisionDashboard({
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<ReviewEvent | null>(null);
+  const [reviewedStatus, setReviewedStatus] = useState<"approved" | "rejected">("approved");
   const [account, setAccount] = useState({
     username: "",
     displayName: "",
@@ -261,6 +263,17 @@ export function SupervisionDashboard({
     } finally {
       setBusy("");
     }
+  }
+  async function exportReviewed() {
+    setBusy("reviewed-export"); setError("");
+    try {
+      const source = await chooseDirectory("选择包含所有 session 的数据目录");
+      if (!source) return;
+      const destination = await chooseDirectory("选择集中导出目录");
+      if (!destination) return;
+      const result = await exportReviewedSessions(source, destination, reviewedStatus);
+      setNotice(`已验证所有 session.json 的 QC，并导出 ${reviewedStatus === "approved" ? "通过" : "不通过"}数据：${result.outputPath}`);
+    } catch (reason) { setError(String(reason)); } finally { setBusy(""); }
   }
   async function createAccount(event: React.FormEvent) {
     event.preventDefault();
@@ -446,6 +459,14 @@ export function SupervisionDashboard({
               <span>
                 交互操作<strong>{totals.operations}</strong>
               </span>
+            </div>
+          </section>
+          <section className="review-decision-overview">
+            <h2>已通过 / 不通过总览</h2>
+            <p>统计来自全部审核事件；集中导出会重新扫描目录下每个 session.json 的 qc 字段进行验证。</p>
+            <div className="review-export-controls">
+              <label>导出结论<select value={reviewedStatus} onChange={(event) => setReviewedStatus(event.target.value as "approved" | "rejected")}><option value="approved">全部通过</option><option value="rejected">全部不通过</option></select></label>
+              <button className="button button-primary" disabled={Boolean(busy)} onClick={() => void exportReviewed()}><Download size={16} />验证并集中导出</button>
             </div>
           </section>
           <h2>账号审核进度</h2>
