@@ -1,6 +1,14 @@
 # 用户中心部署
 
-当前部署目标是本机主机 `10.1.11.200`，服务端口为 `17880`。用户中心在局域网提供强制账号登录和标注绩效审计；客户端仍直接读取本机挂载的源卡，审计不包含源路径或标注内容。
+用户中心在局域网提供账号登录和审核监管；实际地址以管理员导入的固定证书配置为准，默认服务端口为 `17880`。客户端仍直接读取本机挂载的源卡。
+
+## 1.0.21 审核监管升级
+
+服务需要 Node.js 22.13 或更高版本。升级时同时部署 `scripts/user-center-server.mjs` 和 `scripts/review-audit-store.mjs`，保留原配置、账号数据、TLS 证书、service ID 和本地扩展。停止服务后备份整个数据目录，再启动新版；不要重新初始化账号。重启会使现有 token 失效，审核员需重新登录，原账号待传记录会继续补传。
+
+`GET /healthz` 的 capabilities 必须包含 `reviewSupervisionV1`。普通审核账号通过 `POST /api/v1/review/events` 上传，管理员通过 `GET /api/v1/admin/reviews` 分页读取；客户端每 2 秒补传，管理页每 3 秒刷新。旧版服务会在 Viewer 显示升级提示。
+
+服务数据目录新增 `review-audit.sqlite` 及 SQLite WAL 文件。停服备份时一并保留，不删除历史；客户端升级前未记录的交互无法还原。记录包含条目名称、路径哈希标识、标签文本、片段修改、帧位置、耗时、审核原因与修订，不含完整源路径、媒体或凭据。
 
 ## 一键安装
 
@@ -10,7 +18,7 @@
 pnpm user-center:install
 ```
 
-要求主机安装 Node.js、pnpm、OpenSSL 和 macOS `security`/`launchctl`。脚本会：
+要求主机安装 Node.js 22.13+、pnpm、OpenSSL 和 macOS `security`/`launchctl`。脚本会：
 
 1. 在 `~/Library/Application Support/DOHC User Center/` 创建服务数据目录和权限为 `0600` 的账号数据库。
 2. 生成包含 `10.1.11.200` 与 `localhost` 的自签名 HTTPS 证书。

@@ -89,6 +89,7 @@ test("user center supports operator self-registration and administrator account 
       "operatorSelfRegistrationV1",
       "operatorProfileV1",
       "operationsCockpitV1",
+      "reviewSupervisionV1",
     ]);
     const pageHeaders = await requestHeaders(port, ca, "/");
     assert.match(pageHeaders["content-security-policy"], /(?:^|;)\s*connect-src 'self'(?:;|$)/);
@@ -113,6 +114,16 @@ test("user center supports operator self-registration and administrator account 
     });
     assert.equal(selfRegistered.status, 201);
     assert.equal(selfRegistered.body.user.role, "operator");
+    const reviewEvent = { eventId: randomUUID(), sessionId: randomUUID(), episodeKey: "a".repeat(64), episodeName: "review-fixture", action: "approved", occurredAtMs: Date.now(), elapsedMs: 42000, details: { revision: 2 } };
+    assert.equal((await request(port, ca, "GET", "/api/v1/admin/reviews")).status, 403);
+    assert.equal((await request(port, ca, "GET", "/api/v1/admin/reviews", null, selfRegistered.body.token)).status, 403);
+    assert.equal((await request(port, ca, "POST", "/api/v1/review/events", { events: [reviewEvent] }, login.body.token)).status, 403);
+    assert.equal((await request(port, ca, "POST", "/api/v1/review/events", { events: [{ ...reviewEvent, username: "supervisor" }] }, selfRegistered.body.token)).status, 400);
+    for (let retry = 0; retry < 2; retry++) assert.equal((await request(port, ca, "POST", "/api/v1/review/events", { events: [reviewEvent] }, selfRegistered.body.token)).status, 200);
+    const reviewDashboard = await request(port, ca, "GET", "/api/v1/admin/reviews", null, login.body.token);
+    assert.equal(reviewDashboard.body.total, 1);
+    assert.equal(reviewDashboard.body.events[0].username, "selfoperator");
+    assert.equal(reviewDashboard.body.sessions[0].durationMs, 42000);
     const secondSelfSession = await request(port, ca, "POST", "/api/v1/auth/login", {
       username: "selfoperator",
       password: "self-operator-password",

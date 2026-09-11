@@ -1,5 +1,13 @@
 # DOHC Viewer
 
+Version 1.0.21 replaces the administrator annotation cockpit with review supervision:
+live per-account interactions, video seeks and drag durations, label changes, review
+session timing, filtered history, CSV export and account management. Upgrade the user
+center alongside clients (Node.js 22.13+, including `scripts/review-audit-store.mjs`).
+Review events retry from an account-scoped local queue and persist in SQLite; earlier
+versions' unrecorded interactions cannot be reconstructed. See
+[deployment instructions](docs/wiki/User-Center-Deployment.md).
+
 DOHC Viewer is a Tauri 2 desktop application for reading DOHC recordings
 directly from a mounted, read-only SD card, reviewing synchronized sensor data,
 and exporting it through independent format adapters without an automatic local

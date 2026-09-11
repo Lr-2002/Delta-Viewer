@@ -324,6 +324,36 @@ async fn record_annotation_audit(
 }
 
 #[tauri::command]
+async fn record_review_audit(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    username: String,
+    service_id: String,
+    events: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    user_center::review_audit(
+        &app_data_root(&app)?,
+        auth.inner(),
+        &username,
+        &service_id,
+        events,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_review_dashboard(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    query: std::collections::BTreeMap<String, String>,
+) -> Result<serde_json::Value, String> {
+    user_center::review_dashboard(&app_data_root(&app)?, auth.inner(), query)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn get_supervision_dashboard(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -1408,6 +1438,8 @@ pub fn run() {
             update_current_display_name,
             logout_account,
             record_annotation_audit,
+            record_review_audit,
+            get_review_dashboard,
             get_supervision_dashboard,
             batch_create_supervision_accounts,
             set_supervision_account_status,

@@ -16,6 +16,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { openReviewAuditStore } from "./review-audit-store.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CONFIG_PATH = path.join(repositoryRoot, "user-center.config.json");
@@ -524,12 +525,12 @@ function sendHtml(response, status, body) {
   response.end(bytes);
 }
 
-async function parseJsonBody(request) {
+async function parseJsonBody(request, maxBytes = MAX_JSON_BYTES) {
   const chunks = [];
   let total = 0;
   for await (const chunk of request) {
     total += chunk.length;
-    if (total > MAX_JSON_BYTES) throw new Error("请求体过大");
+    if (total > maxBytes) throw new Error("请求体过大");
     chunks.push(chunk);
   }
   try {
@@ -990,6 +991,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
   const attempts = new Map();
   const registrations = new Map();
   const auditEventIds = new Set((await readAuditEvents(dataRoot)).map((event) => event.eventId));
+  const reviewAudit = openReviewAuditStore(dataRoot);
   let stateMutationTail = Promise.resolve();
 
   async function writeState(state) {
@@ -1045,6 +1047,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             OPERATOR_SELF_REGISTRATION_CAPABILITY,
             OPERATOR_PROFILE_CAPABILITY,
             OPERATIONS_COCKPIT_CAPABILITY,
+            "reviewSupervisionV1",
           ],
         });
       }
@@ -1204,6 +1207,18 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             && event.occurredAtMs >= range.startMs && event.occurredAtMs < range.endMs)
           .slice(-500).reverse();
         return sendJson(response, 200, { date: range.date, events });
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/review/events") {
+        const session = authorize(request);
+        if (!session || session.user.role !== "operator") return sendJson(response, 403, { error: "REVIEWER_REQUIRED" });
+        const body = await parseJsonBody(request, 256 * 1024);
+        return sendJson(response, 200, reviewAudit.append(session.user, body.events));
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/admin/reviews") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        const state = await readState(dataRoot);
+        return sendJson(response, 200, reviewAudit.query(Object.fromEntries(url.searchParams), state.users));
       }
       if (request.method === "POST" && url.pathname === "/api/v1/audit/events") {
         const session = authorize(request);
@@ -1605,6 +1620,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       if (!server) return;
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       server = undefined;
+      reviewAudit.close();
     },
     configuration,
     clientConfigPath: initialized.clientConfigPath,

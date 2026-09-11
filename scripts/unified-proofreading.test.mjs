@@ -404,6 +404,39 @@ test("timeline colors remain distinct for adjacent segments after splitting and 
   } finally { await page.close(); }
 });
 
+test("review audit links drag, label changes and successful approval to the same account and session", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  try {
+    await open(page, "machineAnnotation=present", "audit-reviewer");
+    await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    const rail = page.getByLabel("校对播放帧", { exact: true });
+    await rail.fill("30");
+    const box = await rail.boundingBox();
+    await page.mouse.move(box.x + box.width * .2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * .6, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    await page.getByLabel("复核动作描述").fill("审核专用动作标签");
+    await page.getByRole("button", { name: "标签库", exact: true }).click();
+    await page.getByRole("button", { name: "保存当前描述", exact: true }).click();
+    await page.getByRole("button", { name: "删除标签：审核专用动作标签", exact: true }).click();
+    await page.getByRole("button", { name: "关闭标签库", exact: true }).click();
+    await page.getByRole("button", { name: "通过", exact: true }).click();
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem("dohc.demo.review-events") ?? "[]").some((row) => row.action === "approved"));
+    const rows = await page.evaluate(() => JSON.parse(localStorage.getItem("dohc.demo.review-events")));
+    for (const action of ["loaded", "seek", "drag", "label_add", "label_delete", "segment_edit", "approved"]) assert.ok(rows.some((row) => row.action === action), action);
+    assert.equal(new Set(rows.map((row) => row.sessionId)).size, 1);
+    assert.ok(rows.every((row) => row.username === "audit-reviewer"));
+    assert.equal(rows.find((row) => row.action === "label_add").details.value, "审核专用动作标签");
+    assert.equal(rows.find((row) => row.action === "label_delete").details.value, "审核专用动作标签");
+    const approved = rows.find((row) => row.action === "approved"), loaded = rows.find((row) => row.action === "loaded");
+    assert.ok(approved.elapsedMs > 0);
+    assert.ok(Math.abs(approved.elapsedMs - (approved.occurredAtMs - loaded.occurredAtMs)) < 100);
+    assert.ok(rows.find((row) => row.action === "drag").details.durationMs > 0);
+    assert.equal(await page.locator(".review-audit-error").count(), 0);
+  } finally { await page.close(); }
+});
+
 test("missing machine JSON still allows five-camera playback and seeking", async () => {
   const page = await browser.newPage();
   await open(page, "machineAnnotation=missing&trajectoryWarning=static");
