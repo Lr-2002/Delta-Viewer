@@ -54,6 +54,7 @@ for (const callback of [true, false]) test(`proofreading uses actual video frame
     window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
       if (command === "get_video_source") return { fps: 30, mediaFps: 30, segmentSeconds: 3, startFrame: 0, paths: [new URL("/proofreading-test.mp4", location.origin).href] };
       if (command === "load_machine_annotation") return { sourceHash: "test", episodeId: "synthetic", model: "Test", validationStatus: "needs_review", frameCount: 90, segments, warnings: ["未观察到本 episode 的开始姿态，请一审核对", "同一 episode 的任务标签不一致，请一审核对"] };
+      if (command === "list_machine_annotation_sources") return ["bailian_annotation.json", "bailian_annotation.qwen3.8-flash.json"];
       if (command === "load_machine_review") return structuredClone(window.__proofReview);
       if (command === "save_machine_review") {
         await new Promise((resolve) => setTimeout(resolve, 80));

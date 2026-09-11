@@ -5,6 +5,8 @@ after `main` CI succeeds for a coordinated version change.
 
 ## 1.0.23 - 2026-09-11
 
+- 机标来源按当前 session 动态列出根目录和 `.session_meta` 中的 `bailian*.json`、`description.json` 与 `desorption.json`，以路径区分同名文件；保留帧范围、区间和当前 session 身份检查。
+- 监管扫描跳过已识别 session 的相机媒体子目录；旧 JPEG 时长仅读取状态时间戳和 Camera 0 文件名，不解码图像或索引全部相机，状态采样数与视频帧数分别处理。
 - 修复 Windows 已通过数据导出在最终发布目录时因清单文件尚未关闭而出现“拒绝访问”；清单同步并关闭后再原子发布，保留源数据只读、回读校验与取消清理规则。
 - Windows 发布流程增加原生 QC 扫描和导出回归测试。1.0.22 安装包发布因该实机问题已取消，完整功能随本版发布。
 

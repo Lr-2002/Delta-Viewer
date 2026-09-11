@@ -38,13 +38,20 @@ export function MachineAnnotationPanel(props: Props) {
   const [sourceName, setSourceName] = useState("");
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
   const [sourceBusy, setSourceBusy] = useState(false);
-  useEffect(() => { void listMachineAnnotationSources(props.data.summary.root).then(setSourceOptions).catch(() => setSourceOptions([])); }, [props.data.summary.root]);
-  const label = (name: string) => name === "description.json" ? "人工结果（description.json）" : name.replace(/^bailian_annotation\.json$/, "百炼 3.8 Max").replace(/^bailian_annotation\.qwen3\.8-flash\.json$/, "百炼 3.8 Flash");
+  const [sourceError, setSourceError] = useState("");
+  useEffect(() => {
+    let active = true;
+    setSourceName(""); setSourceOptions([]); setSourceError("");
+    void listMachineAnnotationSources(props.data.summary.root).then((options) => { if (active) setSourceOptions(options); }).catch((error) => { if (active) setSourceError(String(error)); });
+    return () => { active = false; };
+  }, [props.data.summary.root]);
+  const label = (name: string) => /(^|\/)(description|desorption)\.json$/.test(name) ? `人工结果（${name}）` : name;
   return <div className={`quality-workspace${props.playback ? " quality-embedded" : ""}`}>
     <label className="machine-source-picker">机标来源<select aria-label="机标来源" value={sourceName} disabled={props.busy || sourceBusy}
       onChange={(event) => { props.playback?.onPause(); setSourceName(event.currentTarget.value); recordReviewInteraction("source", { sourceName: event.currentTarget.value || "auto" }); }}>
       <option value="">自动（优先 Flash）</option>{sourceOptions.map((name) => <option key={name} value={name}>{label(name)}</option>)}
     </select></label>
+    {sourceError && <p role="alert">{sourceError}</p>}
     <MachineAnnotationEditor {...props} key={`${props.username}:${props.data.summary.root}:${sourceName}`} sourceName={sourceName || undefined} onSourceBusy={setSourceBusy} />
   </div>;
 }
@@ -81,7 +88,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const loadedSource = useRef(sourceName);
   const finishLock = useRef(false);
   const legacyRecovery = useRef(false);
-  const legacyRecoveryKey = () => `dohc.machine-review.pending:${root}${loadedSource.current === "bailian_annotation.qwen3.8-flash.json" ? ":qwen3.8-flash" : ""}`;
+  const legacyRecoveryKey = () => `dohc.machine-review.pending:${root}${!loadedSource.current || loadedSource.current === "bailian_annotation.json" ? "" : loadedSource.current === "bailian_annotation.qwen3.8-flash.json" ? ":qwen3.8-flash" : `:source:${encodeURIComponent(loadedSource.current)}`}`;
   const recoveryKey = () => `${legacyRecoveryKey()}:account:${encodeURIComponent(username)}`;
   const [recoveryError, setRecoveryError] = useState("");
   const labelLibraryStorageKey = labelLibraryKey(username);

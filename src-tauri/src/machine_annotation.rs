@@ -13,8 +13,13 @@ pub const DEFAULT_SOURCE: &str = "bailian_annotation.json";
 pub const FLASH_SOURCE: &str = "bailian_annotation.qwen3.8-flash.json";
 
 pub(crate) fn validate_source_name(name: &str) -> AppResult<()> {
-    let valid = matches!(name, "description.json" | "desorption.json")
-        || (name.starts_with("bailian") && name.ends_with(".json") && !name.contains(['/', '\\']));
+    let file = name
+        .strip_prefix(".session_meta/")
+        .or_else(|| name.strip_prefix("./"))
+        .unwrap_or(name);
+    let valid = (matches!(file, "description.json" | "desorption.json")
+        || (file.starts_with("bailian") && file.ends_with(".json")))
+        && !file.contains(['/', '\\', ':', '\0']);
     if !valid {
         return Err(invalid("不支持的机标文件名"));
     }
@@ -22,11 +27,18 @@ pub(crate) fn validate_source_name(name: &str) -> AppResult<()> {
 }
 
 pub fn list_sources(root: &Path) -> AppResult<Vec<String>> {
+    let root = root.canonicalize()?;
     let mut names = Vec::new();
     for directory in [root.to_path_buf(), root.join(".session_meta")] {
-        let Ok(entries) = fs::read_dir(&directory) else {
-            continue;
-        };
+        match fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+            Ok(metadata) if !metadata.is_dir() || directory.canonicalize()? != directory => {
+                return Err(invalid("机标目录必须为普通目录"))
+            }
+            Ok(_) => {}
+        }
+        let entries = fs::read_dir(&directory)?;
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -35,15 +47,18 @@ pub fn list_sources(root: &Path) -> AppResult<Vec<String>> {
                     || (name.starts_with("bailian") && name.ends_with(".json")))
             {
                 validate_source_name(&name)?;
-                if !names.contains(&name) {
-                    names.push(name);
-                }
+                // Preserve distinct root and metadata files with the same name.
+                names.push(if directory == root {
+                    format!("./{name}")
+                } else {
+                    format!(".session_meta/{name}")
+                });
             }
         }
     }
     names.sort_by_key(|name| {
         (
-            !(name == "description.json" || name == "desorption.json"),
+            !(name.ends_with("/description.json") || name.ends_with("/desorption.json")),
             name.clone(),
         )
     });
@@ -182,11 +197,15 @@ pub fn load_selected(
     let Some(bytes) = bytes else {
         return Ok(None);
     };
-    parse_or_human(
+    parse_document(
         &bytes,
         root.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default(),
+        matches!(
+            name.rsplit('/').next(),
+            Some("description.json" | "desorption.json")
+        ),
     )
     .map(|mut annotation| {
         annotation.source_name = name.into();
@@ -194,80 +213,21 @@ pub fn load_selected(
     })
 }
 
-fn parse_or_human(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
-    match parse(bytes, episode_name) {
-        Ok(value) => Ok(value),
-        Err(original) => {
-            let document: Value =
-                serde_json::from_slice(bytes).map_err(|_| invalid("人工结果 JSON 格式无效"))?;
-            let episode = document["episode_results"]
-                .as_array()
-                .and_then(|items| {
-                    items
-                        .iter()
-                        .find(|item| item["episode_id"].as_str() == Some(episode_name))
-                        .or_else(|| (items.len() == 1).then_some(&items[0]))
-                })
-                .ok_or(original)?;
-            let media = episode["media"]["frame_count"]
-                .as_u64()
-                .ok_or_else(|| invalid("人工结果缺少视频帧数"))?;
-            let segments = document["_human_review"]["segments"]
-                .as_array()
-                .or_else(|| episode["annotations"].as_array())
-                .ok_or_else(|| invalid("人工结果缺少片段"))?;
-            let mut result = MachineAnnotation {
-                source_name: String::new(),
-                episode_id: episode_name.into(),
-                model: Some("人工结果".into()),
-                completed_at: None,
-                validation_status: Some("human".into()),
-                frame_count: media,
-                warnings: Vec::new(),
-                segments: Vec::new(),
-                source_hash: blake3::hash(bytes).to_hex().to_string(),
-                source_json: String::from_utf8_lossy(bytes).into_owned(),
-                boundary_method: None,
-            };
-            for (index, item) in segments.iter().enumerate() {
-                result.segments.push(MachineSegment {
-                    source_index: index,
-                    segment_id: item["segment_id"].as_str().map(str::to_owned),
-                    label: item["label_code"].as_str().unwrap_or("human").into(),
-                    description: item["description"]
-                        .as_str()
-                        .or(item["attributes_zh"]["动作描述"].as_str())
-                        .unwrap_or("")
-                        .into(),
-                    start_frame: item["start_frame"]
-                        .as_u64()
-                        .or(item["startFrame"].as_u64())
-                        .unwrap_or_default(),
-                    end_frame: item["end_frame"]
-                        .as_u64()
-                        .or(item["endFrame"].as_u64())
-                        .unwrap_or_default(),
-                    attributes: item["attributes"]
-                        .as_object()
-                        .map(|map| {
-                            map.iter()
-                                .map(|(key, value)| (key.clone(), value.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                });
-            }
-            Ok(result)
-        }
-    }
-}
-
 fn read_source_bytes(root: &Path, name: &str) -> AppResult<Option<Vec<u8>>> {
+    if let Some(file) = name.strip_prefix("./") {
+        return read_bytes(&root.join(file));
+    }
+    if matches!(name, "description.json" | "desorption.json") {
+        return read_bytes(&root.join(name));
+    }
     let directory = root.join(".session_meta");
     match fs::symlink_metadata(&directory) {
         Ok(metadata) => {
             if !metadata.file_type().is_dir() || directory.canonicalize()? != directory {
                 return Err(invalid("机标元数据目录不能是符号链接或非目录文件"));
+            }
+            if let Some(file) = name.strip_prefix(".session_meta/") {
+                return read_bytes(&directory.join(file));
             }
             if let Some(bytes) = read_bytes(&directory.join(name))? {
                 return Ok(Some(bytes));
@@ -275,6 +235,9 @@ fn read_source_bytes(root: &Path, name: &str) -> AppResult<Option<Vec<u8>>> {
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
+    }
+    if name.starts_with(".session_meta/") {
+        return Ok(None);
     }
     read_bytes(&root.join(name))
 }
@@ -323,6 +286,7 @@ pub(crate) fn read_bytes(path: &Path) -> AppResult<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
+#[cfg(test)]
 fn parse(bytes: &[u8], episode_name: &str) -> AppResult<MachineAnnotation> {
     parse_document(bytes, episode_name, false)
 }
@@ -439,6 +403,53 @@ fn parse_document(bytes: &[u8], episode_name: &str, human: bool) -> AppResult<Ma
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discovers_distinct_sources_and_validates_human_and_machine_ranges() {
+        let root = std::env::temp_dir()
+            .join(format!(
+                "viewer-sources-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+            .join("sample");
+        fs::create_dir_all(root.join(".session_meta")).unwrap();
+        let document = fixture();
+        let bytes = serde_json::to_vec(&document).unwrap();
+        for name in [
+            "bailian_new-model.json",
+            ".session_meta/bailian_new-model.json",
+            "description.json",
+            "desorption.json",
+        ] {
+            fs::write(root.join(name), &bytes).unwrap();
+        }
+        let names = list_sources(&root).unwrap();
+        assert_eq!(names.len(), 4);
+        assert!(names.contains(&"./bailian_new-model.json".into()));
+        assert!(names.contains(&".session_meta/bailian_new-model.json".into()));
+        for name in names {
+            let loaded = load_selected(&root, Some(&name)).unwrap().unwrap();
+            assert_eq!(loaded.source_name, name);
+            assert_eq!(loaded.segments[0].end_frame, 22);
+        }
+        let mut invalid = document;
+        invalid["episode_results"][0]["annotations"][0]["end_frame"] = 999.into();
+        for name in ["bailian_new-model.json", "description.json"] {
+            fs::write(root.join(name), serde_json::to_vec(&invalid).unwrap()).unwrap();
+            assert!(load_selected(&root, Some(&format!("./{name}"))).is_err());
+        }
+        for name in [
+            "../bailian.json",
+            ".session_meta/../description.json",
+            "./bailian.json:stream.json",
+        ] {
+            assert!(validate_source_name(name).is_err());
+        }
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
     fn fixture() -> Value {
         serde_json::json!({"schema_version":3,"episode_results":[{
             "episode_id":"sample","annotations":[
