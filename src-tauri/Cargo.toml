@@ -1,6 +1,6 @@
 [package]
 name = "dohc-viewer"
-version = "1.0.19"
+version = "1.0.20"
 description = "Inspect and export DOHC recordings from removable media"
 authors = ["DOHC"]
 edition = "2021"

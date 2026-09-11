@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.20 - 2026-09-11
+
+- 修复审核通过状态在进入下一条后被扫描刷新清空的问题；账号审核状态在扫描结果更新时保留，并继续从本机账号记录补齐。
+
 ## 1.0.19 - 2026-09-11
 
 - 删除标准私有样例作为 `check:full` 和发布检查的硬性前置；完整检查改为直接运行通用门禁和 Tauri debug 构建。
