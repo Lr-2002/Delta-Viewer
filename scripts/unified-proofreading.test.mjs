@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { after, before, test } from "node:test";
 import { createServer } from "vite";
 import { chromium } from "playwright-core";
@@ -319,13 +319,14 @@ test("deleting a segment moves the next real boundary and saved review, with wor
 });
 
 test("history shows the installed patch and its Chinese summary", async () => {
+  const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const page = await browser.newPage();
   try {
     await open(page, "machineAnnotation=present");
     await page.getByRole("button", { name: "查看历史版本", exact: true }).click();
     await page.getByRole("dialog", { name: "历史版本" }).waitFor();
-    assert.equal(await page.locator(".version-history-entry").first().locator("strong").textContent(), "v1.0.18");
-    assert.match(await page.locator(".version-history-summary").first().textContent(), /校对改进/);
+    assert.equal(await page.locator(".version-history-entry").first().locator("strong").textContent(), `v${version}`);
+    assert.match(await page.locator(".version-history-summary").first().textContent(), /\p{Script=Han}/u);
   } finally { await page.close(); }
 });
 

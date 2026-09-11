@@ -122,7 +122,7 @@ updater 上限、安装包上限、SHA-256 和 Ed25519/Minisign 签名，完整�
 ## 版本发布门槛
 
 1. 默认将 patch 位增加 `+0.0.1`；minor/major 或跳号必须由开发负责人明确指定。更新四处应用版本，并在 `CHANGELOG.md` 顶部新增唯一、带日期且非空的版本条目；同步更新 PRD 和用户文档。
-2. 在本地私有标准样例上运行 `pnpm check:full`；平台变更运行对应 bundle/目标测试。
+2. 运行 `pnpm check:full`；标准私有样例已从发布硬性前置中移除，平台变更运行对应 bundle/目标测试。
 3. 确认 staged FFmpeg、私有数据、报告和构建产物没有进入 Git。
 4. 将完整版本内容作为一个 release-ready commit 直接推送或合并到 `main`，不创建独立功能 commit 或 release commit；tag pending 期间冻结 `main`。
 5. CI 成功后由 workflow 自动创建 annotated tag、构建三个安装包并先写入 draft；三份验证全部通过后自动公开。

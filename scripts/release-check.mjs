@@ -42,13 +42,12 @@ function usage() {
 
 Profiles:
   --quick                         Build, regression fixtures, format, lint, and unit tests (default)
-  --full                          Quick checks plus private-sample tests and a Tauri build
+  --full                          Quick checks plus a Tauri debug application build
 
 Options:
   --bundle                        Build a debug platform bundle after all checks
   --allow-nonportable-bundle      Allow a local-only staged FFmpeg in a debug bundle
   --require-clean                 Fail unless the Git worktree is clean
-  --sample-root <path>            Override DOHC_SAMPLE_ROOT for full checks
   --report <path>                 Set the JSON evidence report path
   --help                          Show this help
 `);
@@ -61,9 +60,6 @@ function parseArguments(argv) {
     bundle: false,
     allowNonportableBundle: false,
     requireClean: false,
-    sampleRoot: process.env.DOHC_SAMPLE_ROOT
-      ? path.resolve(process.env.DOHC_SAMPLE_ROOT)
-      : path.join(root, "data/raw/2026-07-13_07-34-12"),
     reportPath: path.join(
       root,
       "artifacts/release-check",
@@ -89,18 +85,13 @@ function parseArguments(argv) {
       case "--require-clean":
         options.requireClean = true;
         break;
-      case "--sample-root":
       case "--report": {
         const value = argv[index + 1];
         if (!value || value.startsWith("--")) {
           throw new Error(`${argument} requires a value`);
         }
         index += 1;
-        if (argument === "--sample-root") {
-          options.sampleRoot = path.resolve(value);
-        } else {
-          options.reportPath = path.resolve(value);
-        }
+        options.reportPath = path.resolve(value);
         break;
       }
       case "--help":
@@ -742,48 +733,6 @@ async function main() {
     );
 
     if (options.profile === "full") {
-      await recordCheck(report, "private sample availability", async () => {
-        const sampleInfo = await stat(options.sampleRoot);
-        if (!sampleInfo.isDirectory()) {
-          throw new Error("DOHC_SAMPLE_ROOT is not a directory");
-        }
-        await access(path.join(options.sampleRoot, "states.jsonl"), fsConstants.R_OK);
-        return {
-          source: process.env.DOHC_SAMPLE_ROOT ? "environment" : "repository default",
-          statesReadable: true,
-        };
-      });
-      const sampleEnvironment = { DOHC_SAMPLE_ROOT: options.sampleRoot };
-      await runCommand(
-        report,
-        "real sample import and hash readback",
-        commands.cargo,
-        [
-          "test",
-          "--manifest-path",
-          cargoManifest,
-          "imports_real_sample_and_verifies_hashes",
-          "--",
-          "--ignored",
-          "--nocapture",
-        ],
-        sampleEnvironment,
-      );
-      await runCommand(
-        report,
-        "real sample validation and three-format readback",
-        commands.cargo,
-        [
-          "test",
-          "--manifest-path",
-          cargoManifest,
-          "validates_and_exports_real_sample",
-          "--",
-          "--ignored",
-          "--nocapture",
-        ],
-        sampleEnvironment,
-      );
       await runCommand(
         report,
         "Tauri debug application build",

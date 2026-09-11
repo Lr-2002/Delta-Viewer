@@ -336,11 +336,10 @@ regression fixtures, Rust format check, Clippy with warnings denied, and the
 regular Rust suite. Every run writes an ignored JSON evidence report under
 `artifacts/release-check/`.
 
-The private sample is excluded from Git. Run both real-data tests plus a Tauri
-debug application build with:
+真实样例不再是发布检查的必需项；`check:full` 直接运行通用门禁和 Tauri debug 构建：
 
 ```bash
-DOHC_SAMPLE_ROOT="$PWD/data/raw/2026-07-13_07-34-12" pnpm check:full
+pnpm check:full
 ```
 
 `pnpm check:bundle` adds an unsigned debug platform package. On macOS in a
@@ -362,10 +361,10 @@ under `artifacts/windows-cross-check/`. It does not link an executable, include
 bundle resources, build an installer, or run on Windows.
 
 On macOS, exercise the production data path from an actual read-only ExFAT
-filesystem with the private fixture:
+filesystem with a separately supplied fixture when available:
 
 ```bash
-DOHC_SAMPLE_ROOT="$PWD/data/raw/2026-07-13_07-34-12" \
+DOHC_SAMPLE_ROOT=/path/to/fixture \
 DOHC_FFMPEG=/absolute/path/to/ffmpeg \
 pnpm check:exfat-macos
 ```
@@ -441,7 +440,6 @@ run the full gate, and then build the offline NSIS installer:
 
 ```powershell
 pnpm install --frozen-lockfile
-$env:DOHC_SAMPLE_ROOT = "C:\path\to\2026-07-13_07-34-12"
 .\scripts\stage-ffmpeg.ps1 `
   -Source C:\path\to\ffmpeg.exe `
   -ExpectedSha256 $FfmpegSha256 `
