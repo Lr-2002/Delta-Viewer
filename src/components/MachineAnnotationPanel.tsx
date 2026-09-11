@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
-import { loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
+import { loadMachineAnnotation, loadMachineReview, saveMachineReview, recordAnnotationAudit } from "../lib/backend";
 import { addReviewSegment, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
@@ -242,6 +242,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text, createdAt: Date.now() },
       ...labelLibrary,
     ].slice(0, LABEL_LIBRARY_LIMIT));
+    void recordAnnotationAudit({ action: "label_library_added", taskId: "", trajectoryCode: "", occurredAtMs: Date.now(), detail: text });
     setLabelLibraryOpen(true);
   }
   function applyLibraryLabel(text: string) {
@@ -252,7 +253,9 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     setLabelLibraryOpen(false);
   }
   function deleteLibraryLabel(id: string) {
+    const removed = labelLibrary.find((item) => item.id === id);
     saveLabelLibrary(labelLibrary.filter((item) => item.id !== id));
+    if (removed) void recordAnnotationAudit({ action: "label_library_deleted", taskId: "", trajectoryCode: "", occurredAtMs: Date.now(), detail: removed.text });
   }
   function boundary(kind: "startFrame" | "endFrame", value: number) {
     if (!active || !result || !canEdit) return;

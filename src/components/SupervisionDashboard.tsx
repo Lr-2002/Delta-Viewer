@@ -26,11 +26,10 @@ type View = "overview" | "assignment" | "alerts" | "quality" | "reports";
 type CockpitProgress = { key: string; label: string; detail: string; completed: number; total: number | null };
 
 const NAVIGATION: { id: View; label: string }[] = [
-  { id: "overview", label: "监管总览" },
-  { id: "assignment", label: "任务分配" },
-  { id: "alerts", label: "异常中心" },
-  { id: "quality", label: "质量管理" },
-  { id: "reports", label: "报表" },
+  { id: "overview", label: "审核总览" },
+  { id: "alerts", label: "实时行为" },
+  { id: "quality", label: "审核记录" },
+  { id: "reports", label: "审核报表" },
 ];
 
 export function SupervisionDashboard({ currentUser, onLogout }: Props) {
@@ -80,6 +79,10 @@ export function SupervisionDashboard({ currentUser, onLogout }: Props) {
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    const timer = window.setInterval(() => { void refresh(); }, 3000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
 
   useEffect(() => {
     if (!busy) {

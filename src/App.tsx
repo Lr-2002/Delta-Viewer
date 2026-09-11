@@ -1199,6 +1199,7 @@ function App() {
     resetPlaybackPreparation();
     frameRef.current = next;
     setCurrentFrame(next);
+    auditActivity("playback_seek", undefined, undefined, `帧 ${next}`);
     if (proofreading) setMachinePreviewRange(null);
   }
 
@@ -1311,13 +1312,14 @@ function App() {
   }
 
 
-  function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "") {
+  function auditActivity(action: AnnotationAuditAction, taskId = selectedTaskId ?? annotation?.taskId ?? "", trajectoryCode = annotation?.trajectoryCode ?? "", detail = "") {
     if (authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
     void recordAnnotationAudit({
       taskId,
       trajectoryCode,
       action,
       occurredAtMs: Date.now(),
+      detail,
     }).then(() => flushPendingAnnotationAudits()).then((remaining) => setAuditUploadPending(remaining > 0)).catch((reason) => {
       setAuditUploadPending(true);
       setAuditUploadError(toMessage(reason));

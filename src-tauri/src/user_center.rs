@@ -294,6 +294,7 @@ pub async fn record_annotation_audit(
             "trajectoryCode": request.trajectory_code,
             "action": request.action,
             "occurredAtMs": request.occurred_at_ms,
+            "detail": request.detail,
         }))
         .send()
         .await

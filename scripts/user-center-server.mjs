@@ -64,6 +64,7 @@ const AUDIT_ACTIONS = new Set([
   "annotation_ended", "episode_opened", "source_unavailable",
   "annotation_save_failed", "validation_warning", "validation_error",
   "user_center_unavailable",
+  "playback_seek", "label_library_added", "label_library_deleted",
 ]);
 
 function parseArguments(argv) {
@@ -619,7 +620,7 @@ function availableAssignmentStart(users, excludedUsername, task, quantity) {
 }
 
 function auditEvent(body, user) {
-  const allowedFields = new Set(["eventId", "taskId", "trajectoryCode", "action", "occurredAtMs"]);
+  const allowedFields = new Set(["eventId", "taskId", "trajectoryCode", "action", "occurredAtMs", "detail"]);
   if (!body || typeof body !== "object" || Array.isArray(body)
     || Object.keys(body).some((field) => !allowedFields.has(field))) {
     throw new Error("AUDIT_FIELD_INVALID: 监管 payload 只能包含白名单字段");
@@ -628,7 +629,8 @@ function auditEvent(body, user) {
   if (!AUDIT_ACTIONS.has(action)) throw new Error("AUDIT_ACTION_INVALID: 行为类型无效");
   const taskId = String(body.taskId ?? "");
   const trajectoryCode = String(body.trajectoryCode ?? "");
-  if (taskId.length > 100 || trajectoryCode.length > 100) throw new Error("AUDIT_FIELD_INVALID: 监管字段无效");
+  const detail = String(body.detail ?? "");
+  if (taskId.length > 100 || trajectoryCode.length > 100 || detail.length > 500) throw new Error("AUDIT_FIELD_INVALID: 监管字段无效");
   const occurredAtMs = Number(body.occurredAtMs);
   if (!Number.isSafeInteger(occurredAtMs) || Math.abs(nowMs() - occurredAtMs) > 86_400_000) {
     throw new Error("AUDIT_TIME_INVALID: 行为时间无效");
@@ -647,6 +649,7 @@ function auditEvent(body, user) {
     action,
     occurredAtMs,
     receivedAtMs: nowMs(),
+    detail,
   };
 }
 

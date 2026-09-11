@@ -322,7 +322,7 @@ export type AnnotationAuditAction =
   | "segment_deleted" | "annotation_saved" | "export_started" | "export_finished"
   | "annotation_ended" | "episode_opened" | "source_unavailable"
   | "annotation_save_failed" | "validation_warning" | "validation_error"
-  | "user_center_unavailable";
+  | "user_center_unavailable" | "playback_seek" | "label_library_added" | "label_library_deleted";
 
 export interface AnnotationAuditRequest {
   eventId: string;
@@ -330,6 +330,7 @@ export interface AnnotationAuditRequest {
   trajectoryCode: string;
   action: AnnotationAuditAction;
   occurredAtMs: number;
+  detail?: string;
 }
 
 export type SupervisionReportKind = "daily" | "weekly" | "task";

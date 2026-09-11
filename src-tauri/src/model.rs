@@ -393,6 +393,8 @@ pub struct AnnotationAuditRequest {
     pub trajectory_code: String,
     pub action: String,
     pub occurred_at_ms: u64,
+    #[serde(default)]
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

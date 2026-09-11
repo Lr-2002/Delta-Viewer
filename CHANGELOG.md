@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.21 - 2026-09-11
+
+- 管理员监管页改为实时审核视图：每 3 秒刷新各账号行为、播放定位、标签库增删和审核进度；管理员不再看到标注任务分配入口。
+- 审核账号的加载、拖动时间、标签库操作、保存和通过行为写入审计事件，并保留账号级操作时间线。
+
 ## 1.0.20 - 2026-09-11
 
 - 修复审核通过状态在进入下一条后被扫描刷新清空的问题；账号审核状态在扫描结果更新时保留，并继续从本机账号记录补齐。
