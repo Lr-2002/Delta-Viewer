@@ -1603,14 +1603,17 @@ function App() {
     [clipEndFrame, clipStartFrame, report],
   );
   useEffect(() => {
-    let active = true;
     setReviewedEpisodes({});
-    if (!authStatus?.currentUser || !scan) return;
+  }, [authStatus?.currentUser?.username]);
+
+  useEffect(() => {
+    let active = true;
+    if (!authStatus?.currentUser || !scan) return () => { active = false; };
     void listMyMachineReviews(scan.episodes.map((episode) => episode.root)).then((records) => {
       if (!active) return;
       setReviewedEpisodes((current) => ({
-        ...Object.fromEntries(records.map((record) => [record.sourcePath, record.status])),
         ...current,
+        ...Object.fromEntries(records.map((record) => [record.sourcePath, record.status])),
       }));
     }).catch((reason) => { if (active) setNotice(`账号审核记录读取失败，可重新加载目录重试：${toMessage(reason)}`); });
     return () => { active = false; };
