@@ -13,7 +13,7 @@ pub const DEFAULT_SOURCE: &str = "bailian_annotation.json";
 pub const FLASH_SOURCE: &str = "bailian_annotation.qwen3.8-flash.json";
 
 pub(crate) fn validate_source_name(name: &str) -> AppResult<()> {
-    let valid = name == "description.json"
+    let valid = matches!(name, "description.json" | "desorption.json")
         || (name.starts_with("bailian") && name.ends_with(".json") && !name.contains(['/', '\\']));
     if !valid {
         return Err(invalid("不支持的机标文件名"));
@@ -31,7 +31,7 @@ pub fn list_sources(root: &Path) -> AppResult<Vec<String>> {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if entry.file_type()?.is_file()
-                && (name == "description.json"
+                && (matches!(name.as_str(), "description.json" | "desorption.json")
                     || (name.starts_with("bailian") && name.ends_with(".json")))
             {
                 validate_source_name(&name)?;
@@ -41,7 +41,12 @@ pub fn list_sources(root: &Path) -> AppResult<Vec<String>> {
             }
         }
     }
-    names.sort_by_key(|name| (name != "description.json", name.clone()));
+    names.sort_by_key(|name| {
+        (
+            !(name == "description.json" || name == "desorption.json"),
+            name.clone(),
+        )
+    });
     Ok(names)
 }
 
