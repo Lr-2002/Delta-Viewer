@@ -169,8 +169,13 @@ fn selected_draft_path(data_root: &Path, root: &Path, annotation: &MachineAnnota
     let path = draft_path(data_root, root);
     if annotation.source_name == machine_annotation::FLASH_SOURCE {
         path.with_extension("qwen3.8-flash.json")
-    } else {
+    } else if annotation.source_name == machine_annotation::DEFAULT_SOURCE {
         path
+    } else {
+        path.with_extension(format!(
+            "{}.json",
+            blake3::hash(annotation.source_name.as_bytes()).to_hex()
+        ))
     }
 }
 

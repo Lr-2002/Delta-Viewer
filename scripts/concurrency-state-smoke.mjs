@@ -338,6 +338,7 @@ try {
           case "list_assigned_task_definitions":
           case "get_assigned_tasks":
           case "list_my_machine_reviews":
+          case "list_machine_annotation_sources":
           case "list_operation_errors":
             return [];
           case "get_assigned_task_activity":

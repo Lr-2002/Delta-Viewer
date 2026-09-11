@@ -330,6 +330,8 @@ if (!browserExecutable && requireBrowser) {
                   },
                 ],
               };
+            case "list_machine_annotation_sources":
+              return [];
             default:
               return null;
           }

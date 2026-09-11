@@ -379,6 +379,9 @@ jobs:
       - name: Build unsigned offline NSIS installer
         run: pnpm tauri build --ci --bundles nsis --no-sign --config "$env:RUNNER_TEMP\tauri-release-installer.json"
 
+      - name: Verify native Windows QC catalog and export behavior
+        run: cargo test --release --manifest-path src-tauri/Cargo.toml review_catalog::tests
+
       - name: Verify unsigned state, install, launch, resources, and uninstall
         shell: pwsh
         run: |

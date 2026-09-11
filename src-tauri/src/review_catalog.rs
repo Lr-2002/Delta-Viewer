@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppResult};
-use crate::{machine_annotation, source, storage};
+use crate::{machine_annotation, storage};
 use serde::Serialize;
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
@@ -140,10 +140,24 @@ fn tree_snapshot(root: &Path, cancelled: &AtomicBool) -> AppResult<String> {
 }
 
 fn skip(entry: &walkdir::DirEntry) -> bool {
-    matches!(
+    if matches!(
         entry.file_name().to_str(),
         Some(".session_meta" | "@eaDir" | ".git")
-    )
+    ) {
+        return true;
+    }
+    // Only skip camera contents inside a session. A top-level directory called
+    // images/videos/media can still contain sessions and must remain discoverable.
+    let camera = matches!(
+        entry.file_name().to_str(),
+        Some("cam0" | "cam1" | "cam2" | "t265_left" | "t265_right")
+    );
+    entry.depth() > 0
+        && entry.file_type().is_dir()
+        && camera
+        && entry.path().parent().is_some_and(|parent| {
+            parent.join("session.json").is_file() || parent.join("states.jsonl").is_file()
+        })
 }
 
 pub fn scan(
@@ -366,29 +380,109 @@ fn timing(root: &Path, cancelled: &AtomicBool) -> AppResult<(u64, f64, String)> 
             }
         }
     }
-    let summary = source::scan_episode(root, None, cancelled)?;
-    let camera = summary
-        .streams
-        .iter()
-        .find(|stream| stream.name == "cam0")
-        .ok_or_else(|| fail("缺少 Camera 0"))?;
-    let (start, end) = summary
-        .start_time_ns
-        .as_deref()
-        .zip(summary.end_time_ns.as_deref())
-        .ok_or_else(|| fail("缺少原始时间戳或帧率"))?;
-    let start: i128 = start.parse().map_err(|_| fail("原始时间戳无效"))?;
-    let end: i128 = end.parse().map_err(|_| fail("原始时间戳无效"))?;
-    if end <= start || camera.frame_count < 2 || summary.state_count < 2 {
-        return Err(fail("原始时间范围无效"));
+    // Legacy JPEG timing counts camera filenames without decoding images or
+    // indexing all five streams. State cadence is not the camera frame count.
+    if let Some((frames, seconds)) = quick_states_timing(root, cancelled)? {
+        return Ok((frames, seconds, "采集时间戳（含末帧，估算）".into()));
     }
-    let seconds = (end - start) as f64 / 1e9;
-    // A frame occupies one interval; include the last frame without adding camera streams.
-    Ok((
-        camera.frame_count,
-        seconds * summary.state_count as f64 / (summary.state_count - 1) as f64,
-        "采集时间戳（含末帧，估算）".into(),
-    ))
+    Err(fail("缺少可核验的 Camera 0 帧数或原始时间戳"))
+}
+
+fn quick_states_timing(root: &Path, cancelled: &AtomicBool) -> AppResult<Option<(u64, f64)>> {
+    let path = root.join("states.jsonl");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() || is_link(&metadata) {
+        return Err(fail("states.jsonl 必须为普通文件"));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(&path)?;
+    if is_link(&file.metadata()?) {
+        return Err(fail("states.jsonl 不可为链接"));
+    }
+    let mut reader = std::io::BufReader::new(file);
+    let (mut first, mut last, mut count) = (None, None, 0u64);
+    let mut line = Vec::new();
+    loop {
+        check(cancelled)?;
+        line.clear();
+        if std::io::BufRead::read_until(
+            &mut (&mut reader).take(8 * 1024 * 1024 + 1),
+            b'\n',
+            &mut line,
+        )? == 0
+        {
+            break;
+        }
+        if line.len() > 8 * 1024 * 1024 {
+            return Err(fail("状态记录单行超过 8 MiB"));
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let value: Value = serde_json::from_slice(&line)?;
+        let timestamp = value["capture_time_ns"]
+            .as_i64()
+            .map(i128::from)
+            .or_else(|| {
+                value["capture_time_ns"]
+                    .as_str()
+                    .and_then(|value| value.parse().ok())
+            });
+        let timestamp = timestamp.ok_or_else(|| fail("状态记录缺少有效时间戳"))?;
+        if last.is_some_and(|last| timestamp < last) {
+            return Err(fail("状态时间戳倒序"));
+        }
+        first.get_or_insert(timestamp);
+        last = Some(timestamp);
+        count += 1;
+    }
+    let Some((start, end)) = first
+        .zip(last)
+        .filter(|(start, end)| end > start && count > 1)
+    else {
+        return Ok(None);
+    };
+    let camera = root.join("cam0");
+    if !camera.try_exists()? {
+        return Ok(None);
+    }
+    regular_directory(&camera)?;
+    let mut frames = 0;
+    for entry in fs::read_dir(camera)? {
+        check(cancelled)?;
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_file()
+            && path.extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg")
+            })
+            && path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.parse::<u64>().is_ok())
+        {
+            frames += 1;
+        }
+    }
+    Ok((frames > 0).then_some((
+        frames,
+        (end - start) as f64 / 1e9 * count as f64 / (count - 1) as f64,
+    )))
 }
 
 fn effective(root: &Path, frames: u64, seconds: f64) -> AppResult<f64> {
@@ -541,6 +635,8 @@ pub fn export(
             .open(partial.join("review-manifest.json"))?;
         serde_json::to_writer_pretty(&mut manifest, &fresh)?;
         manifest.sync_all()?;
+        // Windows cannot rename the parent while a child file remains open.
+        drop(manifest);
         check(cancelled)?;
         storage::publish_noreplace(&partial, &output)?;
         Ok(ReviewExport {
@@ -677,6 +773,47 @@ mod tests {
     }
     fn write(path: &Path, value: Value) {
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn legacy_camera_frames_are_independent_of_state_cadence() {
+        let f = Fixture::new();
+        let root = f.session("images/a", "通过");
+        fs::remove_file(root.join(".session_meta/manifest.json")).unwrap();
+        fs::create_dir(root.join("cam0")).unwrap();
+        for frame in 0..300 {
+            fs::write(root.join(format!("cam0/{frame}.jpg")), []).unwrap();
+        }
+        // 600 state samples span 10 seconds, while the video has 300 frames.
+        let states = (0..600)
+            .map(|index| {
+                format!(
+                    "{{\"capture_time_ns\":{}}}\n",
+                    index * 1_000_000_000u64 / 60
+                )
+            })
+            .collect::<String>();
+        fs::write(root.join("states.jsonl"), states).unwrap();
+        let catalog = f.scan();
+        assert_eq!(catalog.approved, 1);
+        assert_eq!(catalog.errors, 0);
+        assert!((catalog.original_seconds - 10.0).abs() < 0.000001);
+        assert!((catalog.effective_seconds - 2.0).abs() < 0.000001);
+    }
+
+    #[test]
+    fn overview_does_not_read_camera_contents() {
+        let f = Fixture::new();
+        let root = f.session("videos/a", "通过");
+        fs::create_dir_all(root.join("cam0/deep")).unwrap();
+        // An irrelevant invalid JSON inside the camera must not be discovered as
+        // another session. A grouping directory named videos remains discoverable.
+        fs::write(root.join("cam0/deep/session.json"), b"invalid").unwrap();
+        let catalog = f.scan();
+        assert_eq!(
+            (catalog.rows.len(), catalog.approved, catalog.errors),
+            (1, 1, 0)
+        );
     }
     fn run_export(f: &Fixture, catalog: &ReviewCatalog) -> AppResult<ReviewExport> {
         export(
