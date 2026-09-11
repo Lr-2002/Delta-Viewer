@@ -541,6 +541,8 @@ pub fn export(
             .open(partial.join("review-manifest.json"))?;
         serde_json::to_writer_pretty(&mut manifest, &fresh)?;
         manifest.sync_all()?;
+        // Windows cannot rename the parent while a child file remains open.
+        drop(manifest);
         check(cancelled)?;
         storage::publish_noreplace(&partial, &output)?;
         Ok(ReviewExport {
