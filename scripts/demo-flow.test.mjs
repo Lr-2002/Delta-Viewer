@@ -373,6 +373,42 @@ if (!browserExecutable) {
     await context.close();
   });
 
+  test("review catalog requires a scan, shows durations, filters and invalidates changed paths", async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${baseUrl}/?demoScenario=operations-cockpit`, { waitUntil: "networkidle" });
+    await page.getByRole("heading", { name: "已通过 / 不通过总览" }).waitFor();
+    const exportButton = page.getByRole("button", { name: "导出通过数据", exact: true });
+    assert.equal(await exportButton.isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "扫描总览", exact: true }).isDisabled(), true);
+    await page.getByLabel("数据根目录", { exact: true }).fill("/mounted/review-data");
+    assert.equal(await exportButton.isDisabled(), true);
+    await page.getByRole("button", { name: "扫描总览", exact: true }).click();
+    const counts = page.locator(".review-catalog-counts");
+    await counts.getByText("全部 3 条", { exact: true }).waitFor();
+    for (const text of ["通过 1 条", "不通过 1 条", "待审核 1 条", "存在异常 1 条"]) assert.equal(await counts.getByText(text, { exact: true }).count(), 1);
+    assert.deepEqual(await page.locator(".review-duration-totals dd").allTextContents(), ["0 时 3 分 0.00 秒", "0 时 1 分 40.00 秒", "0 时 1 分 5.00 秒"]);
+    assert.equal(await exportButton.isEnabled(), true);
+    const rows = page.getByRole("table", { name: "数据扫描明细" }).locator("tbody tr");
+    assert.equal(await rows.count(), 3);
+    await page.getByLabel("数据状态筛选").selectOption("approved");
+    assert.equal(await rows.count(), 1);
+    await page.getByLabel("数据状态筛选").selectOption("error");
+    assert.equal(await rows.count(), 1);
+    await page.getByLabel("数据状态筛选").selectOption("all");
+    await page.screenshot({ path: "artifacts/review-catalog-desktop.png", fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: "artifacts/review-catalog-mobile.png", fullPage: true });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    await page.getByLabel("数据根目录", { exact: true }).fill("/mounted/other");
+    assert.equal(await exportButton.isDisabled(), true);
+    assert.equal(await counts.count(), 0);
+    assert.deepEqual(errors, []);
+    await context.close();
+  });
+
   test("registration loads the packaged browser demo without /@fs requests", async () => {
     const context = await browser.newContext({ viewport: cleanViewport });
     const page = await context.newPage();
