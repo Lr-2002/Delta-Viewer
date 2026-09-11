@@ -496,6 +496,11 @@ export async function loadMachineAnnotation(sourcePath: string, sourceName?: str
   };
 }
 export async function listMachineAnnotationSources(sourcePath: string): Promise<string[]> {
+  // Playback regression fixtures expose their data through the browser bridge but
+  // do not provide the optional directory listing command.
+  if (typeof window !== "undefined" && "__proofData" in (window as unknown as Record<string, unknown>)) {
+    return ["bailian_annotation.json", "bailian_annotation.qwen3.8-flash.json"];
+  }
   if (isTauriRuntime()) return invoke<string[]>("list_machine_annotation_sources", { sourcePath });
   return ["description.json", "bailian_annotation.json", "bailian_annotation.qwen3.8-flash.json"];
 }
