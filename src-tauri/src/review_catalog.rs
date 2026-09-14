@@ -720,17 +720,21 @@ fn copy_verified(source: &Path, target: &Path, cancelled: &AtomicBool) -> AppRes
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::AtomicUsize;
+
+    static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!(
-                "viewer-qc-{}-{}",
+                "viewer-qc-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
-                    .as_nanos()
+                    .as_nanos(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir_all(root.join("source")).unwrap();
             fs::create_dir(root.join("output")).unwrap();

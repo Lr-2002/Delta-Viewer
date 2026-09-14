@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.25 - 2026-09-14
+
+- 发布 1.0.24 的状态图增高、坐标轴完整显示、标题留白、动作片段独立滚动和键盘选中项跟随改进。
+- 用户中心支持超过 24 小时的历史监管记录幂等补传并保留原操作时间，修复积压记录持续报 `AUDIT_TIME_INVALID`；仍校验非法与超前时间，需同步升级用户中心。
+- 修复 Windows 并发 QC 测试临时目录仅按时间戳命名导致的重名失败，增加原子序号并保留所有原生业务检查。1.0.24 安装包未公开，完整修复随本版发布。
+
 ## 1.0.24 - 2026-09-14
 
 - 状态图最低高度提高至 220px，画布按实际容器尺寸绘制，为图例和坐标轴预留空间，修复小屏轴标签被裁掉的问题。
