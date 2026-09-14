@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.24 - 2026-09-14
+
+- 状态图最低高度提高至 220px，画布按实际容器尺寸绘制，为图例和坐标轴预留空间，修复小屏轴标签被裁掉的问题。
+- 动作片段列表增加独立滚动条并按窗口高度限制长度，上下键切段自动显示选中项，保留编辑与审核按钮空间；多路回放、状态数据标题增加边缘留白。
+- 修复旧监管接口拒绝超过 24 小时的待传记录、导致重试队列阻塞的问题。用户中心允许历史事件幂等补传并保留原操作时间，继续拒绝非法时间和超前超过 5 分钟的时间；需同步升级用户中心。
+
 ## 1.0.23 - 2026-09-11
 
 - 机标来源按当前 session 动态列出根目录和 `.session_meta` 中的 `bailian*.json`、`description.json` 与 `desorption.json`，以路径区分同名文件；保留帧范围、区间和当前 session 身份检查。

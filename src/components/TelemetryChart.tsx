@@ -13,6 +13,7 @@ interface FrameBounds {
 }
 const COLORS = ["#d1495b", "#007c73", "#2f67c7", "#8b4fb3"];
 const LINE_DASHES = [[], [7, 3], [2, 3], [9, 3, 2, 3]];
+const PADDING = { top: 40, right: 18, bottom: 30, left: 60 };
 
 const METRIC_LABELS: Record<MetricKey, string> = {
   position: "位置",
@@ -51,10 +52,10 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
     if (!container) return;
 
     const draw = () => {
-      const bounds = container.getBoundingClientRect();
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
-      const width = Math.max(320, Math.floor(bounds.width));
-      const height = Math.max(180, Math.floor(bounds.height));
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      if (!width || !height) return;
       for (const canvas of [plotCanvas, markerCanvas]) {
         canvas.width = width * ratio;
         canvas.height = height * ratio;
@@ -66,7 +67,7 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
       context.scale(ratio, ratio);
       context.clearRect(0, 0, width, height);
 
-      const padding = { top: 18, right: 18, bottom: 28, left: 54 };
+      const padding = PADDING;
       const plotWidth = width - padding.left - padding.right;
       const plotHeight = height - padding.top - padding.bottom;
       let minimum = Number.POSITIVE_INFINITY;
@@ -134,9 +135,9 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
       context.fillStyle = "#666666";
       context.textAlign = "left";
       context.textBaseline = "bottom";
-      context.fillText("0", padding.left, height - 7);
+      context.fillText(String(firstFrame), padding.left, height - 7);
       context.textAlign = "right";
-      context.fillText(String(states.at(-1)?.frameId ?? 0), width - padding.right, height - 7);
+      context.fillText(String(lastFrame), width - padding.right, height - 7);
       if (frameBounds) {
         drawPlaybackMarker(markerCanvas, container, frameBounds, frameIdRef.current);
       }
@@ -181,11 +182,11 @@ function drawPlaybackMarker(
   const context = canvas.getContext("2d");
   if (!context) return;
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.max(320, Math.floor(container.getBoundingClientRect().width));
-  const height = Math.max(180, Math.floor(container.getBoundingClientRect().height));
+  const width = container.clientWidth;
+  const height = container.clientHeight;
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
   context.clearRect(0, 0, width, height);
-  const padding = { top: 18, right: 18, bottom: 28, left: 54 };
+  const padding = PADDING;
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const frameSpan = Math.max(frameBounds.lastFrame - frameBounds.firstFrame, 1);

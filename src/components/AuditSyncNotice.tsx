@@ -85,7 +85,9 @@ export function AuditSyncNotice({ username, error, onError, onPendingChange }: A
           {needsLogin ? <LogIn size={14} /> : <RefreshCw size={14} />}{needsLogin ? "重新登录" : "重试上传"}
         </button>
       )}
-      {error && !error.includes("AUTH_REQUIRED") ? <span>{error}</span> : null}
+      {error && !error.includes("AUTH_REQUIRED") ? <span>{error.includes("AUDIT_TIME_INVALID")
+        ? "监管时间校验失败：请检查客户端与服务端时钟；跨天待传记录需用户中心升级后重试。原记录已保留。"
+        : error}</span> : null}
     </div>
   );
 }

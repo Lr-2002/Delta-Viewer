@@ -1,5 +1,9 @@
 # 故障排查
 
+## 监管上传提示 AUDIT_TIME_INVALID
+
+旧用户中心会拒收超过 24 小时的待传记录，反复重试不会改变原操作时间。将用户中心升级到 `1.0.24` 或更新版本，重新登录后重试即可补传历史记录；不要清空队列。若仍失败，检查客户端和服务端系统时钟，操作时间不得超前服务端超过 5 分钟。
+
 ## 选择不到 SD 卡
 
 先确认操作系统文件管理器能够看到卷和 episode 文件。DOHC Viewer 不包含 ext4 驱动；ext4 卡在标准 Windows/macOS 上不能直接选择。macOS 用户可按[Paragon extFS 只读教程](Paragon-extFS-macOS)挂载，必须确认 `Mount in Read-only mode` 和只读卷状态。Ubuntu 原生 deb 可选择当前用户有权读取的只读挂载目录。不要为了读取数据直接格式化仍含数据的卡。

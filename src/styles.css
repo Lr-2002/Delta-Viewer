@@ -1466,13 +1466,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 
 /* Replay and telemetry share the left column; editing stays in the right rail. */
-.review-main-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(310px, .46fr); grid-template-areas: "replay editor" "telemetry editor"; grid-template-rows: auto minmax(150px, 1fr); gap: 12px 16px; align-items: stretch; padding: 2px 0 14px; }
+.review-main-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(310px, .46fr); grid-template-areas: "replay editor" "telemetry editor"; grid-template-rows: auto minmax(220px, 1fr); gap: 16px; align-items: stretch; padding: 14px 18px 18px; }
 .review-main-grid > .camera-section { grid-area: replay; min-width: 0; padding-bottom: 0; border-bottom: 0; }
 .review-main-grid > .telemetry-section { grid-area: telemetry; min-width: 0; padding-top: 0; }
 .review-main-grid > .quality-workspace { grid-area: editor; min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid var(--line); padding: 0 0 0 14px; background: linear-gradient(90deg, rgba(0,0,0,.018), transparent 18px); }
 .review-main-grid .compact-heading { margin-bottom: 7px; flex-wrap: wrap; gap: 6px; }
-.review-main-grid .telemetry-chart { height: clamp(132px, 17vh, 178px); min-height: 132px; border-color: #d5d9d9; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
-.review-main-grid .camera-grid, .review-main-grid .skeleton-side-panel > .skeleton-viewer { height: clamp(260px, 43vh, 460px); min-height: 0; }
+.review-main-grid .telemetry-chart { height: clamp(220px, 25vh, 300px); min-height: 220px; border-color: #d5d9d9; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+.review-main-grid .camera-grid, .review-main-grid .skeleton-side-panel > .skeleton-viewer { height: clamp(260px, 40vh, 440px); min-height: 0; }
 .review-main-grid .replay-visual-row.with-skeleton { grid-template-columns: minmax(0, 1fr) minmax(120px, .25fr); }
 .review-main-grid .skeleton-heading { min-height: 34px; padding: 5px 7px; flex-wrap: wrap; gap: 3px; }
 .review-main-grid .skeleton-heading .section-kicker, .review-main-grid .skeleton-viewer footer { display: none; }
@@ -1480,7 +1480,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .review-main-grid .skeleton-heading > span { font-size: 9px; }
 .review-main-grid .frame-render-progress { min-height: 22px; margin-top: 4px; padding: 3px 6px; }
 .review-main-grid .quality-inspector { display: flex; flex-direction: column; gap: 7px; min-height: 0; }
-.review-main-grid .quality-inspector .machine-segment-list { flex: 1 1 auto; width: 100%; max-height: none; min-height: 100px; overflow-y: auto; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); scrollbar-gutter: stable; }
+.review-main-grid .quality-inspector .machine-segment-list { flex: 0 1 auto; width: 100%; height: auto; max-height: clamp(120px, calc(100vh - 740px), 360px); min-height: 100px; overflow-y: scroll; overscroll-behavior: contain; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); scrollbar-gutter: stable; scrollbar-color: #89969b #edf0f1; }
+.review-main-grid .machine-segment-list::-webkit-scrollbar { width: 10px; }
+.review-main-grid .machine-segment-list::-webkit-scrollbar-track { background: #edf0f1; }
+.review-main-grid .machine-segment-list::-webkit-scrollbar-thumb { background: #89969b; border: 2px solid #edf0f1; border-radius: 5px; }
 .review-main-grid .quality-editor, .review-main-grid .quality-footer { width: 100%; }
 .review-main-grid .quality-editor textarea { height: 64px; min-height: 52px; }
 .review-main-grid .quality-timeline { padding-bottom: 8px; }
@@ -1502,7 +1505,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .review-main-grid { padding-inline: 12px; column-gap: 10px; grid-template-columns: minmax(0, 1fr) 300px; }
   .review-main-grid .replay-visual-row.with-skeleton { grid-template-columns: 1fr; }
   .review-main-grid .skeleton-side-panel > .skeleton-viewer { height: 145px; margin-top: 6px; }
-  .review-main-grid .telemetry-chart { height: 145px; min-height: 120px; }
+  .review-main-grid .telemetry-chart { height: 240px; min-height: 220px; }
   .review-main-grid .frame-panel figcaption { padding: 4px; font-size: 9px; }
   .review-main-grid .frame-resolution { display: none; }
 }
