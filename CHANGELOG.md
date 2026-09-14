@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.28 - 2026-09-14
+
+- 修正已删除账号历史筛选回归：默认隐藏，勾选“包含已删除账号”后可继续查询历史审核记录。
+
 ## 1.0.27 - 2026-09-14
 
 - 实时审核进度、实时行为和默认账号筛选隐藏已删除账号；历史审核记录增加“包含已删除账号”选项，开启后仍可查询完整留痕。

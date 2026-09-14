@@ -418,6 +418,7 @@ if (!browserExecutable) {
       await page.getByRole("button", { name: "审核账号", exact: true }).click();
       assert.equal(await remove.count(), 0);
       await page.getByRole("button", { name: "审核记录", exact: true }).click();
+      await page.getByLabel("包含已删除账号").check();
       await page.getByLabel("审核账号筛选").selectOption("alice");
       await page.getByRole("cell", { name: "review-session", exact: true }).waitFor();
       assert.match(await page.getByLabel("审核账号筛选").textContent(), /已删除/);
