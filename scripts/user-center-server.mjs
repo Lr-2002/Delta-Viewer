@@ -630,7 +630,7 @@ function auditEvent(body, user) {
   const taskId = String(body.taskId ?? "");
   const trajectoryCode = String(body.trajectoryCode ?? "");
   if (taskId.length > 100 || trajectoryCode.length > 100) throw new Error("AUDIT_FIELD_INVALID: 监管字段无效");
-  const occurredAtMs = Number(body.occurredAtMs);
+  const occurredAtMs = body.occurredAtMs;
   // Offline queues retain their original timestamp, including across weekends.
   // receivedAtMs separately records arrival; retries must not rewrite history.
   if (!Number.isSafeInteger(occurredAtMs) || occurredAtMs <= 0 || occurredAtMs > nowMs() + 300_000) {

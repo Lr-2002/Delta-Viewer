@@ -437,7 +437,7 @@ test("user center supports operator self-registration and administrator account 
     assert.equal(recorded.length, 1);
     assert.equal(recorded[0].occurredAtMs, offlineEvent.occurredAtMs);
     assert.ok(recorded[0].receivedAtMs >= receivedAfter);
-    for (const occurredAtMs of [0, -1, 1.5, "invalid", Date.now() + 600_000]) {
+    for (const occurredAtMs of [0, -1, 1.5, null, true, "1", "invalid", Date.now() + 600_000]) {
       const invalid = await request(port, ca, "POST", "/api/v1/audit/events", {
         ...offlineEvent, eventId: randomUUID(), occurredAtMs,
       }, operator.body.token);
