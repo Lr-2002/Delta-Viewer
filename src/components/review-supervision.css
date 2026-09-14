@@ -288,3 +288,12 @@
 /* Keep the scan/export steps readable even when global compact buttons hide text. */
 .review-export-controls .button { font-size: 13px; width: auto; min-width: max-content; }
 .review-source-path input { width: 100%; }
+.review-account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.review-delete-account { color: #b42318; flex: 0 0 36px; height: 36px; }
+.review-delete-dialog { width: 440px; max-width: calc(100% - 32px); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid #cad4d9; border-radius: 6px; padding: 24px; color: #243238; }
+.review-delete-dialog::backdrop { background: #152b3566; }
+.review-delete-dialog h2 { margin: 0 0 16px; font-size: 18px; }
+.review-delete-dialog p { line-height: 1.6; overflow-wrap: anywhere; }
+.review-delete-dialog footer { display: flex; justify-content: end; gap: 12px; margin-top: 24px; }
+.review-delete-dialog .button { font-size: 13px; width: auto; min-width: 80px; padding-inline: 14px; }
+.review-delete-confirm { background: #b42318; color: white; border-color: #b42318; }

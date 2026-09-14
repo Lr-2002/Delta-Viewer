@@ -223,7 +223,7 @@ export function openReviewAuditStore(dataRoot) {
         averageMs: null,
         lastActivityAtMs: null,
         ...stats.find((row) => row.username === user.username),
-        online: Date.now() - (presence.get(user.username) ?? 0) < 45_000,
+        online: (user.accountStatus ?? "active") === "active" && Date.now() - (presence.get(user.username) ?? 0) < 45_000,
       }));
     const sessionBefore =
       Number(input.sessionBefore) || Number.MAX_SAFE_INTEGER;

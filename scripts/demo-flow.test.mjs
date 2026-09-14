@@ -373,6 +373,57 @@ if (!browserExecutable) {
     await context.close();
   });
 
+  test("deleting a review account requires confirmation, retains history and survives refresh", async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+    const page = await context.newPage();
+    try {
+      await page.addInitScript(() => {
+        if (localStorage.getItem("dohc.demo.review-events")) return;
+        localStorage.setItem("dohc.demo.review-events", JSON.stringify([{
+          eventId: crypto.randomUUID(), id: 1, sessionId: crypto.randomUUID(), episodeKey: "a".repeat(64),
+          episodeName: "review-session", username: "alice", displayName: "审核员甲", action: "approved",
+          occurredAtMs: Date.now(), receivedAtMs: Date.now(), elapsedMs: 42000, details: {},
+        }]));
+      });
+      await context.route("**/src/lib/backend.ts", async (route) => {
+        const response = await route.fetch();
+        const body = (await response.text()).replace(/(export async function deleteSupervisionAccount\([^]*?\) \{)/,
+          '$1\n if (localStorage.getItem("test.delete-failure") === "1") throw new Error("模拟网络故障");');
+        await route.fulfill({ response, body });
+      });
+      await page.goto(`${baseUrl}/?demoScenario=operations-cockpit`, { waitUntil: "networkidle" });
+      await page.getByRole("button", { name: "审核账号", exact: true }).click();
+      const remove = page.getByRole("button", { name: "删除账号 @alice", exact: true });
+      await remove.click();
+      const dialog = page.getByRole("dialog", { name: "删除审核账号", exact: true });
+      await dialog.waitFor();
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      assert.equal(await remove.count(), 1);
+      await page.evaluate(() => localStorage.setItem("test.delete-failure", "1"));
+      await remove.click();
+      await dialog.getByRole("button", { name: "确认删除", exact: true }).click();
+      await dialog.getByRole("alert").waitFor();
+      assert.equal(await remove.count(), 1, "failure keeps the account");
+      await page.screenshot({ path: "artifacts/delete-account-desktop.png", fullPage: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.screenshot({ path: "artifacts/delete-account-mobile.png", fullPage: true });
+      const box = await dialog.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= 390);
+      await page.evaluate(() => localStorage.removeItem("test.delete-failure"));
+      await dialog.getByRole("button", { name: "确认删除", exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+      await remove.waitFor({ state: "detached" });
+      await page.reload({ waitUntil: "networkidle" });
+      await page.getByRole("button", { name: "审核账号", exact: true }).click();
+      assert.equal(await remove.count(), 0);
+      await page.getByRole("button", { name: "审核记录", exact: true }).click();
+      await page.getByLabel("审核账号筛选").selectOption("alice");
+      await page.getByRole("cell", { name: "review-session", exact: true }).waitFor();
+      assert.match(await page.getByLabel("审核账号筛选").textContent(), /已删除/);
+    } finally { await context.close(); }
+  });
+
   test("review catalog requires a scan, shows durations, filters and invalidates changed paths", async () => {
     const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
     const page = await context.newPage();

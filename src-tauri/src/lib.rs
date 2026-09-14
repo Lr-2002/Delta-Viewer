@@ -389,6 +389,17 @@ async fn set_supervision_account_status(
 }
 
 #[tauri::command]
+async fn delete_supervision_account(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    username: String,
+) -> Result<(), String> {
+    user_center::delete_account(&app_data_root(&app)?, auth.inner(), &username)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn export_supervision_report(
     auth: State<'_, AuthState>,
     destination_parent: String,
@@ -1543,6 +1554,7 @@ pub fn run() {
             get_supervision_dashboard,
             batch_create_supervision_accounts,
             set_supervision_account_status,
+            delete_supervision_account,
             export_supervision_report,
             export_reviewed_sessions,
             scan_reviewed_sessions,

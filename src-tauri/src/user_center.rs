@@ -519,6 +519,31 @@ pub async fn batch_create_accounts(
         .map_err(|error| AppError::Message(format!("批量账号响应无效: {error}")))
 }
 
+pub async fn delete_account(data_root: &Path, state: &AuthState, username: &str) -> AppResult<()> {
+    require_supervisor(state)?;
+    if !(3..=32).contains(&username.len())
+        || !username
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+    {
+        return Err(AppError::Message("ACCOUNT_USERNAME_INVALID".into()));
+    }
+    let config = load_config(data_root)?;
+    let response = client_for(&config)?
+        .delete(endpoint(
+            &config,
+            &format!("api/v1/admin/users/{username}"),
+        )?)
+        .bearer_auth(state.managed_token()?)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    Ok(())
+}
+
 pub async fn set_account_status(
     data_root: &Path,
     state: &AuthState,
