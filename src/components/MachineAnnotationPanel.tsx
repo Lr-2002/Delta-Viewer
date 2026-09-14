@@ -466,7 +466,18 @@ const SegmentList = memo(function SegmentList({ rows, selected, disabled, onChoo
   rows: ReviewSegment[]; selected: number | undefined; disabled: boolean;
   onChoose: (sourceIndex: number) => void; onDelete: (sourceIndex: number) => void;
 }) {
-  return <div className="machine-segment-list" role="list">
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const list = listRef.current;
+    const active = list?.querySelector<HTMLElement>(".machine-segment.active");
+    if (!list || !active) return;
+    const top = active.offsetTop;
+    const bottom = top + active.offsetHeight;
+    // Keep keyboard selection visible without scrolling the surrounding workspace.
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+  }, [selected, rows]);
+  return <div ref={listRef} className="machine-segment-list" role="list">
     {rows.map((segment, index) => <div role="listitem" data-source-index={segment.sourceIndex} className={`machine-segment${segment.sourceIndex === selected ? " active" : ""}`} key={segment.sourceIndex}>
       <button className="machine-segment-description" aria-label={`定位机标片段 ${index + 1}`} disabled={disabled} onClick={() => onChoose(segment.sourceIndex)}>
         <strong>{index + 1}. {segment.description || "暂无中文描述"}</strong><small>帧 [{segment.startFrame}, {segment.endFrame + 1})</small>

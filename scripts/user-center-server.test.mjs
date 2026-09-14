@@ -419,6 +419,31 @@ test("user center supports operator self-registration and administrator account 
       assignedTasks: 3,
     }, operator.body.token);
     assert.equal(assignmentDenied.status, 403);
+    const offlineEvent = {
+      eventId: randomUUID(),
+      taskId: "sofa",
+      trajectoryCode: "sofa-offline",
+      action: "annotation_started",
+      occurredAtMs: Date.now() - 3 * 86_400_000,
+    };
+    const receivedAfter = Date.now();
+    const offline = await request(port, ca, "POST", "/api/v1/audit/events", offlineEvent, operator.body.token);
+    assert.equal(offline.status, 201, "records queued over a weekend can be uploaded");
+    const retried = await request(port, ca, "POST", "/api/v1/audit/events", offlineEvent, operator.body.token);
+    assert.equal(retried.status, 200);
+    assert.equal(retried.body.duplicate, true);
+    const offlineAudit = await request(port, ca, "GET", "/api/v1/admin/audit", null, login.body.token);
+    const recorded = offlineAudit.body.events.filter((item) => item.eventId === offlineEvent.eventId);
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0].occurredAtMs, offlineEvent.occurredAtMs);
+    assert.ok(recorded[0].receivedAtMs >= receivedAfter);
+    for (const occurredAtMs of [0, -1, 1.5, null, true, "1", "invalid", Date.now() + 600_000]) {
+      const invalid = await request(port, ca, "POST", "/api/v1/audit/events", {
+        ...offlineEvent, eventId: randomUUID(), occurredAtMs,
+      }, operator.body.token);
+      assert.equal(invalid.status, 400);
+      assert.match(JSON.stringify(invalid.body), /AUDIT_TIME_INVALID/);
+    }
     assert.match(initialized.clientConfigPath, /DOHC-User-Center-Client\.json$/);
   } finally {
     await service?.stop().catch(() => {});

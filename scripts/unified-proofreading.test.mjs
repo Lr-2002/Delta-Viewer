@@ -296,6 +296,78 @@ test("unified layout fits desktop and mobile with a visible interactive skeleton
   await page.close();
 });
 
+test("long segment lists scroll independently and telemetry axes fit their canvas", async () => {
+  const page = await browser.newPage();
+  try {
+    await open(page, "machineAnnotation=present");
+    await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    await page.evaluate(async () => {
+      const backend = await import("/src/lib/backend.ts");
+      const root = "/demo/2026-07-13_07-34-12";
+      const review = await backend.loadMachineReview(root);
+      const segments = Array.from({ length: 30 }, (_, sourceIndex) => ({
+        sourceIndex, startFrame: sourceIndex * 6, endFrame: sourceIndex === 29 ? 194 : sourceIndex * 6 + 5,
+        description: `动作片段 ${sourceIndex + 1}`, deleted: false, decision: "pending",
+      }));
+      await backend.saveMachineReview(root, review.sourceHash, review.revision, segments);
+    });
+    await page.getByRole("button", { name: "重新读取机标", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".machine-segment").length === 30);
+    for (const [width, height] of [[1920, 1080], [1440, 920], [1280, 720], [960, 680], [390, 844]]) {
+      await page.setViewportSize({ width, height });
+      const list = page.locator(".machine-segment-list");
+      await list.scrollIntoViewIfNeeded();
+      const before = await page.locator(".quality-footer").boundingBox();
+      if (width >= 1440) {
+        await page.screenshot({ path: `artifacts/unified-proofreading/long-list-${width}.png`, fullPage: true });
+        assert.ok(before.y + before.height <= height, `long lists leave approval buttons visible: ${JSON.stringify({ width, height, footer: before })}`);
+      }
+      const scroll = await list.evaluate((element) => {
+        const pageY = window.scrollY;
+        element.scrollTop = element.scrollHeight;
+        return { pageY, afterY: window.scrollY, height: element.clientHeight, total: element.scrollHeight, top: element.scrollTop };
+      });
+      assert.ok(scroll.total > scroll.height && scroll.top > 0, "long lists scroll within their bounded height");
+      assert.equal(scroll.pageY, scroll.afterY);
+      assert.deepEqual(await page.locator(".quality-footer").boundingBox(), before, "list scrolling keeps review controls fixed");
+      const chart = page.locator(".telemetry-chart");
+      await chart.scrollIntoViewIfNeeded();
+      await page.waitForFunction(() => {
+        const container = document.querySelector(".telemetry-chart");
+        const canvas = container.querySelector("canvas");
+        const ratio = Math.min(devicePixelRatio, 2);
+        return canvas.width === Math.floor(container.clientWidth * ratio)
+          && canvas.height === Math.floor(container.clientHeight * ratio);
+      });
+      const bounds = await chart.boundingBox();
+      assert.ok(bounds.height >= 220, "state chart keeps room for axes on small screens");
+      const axes = await chart.locator("canvas").first().evaluate((canvas) => {
+        const ctx = canvas.getContext("2d");
+        const scale = Math.min(devicePixelRatio, 2);
+        const pixels = ctx.getImageData(0, canvas.height - 25 * scale, canvas.width, 22 * scale).data;
+        let ink = 0;
+        for (let i = 0; i < pixels.length; i += 4) if (pixels[i + 3] > 0 && pixels[i] < 200) ink++;
+        return ink;
+      });
+      assert.ok(axes > 10, "bottom axis labels are painted inside the visible canvas");
+      const inset = await page.locator(".camera-section").evaluate((section) => section.getBoundingClientRect().left - section.parentElement.getBoundingClientRect().left);
+      assert.ok(inset >= 12, "section headings have space from the workspace edge");
+      await page.screenshot({ path: `artifacts/unified-proofreading/long-list-${width}.png`, fullPage: true });
+    }
+    await page.setViewportSize({ width: 1440, height: 920 });
+    await page.getByRole("button", { name: "定位机标片段 1", exact: true }).click();
+    await page.keyboard.press("Space");
+    const footer = await page.locator(".quality-footer").boundingBox();
+    for (let index = 0; index < 15; index++) await page.keyboard.press("ArrowDown");
+    assert.ok(await page.locator(".machine-segment-list").evaluate((list) => {
+      const active = list.querySelector(".machine-segment.active").getBoundingClientRect();
+      const bounds = list.getBoundingClientRect();
+      return list.scrollTop > 0 && active.top >= bounds.top && active.bottom <= bounds.bottom;
+    }), "keyboard selection follows the active segment within the list");
+    assert.deepEqual(await page.locator(".quality-footer").boundingBox(), footer);
+  } finally { await page.close(); }
+});
+
 test("deleting a segment moves the next real boundary and saved review, with working undo", async () => {
   const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
   try {

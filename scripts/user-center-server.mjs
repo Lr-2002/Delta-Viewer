@@ -630,9 +630,11 @@ function auditEvent(body, user) {
   const taskId = String(body.taskId ?? "");
   const trajectoryCode = String(body.trajectoryCode ?? "");
   if (taskId.length > 100 || trajectoryCode.length > 100) throw new Error("AUDIT_FIELD_INVALID: 监管字段无效");
-  const occurredAtMs = Number(body.occurredAtMs);
-  if (!Number.isSafeInteger(occurredAtMs) || Math.abs(nowMs() - occurredAtMs) > 86_400_000) {
-    throw new Error("AUDIT_TIME_INVALID: 行为时间无效");
+  const occurredAtMs = body.occurredAtMs;
+  // Offline queues retain their original timestamp, including across weekends.
+  // receivedAtMs separately records arrival; retries must not rewrite history.
+  if (!Number.isSafeInteger(occurredAtMs) || occurredAtMs <= 0 || occurredAtMs > nowMs() + 300_000) {
+    throw new Error("AUDIT_TIME_INVALID: 行为时间无效或超前，请检查客户端与服务端系统时间");
   }
   const eventId = String(body.eventId ?? "");
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventId)) {
