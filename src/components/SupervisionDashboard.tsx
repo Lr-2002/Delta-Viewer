@@ -84,6 +84,7 @@ export function SupervisionDashboard({
   const [view, setView] = useState<View>("overview");
   const [data, setData] = useState<ReviewDashboardData | null>(null);
   const [username, setUsername] = useState("");
+  const [includeDeleted, setIncludeDeleted] = useState(false);
   const [action, setAction] = useState("");
   const [date, setDate] = useState("");
   const [sessionId, setSessionId] = useState("");
@@ -201,7 +202,18 @@ export function SupervisionDashboard({
   const users = (data?.users ?? []).filter(
     (user) => !username || user.username === username,
   );
-  const totals = users.reduce(
+  const visibleUsers = users.filter(
+    (user) => user.accountStatus !== "deleted" || (view === "sessions" && includeDeleted),
+  );
+  const visibleSessions = data?.sessions.filter((row) => {
+    const user = data.users.find((candidate) => candidate.username === row.username);
+    return user?.accountStatus !== "deleted" || includeDeleted;
+  });
+  const visibleEvents = data?.events.filter((event) => {
+    const user = data.users.find((candidate) => candidate.username === event.username);
+    return user?.accountStatus !== "deleted" || (view === "sessions" && includeDeleted);
+  });
+  const totals = visibleUsers.reduce(
     (total, user) => ({
       approved: total.approved + user.approved,
       rejected: total.rejected + user.rejected,
@@ -400,7 +412,7 @@ export function SupervisionDashboard({
             onChange={(event) => setUsername(event.target.value)}
           >
             <option value="">全部账号</option>
-            {data?.users.map((user) => (
+            {data?.users.filter((user) => user.accountStatus !== "deleted" || (view === "sessions" && includeDeleted)).map((user) => (
               <option key={user.username} value={user.username}>
                 {user.displayName} (@{user.username})
                 {user.accountStatus === "deleted" ? "（已删除）" : ""}
@@ -408,6 +420,17 @@ export function SupervisionDashboard({
             ))}
           </select>
         </label>
+        {view === "sessions" && (
+          <label className="review-deleted-toggle">
+            <input
+              type="checkbox"
+              aria-label="包含已删除账号"
+              checked={includeDeleted}
+              onChange={(event) => setIncludeDeleted(event.target.checked)}
+            />
+            包含已删除账号
+          </label>
+        )}
         <label>
           日期
           <input
@@ -556,7 +579,7 @@ export function SupervisionDashboard({
                 </tr>
               </thead>
               <tbody>
-                {users.map((user) => (
+                {visibleUsers.map((user) => (
                   <tr key={user.username}>
                     <td>
                       <button
@@ -609,7 +632,7 @@ export function SupervisionDashboard({
                 </tr>
               </thead>
               <tbody>
-                {data?.events.map((event) => (
+                {visibleEvents?.map((event) => (
                   <tr key={event.id}>
                     <td>{time(event.occurredAtMs)}</td>
                     <td>
@@ -685,7 +708,7 @@ export function SupervisionDashboard({
                 </tr>
               </thead>
               <tbody>
-                {data?.sessions.map((row) => (
+                {visibleSessions?.map((row) => (
                   <tr key={`${row.username}:${row.sessionId}`}>
                     <td>
                       <button
@@ -849,7 +872,7 @@ export function SupervisionDashboard({
           </form>
         </>
       )}
-      {!loading && !data?.events.length && view !== "accounts" && (
+      {!loading && !visibleEvents?.length && view !== "accounts" && (
         <p className="review-empty">暂无符合条件的审核操作</p>
       )}
       {deleteTarget && <dialog ref={deleteDialog} className="review-delete-dialog" aria-labelledby="delete-account-title"

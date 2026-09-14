@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.27 - 2026-09-14
+
+- 实时审核进度、实时行为和默认账号筛选隐藏已删除账号；历史审核记录增加“包含已删除账号”选项，开启后仍可查询完整留痕。
+
 ## 1.0.26 - 2026-09-14
 
 - 审核账号表增加删除按钮和确认窗口，支持取消、失败提示与重试；仅管理员可以删除普通审核账号，不能删除管理员。
