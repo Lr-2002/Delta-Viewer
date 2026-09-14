@@ -11,6 +11,7 @@ import {
   Play,
   RefreshCw,
   ShieldCheck,
+  Trash2,
   UserPlus,
   XCircle,
 } from "lucide-react";
@@ -26,6 +27,7 @@ import {
   getReviewDashboard,
   isTauriRuntime,
   setSupervisionAccountStatus,
+  deleteSupervisionAccount,
 } from "../lib/backend";
 import {
   reviewActionLabels,
@@ -93,6 +95,10 @@ export function SupervisionDashboard({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<{ username: string; displayName: string } | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+  const deleteDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (deleteTarget) deleteDialog.current?.showModal(); }, [deleteTarget]);
   const [selected, setSelected] = useState<ReviewEvent | null>(null);
   const [sourcePath, setSourcePath] = useState("");
   const [catalog, setCatalog] = useState<ReviewedCatalog | null>(null);
@@ -336,6 +342,23 @@ export function SupervisionDashboard({
       setBusy("");
     }
   }
+  async function deleteAccount() {
+    if (!deleteTarget || busy) return;
+    const target = deleteTarget;
+    setBusy(`delete:${target.username}`);
+    setDeleteError("");
+    try {
+      await deleteSupervisionAccount(target.username);
+      requestGeneration.current++;
+      setData((previous) => previous ? { ...previous, users: previous.users.map((user) =>
+        user.username === target.username ? { ...user, accountStatus: "deleted", online: false } : user) } : previous);
+      setNotice(`已删除 @${target.username}，历史审核记录已保留`);
+      setDeleteTarget(null);
+      setRefreshId((id) => id + 1);
+    } catch (reason) {
+      setDeleteError(String(reason));
+    } finally { setBusy(""); }
+  }
   return (
     <main className="review-supervision">
       <header className="review-supervision-header">
@@ -380,6 +403,7 @@ export function SupervisionDashboard({
             {data?.users.map((user) => (
               <option key={user.username} value={user.username}>
                 {user.displayName} (@{user.username})
+                {user.accountStatus === "deleted" ? "（已删除）" : ""}
               </option>
             ))}
           </select>
@@ -548,7 +572,7 @@ export function SupervisionDashboard({
                     </td>
                     <td>
                       <span className={user.online ? "review-online" : ""}>
-                        {user.online ? "在线" : "离线"}
+                        {user.accountStatus === "deleted" ? "已删除" : user.online ? "在线" : "离线"}
                       </span>
                     </td>
                     <td>
@@ -736,12 +760,12 @@ export function SupervisionDashboard({
                 </tr>
               </thead>
               <tbody>
-                {users.map((user) => (
+                {users.filter((user) => user.accountStatus !== "deleted").map((user) => (
                   <tr key={user.username}>
                     <td>@{user.username}</td>
                     <td>{user.displayName}</td>
                     <td>{user.accountStatus === "active" ? "启用" : "暂停"}</td>
-                    <td>
+                    <td><div className="review-account-actions">
                       <button
                         className="button button-secondary"
                         disabled={Boolean(busy)}
@@ -763,6 +787,12 @@ export function SupervisionDashboard({
                           ? "暂停账号"
                           : "启用账号"}
                       </button>
+                      <button className="icon-button review-delete-account" title="删除账号"
+                        aria-label={`删除账号 @${user.username}`} disabled={Boolean(busy)}
+                        onClick={() => { setDeleteError(""); setDeleteTarget(user); }}>
+                        <Trash2 size={17} />
+                      </button>
+                    </div>
                     </td>
                   </tr>
                 ))}
@@ -822,6 +852,19 @@ export function SupervisionDashboard({
       {!loading && !data?.events.length && view !== "accounts" && (
         <p className="review-empty">暂无符合条件的审核操作</p>
       )}
+      {deleteTarget && <dialog ref={deleteDialog} className="review-delete-dialog" aria-labelledby="delete-account-title"
+        onCancel={(event) => { event.preventDefault(); if (!busy) setDeleteTarget(null); }}>
+        <h2 id="delete-account-title">删除审核账号</h2>
+        <p>{deleteTarget.displayName} (@{deleteTarget.username})</p>
+        <p>账号将无法登录，当前会话立即注销。历史审核记录保留，账号名不可再次注册。删除后不可恢复。</p>
+        {deleteError && <p role="alert" className="review-audit-error">{deleteError}</p>}
+        <footer>
+          <button autoFocus className="button button-secondary" disabled={Boolean(busy)} onClick={() => setDeleteTarget(null)}>取消</button>
+          <button className="button review-delete-confirm" disabled={Boolean(busy)} onClick={() => void deleteAccount()}>
+            {busy ? <LoaderCircle size={16} className="spin" /> : <Trash2 size={16} />}确认删除
+          </button>
+        </footer>
+      </dialog>}
       {selected && (
         <div
           className="review-dialog-backdrop"

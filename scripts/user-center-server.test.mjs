@@ -445,6 +445,56 @@ test("user center supports operator self-registration and administrator account 
       assert.match(JSON.stringify(invalid.body), /AUDIT_TIME_INVALID/);
     }
     assert.match(initialized.clientConfigPath, /DOHC-User-Center-Client\.json$/);
+    const deletePath = "/api/v1/admin/users/selfoperator";
+    assert.equal((await request(port, ca, "DELETE", deletePath)).status, 403);
+    assert.equal((await request(port, ca, "DELETE", deletePath, null, operator.body.token)).status, 403);
+    assert.equal((await request(port, ca, "DELETE", "/api/v1/admin/users/supervisor", null, login.body.token)).status, 403);
+    assert.equal((await request(port, ca, "DELETE", "/api/v1/admin/users/missing-account", null, login.body.token)).status, 404);
+    const relogin = await request(port, ca, "POST", "/api/v1/auth/login", {
+      username: "selfoperator", password: "self-operator-password",
+    });
+    assert.equal(relogin.status, 200);
+    const deleted = await request(port, ca, "DELETE", deletePath, null, login.body.token);
+    assert.equal(deleted.status, 200);
+    assert.equal(deleted.body.deleted, true);
+    assert.equal((await request(port, ca, "DELETE", deletePath, null, login.body.token)).status, 200, "retry is idempotent");
+    for (const token of [relogin.body.token, selfRegistered.body.token]) {
+      assert.equal((await request(port, ca, "GET", "/api/v1/auth/me", null, token)).status, 401);
+      assert.equal((await request(port, ca, "POST", "/api/v1/review/events", { events: [reviewEvent] }, token)).status, 403);
+    }
+    assert.equal((await request(port, ca, "POST", "/api/v1/auth/login", {
+      username: "selfoperator", password: "self-operator-password",
+    })).status, 401);
+    assert.equal((await request(port, ca, "PUT", "/api/v1/admin/users/status", {
+      usernames: ["selfoperator"], status: "active",
+    }, login.body.token)).status, 404, "deleted accounts cannot be reactivated");
+    const accountList = await request(port, ca, "GET", "/api/v1/admin/users", null, login.body.token);
+    assert.ok(!accountList.body.users.some((user) => user.username === "selfoperator"));
+    const storedAfterDelete = JSON.parse(await readFile(statePath, "utf8"));
+    const tombstone = storedAfterDelete.deletedUsers.find((user) => user.username === "selfoperator");
+    assert.equal(tombstone.deletedBy, "supervisor");
+    assert.ok(!("password" in tombstone));
+    assert.ok(!storedAfterDelete.users.some((user) => user.username === "selfoperator"));
+    const credentials = { username: "selfoperator", displayName: "New person", password: "new-password" };
+    for (const [endpoint, payload] of [["/api/v1/auth/register", credentials],
+      ["/api/v1/admin/users", credentials], ["/api/v1/admin/users/batch", { users: [credentials] }]]) {
+      assert.equal((await request(port, ca, "POST", endpoint, payload, login.body.token)).status, 409, "historical usernames remain reserved");
+    }
+    await service.stop();
+    service = await createUserCenter(configuration, root, logger);
+    await service.start();
+    const restartedAdmin = await request(port, ca, "POST", "/api/v1/auth/login", {
+      username: "supervisor", password: "admin-password",
+    });
+    assert.equal(restartedAdmin.status, 200);
+    const history = await request(port, ca, "GET", "/api/v1/admin/reviews?username=selfoperator", null, restartedAdmin.body.token);
+    assert.equal(history.status, 200);
+    assert.ok(history.body.events.some((event) => event.eventId === reviewEvent.eventId));
+    const formerUser = history.body.users.find((user) => user.username === "selfoperator");
+    assert.equal(formerUser.accountStatus, "deleted");
+    assert.equal(formerUser.online, false);
+    assert.equal(formerUser.approved, 1);
+    assert.equal((await request(port, ca, "POST", "/api/v1/auth/register", credentials)).status, 409);
   } finally {
     await service?.stop().catch(() => {});
     await rm(root, { recursive: true, force: true });

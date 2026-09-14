@@ -222,10 +222,11 @@ export async function getReviewDashboard(query: Record<string, string> = {}): Pr
   const stored = JSON.parse(localStorage.getItem("dohc.demo.review-events") ?? "[]") as import("./review-audit-types").ReviewEvent[];
   const events = stored.filter((row) => (!query.username || row.username === query.username) && (!query.sessionId || row.sessionId === query.sessionId) && (!query.action || row.action === query.action) && (!query.fromMs || row.occurredAtMs >= Number(query.fromMs)) && (!query.toMs || row.occurredAtMs <= Number(query.toMs))).reverse();
   const names = [...new Set(stored.map((row) => row.username))];
+  const deleted = JSON.parse(localStorage.getItem("dohc.demo.deleted-review-users") ?? "[]") as string[];
   const users = names.map((username) => {
     const mine = events.filter((event) => event.username === username);
     const finished = mine.filter((event) => event.action === "approved" || event.action === "rejected");
-    return { username, displayName: stored.find((row) => row.username === username)!.displayName, accountStatus: "active", online: true,
+    return { username, displayName: stored.find((row) => row.username === username)!.displayName, accountStatus: deleted.includes(username) ? "deleted" : "active", online: !deleted.includes(username),
       operations: mine.length, approved: mine.filter((row) => row.action === "approved").length, rejected: mine.filter((row) => row.action === "rejected").length,
       seeks: mine.filter((row) => row.action === "seek").length, labelsAdded: mine.filter((row) => row.action === "label_add").length, labelsDeleted: mine.filter((row) => row.action === "label_delete").length,
       averageMs: finished.length ? finished.reduce((sum, row) => sum + row.elapsedMs, 0) / finished.length : null, lastActivityAtMs: mine[0]?.occurredAtMs ?? null };
@@ -254,6 +255,13 @@ export async function setSupervisionAccountStatus(usernames: string[], status: "
     return structuredClone(selected);
   }
   throw new Error("SUPERVISOR_REQUIRED: 演示模式没有监管账户");
+}
+
+export async function deleteSupervisionAccount(username: string): Promise<void> {
+  if (isTauriRuntime()) return invoke("delete_supervision_account", { username });
+  if (!isOperationsCockpitDemoScenario()) throw new Error("ADMIN_REQUIRED");
+  const deleted = JSON.parse(localStorage.getItem("dohc.demo.deleted-review-users") ?? "[]") as string[];
+  localStorage.setItem("dohc.demo.deleted-review-users", JSON.stringify([...new Set([...deleted, username])]));
 }
 
 export async function setSupervisionAssignedTasks(

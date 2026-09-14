@@ -267,6 +267,7 @@ async function readState(dataRoot) {
   const raw = JSON.parse(await readFile(statePath(dataRoot), "utf8"));
   if (raw.schemaVersion !== DATA_SCHEMA_VERSION || typeof raw.serviceId !== "string"
     || !Array.isArray(raw.users) || raw.users.length > MAX_USERS
+    || (raw.deletedUsers !== undefined && !Array.isArray(raw.deletedUsers))
     || (raw.taskDetails !== undefined && (!Array.isArray(raw.taskDetails) || raw.taskDetails.length > MAX_TASK_DETAILS))
     || (raw.qualityReviews !== undefined
       && (!Array.isArray(raw.qualityReviews) || raw.qualityReviews.length > MAX_QUALITY_REVIEWS))
@@ -275,10 +276,24 @@ async function readState(dataRoot) {
     throw new Error("用户中心数据文件无效");
   }
   for (const user of raw.users) validateStoredUser(user);
+  for (const user of raw.deletedUsers ?? []) {
+    requirePlainObject(user, "deleted user");
+    normalizeUsername(user.username);
+    normalizeDisplayName(user.displayName);
+    if (user.role !== "operator" || user.accountStatus !== "deleted" || "password" in user
+      || !Number.isSafeInteger(user.deletedAtMs) || user.deletedAtMs <= 0) {
+      throw new Error("已删除账号记录无效");
+    }
+    normalizeUsername(user.deletedBy);
+  }
   for (const detail of raw.taskDetails ?? []) validateTaskDetail(detail);
   for (const review of raw.qualityReviews ?? []) validateQualityReview(review);
   for (const action of raw.alertActions ?? []) validateAlertAction(action);
   return raw;
+}
+
+function reservedUsers(state) {
+  return [...state.users, ...(state.deletedUsers ?? [])];
 }
 
 function normalizeTaskDetailText(value, label, maximum) {
@@ -1127,7 +1142,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           if (state.users.length >= MAX_USERS) {
             return sendJson(response, 409, { error: "USER_LIMIT_EXCEEDED" });
           }
-          if (state.users.some((candidate) => candidate.username === username)) {
+          if (reservedUsers(state).some((candidate) => candidate.username === username)) {
             return sendJson(response, 409, { error: "ACCOUNT_EXISTS: 账号已存在" });
           }
           const user = {
@@ -1220,7 +1235,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const session = authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const state = await readState(dataRoot);
-        return sendJson(response, 200, reviewAudit.query(Object.fromEntries(url.searchParams), state.users));
+        return sendJson(response, 200, reviewAudit.query(Object.fromEntries(url.searchParams), reservedUsers(state)));
       }
       if (request.method === "POST" && url.pathname === "/api/v1/audit/events") {
         const session = authorize(request);
@@ -1240,7 +1255,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (!session) return sendJson(response, 403, { error: "SUPERVISOR_REQUIRED" });
         const events = await readAuditEvents(dataRoot);
         const state = await readState(dataRoot);
-        const operations = operationsSummary(events, state.users, state.alertActions ?? []);
+        const operations = operationsSummary(events, reservedUsers(state), state.alertActions ?? []);
         return sendJson(response, 200, {
           ...operations,
           events: events.slice(-500).reverse(),
@@ -1254,6 +1269,34 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const state = await readState(dataRoot);
         return sendJson(response, 200, { users: state.users.map(publicUser) });
+      }
+      const deleteAccountMatch = /^\/api\/v1\/admin\/users\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "DELETE" && deleteAccountMatch) {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        const username = normalizeUsername(decodeURIComponent(deleteAccountMatch[1]));
+        return await serializeStateMutation(async () => {
+          const state = await readState(dataRoot);
+          const user = state.users.find((entry) => entry.username === username);
+          if (!user) {
+            if ((state.deletedUsers ?? []).some((entry) => entry.username === username)) {
+              return sendJson(response, 200, { username, deleted: true });
+            }
+            return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND: 审核账号不存在" });
+          }
+          if (user.role !== "operator") return sendJson(response, 403, { error: "ACCOUNT_DELETE_FORBIDDEN: 只能删除审核账号，不能删除管理员" });
+          // Keep only the identity needed by history; never retain login credentials.
+          state.deletedUsers ??= [];
+          state.deletedUsers.push({ username, displayName: user.displayName, role: user.role,
+            accountStatus: "deleted", createdAtMs: user.createdAtMs,
+            deletedAtMs: nowMs(), deletedBy: session.user.username });
+          state.users = state.users.filter((entry) => entry.username !== username);
+          await writeState(state);
+          for (const [token, active] of sessions) {
+            if (active.user.username === username) sessions.delete(token);
+          }
+          return sendJson(response, 200, { username, deleted: true });
+        });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/users/batch") {
         const session = authorize(request, true);
@@ -1272,7 +1315,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         }
         return await serializeStateMutation(async () => {
           const state = await readState(dataRoot);
-          const existing = new Set(state.users.map((user) => user.username));
+          const existing = new Set(reservedUsers(state).map((user) => user.username));
           const conflicts = requested.filter((entry) => existing.has(entry.username)).map((entry) => entry.username);
           if (conflicts.length) return sendJson(response, 409, { error: `ACCOUNT_EXISTS: ${conflicts.join(", ")}` });
           if (state.users.length + requested.length > MAX_USERS) {
@@ -1327,7 +1370,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         return await serializeStateMutation(async () => {
           const state = await readState(dataRoot);
           if (state.users.length >= MAX_USERS) return sendJson(response, 409, { error: "USER_LIMIT_EXCEEDED" });
-          if (state.users.some((candidate) => candidate.username === username)) {
+          if (reservedUsers(state).some((candidate) => candidate.username === username)) {
             return sendJson(response, 409, { error: "ACCOUNT_EXISTS: 账号已存在" });
           }
           const user = {
