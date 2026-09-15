@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.29 - 2026-09-15
+
+- 无机标结果但已有人工审核状态时允许直接新增人工片段，默认按整段视频帧范围创建切割标注。
+
 ## 1.0.28 - 2026-09-14
 
 - 修正已删除账号历史筛选回归：默认隐藏，勾选“包含已删除账号”后可继续查询历史审核记录。
