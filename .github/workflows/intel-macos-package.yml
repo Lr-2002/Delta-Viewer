@@ -1,0 +1,160 @@
+name: Intel Mac Tahoe package
+on:
+  push:
+    branches: [build/intel-macos-1.0.30]
+permissions:
+  contents: read
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.12.1"
+  RUST_VERSION: "1.97.1"
+jobs:
+  macos:
+    name: macOS 12+ x64 unsigned DMG
+    runs-on: macos-26-intel
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      FFMPEG_SOURCE_URL: https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2
+      FFMPEG_SOURCE_SHA256: 9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7
+      FFMPEG_SOURCE_REVISION: 38b88335f99e76ed89ff3c93f877fdefce736c13
+      FFMPEG_BUILD_ID: ffmpeg-8.1.2-dohc-minimal-lgpl
+    steps:
+      - name: Check out bound release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: b0eb0e16df1ad3b466dfda2ac90cfe435b17f485
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up Rust target
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-apple-darwin
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: "./src-tauri -> target"
+          key: release-x86_64-apple-darwin
+          cache-bin: "false"
+          cache-all-crates: "false"
+          cache-workspace-crates: "false"
+          save-if: "false"
+
+      - name: Reverify immutable release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          node scripts/verify-release.mjs --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" --trusted-main-ref "HEAD" --expected-trusted-main-commit "$RELEASE_COMMIT"
+        env:
+          RELEASE_TAG: v1.0.30
+          RELEASE_COMMIT: b0eb0e16df1ad3b466dfda2ac90cfe435b17f485
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and stage reviewed macOS FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_archive="$RUNNER_TEMP/ffmpeg-n8.1.2.tar.gz"
+          curl \
+            --fail \
+            --location \
+            --proto '=https' \
+            --tlsv1.2 \
+            --silent \
+            --show-error \
+            "$FFMPEG_SOURCE_URL" \
+            --output "$source_archive"
+          bash scripts/build-ffmpeg-macos.sh \
+            --source-archive "$source_archive" \
+            --expected-source-sha256 "$FFMPEG_SOURCE_SHA256" \
+            --source-url "$FFMPEG_SOURCE_URL" \
+            --source-revision "$FFMPEG_SOURCE_REVISION" \
+            --build-id "$FFMPEG_BUILD_ID"
+
+      - name: Build ad-hoc-sealed app and headless DMG
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: |
+          set -euo pipefail
+          pnpm tauri build --ci --target x86_64-apple-darwin --bundles app --no-sign
+          bundle_root="src-tauri/target/x86_64-apple-darwin/release/bundle"
+          app_count="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')"
+          [[ "$app_count" == "1" ]] || { echo "Expected one app bundle, found $app_count" >&2; exit 1; }
+          app="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' -print)"
+          bash scripts/seal-macos-app-adhoc.sh --app "$app"
+          updater="$bundle_root/macos/DOHC-Viewer_1.0.30_UNSIGNED_macos-x64.app.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "$updater" -C "$(dirname "$app")" "$(basename "$app")"
+          updater_size="$(stat -f '%z' "$updater")"
+          (( updater_size >= 1048576 && updater_size <= 67108864 )) || {
+            echo "macOS updater archive is outside the 1-64 MiB bounded-memory contract" >&2
+            exit 1
+          }
+          mkdir -p "$bundle_root/dmg"
+          bash scripts/make-dmg.sh \
+            --app "$app" \
+            --output "$bundle_root/dmg/DOHC-Viewer_1.0.30_x64.dmg"
+
+      - name: Verify ad-hoc seal, Gatekeeper state, DMG, resources, and startup
+        shell: bash
+        run: |
+          bash scripts/verify-release-macos.sh \
+            --target x86_64-apple-darwin \
+            --arch x64 \
+            --version "1.0.30" \
+            --tag "v1.0.30" \
+            --commit "b0eb0e16df1ad3b466dfda2ac90cfe435b17f485" \
+            --output "$RUNNER_TEMP/release-assets"
+
+      - name: Verify, sign, and stage macOS updater
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          updater="src-tauri/target/x86_64-apple-darwin/release/bundle/macos/DOHC-Viewer_1.0.30_UNSIGNED_macos-x64.app.tar.gz"
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          tar -xzf "$updater" -C "$scratch"
+          extracted_count="$(find "$scratch" -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')"
+          [[ "$extracted_count" == "1" ]] || { echo "Updater archive must contain one app" >&2; exit 1; }
+          extracted_app="$(find "$scratch" -maxdepth 1 -type d -name '*.app' -print)"
+          codesign --verify --deep --strict "$extracted_app"
+          pnpm tauri signer sign "$updater"
+          test -f "$updater.sig"
+          cp "$updater" "$updater.sig" "$RUNNER_TEMP/release-assets/"
+
+      - name: Attest macOS installer provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_1.0.30_UNSIGNED_macos-x64.dmg
+
+      - name: Upload verified macOS release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-macos-x64
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+
+
