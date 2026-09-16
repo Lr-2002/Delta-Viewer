@@ -108,7 +108,7 @@ jobs:
               exit 1
             fi
           else
-            git tag -a "$tag" "$release_commit" -m "DOHC Viewer $tag"
+            git tag -a "$tag" "$release_commit" -m "Delta Viewer $tag"
             tag_needs_push=true
           fi
 
@@ -446,14 +446,14 @@ jobs:
           if (-not (Test-Path -LiteralPath $signature -PathType Leaf)) {
             throw "NSIS updater signature is missing"
           }
-          $name = "DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_windows-x64-updater.exe"
+          $name = "Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_windows-x64-updater.exe"
           Copy-Item -LiteralPath $updaters[0].FullName -Destination (Join-Path $env:RUNNER_TEMP "release-assets\$name")
           Copy-Item -LiteralPath $signature -Destination (Join-Path $env:RUNNER_TEMP "release-assets\$name.sig")
 
       - name: Attest Windows installer provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_windows-x64-setup.exe
+          subject-path: ${{ runner.temp }}/release-assets/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_windows-x64-setup.exe
 
       - name: Upload verified Windows release artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -558,7 +558,7 @@ jobs:
           [[ "$app_count" == "1" ]] || { echo "Expected one app bundle, found $app_count" >&2; exit 1; }
           app="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' -print)"
           bash scripts/seal-macos-app-adhoc.sh --app "$app"
-          updater="$bundle_root/macos/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.app.tar.gz"
+          updater="$bundle_root/macos/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.app.tar.gz"
           COPYFILE_DISABLE=1 tar -czf "$updater" -C "$(dirname "$app")" "$(basename "$app")"
           updater_size="$(stat -f '%z' "$updater")"
           (( updater_size >= 1048576 && updater_size <= 67108864 )) || {
@@ -568,7 +568,7 @@ jobs:
           mkdir -p "$bundle_root/dmg"
           bash scripts/make-dmg.sh \
             --app "$app" \
-            --output "$bundle_root/dmg/DOHC-Viewer_${{ needs.controller.outputs.version }}_arm64.dmg"
+            --output "$bundle_root/dmg/Delta-Viewer_${{ needs.controller.outputs.version }}_arm64.dmg"
 
       - name: Verify ad-hoc seal, Gatekeeper state, DMG, resources, and startup
         shell: bash
@@ -588,7 +588,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          updater="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.app.tar.gz"
+          updater="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.app.tar.gz"
           scratch="$(mktemp -d)"
           trap 'rm -rf "$scratch"' EXIT
           tar -xzf "$updater" -C "$scratch"
@@ -603,7 +603,7 @@ jobs:
       - name: Attest macOS installer provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.dmg
+          subject-path: ${{ runner.temp }}/release-assets/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.dmg
 
       - name: Upload verified macOS release artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -714,7 +714,7 @@ jobs:
           deb="$(find src-tauri/target -type f -path '*/release/bundle/deb/*.deb' -print -quit)"
           [[ -n "$deb" ]] || { echo "Tauri did not produce a Debian package" >&2; exit 1; }
           mkdir -p "$RUNNER_TEMP/release-assets"
-          formal_deb="$RUNNER_TEMP/release-assets/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_ubuntu-22.04+-x64.deb"
+          formal_deb="$RUNNER_TEMP/release-assets/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_ubuntu-22.04+-x64.deb"
           install -m 0644 "$deb" "$formal_deb"
           bash scripts/verify-release-deb.sh \
             --deb "$formal_deb" \
@@ -730,7 +730,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          deb="$RUNNER_TEMP/release-assets/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_ubuntu-22.04+-x64.deb"
+          deb="$RUNNER_TEMP/release-assets/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_ubuntu-22.04+-x64.deb"
           size="$(stat -c '%s' "$deb")"
           (( size >= 1048576 && size <= 67108864 )) || {
             echo "Ubuntu updater deb is outside the 1-64 MiB bounded-memory contract" >&2
@@ -742,7 +742,7 @@ jobs:
       - name: Attest Ubuntu deb provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: ${{ runner.temp }}/release-assets/DOHC-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_ubuntu-22.04+-x64.deb
+          subject-path: ${{ runner.temp }}/release-assets/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_ubuntu-22.04+-x64.deb
 
       - name: Upload verified Ubuntu deb artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -844,9 +844,9 @@ jobs:
             while IFS= read -r existing_asset; do
               [[ -z "$existing_asset" ]] || gh release delete-asset "$TAG" "$existing_asset" --yes
             done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
-            gh release edit "$TAG" --title "DOHC Viewer $TAG (UNSIGNED)" --notes-file "$notes_file"
+            gh release edit "$TAG" --title "Delta Viewer $TAG (UNSIGNED)" --notes-file "$notes_file"
           else
-            create_args=("$TAG" --verify-tag --draft --title "DOHC Viewer $TAG (UNSIGNED)" --notes-file "$notes_file")
+            create_args=("$TAG" --verify-tag --draft --title "Delta Viewer $TAG (UNSIGNED)" --notes-file "$notes_file")
             if [[ "$PRERELEASE" == "true" ]]; then create_args+=(--prerelease); fi
             gh release create "${create_args[@]}"
           fi

@@ -140,7 +140,7 @@ export async function configureUserCenter(): Promise<UserCenterStatus> {
       directory: false,
       multiple: false,
       title: "导入管理员提供的用户中心配置",
-      filters: [{ name: "DOHC User Center", extensions: ["json"] }],
+      filters: [{ name: "Delta User Center", extensions: ["json"] }],
     });
     if (typeof selection !== "string") throw new Error("未选择用户中心配置文件");
     return invoke<UserCenterStatus>("configure_user_center", { configPath: selection });
@@ -423,7 +423,7 @@ export async function importTaskTemplateConfig(): Promise<TaskDefinition[]> {
       directory: false,
       multiple: false,
       title: "导入任务模板配置",
-      filters: [{ name: "DOHC Task Templates", extensions: ["json"] }],
+      filters: [{ name: "Delta Task Templates", extensions: ["json"] }],
     });
     if (typeof selection !== "string") throw new Error("未选择任务模板配置文件");
     return invoke<TaskDefinition[]>("import_task_template_config", { configPath: selection });
@@ -1078,7 +1078,7 @@ export async function validateEpisode(path: string, operationId: number): Promis
       stabilityPercent: 91.8,
       stable: true,
     },
-    autoReportPath: "/DOHC Viewer/reports/2026-07-13_07-34-12.health.json",
+    autoReportPath: "/Delta Viewer/reports/2026-07-13_07-34-12.health.json",
     status: "warning",
     checkedFiles: 26,
     elapsedMs: 214,

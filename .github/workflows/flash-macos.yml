@@ -51,7 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           pnpm tauri build --ci --target aarch64-apple-darwin --bundles app --no-sign
-          app='src-tauri/target/aarch64-apple-darwin/release/bundle/macos/DOHC Viewer.app'
+          app='src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Delta Viewer.app'
           bash scripts/seal-macos-app-adhoc.sh --app "$app"
           mkdir -p src-tauri/target/aarch64-apple-darwin/release/bundle/dmg
           bash scripts/make-dmg.sh --app "$app" --output src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/Viewer-Flash.dmg

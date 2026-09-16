@@ -50,22 +50,22 @@ function expectedArtifacts(version) {
       key: "windows-x64",
       platform: "windows",
       architecture: "x64",
-      installer: `DOHC-Viewer_${version}_UNSIGNED_windows-x64-setup.exe`,
-      report: `DOHC-Viewer_${version}_windows-x64.verification.json`,
+      installer: `Delta-Viewer_${version}_UNSIGNED_windows-x64-setup.exe`,
+      report: `Delta-Viewer_${version}_windows-x64.verification.json`,
       updater: {
         target: "windows-x86_64-nsis",
-        fileName: `DOHC-Viewer_${version}_UNSIGNED_windows-x64-updater.exe`,
+        fileName: `Delta-Viewer_${version}_UNSIGNED_windows-x64-updater.exe`,
       },
     },
     {
       key: "macos-arm64",
       platform: "macos",
       architecture: "arm64",
-      installer: `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.dmg`,
-      report: `DOHC-Viewer_${version}_macos-arm64.verification.json`,
+      installer: `Delta-Viewer_${version}_UNSIGNED_macos-arm64.dmg`,
+      report: `Delta-Viewer_${version}_macos-arm64.verification.json`,
       updater: {
         target: "darwin-aarch64-app",
-        fileName: `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.app.tar.gz`,
+        fileName: `Delta-Viewer_${version}_UNSIGNED_macos-arm64.app.tar.gz`,
       },
     },
     {
@@ -73,11 +73,11 @@ function expectedArtifacts(version) {
       platform: "linux",
       architecture: "x64",
       packageKind: "deb",
-      installer: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
-      report: `DOHC-Viewer_${version}_linux-deb-x64.verification.json`,
+      installer: `Delta-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
+      report: `Delta-Viewer_${version}_linux-deb-x64.verification.json`,
       updater: {
         target: "linux-x86_64-deb",
-        fileName: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
+        fileName: `Delta-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
       },
     },
   ];
@@ -129,6 +129,9 @@ async function validateArtifact(options, expected, version, updaterPublicKey) {
     throw new Error(`${expected.report} has not passed unsigned-distribution and runtime checks`);
   }
   if (expected.platform === "windows") {
+    if (report.runtimeSmoke?.legacyRenameUpgrade !== true) {
+      throw new Error(`${expected.report} has not verified the legacy rename upgrade`);
+    }
     if (report.signing?.mode !== "unsigned" || report.signing?.verified !== false) {
       throw new Error(`${expected.report} has an invalid unsigned Windows signing state`);
     }
@@ -208,7 +211,7 @@ async function validateArtifact(options, expected, version, updaterPublicKey) {
     ];
     const dependencies = report.deb?.dependencies ?? [];
     if (
-      report.deb?.packageName !== "dohc-viewer" ||
+      report.deb?.packageName !== "delta-viewer" ||
       report.deb?.packageVersion !== version ||
       report.deb?.packageArchitecture !== "amd64" ||
       report.deb?.hostMinimum !== "ubuntu-22.04" ||
@@ -361,7 +364,7 @@ async function main() {
 
   const manifest = {
     schemaVersion: 1,
-    application: "DOHC Viewer",
+    application: "Delta Viewer",
     tag: options.tag,
     version,
     commit: options.commit,

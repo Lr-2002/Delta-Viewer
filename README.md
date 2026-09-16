@@ -1,4 +1,4 @@
-# DOHC Viewer
+# Delta Viewer
 
 Version 1.0.21 replaces the administrator annotation cockpit with review supervision:
 live per-account interactions, video seeks and drag durations, label changes, review
@@ -8,7 +8,7 @@ Review events retry from an account-scoped local queue and persist in SQLite; ea
 versions' unrecorded interactions cannot be reconstructed. See
 [deployment instructions](docs/wiki/User-Center-Deployment.md).
 
-DOHC Viewer is a Tauri 2 desktop application for reading DOHC recordings
+Delta Viewer is a Tauri 2 desktop application for reading DOHC recordings
 directly from a mounted, read-only SD card, reviewing synchronized sensor data,
 and exporting it through independent format adapters without an automatic local
 episode copy.
@@ -33,9 +33,9 @@ User-facing installers are mirrored at
 [http://39.155.172.162:17879/](http://39.155.172.162:17879/); users do not need GitHub
 access. GitHub Releases remains the build and signed upstream source:
 
-- `DOHC-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`
-- `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`
-- `DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`
+- `Delta-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`
+- `Delta-Viewer_<version>_UNSIGNED_macos-arm64.dmg`
+- `Delta-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`
 
 The current release channel has no trusted publisher signature. Windows can
 show an unknown-publisher or SmartScreen warning. The macOS app is ad-hoc sealed

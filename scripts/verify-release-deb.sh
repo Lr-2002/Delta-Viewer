@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: scripts/verify-release-deb.sh \
-  --deb /path/to/DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb \
+  --deb /path/to/Delta-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb \
   --version <version> \
   --tag <vX.Y.Z> \
   --commit <40 character git revision> \
@@ -58,7 +58,7 @@ host_version="$(. /etc/os-release; printf '%s' "$VERSION_ID")"
   exit 1
 }
 
-expected_name="DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb"
+expected_name="Delta-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb"
 [[ "$(basename "$deb_path")" == "$expected_name" ]] || {
   echo "Unexpected Debian package file name: $(basename "$deb_path")" >&2
   exit 1
@@ -71,7 +71,10 @@ package_name="$(dpkg-deb -f "$deb_path" Package)"
 package_version="$(dpkg-deb -f "$deb_path" Version)"
 package_architecture="$(dpkg-deb -f "$deb_path" Architecture)"
 package_dependencies="$(dpkg-deb -f "$deb_path" Depends)"
-[[ "$package_name" == "dohc-viewer" ]] || { echo "Unexpected package name: $package_name" >&2; exit 1; }
+[[ "$package_name" == "delta-viewer" ]] || { echo "Unexpected package name: $package_name" >&2; exit 1; }
+for relation in Replaces Conflicts Provides; do
+  [[ "$(dpkg-deb -f "$deb_path" "$relation")" == "dohc-viewer" ]] || { echo "Missing legacy package relation: $relation" >&2; exit 1; }
+done
 [[ "$package_version" == "$version" ]] || { echo "Unexpected package version: $package_version" >&2; exit 1; }
 [[ "$package_architecture" == "amd64" ]] || { echo "Unexpected package architecture: $package_architecture" >&2; exit 1; }
 for dependency in libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 librsvg2-2 gstreamer1.0-libav gstreamer1.0-vaapi; do
@@ -190,7 +193,7 @@ artifact_sha256="$(sha256sum "$deb_path" | awk '{print $1}')"
 artifact_size="$(stat -c '%s' "$deb_path")"
 source_archive_sha256="$(jq -r '.sourceArchiveSha256' "$manifest_path")"
 source_revision="$(jq -r '.sourceRevision' "$manifest_path")"
-report_path="$output_directory/DOHC-Viewer_${version}_linux-deb-x64.verification.json"
+report_path="$output_directory/Delta-Viewer_${version}_linux-deb-x64.verification.json"
 temporary_report="$report_path.partial-$$"
 
 REPORT_PATH="$temporary_report" \

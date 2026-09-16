@@ -17,20 +17,20 @@ const TARGETS = [
   {
     key: "windows-x64",
     target: "windows-x86_64-nsis",
-    updaterName: (version) => `DOHC-Viewer_${version}_UNSIGNED_windows-x64-updater.exe`,
-    installerName: (version) => `DOHC-Viewer_${version}_UNSIGNED_windows-x64-setup.exe`,
+    updaterName: (version) => `Delta-Viewer_${version}_UNSIGNED_windows-x64-updater.exe`,
+    installerName: (version) => `Delta-Viewer_${version}_UNSIGNED_windows-x64-setup.exe`,
   },
   {
     key: "macos-arm64",
     target: "darwin-aarch64-app",
-    updaterName: (version) => `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.app.tar.gz`,
-    installerName: (version) => `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.dmg`,
+    updaterName: (version) => `Delta-Viewer_${version}_UNSIGNED_macos-arm64.app.tar.gz`,
+    installerName: (version) => `Delta-Viewer_${version}_UNSIGNED_macos-arm64.dmg`,
   },
   {
     key: "ubuntu-deb-x64",
     target: "linux-x86_64-deb",
-    updaterName: (version) => `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
-    installerName: (version) => `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
+    updaterName: (version) => `Delta-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
+    installerName: (version) => `Delta-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
   },
 ];
 
@@ -73,12 +73,12 @@ function sha256(contents) {
   return createHash("sha256").update(contents).digest("hex");
 }
 
-function createRelease(version, signer, upstreamBase, fillOffset = 0) {
+function createRelease(version, signer, upstreamBase, fillOffset = 0, legacy = false) {
   const files = new Map();
   const platforms = {};
   const assets = [];
   for (const [index, target] of TARGETS.entries()) {
-    const updaterName = target.updaterName(version);
+    const updaterName = legacy ? target.updaterName(version).replace("Delta-Viewer", "DOHC-Viewer") : target.updaterName(version);
     const updater = Buffer.alloc(1024 * 1024 + index, 20 + fillOffset + index);
     files.set(updaterName, updater);
     platforms[target.target] = {
@@ -87,7 +87,7 @@ function createRelease(version, signer, upstreamBase, fillOffset = 0) {
       size: updater.length,
       sha256: sha256(updater),
     };
-    const installerName = target.installerName(version);
+    const installerName = legacy ? target.installerName(version).replace("Delta-Viewer", "DOHC-Viewer") : target.installerName(version);
     const installer = installerName === updaterName
       ? updater
       : Buffer.alloc(1024 * 1024 + 100 + index, 40 + fillOffset + index);
@@ -109,7 +109,7 @@ function createRelease(version, signer, upstreamBase, fillOffset = 0) {
     },
     releaseManifest: {
       schemaVersion: 1,
-      application: "DOHC Viewer",
+      application: legacy ? "DOHC Viewer" : "Delta Viewer",
       tag: `v${version}`,
       version,
       commit: "a".repeat(40),
@@ -229,6 +229,15 @@ test("mirrors signed installers locally and retains the last good release after 
       logger: { error: (message) => loggedErrors.push(message) },
     });
     const { address, publicBaseUrl, fallbackBaseUrls } = await mirror.start();
+    currentRelease = createRelease("1.0.31", signer, upstreamBase, 0, true);
+    await mirror.sync();
+    assert.equal(mirror.state.current.version, "1.0.31");
+    assert.match(mirror.state.current.latest.platforms[TARGETS[0].target].url, /DOHC-Viewer/);
+    currentRelease = createRelease("1.0.32", signer, upstreamBase);
+    await mirror.sync();
+    assert.equal(mirror.state.current.version, "1.0.32");
+    assert.match(mirror.state.current.latest.platforms[TARGETS[0].target].url, /Delta-Viewer/);
+    currentRelease = createRelease("1.2.3", signer, upstreamBase);
     await mirror.sync();
 
     const health = await fetch(`${publicBaseUrl}/healthz`).then((response) => response.json());

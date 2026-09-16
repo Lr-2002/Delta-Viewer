@@ -217,7 +217,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
   run("git", ["commit", "-qm", "release fixture"], testRoot);
   const mainCommit = run("git", ["rev-parse", "HEAD"], testRoot);
   run("git", ["update-ref", "refs/remotes/origin/main", mainCommit], testRoot);
-  run("git", ["tag", "-a", "v1.2.3", "-m", "DOHC Viewer v1.2.3"], testRoot);
+  run("git", ["tag", "-a", "v1.2.3", "-m", "Delta Viewer v1.2.3"], testRoot);
 
   const output = path.join(path.dirname(testRoot), `${path.basename(testRoot)}-metadata.json`);
   run(
@@ -308,7 +308,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
   assert.notEqual(nonMainTag.status, 0);
   assert.match(nonMainTag.stderr, /is not reachable from trusted main ref origin\/main/);
   run("git", ["tag", "-d", "v1.2.3"], testRoot);
-  run("git", ["tag", "-a", "v1.2.3", mainCommit, "-m", "DOHC Viewer v1.2.3"], testRoot);
+  run("git", ["tag", "-a", "v1.2.3", mainCommit, "-m", "Delta Viewer v1.2.3"], testRoot);
   assert.deepEqual(metadata.packaging.macos, ["untrusted-adhoc-sealed-dmg-arm64"]);
   assert.deepEqual(metadata.packaging.linux, ["unsigned-deb-ubuntu-22.04+-x64"]);
   assert.equal(metadata.packaging.linuxDebMinimum, "ubuntu-22.04");
@@ -484,7 +484,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
       architecture: "x64",
       suffix: "windows-x64-setup.exe",
       reportSuffix: "windows-x64.verification.json",
-      updater: `DOHC-Viewer_${version}_UNSIGNED_windows-x64-updater.exe`,
+      updater: `Delta-Viewer_${version}_UNSIGNED_windows-x64-updater.exe`,
       updaterTarget: "windows-x86_64-nsis",
     },
     {
@@ -492,7 +492,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
       architecture: "arm64",
       suffix: "macos-arm64.dmg",
       reportSuffix: "macos-arm64.verification.json",
-      updater: `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.app.tar.gz`,
+      updater: `Delta-Viewer_${version}_UNSIGNED_macos-arm64.app.tar.gz`,
       updaterTarget: "darwin-aarch64-app",
     },
     {
@@ -501,14 +501,14 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
       packageKind: "deb",
       suffix: "ubuntu-22.04+-x64.deb",
       reportSuffix: "linux-deb-x64.verification.json",
-      updater: `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
+      updater: `Delta-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
       updaterTarget: "linux-x86_64-deb",
     },
   ];
   const updaterPayloads = new Map();
 
   for (const [index, definition] of definitions.entries()) {
-    const installer = `DOHC-Viewer_${version}_UNSIGNED_${definition.suffix}`;
+    const installer = `Delta-Viewer_${version}_UNSIGNED_${definition.suffix}`;
     const installerPath = path.join(input, installer);
     const contents = Buffer.alloc(1_000_001, index + 1);
     await writeFile(installerPath, contents);
@@ -523,7 +523,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
     );
     updaterPayloads.set(definition.updater, updaterContents);
     const digest = createHash("sha256").update(contents).digest("hex");
-    const reportName = `DOHC-Viewer_${version}_${definition.reportSuffix}`;
+    const reportName = `Delta-Viewer_${version}_${definition.reportSuffix}`;
     await writeJson(path.join(input, reportName), {
       schemaVersion: 1,
       status: "passed",
@@ -579,7 +579,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
       runtimeSmoke:
         definition.platform === "linux"
           ? { passed: true, displayServer: "xvfb" }
-          : { passed: true },
+          : { passed: true, ...(definition.platform === "windows" ? { legacyRenameUpgrade: true } : {}) },
       ...(definition.platform === "windows"
         ? {
             webview2: {
@@ -591,7 +591,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
         : definition.packageKind === "deb"
           ? {
               deb: {
-                packageName: "dohc-viewer",
+                packageName: "delta-viewer",
                 packageVersion: version,
                 packageArchitecture: "amd64",
                 hostMinimum: "ubuntu-22.04",
@@ -627,7 +627,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
 
   const macosReportPath = path.join(
     input,
-    `DOHC-Viewer_${version}_macos-arm64.verification.json`,
+    `Delta-Viewer_${version}_macos-arm64.verification.json`,
   );
   const macosReport = JSON.parse(await readFile(macosReportPath, "utf8"));
   macosReport.gatekeeper.assessment = "rejected-not-notarized-xprotect-unavailable";
@@ -660,7 +660,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
 
   const debReportPath = path.join(
     input,
-    `DOHC-Viewer_${version}_linux-deb-x64.verification.json`,
+    `Delta-Viewer_${version}_linux-deb-x64.verification.json`,
   );
   const debReport = JSON.parse(await readFile(debReportPath, "utf8"));
   debReport.deb.verifiedHost = "ubuntu-24.04";
@@ -738,7 +738,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
 
   const macosX64Installer = path.join(
     input,
-    `DOHC-Viewer_${version}_UNSIGNED_macos-x64.dmg`,
+    `Delta-Viewer_${version}_UNSIGNED_macos-x64.dmg`,
   );
   await writeFile(macosX64Installer, Buffer.alloc(1_000_001));
   const macosX64Output = path.join(testRoot, "macos-x64-output");
@@ -768,7 +768,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
 
   const flatpakInstaller = path.join(
     input,
-    `DOHC-Viewer_${version}_UNSIGNED_ubuntu-x64.flatpak`,
+    `Delta-Viewer_${version}_UNSIGNED_ubuntu-x64.flatpak`,
   );
   await writeFile(flatpakInstaller, Buffer.alloc(1_000_001));
   const flatpakOutput = path.join(testRoot, "flatpak-output");

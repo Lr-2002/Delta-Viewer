@@ -1603,7 +1603,7 @@ pub fn run() {
             read_frame
         ])
         .run(tauri::generate_context!())
-        .expect("error while running DOHC Viewer");
+        .expect("error while running Delta Viewer");
 }
 
 #[cfg(test)]

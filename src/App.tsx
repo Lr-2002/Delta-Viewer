@@ -175,7 +175,7 @@ const RELEASE_SUMMARIES_ZH: Record<string, string> = {
   "0.17.56": "修复 NAS 网络挂载无响应时标注账号自动加载长期锁死界面的问题，失败后可继续退出、重新配置或导入数据。",
   "0.17.55": "批量任务分配新增整文件夹与多任务数量双模式，截止时间改为日期并在当日显示“今天”。",
   "0.17.54": "新增任务运营驾驶舱、批量与速度建议分配、异常处置、独立质量复核、隐私安全报表和标注员快捷任务队列。",
-  "0.17.53": "支持标注员注册和当前姓名修改；监管分配重复任务时确认，并默认选择任务文件夹全部数量。",
+  "0.17.53": "支持审核员注册和当前姓名修改；监管分配重复任务时确认，并默认选择任务文件夹全部数量。",
   "0.17.52": "新增个人任务抽屉、按日期标注记录和本机任务路径配置，优化监管全量分配与紧凑任务描述输入。",
   "0.17.51": "修复桌面端与旧用户中心版本不一致时任务分配假成功和普通账号 NOT_FOUND 的问题。",
   "0.17.50": "修复监管模式下 JSON 任务分配无法保存的问题，并在分配区域即时显示保存结果和错误。",
@@ -1719,7 +1719,7 @@ function App() {
         <div className="brand-lockup">
           <span className="brand-mark">D</span>
           <div>
-            <strong>DOHC Viewer{IS_DEVELOPMENT_EDITION ? " Dev" : ""}</strong>
+            <strong>Delta Viewer{IS_DEVELOPMENT_EDITION ? " Dev" : ""}</strong>
             <span>v{updateInfo?.currentVersion ?? APP_VERSION}</span>
           </div>
           <button
@@ -2393,7 +2393,7 @@ function presentOperationError(message: string): string {
     || message.includes("权限")
     || message.includes("不允许")
   ) {
-    return `系统拒绝访问所选卷或目录。请确认当前账号和 DOHC Viewer 可以读取该卷，并允许写入本机应用数据目录。原始错误：${message}`;
+    return `系统拒绝访问所选卷或目录。请确认当前账号和 Delta Viewer 可以读取该卷，并允许写入本机应用数据目录。原始错误：${message}`;
   }
   return message;
 }

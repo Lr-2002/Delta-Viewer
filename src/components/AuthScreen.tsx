@@ -107,7 +107,7 @@ export function AuthScreen({
         <header className="auth-brand">
           <span className="brand-mark">D</span>
           <div>
-            <strong>DOHC Viewer</strong>
+            <strong>Delta Viewer</strong>
             <span>recording workspace</span>
           </div>
         </header>
@@ -122,7 +122,7 @@ export function AuthScreen({
           <div className="workspace-mode-options">
             <button className="workspace-mode-option" type="button" onClick={() => void selectMode("managed")} disabled={busy}>
               <Network size={18} />
-              <span><strong>登录工作区</strong><small>使用局域网用户中心账号，标注操作纳入审计</small></span>
+              <span><strong>登录工作区</strong><small>使用局域网用户中心账号，审核操作纳入审计</small></span>
             </button>
           </div>
           {error ? <div className="auth-error" role="alert">{error}</div> : null}
@@ -137,7 +137,7 @@ export function AuthScreen({
       <header className="auth-brand">
         <span className="brand-mark">D</span>
         <div>
-          <strong>DOHC Viewer</strong>
+          <strong>Delta Viewer</strong>
           <span>recording workspace</span>
         </div>
       </header>
@@ -146,7 +146,7 @@ export function AuthScreen({
           <span className="auth-icon"><KeyRound size={20} /></span>
           <div>
             <span className="section-kicker">USER CENTER</span>
-            <h1 id="auth-title">{userCenter.configured ? mode === "login" ? "登录" : "标注员注册" : "连接用户中心"}</h1>
+            <h1 id="auth-title">{userCenter.configured ? mode === "login" ? "登录" : "审核员注册" : "连接用户中心"}</h1>
           </div>
         </div>
         {!userCenter.configured ? (
@@ -224,7 +224,7 @@ export function AuthScreen({
             选择工作模式
           </button>
           {userCenter.configured && mode === "login" ? (
-            <button type="button" className="text-button" onClick={() => switchLoginMode("register")}>注册标注员账号</button>
+            <button type="button" className="text-button" onClick={() => switchLoginMode("register")}>注册审核员账号</button>
           ) : userCenter.configured && mode === "register" ? (
             <button type="button" className="text-button" onClick={() => switchLoginMode("login")}>返回登录</button>
           ) : null}

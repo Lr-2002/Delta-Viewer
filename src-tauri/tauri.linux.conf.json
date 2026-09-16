@@ -9,6 +9,9 @@
     },
     "linux": {
       "deb": {
+        "replaces": ["dohc-viewer"],
+        "conflicts": ["dohc-viewer"],
+        "provides": ["dohc-viewer"],
         "depends": [
           "libwebkit2gtk-4.1-0",
           "libgtk-3-0",

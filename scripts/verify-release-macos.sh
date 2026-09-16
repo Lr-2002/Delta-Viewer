@@ -141,7 +141,7 @@ codesign --verify --deep --strict --verbose=4 "$mounted_app"
 mounted_ffmpeg_sha="$(shasum -a 256 "$mounted_app/Contents/Resources/bin/ffmpeg" | awk '{print $1}')"
 [[ "$mounted_ffmpeg_sha" == "$ffmpeg_expected" ]] || { echo "DMG FFmpeg hash mismatch" >&2; exit 1; }
 
-installed_app="$install_parent/DOHC Viewer.app"
+installed_app="$install_parent/Delta Viewer.app"
 ditto "$mounted_app" "$installed_app"
 codesign --verify --deep --strict --verbose=4 "$installed_app"
 quarantine_timestamp="$(printf '%x' "$(date +%s)")"
@@ -223,7 +223,7 @@ if ! printf '%s\n' "$gatekeeper_output" | grep -F 'Adhoc Signed App' >/dev/null;
   printf '%s\n' "$control_gatekeeper_output" | grep -F 'Internal Xprotect Error' >/dev/null || {
     printf '%s\n' "$gatekeeper_output" >&2
     printf '%s\n' "$control_gatekeeper_output" >&2
-    echo "XProtect failed only for DOHC Viewer; refusing to classify it as a runner issue" >&2
+    echo "XProtect failed only for Delta Viewer; refusing to classify it as a runner issue" >&2
     exit 1
   }
 
@@ -254,13 +254,13 @@ attached=false
 rmdir "$mount_point"
 
 mkdir -p "$output"
-artifact_name="DOHC-Viewer_${version}_UNSIGNED_macos-${arch}.dmg"
+artifact_name="Delta-Viewer_${version}_UNSIGNED_macos-${arch}.dmg"
 artifact_path="$output/$artifact_name"
 [[ ! -e "$artifact_path" ]] || { echo "Output already exists: $artifact_path" >&2; exit 1; }
 cp "$dmg" "$artifact_path"
 artifact_sha="$(shasum -a 256 "$artifact_path" | awk '{print $1}')"
 artifact_size="$(stat -f '%z' "$artifact_path")"
-report_path="$output/DOHC-Viewer_${version}_macos-${arch}.verification.json"
+report_path="$output/Delta-Viewer_${version}_macos-${arch}.verification.json"
 
 jq -n \
   --arg tag "$tag" \

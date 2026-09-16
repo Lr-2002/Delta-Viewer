@@ -9,7 +9,7 @@ fi
 
 app_path=""
 output_path=""
-volume_name="DOHC Viewer"
+volume_name="Delta Viewer"
 
 while (($# > 0)); do
   case "$1" in
