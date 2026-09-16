@@ -1,6 +1,6 @@
-# DOHC Viewer 用户手册
+# Delta Viewer 用户手册
 
-DOHC Viewer 是用于 DOHC 采集数据的离线桌面应用。它从本机可见的 SD 卡或目录发现全部采集 session，直接从源路径进行数据检查、同步回放、任务标注和格式导出，不自动创建等量本机副本。保存标注时只在当前 episode 根目录原子更新 `description.json`，其他采集文件保持只读。
+Delta Viewer 是用于 DOHC 采集数据的离线桌面应用。它从本机可见的 SD 卡或目录发现全部采集 session，直接从源路径进行数据检查、同步回放、任务标注和格式导出，不自动创建等量本机副本。保存标注时只在当前 episode 根目录原子更新 `description.json`，其他采集文件保持只读。
 
 固定 IP 更新镜像 [http://39.155.172.162:17879/](http://39.155.172.162:17879/) 提供以下安装产物，用户不需要访问 GitHub：
 
@@ -22,7 +22,7 @@ DOHC Viewer 是用于 DOHC 采集数据的离线桌面应用。它从本机可�
 
 输入 episode 固定包含五路 JPEG：`cam0`、`cam1`、`cam2`、`t265_left`、`t265_right`，以及逐行 JSON 状态文件 `states.jsonl`。当前导出格式为 MCAP、HDF5 和 LeRobot v2.1。
 
-DOHC Viewer 不提供 ext4 驱动。Windows 和 macOS 只能直接选择操作系统已经挂载的卷；macOS 用户可按[Paragon extFS 只读教程](Paragon-extFS-macOS)使用独立的第三方商业驱动。Ubuntu 可以用 Linux 内核原生只读挂载 ext4；原生 deb 可访问当前用户有权读取的挂载目录。新卡仍推荐使用经过采集设备验证的 exFAT。现有 ext4 卡必须先在能够读取 ext4 的机器上完成备份，格式化会清空卡。
+Delta Viewer 不提供 ext4 驱动。Windows 和 macOS 只能直接选择操作系统已经挂载的卷；macOS 用户可按[Paragon extFS 只读教程](Paragon-extFS-macOS)使用独立的第三方商业驱动。Ubuntu 可以用 Linux 内核原生只读挂载 ext4；原生 deb 可访问当前用户有权读取的挂载目录。新卡仍推荐使用经过采集设备验证的 exFAT。现有 ext4 卡必须先在能够读取 ext4 的机器上完成备份，格式化会清空卡。
 
 ## 发布可信度
 

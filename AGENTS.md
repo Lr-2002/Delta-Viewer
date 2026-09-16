@@ -1,4 +1,4 @@
-# DOHC Viewer 开发指南
+# Delta Viewer 开发指南
 
 本文件适用于整个仓库。所有开发者和自动化编码 agent 在修改代码前都必须阅读 `prd.md`；产品范围、字段语义和验收标准以 `prd.md` 为准。
 
@@ -57,7 +57,7 @@ DOHC_Viewer/
   src/                           React/TypeScript UI
     App.tsx                      顶层工作流和视图状态
     components/                  回放、检查、进度和导出组件
-      AuthScreen.tsx             工作模式选择、用户中心配置导入、标注员注册和登录
+      AuthScreen.tsx             工作模式选择、用户中心配置导入、审核员注册和登录
       AnnotationPanel.tsx        episode 任务、描述、轨迹码和处理人
       SkeletonViewer.tsx         可选 SMPL/骨架 Three.js 三维回放
     lib/backend.ts               所有 Tauri IPC/browser demo 适配
@@ -137,7 +137,7 @@ React component
 - macOS AppleDouble `._*` 和 `.DS_Store` 是平台元数据，不属于采集数据；扫描、统计、指纹、校验和显式导入必须统一忽略且不得删除源文件。其他无法映射为非负十进制帧号的 JPEG 仍是 `INVALID_FRAME_FILENAME` error。
 - 根级 `description.json` 是应用管理的 episode metadata，不参与采集统计、健康检查或数据指纹；其 partial 必须被扫描、指纹和导入忽略，正式文件随显式导入复制并验证。
 - Export UI 不知道格式内部结构；格式差异只能进入 adapter。
-- 未登录时只允许读取/选择登录模式、用户中心状态、配置导入、普通标注员注册、登录和退出 commands；自助注册不得接受角色字段或创建管理员，管理员创建仍只能在用户中心管理员页面完成。已登录标注员的个人资料接口只接受显示名称，不得修改账号名、角色、密码或其他账号。扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁；前端隐藏工作区不能替代后端门禁。
+- 未登录时只允许读取/选择登录模式、用户中心状态、配置导入、普通审核员注册、登录和退出 commands；自助注册不得接受角色字段或创建管理员，管理员创建仍只能在用户中心管理员页面完成。已登录标注员的个人资料接口只接受显示名称，不得修改账号名、角色、密码或其他账号。扫描、导入、加载、检查、读帧、标注和导出必须经 `AuthState::require_user()` 门禁；前端隐藏工作区不能替代后端门禁。
 - 内置任务和用户创建任务的校验、持久化与自动编号逻辑以 `src-tauri/src/annotations.rs` 为唯一真源。新任务只接收名称，由 Rust 生成稳定 task ID/轨迹前缀；前端不得提交或指定轨迹编号。
 - 批量导出清单只能由 `src-tauri/src/annotations.rs` 回读本机最新标注；批量 IPC 只接受 episode ID、目标目录和格式，必须在 Rust 中重新解析标注、核对规范化源路径与指纹、生成可信检查缓存后再调用 adapter。不得接受前端提交的源路径、标注对象或检查状态作为授权。
 - Browser demo 仅用于视觉开发，必须和真实样例统计、warning 和类型保持一致。其工作模式、账号、用户任务和标注只保存在当前页面进程内，刷新后重置；离线演示不得渲染账号/处理人或发起用户中心请求。交互抽检基线是报告 format v5、26 个已检查文件、每流 5 帧、`[1,25,50,73,99]`、30 FPS 帧率与稳定度统计和非空 `autoReportPath`。它不能被当作账号安全、后端门禁或数据验收。

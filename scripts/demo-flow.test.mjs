@@ -66,6 +66,26 @@ if (!browserExecutable) {
     await new Promise((resolveExit) => server.once("exit", resolveExit));
   });
 
+  test("Delta Viewer login and reviewer registration use the renamed product", async () => {
+    for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
+      const context = await browser.newContext({ viewport });
+      try {
+        const page = await context.newPage();
+        await page.goto(baseUrl, { waitUntil: "networkidle" });
+        await page.getByRole("button", { name: "登录工作区" }).click();
+        assert.equal(await page.title(), "Delta Viewer");
+        await page.getByRole("heading", { name: "审核员注册", exact: true }).waitFor();
+        await page.getByRole("button", { name: "返回登录", exact: true }).click();
+        await page.getByRole("button", { name: "注册审核员账号", exact: true }).click();
+        await page.getByRole("heading", { name: "审核员注册", exact: true }).waitFor();
+        assert.equal(await page.locator(".auth-brand strong").innerText(), "Delta Viewer");
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        mkdirSync(resolve(root, "artifacts/branding"), { recursive: true });
+        await page.screenshot({ path: resolve(root, `artifacts/branding/registration-${viewport.width}.png`), fullPage: true });
+      } finally { await context.close(); }
+    }
+  });
+
   test("development operators can annotate videos with tracking warnings and retain proofreading", { skip: "Covered by the unified proofreading regression suite" }, async () => {
     for (const scenario of ["static", "unavailable"]) {
       const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });

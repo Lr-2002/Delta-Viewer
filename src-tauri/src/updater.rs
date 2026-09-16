@@ -77,7 +77,7 @@ pub async fn download_and_install(
     let progress_app = app.clone();
     let client = reqwest::Client::builder()
         .timeout(DOWNLOAD_TIMEOUT)
-        .user_agent(concat!("DOHC-Viewer/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Delta-Viewer/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(update_download_error)?;
     source::emit_progress_for_operation(

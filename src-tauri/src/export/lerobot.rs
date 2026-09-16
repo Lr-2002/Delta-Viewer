@@ -149,7 +149,7 @@ impl ExportAdapter for LeRobotV2Adapter {
         fs::write(
             partial.join("README.md"),
             format!(
-                "# {}\n\nLeRobot v2.1 dataset exported by DOHC Viewer.\n\nFrame range: {}-{}.\n{}",
+                "# {}\n\nLeRobot v2.1 dataset exported by Delta Viewer.\n\nFrame range: {}-{}.\n{}",
                 context
                     .annotation
                     .map(|annotation| annotation.trajectory_code.as_str())

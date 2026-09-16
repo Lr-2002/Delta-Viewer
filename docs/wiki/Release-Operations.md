@@ -15,9 +15,9 @@ Release 正文，并在公开前回读确认版本标题存在。
 
 当前通道是公开的 unsigned GitHub Release；`UNSIGNED` 表示没有可信发布者身份，不表示 macOS app 可以缺少完整性封印。一次 Release 必须同时包含：
 
-- `DOHC-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`。
-- `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`。
-- `DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`。
+- `Delta-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`。
+- `Delta-Viewer_<version>_UNSIGNED_macos-arm64.dmg`。
+- `Delta-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`。
 - Windows x64 NSIS updater executable、macOS arm64 app tarball、Ubuntu x86_64 deb 各自对应的 Ed25519/Minisign `.sig`，以及三平台 `latest.json`。
 - `SHA256SUMS.txt` 和 `release-manifest.json`。
 - GitHub build provenance attestations。

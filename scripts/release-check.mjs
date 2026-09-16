@@ -503,7 +503,7 @@ async function verifyMacDmg(dmgPath, expectedVersion, dependency) {
       throw new Error("macOS DMG does not contain the expected /Applications link");
     }
     const app = await verifyMacApp(
-      path.join(mountPoint, "DOHC Viewer.app"),
+      path.join(mountPoint, "Delta Viewer.app"),
       expectedVersion,
       dependency,
     );
@@ -535,7 +535,7 @@ async function verifyLinuxDeb(debPath, dependency) {
   try {
     captureRequired("dpkg-deb", ["--extract", debPath, extractRoot], 8 * 1024 * 1024);
     const executable = path.join(extractRoot, "usr/bin/dohc-viewer");
-    const resources = path.join(extractRoot, "usr/lib/DOHC Viewer");
+    const resources = path.join(extractRoot, "usr/lib/Delta Viewer");
     const binary = path.join(resources, "bin/ffmpeg");
     const license = path.join(resources, "licenses/FFmpeg.txt");
     const manifest = path.join(resources, "ffmpeg-manifest.json");
@@ -628,7 +628,7 @@ async function main() {
   const gitStatus = capture(commands.git, ["status", "--porcelain=v1"]);
   const report = {
     schemaVersion: 1,
-    application: "DOHC Viewer",
+    application: "Delta Viewer",
     appVersion: null,
     profile: options.profile,
     bundleRequested: options.bundle,
@@ -762,11 +762,11 @@ async function main() {
             "--ci",
           ]),
         );
-        const appPath = path.join(root, "src-tauri/target/debug/bundle/macos/DOHC Viewer.app");
+        const appPath = path.join(root, "src-tauri/target/debug/bundle/macos/Delta Viewer.app");
         const dmgPath = path.join(
           root,
           "src-tauri/target/debug/bundle/dmg",
-          `DOHC Viewer_${report.appVersion}_${process.arch}.headless-${bundleStartedAt}.dmg`,
+          `Delta Viewer_${report.appVersion}_${process.arch}.headless-${bundleStartedAt}.dmg`,
         );
         await runCommand(report, "macOS headless DMG bundle", "bash", [
           "scripts/make-dmg.sh",
@@ -775,7 +775,7 @@ async function main() {
           "--output",
           dmgPath,
           "--volume-name",
-          "DOHC Viewer",
+          "Delta Viewer",
         ]);
       } else if (process.platform === "win32") {
         await runCommand(

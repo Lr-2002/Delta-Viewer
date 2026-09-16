@@ -1,8 +1,8 @@
 # macOS 使用 Paragon extFS 只读访问 ext4 SD 卡
 
-DOHC Viewer 不包含 ext4 驱动，但可以读取 macOS 已经挂载的普通目录。Paragon extFS for Mac 是第三方商业文件系统驱动；安装后可把 ext2、ext3 或 ext4 卷挂载到 Finder，再由 DOHC Viewer 从只读路径直接检查、回放和导出。
+Delta Viewer 不包含 ext4 驱动，但可以读取 macOS 已经挂载的普通目录。Paragon extFS for Mac 是第三方商业文件系统驱动；安装后可把 ext2、ext3 或 ext4 卷挂载到 Finder，再由 Delta Viewer 从只读路径直接检查、回放和导出。
 
-本教程只允许把采集卡挂载为只读。Paragon 支持写入 ext4，但 DOHC 工作流不使用该能力。Paragon 的购买、试用、激活、系统扩展和技术支持独立于 DOHC Viewer；核心 Viewer 数据流程仍然不会上传图像、状态、路径或 hash。
+本教程只允许把采集卡挂载为只读。Paragon 支持写入 ext4，但 DOHC 工作流不使用该能力。Paragon 的购买、试用、激活、系统扩展和技术支持独立于 Delta Viewer；核心 Viewer 数据流程仍然不会上传图像、状态、路径或 hash。
 
 > 重要：Paragon 是具备完整写入能力的驱动，不能假设一张新卡第一次连接时会默认只读。没有物理写保护或硬件写保护器时，不要把唯一一份原始采集卡直接连接到已经启用 Paragon 的 Mac。
 
@@ -10,7 +10,7 @@ DOHC Viewer 不包含 ext4 驱动，但可以读取 macOS 已经挂载的普通�
 
 准备以下条件：
 
-- 使用 `0.15.2` 或更高版本的 DOHC Viewer。
+- 使用 `0.15.2` 或更高版本的 Delta Viewer。
 - Mac 当前账号具有管理员权限，并预留至少两次重启时间。
 - 用于导出的 APFS 卷有足够空间容纳所选输出；正常界面不会再为完整 session 自动创建 app-local-data 副本。
 - 如果 SD 卡或全尺寸 SD 转接卡带有写保护开关，先拨到锁定位置。部分 USB 读卡器可能忽略该开关；不可替代的数据应使用硬件写保护器。
@@ -54,7 +54,7 @@ DOHC Viewer 不包含 ext4 驱动，但可以读取 macOS 已经挂载的普通�
 6. 勾选 `Mount in Read-only mode`。
 7. 建议同时勾选 `Do not mount automatically`。这样以后插卡后需要在 Paragon 中手动挂载，能够在读取前再次确认只读状态。
 8. 点击 `Mount`，等待卷出现在 Finder 的“位置”或 `/Volumes` 下。
-9. 确认 Paragon 的卷列表显示 `read-only`。没有该标记时不要打开 DOHC Viewer。
+9. 确认 Paragon 的卷列表显示 `read-only`。没有该标记时不要打开 Delta Viewer。
 
 可以在终端做附加检查，其中 `CARD_NAME` 替换为 Finder 显示的卷名：
 
@@ -64,21 +64,21 @@ diskutil info "/Volumes/CARD_NAME" | grep -E "Device Node|File System Personalit
 
 `Read-Only Volume` 必须为 `Yes`。如果 Paragon 界面和 `diskutil` 结果不一致，立即卸载该卷并停止操作。不要通过创建测试文件来验证只读状态。
 
-## 4. 在 DOHC Viewer 中只读打开
+## 4. 在 Delta Viewer 中只读打开
 
 1. 先在 Finder 中打开只读卷，确认能看到 session 目录和预期的 `cam0`、`cam1`、`cam2`、`t265_left`、`t265_right`、`states.jsonl` 数据。
-2. 启动 DOHC Viewer，选择统一管理模式后导入管理员提供的用户中心配置并登录账号；也可以选择离线模式直接继续，不需要账号或用户中心。
+2. 启动 Delta Viewer，选择统一管理模式后导入管理员提供的用户中心配置并登录账号；也可以选择离线模式直接继续，不需要账号或用户中心。
 3. 点击“选择 SD 卡”，通过系统目录选择框选择 `/Volumes/CARD_NAME` 对应的卡根目录。
-4. 选择完成后 DOHC Viewer 会扫描全部 session，并直接从只读源路径加载第一条记录；不会要求选择导入目标，也不会自动复制完整 session。不要为了标注把唯一原始卡改成可写。
+4. 选择完成后 Delta Viewer 会扫描全部 session，并直接从只读源路径加载第一条记录；不会要求选择导入目标，也不会自动复制完整 session。不要为了标注把唯一原始卡改成可写。
 5. 等待结构/状态检查和固定百分位 JPEG 抽检完成。任务结束前保持读卡器连接稳定。
 6. 后续检查、回放和导出仍从源卡读取，因此应用使用期间必须保持卷挂载。严格只读模式下不能保存标注，因为保存操作必须在 episode 根目录更新 `description.json`；检查报告仍只写应用 local-data。需要标注时应使用经过授权的可写工作介质，不要解除唯一原始卡的只读保护。
 
-如果目录选择框没有显示该卷，先确认 Finder 能打开它。然后进入“系统设置 -> 隐私与安全性 -> 文件与文件夹”，如果存在 DOHC Viewer 的“可移动宗卷”开关，将其打开，再通过应用内的原生目录选择框重新选择。
+如果目录选择框没有显示该卷，先确认 Finder 能打开它。然后进入“系统设置 -> 隐私与安全性 -> 文件与文件夹”，如果存在 Delta Viewer 的“可移动宗卷”开关，将其打开，再通过应用内的原生目录选择框重新选择。
 
 ## 5. 安全卸载 SD 卡
 
-1. 等待 DOHC Viewer 的读取、检查或导出任务完全结束。
-2. 退出 DOHC Viewer，或确认应用不再读取源路径。
+1. 等待 Delta Viewer 的读取、检查或导出任务完全结束。
+2. 退出 Delta Viewer，或确认应用不再读取源路径。
 3. 在 Finder 中弹出该卷，或在 Paragon 中点击 `Unmount`。
 4. 等待卷从 Finder 和 Paragon 的已挂载状态中消失，再拔出读卡器。
 
@@ -91,7 +91,7 @@ diskutil info "/Volumes/CARD_NAME" | grep -E "Device Node|File System Personalit
 - Spotlight indexing 已关闭。
 - `Mount in Read-only mode` 已开启。
 - Paragon 显示 `read-only`，附加检查中的 `Read-Only Volume` 为 `Yes`。
-- DOHC Viewer 正常界面直接只读访问源卡，不自动创建 app-local-data 数据副本；本次只读流程不执行需要写 `description.json` 的标注保存。
+- Delta Viewer 正常界面直接只读访问源卡，不自动创建 app-local-data 数据副本；本次只读流程不执行需要写 `description.json` 的标注保存。
 - 拔卡前已完成任务并正常卸载。
 
 ## 7. 常见问题
@@ -104,7 +104,7 @@ diskutil info "/Volumes/CARD_NAME" | grep -E "Device Node|File System Personalit
 
 ### 卡被挂载为可写
 
-不要启动 DOHC Viewer。立即在 Paragon 中卸载该卷，开启物理写保护，重新勾选 `Mount in Read-only mode` 后再挂载。如果仍显示可写，停止使用该读卡器或驱动配置。
+不要启动 Delta Viewer。立即在 Paragon 中卸载该卷，开启物理写保护，重新勾选 `Mount in Read-only mode` 后再挂载。如果仍显示可写，停止使用该读卡器或驱动配置。
 
 ### Viewer 报告 Permission denied
 

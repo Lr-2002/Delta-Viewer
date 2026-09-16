@@ -39,27 +39,32 @@ const MAX_JSON_BYTES = 1024 * 1024;
 const MANIFEST_TIMEOUT_MS = 15_000;
 const ASSET_TIMEOUT_MS = 20 * 60_000;
 
+function releaseBrand(version) {
+  const [major, minor, patch] = version.split(/[.-]/).map(Number);
+  return major > 1 || (major === 1 && (minor > 0 || patch >= 32)) ? "Delta" : "DOHC";
+}
+
 const TARGETS = [
   {
     key: "windows-x64",
     target: "windows-x86_64-nsis",
     label: "Windows 10/11 x64",
-    updaterName: (version) => `DOHC-Viewer_${version}_UNSIGNED_windows-x64-updater.exe`,
-    installerName: (version) => `DOHC-Viewer_${version}_UNSIGNED_windows-x64-setup.exe`,
+    updaterName: (version) => `${releaseBrand(version)}-Viewer_${version}_UNSIGNED_windows-x64-updater.exe`,
+    installerName: (version) => `${releaseBrand(version)}-Viewer_${version}_UNSIGNED_windows-x64-setup.exe`,
   },
   {
     key: "macos-arm64",
     target: "darwin-aarch64-app",
     label: "macOS 12+ Apple Silicon",
-    updaterName: (version) => `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.app.tar.gz`,
-    installerName: (version) => `DOHC-Viewer_${version}_UNSIGNED_macos-arm64.dmg`,
+    updaterName: (version) => `${releaseBrand(version)}-Viewer_${version}_UNSIGNED_macos-arm64.app.tar.gz`,
+    installerName: (version) => `${releaseBrand(version)}-Viewer_${version}_UNSIGNED_macos-arm64.dmg`,
   },
   {
     key: "ubuntu-deb-x64",
     target: "linux-x86_64-deb",
     label: "Ubuntu 22.04+ x86_64 deb",
-    updaterName: (version) => `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
-    installerName: (version) => `DOHC-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
+    updaterName: (version) => `${releaseBrand(version)}-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
+    installerName: (version) => `${releaseBrand(version)}-Viewer_${version}_UNSIGNED_ubuntu-22.04+-x64.deb`,
   },
 ];
 
@@ -234,7 +239,7 @@ async function fetchBytes(fetchImpl, url, maximumBytes, timeoutMs) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(url, {
-      headers: { accept: "application/json", "user-agent": "DOHC-Viewer-Update-Mirror/1" },
+      headers: { accept: "application/json", "user-agent": "Delta-Viewer-Update-Mirror/1" },
       redirect: "follow",
       signal: controller.signal,
     });
@@ -346,7 +351,7 @@ function validateReleaseManifest(raw, latest, configuration) {
   const manifest = requirePlainObject(raw, "release-manifest.json");
   if (
     manifest.schemaVersion !== 1
-    || manifest.application !== "DOHC Viewer"
+    || manifest.application !== `${releaseBrand(latest.version)} Viewer`
     || manifest.version !== latest.version
     || manifest.tag !== `v${latest.version}`
     || !Array.isArray(manifest.assets)
@@ -383,7 +388,7 @@ async function downloadFile(fetchImpl, descriptor, destination) {
   let handle;
   try {
     const response = await fetchImpl(descriptor.url, {
-      headers: { accept: "application/octet-stream", "user-agent": "DOHC-Viewer-Update-Mirror/1" },
+      headers: { accept: "application/octet-stream", "user-agent": "Delta-Viewer-Update-Mirror/1" },
       redirect: "follow",
       signal: controller.signal,
     });
@@ -700,7 +705,7 @@ function escapeHtml(value) {
 
 function renderIndex(current, baseUrl) {
   if (!current) {
-    return "<!doctype html><meta charset=\"utf-8\"><title>DOHC Viewer 更新服务</title><h1>更新尚未就绪</h1><p>服务正在同步已签名版本，请稍后刷新。</p>";
+    return "<!doctype html><meta charset=\"utf-8\"><title>Delta Viewer 更新服务</title><h1>更新尚未就绪</h1><p>服务正在同步已签名版本，请稍后刷新。</p>";
   }
   const links = current.release.installers.map((installer) => (
     `<li><a href="${escapeHtml(localAssetUrl(baseUrl, current.version, installer.fileName))}">${escapeHtml(installer.label)}</a>`
@@ -709,9 +714,9 @@ function renderIndex(current, baseUrl) {
   )).join("\n");
   return `<!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>DOHC Viewer v${escapeHtml(current.version)}</title>
+<title>Delta Viewer v${escapeHtml(current.version)}</title>
 <style>body{max-width:900px;margin:40px auto;padding:0 20px;font:15px/1.55 system-ui;color:#171717}li{margin:18px 0}code{overflow-wrap:anywhere}a{color:#111;font-weight:650}</style>
-<h1>DOHC Viewer v${escapeHtml(current.version)}</h1>
+<h1>Delta Viewer v${escapeHtml(current.version)}</h1>
 <p>请选择对应平台安装包。当前安装包没有可信发布者身份，安装前请核对下列 SHA-256。</p>
 <ul>${links}</ul>
 <p><a href="/releases/v${escapeHtml(current.version)}/SHA256SUMS.txt">SHA256SUMS.txt</a></p>

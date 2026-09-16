@@ -93,7 +93,7 @@ try {
     throw "Installed FFmpeg resource is missing or has the wrong hash"
   }
   $InstalledApps = @(Get-ChildItem -LiteralPath $InstallRoot -Recurse -File -Filter "dohc-viewer.exe")
-  if ($InstalledApps.Count -ne 1) { throw "Could not identify exactly one installed DOHC Viewer executable" }
+  if ($InstalledApps.Count -ne 1) { throw "Could not identify exactly one installed Delta Viewer executable" }
   [void](Assert-Unsigned -Path $InstalledApps[0].FullName)
 
   $RunningApp = Start-Process -FilePath $InstalledApps[0].FullName -PassThru
@@ -103,6 +103,33 @@ try {
   Stop-Process -Id $RunningApp.Id -Force
   $RunningApp.WaitForExit()
   $RunningApp = $null
+
+  # Model the previous product registration and verify an in-place rename upgrade.
+  $CurrentKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Delta Viewer'
+  $LegacyKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DOHC Viewer'
+  if (Test-Path $LegacyKey) { throw 'Unexpected existing legacy Viewer installation on build runner' }
+  Copy-Item $CurrentKey $LegacyKey -Recurse
+  Set-ItemProperty $LegacyKey DisplayName 'DOHC Viewer'
+  New-Item 'HKCU:\Software\dohc\DOHC Viewer' -Force | Out-Null
+  Set-Item 'HKCU:\Software\dohc\DOHC Viewer' $InstallRoot
+  Remove-Item $CurrentKey -Recurse
+  Remove-Item 'HKCU:\Software\dohc\Delta Viewer' -Recurse -ErrorAction SilentlyContinue
+  $Sentinel = Join-Path $InstallRoot 'upgrade-preservation-check.txt'
+  [System.IO.File]::WriteAllText($Sentinel, 'preserve existing files')
+  $Desktop = [Environment]::GetFolderPath('Desktop')
+  $LegacyShortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $Desktop 'DOHC Viewer.lnk'))
+  $LegacyShortcut.TargetPath = $InstalledApps[0].FullName
+  $LegacyShortcut.Save()
+  $UpgradeProcess = Start-Process -FilePath $Installer.FullName -ArgumentList '/S' -Wait -PassThru
+  if ($UpgradeProcess.ExitCode -ne 0) { throw 'Renamed Viewer upgrade failed' }
+  if (Test-Path $LegacyKey) { throw 'Legacy uninstall entry remains after rename upgrade' }
+  if ((Get-ItemProperty $CurrentKey).DisplayName -ne 'Delta Viewer') { throw 'Incorrect installed product name' }
+  if ((Get-ItemProperty $CurrentKey).InstallLocation.Trim('"') -ne $InstallRoot) { throw 'Rename upgrade changed installation location' }
+  if ([System.IO.File]::ReadAllText($Sentinel) -ne 'preserve existing files') { throw 'Rename upgrade lost existing files' }
+  if (Test-Path (Join-Path $Desktop 'DOHC Viewer.lnk')) { throw 'Legacy shortcut remains after upgrade' }
+  if (-not (Test-Path (Join-Path $Desktop 'Delta Viewer.lnk'))) { throw 'Renamed desktop shortcut is missing' }
+  if ((Get-Item $InstalledApps[0].FullName).VersionInfo.ProductName -ne 'Delta Viewer') { throw 'Executable product metadata still has the old name' }
+  Remove-Item $Sentinel
 
   $Uninstallers = @(Get-ChildItem -LiteralPath $InstallRoot -Recurse -File -Filter "*uninstall*.exe")
   if ($Uninstallers.Count -ne 1) { throw "Could not identify exactly one NSIS uninstaller" }
@@ -115,7 +142,7 @@ try {
   $Uninstaller = $null
 
   New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-  $ArtifactName = "DOHC-Viewer_${Version}_UNSIGNED_windows-x64-setup.exe"
+  $ArtifactName = "Delta-Viewer_${Version}_UNSIGNED_windows-x64-setup.exe"
   $ArtifactPath = Join-Path $OutputDirectory $ArtifactName
   if (Test-Path -LiteralPath $ArtifactPath) { throw "Output already exists: $ArtifactPath" }
   Copy-Item -LiteralPath $Installer.FullName -Destination $ArtifactPath
@@ -161,10 +188,11 @@ try {
       silentInstall = $true
       launchedSeconds = 8
       silentUninstall = $true
+      legacyRenameUpgrade = $true
     }
     minimumWindowsVersion = "10.0"
   }
-  $ReportPath = Join-Path $OutputDirectory "DOHC-Viewer_${Version}_windows-x64.verification.json"
+  $ReportPath = Join-Path $OutputDirectory "Delta-Viewer_${Version}_windows-x64.verification.json"
   [System.IO.File]::WriteAllText(
     $ReportPath,
     (($Report | ConvertTo-Json -Depth 6) + "`n"),

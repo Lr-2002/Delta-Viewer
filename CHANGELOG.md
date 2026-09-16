@@ -1,7 +1,13 @@
-# DOHC Viewer Changelog
+# Delta Viewer Changelog
 
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
+
+## 1.0.32 - 2026-09-16
+
+- 软件统一更名为 Delta Viewer：应用窗口、登录页、安装包、GitHub Release、README 和 Wiki 同步更新。
+- 登录页入口改为“注册审核员账号”，注册页标题改为“审核员注册”。
+- 保留现有应用身份和数据存储键，继续读取账号配置、审核草稿和进度；Windows 升级复用旧安装目录并清理旧名称快捷方式和卸载入口，Linux 包替换旧包，更新镜像兼容改名前后的版本。
 
 ## 1.0.31 - 2026-09-16
 

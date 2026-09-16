@@ -297,7 +297,7 @@ async function verify(options) {
 
   return {
     schemaVersion: 1,
-    application: "DOHC Viewer",
+    application: "Delta Viewer",
     tag: options.tag,
     version,
     commit: head,

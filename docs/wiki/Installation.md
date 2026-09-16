@@ -2,38 +2,40 @@
 
 ## 工作模式与局域网用户中心
 
-应用首次启动时要求进入登录模式。账号由当前主机的用户中心管理员创建，服务主机执行 `pnpm user-center:install` 完成一键安装和 LaunchAgent 部署；详细步骤见[用户中心部署](User-Center-Deployment)。客户端首次启动时导入管理员提供的 `DOHC-User-Center-Client.json`，不能在客户端自助注册账号。
+应用首次启动时要求进入登录模式。客户端导入管理员提供的 `DOHC-User-Center-Client.json` 后，可登录或点击“注册审核员账号”。服务主机执行 `pnpm user-center:install` 完成一键安装和 LaunchAgent 部署；详细步骤见[用户中心部署](User-Center-Deployment)。
+
+1.0.32 起产品名称为 Delta Viewer，已有账号配置、审核草稿和进度继续保留。Windows 升级继续使用旧安装目录，桌面和开始菜单显示新名称；Linux 安装新 deb 时替换旧包。内部应用标识及 `dohc-viewer` 命令保持兼容。历史 Release 的旧名称资产保持原样。
 
 只从固定更新镜像 [http://39.155.172.162:17879/](http://39.155.172.162:17879/) 下载安装包，用户不需要访问 GitHub。当前发布通道没有可信发布者签名，页面中的三个安装包文件名都必须显示 `UNSIGNED`。macOS app 带有用于验证包完整性的本地 ad-hoc seal，但没有 Apple Developer ID 或 notarization；Ubuntu deb 同样没有可信发行者签名。镜像没有同时列出 Windows x64、macOS arm64 和 Ubuntu deb 时不要使用临时 artifact 或本地 debug bundle。
 
 ## Windows 10/11 x64
 
-下载 `DOHC-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`，先按本页校验 SHA-256，再双击运行。Windows 会显示未知发布者，SmartScreen 也可能要求选择“更多信息”后确认运行。安装器使用当前用户模式，不要求管理员权限，并内置 WebView2 离线安装器和 reviewed FFmpeg，因此断网也能完成安装和 LeRobot 视频导出。
+下载 `Delta-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`，先按本页校验 SHA-256，再双击运行。Windows 会显示未知发布者，SmartScreen 也可能要求选择“更多信息”后确认运行。安装器使用当前用户模式，不要求管理员权限，并内置 WebView2 离线安装器和 reviewed FFmpeg，因此断网也能完成安装和 LeRobot 视频导出。
 
 安装器会在 Windows 10 以下停止。Windows on ARM 当前不在支持范围内。
 
 ## macOS 12 及以上 Apple Silicon
 
-Apple Silicon 机器下载 `DOHC-Viewer_<version>_UNSIGNED_macos-arm64.dmg`。先校验 SHA-256，打开 DMG 后将 `DOHC Viewer.app` 拖入 `Applications`。后续版本不再提供 Intel/x64 DMG；旧 Release 中已有的 x64 资产仅作为不可变历史保留，不再维护。
+Apple Silicon 机器下载 `Delta-Viewer_<version>_UNSIGNED_macos-arm64.dmg`。先校验 SHA-256，打开 DMG 后将 `Delta Viewer.app` 拖入 `Applications`。后续版本不再提供 Intel/x64 DMG；旧 Release 中已有的 x64 资产仅作为不可变历史保留，不再维护。
 
-可在“关于本机”查看芯片类型。当前 app 已通过完整的 ad-hoc 资源封印校验，但 DMG 没有 Developer ID 和 Apple notarization，因此首次启动仍会被 Gatekeeper 阻止。核对来源和 hash 后，先在“应用程序”中尝试打开一次；随后进入“系统设置 -> 隐私与安全性”，在 DOHC Viewer 提示旁选择“仍要打开”，完成系统认证后再次确认“打开”。这是每个版本的一次性授权。不要关闭 Gatekeeper，也不要运行移除 quarantine 的命令。
+可在“关于本机”查看芯片类型。当前 app 已通过完整的 ad-hoc 资源封印校验，但 DMG 没有 Developer ID 和 Apple notarization，因此首次启动仍会被 Gatekeeper 阻止。核对来源和 hash 后，先在“应用程序”中尝试打开一次；随后进入“系统设置 -> 隐私与安全性”，在 Delta Viewer 提示旁选择“仍要打开”，完成系统认证后再次确认“打开”。这是每个版本的一次性授权。不要关闭 Gatekeeper，也不要运行移除 quarantine 的命令。
 
 `0.15.0` 的 macOS 包存在无效资源封印，可能被系统提示“已损坏”，已由 `0.15.2` 取代。`0.15.1` tag 在 CI 阶段被阻止，没有公开 Release。macOS 用户不得继续使用 `0.15.0` DMG；请下载 `0.15.2` 或更高版本。Windows `0.15.0` 安装器不受此问题影响。
 
-DOHC Viewer 本身不提供 ext4 驱动。需要读取现有 ext4 采集卡时，先按[macOS 使用 Paragon extFS 只读访问 ext4 SD 卡](Paragon-extFS-macOS)安装第三方驱动并确认卷为只读，再从 Viewer 选择系统已经挂载的卡根目录。只读挂载可检查、回放和导出，但不能保存需要写入 `description.json` 的标注；不得为了标注解除唯一原始卡的只读保护。
+Delta Viewer 本身不提供 ext4 驱动。需要读取现有 ext4 采集卡时，先按[macOS 使用 Paragon extFS 只读访问 ext4 SD 卡](Paragon-extFS-macOS)安装第三方驱动并确认卷为只读，再从 Viewer 选择系统已经挂载的卡根目录。只读挂载可检查、回放和导出，但不能保存需要写入 `description.json` 的标注；不得为了标注解除唯一原始卡的只读保护。
 
 ## Ubuntu 22.04 及以上 x86_64
 
-优先下载 `DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`。校验 SHA-256 后，在下载目录执行：
+优先下载 `Delta-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb`。校验 SHA-256 后，在下载目录执行：
 
 ```bash
 sudo apt update
-sudo apt install ./DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb
+sudo apt install ./Delta-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb
 ```
 
-必须保留命令中的 `./`，这样 `apt` 会把参数识别为本地安装包并自动补齐 WebKitGTK、GTK、AppIndicator 和 librsvg 运行时依赖。安装后从应用菜单打开 **DOHC Viewer**，也可以在终端运行 `dohc-viewer`。升级时对新版本 deb 重复同一条 `sudo apt install ./...deb` 命令。
+必须保留命令中的 `./`，这样 `apt` 会把参数识别为本地安装包并自动补齐 WebKitGTK、GTK、AppIndicator 和 librsvg 运行时依赖。安装后从应用菜单打开 **Delta Viewer**，也可以在终端运行 `dohc-viewer`。升级时对新版本 deb 重复同一条 `sudo apt install ./...deb` 命令。
 
-原生 deb 可以选择当前 Linux 用户有权读取的已挂载 SD 卡目录。Ubuntu 内核原生支持 ext4，不需要 Paragon；只读挂载可检查、回放和导出。DOHC Viewer 不自动复制 session，也不会修改采集文件；保存标注需要可写 episode，以便原子更新 `description.json`。使用期间需保持卷挂载。当前只支持 x86_64 Ubuntu，ARM64 不在发布范围内。
+原生 deb 可以选择当前 Linux 用户有权读取的已挂载 SD 卡目录。Ubuntu 内核原生支持 ext4，不需要 Paragon；只读挂载可检查、回放和导出。Delta Viewer 不自动复制 session，也不会修改采集文件；保存标注需要可写 episode，以便原子更新 `description.json`。使用期间需保持卷挂载。当前只支持 x86_64 Ubuntu，ARM64 不在发布范围内。
 
 项目不支持 Flatpak，也不保留 Flatpak 打包工具。Ubuntu 22.04 及以上 x86_64 deb 是唯一受支持的 Linux 发布安装包；Ubuntu 20.04 没有当前版本的二进制安装包。
 
@@ -44,19 +46,19 @@ sudo apt install ./DOHC-Viewer_<version>_UNSIGNED_ubuntu-22.04+-x64.deb
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\DOHC-Viewer_0.17.12_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\Delta-Viewer_1.0.32_UNSIGNED_windows-x64-setup.exe -Algorithm SHA256
 ```
 
 macOS：
 
 ```bash
-shasum -a 256 DOHC-Viewer_0.17.12_UNSIGNED_macos-arm64.dmg
+shasum -a 256 Delta-Viewer_1.0.32_UNSIGNED_macos-arm64.dmg
 ```
 
 Ubuntu：
 
 ```bash
-sha256sum 'DOHC-Viewer_0.17.12_UNSIGNED_ubuntu-22.04+-x64.deb'
+sha256sum 'Delta-Viewer_1.0.32_UNSIGNED_ubuntu-22.04+-x64.deb'
 ```
 
 结果必须与镜像页面和 `SHA256SUMS.txt` 中对应文件完全一致。发布维护人员仍可在能够访问 GitHub 的机器上用 `gh attestation verify <file> --repo Lr-2002/Delta-Viewer` 验证构建 provenance。

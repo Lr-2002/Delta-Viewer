@@ -175,7 +175,7 @@ pub fn run_stress(mut config: StressConfig) -> Result<StressReport, String> {
     let report_path = config.work_root.join(REPORT_NAME);
     let mut report = StressReport {
         schema_version: 1,
-        application: "DOHC Viewer",
+        application: "Delta Viewer",
         app_version: env!("CARGO_PKG_VERSION"),
         formal: config.formal,
         status: "running".into(),
@@ -591,7 +591,7 @@ fn prepare_work_root(source: &Path, requested: &Path, formal: bool) -> AppResult
     fs::create_dir(work_root.join("exports"))?;
     let marker = serde_json::json!({
         "schemaVersion": 1,
-        "application": "DOHC Viewer",
+        "application": "Delta Viewer",
         "appVersion": env!("CARGO_PKG_VERSION"),
         "formal": formal,
         "sourcePath": source.display().to_string(),

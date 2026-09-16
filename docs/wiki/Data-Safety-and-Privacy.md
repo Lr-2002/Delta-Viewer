@@ -1,6 +1,6 @@
 # 数据安全与隐私
 
-DOHC Viewer 的源数据工作流只通过操作系统已经挂载或映射为目录的文件系统路径访问数据，包括本地目录、SD 卡和网络映射盘。所有数据用户必须通过固定证书连接局域网用户中心登录：
+Delta Viewer 的源数据工作流只通过操作系统已经挂载或映射为目录的文件系统路径访问数据，包括本地目录、SD 卡和网络映射盘。所有数据用户必须通过固定证书连接局域网用户中心登录：
 
 - 不支持在应用内配置或连接 SSH、HTTP、云存储或 NAS 协议数据源；操作系统已挂载的 Windows 映射盘、SMB/NFS 目录可作为源目录。扫描、检查、回放和导出保持只读，保存标注要求目录可写。
 - 用户中心处理账号、任务分配计划、独立质量复核及标注绩效审计；登录成功后 token 只保存在客户端 Rust 进程内。
@@ -28,7 +28,7 @@ GitHub Release 的构建过程需要网络下载编译依赖、reviewed FFmpeg �
 
 ## 文件系统
 
-Windows 和 macOS 不能直接读取普通 ext4 SD 卡。macOS 使用第三方驱动时必须按[Paragon extFS 只读教程](Paragon-extFS-macOS)关闭 Spotlight indexing 并确认卷为只读；第三方驱动的安装、激活和网络行为不属于 DOHC Viewer。Ubuntu 可用 Linux 内核原生只读挂载 ext4；原生 deb 可访问当前用户有权限的挂载目录。exFAT 可以改善跨平台挂载，但格式化会清空现有数据，而且 exFAT 不带日志。切换前必须完成备份、hash 校验、长时写入、接近满盘、断电和重新插拔测试。
+Windows 和 macOS 不能直接读取普通 ext4 SD 卡。macOS 使用第三方驱动时必须按[Paragon extFS 只读教程](Paragon-extFS-macOS)关闭 Spotlight indexing 并确认卷为只读；第三方驱动的安装、激活和网络行为不属于 Delta Viewer。Ubuntu 可用 Linux 内核原生只读挂载 ext4；原生 deb 可访问当前用户有权限的挂载目录。exFAT 可以改善跨平台挂载，但格式化会清空现有数据，而且 exFAT 不带日志。切换前必须完成备份、hash 校验、长时写入、接近满盘、断电和重新插拔测试。
 
 导出目标卷应使用 NTFS、APFS、exFAT 或其他支持大文件的本机文件系统。FAT32 有 4 GB 单文件限制，不作为受支持的导出目标。
 

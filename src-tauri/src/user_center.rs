@@ -203,7 +203,7 @@ pub async fn register(
         .any(|capability| capability == OPERATOR_SELF_REGISTRATION_CAPABILITY)
     {
         return Err(AppError::Message(
-            "USER_CENTER_UPGRADE_REQUIRED: 用户中心版本过旧，不支持标注员注册；请升级并重启用户中心服务".into(),
+            "USER_CENTER_UPGRADE_REQUIRED: 用户中心版本过旧，不支持审核员注册；请升级并重启用户中心服务".into(),
         ));
     }
     let response = client
@@ -1043,7 +1043,7 @@ fn client_for(config: &UserCenterClientConfig) -> AppResult<Client> {
         .https_only(true)
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(12))
-        .user_agent("DOHC-Viewer-User-Center/1")
+        .user_agent("Delta-Viewer-User-Center/1")
         .build()
         .map_err(|error| AppError::Message(format!("无法创建用户中心连接: {error}")))
 }

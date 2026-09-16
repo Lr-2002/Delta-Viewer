@@ -37,7 +37,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Verify development identity and source frame mapping
         run: |
-          node --input-type=module -e 'import fs from "node:fs"; import assert from "node:assert/strict"; const p=JSON.parse(fs.readFileSync("package.json")); const c=JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json")); assert.match(p.version, /^\d+\.\d+\.\d+-dev\.\d+$/); assert.equal(c.version,p.version); assert.equal(c.identifier,"com.dohc.viewer.dev"); assert.equal(c.productName,"DOHC Viewer Dev");'
+          node --input-type=module -e 'import fs from "node:fs"; import assert from "node:assert/strict"; const p=JSON.parse(fs.readFileSync("package.json")); const c=JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json")); assert.match(p.version, /^\d+\.\d+\.\d+-dev\.\d+$/); assert.equal(c.version,p.version); assert.equal(c.identifier,"com.dohc.viewer.dev"); assert.equal(c.productName,"Delta Viewer Dev");'
           node --test --experimental-strip-types scripts/machine-annotation.test.ts
       - name: Build reviewed portable FFmpeg
         run: |
@@ -49,7 +49,7 @@ jobs:
         run: |
           set -euo pipefail
           pnpm tauri build --ci --target aarch64-apple-darwin --bundles app --no-sign
-          app='src-tauri/target/aarch64-apple-darwin/release/bundle/macos/DOHC Viewer Dev.app'
+          app='src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Delta Viewer Dev.app'
           bash scripts/seal-macos-app-adhoc.sh --app "$app" --bundle-id com.dohc.viewer.dev
           mkdir -p src-tauri/target/aarch64-apple-darwin/release/bundle/dmg
           bash scripts/make-dmg.sh --app "$app" --output src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/Viewer-Dev.dmg

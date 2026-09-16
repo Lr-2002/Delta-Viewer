@@ -39,6 +39,9 @@ async function main() {
     "Linux Tauri config must build only deb",
   );
   requireCondition(deb && Array.isArray(deb.depends), "Linux deb dependencies are missing");
+  for (const relation of ["replaces", "conflicts", "provides"]) {
+    requireCondition(deb[relation]?.includes("dohc-viewer"), `Linux deb ${relation} must preserve legacy upgrades`);
+  }
   for (const dependency of [
     "libwebkit2gtk-4.1-0",
     "libgtk-3-0",
@@ -79,7 +82,7 @@ async function main() {
   );
   for (const [tag, value] of [
     ["id", "com.dohc.viewer"],
-    ["name", "DOHC Viewer"],
+    ["name", "Delta Viewer"],
     ["launchable", "com.dohc.viewer.desktop"],
   ]) {
     requireCondition(
