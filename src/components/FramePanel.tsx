@@ -1,5 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ImageOff } from "lucide-react";
+import type Hls from "hls.js";
 import { frameUrl, videoSource } from "../lib/backend";
 import {
   FrameCache,
@@ -103,12 +104,24 @@ export const FramePanel = memo(function FramePanel({
   const [videoSourceChecked, setVideoSourceChecked] = useState(false);
   const [nativeVideoFailed, setNativeVideoFailed] = useState(false);
   const [videoStatus, setVideoStatus] = useState<"loading" | "ready" | "playing" | "buffering" | "fallback">("loading");
+  const [previewRevision, setPreviewRevision] = useState(0);
+  const [quality, setQuality] = useState("auto");
+  const [adaptiveFailed, setAdaptiveFailed] = useState(false);
+  const [levels, setLevels] = useState<number[]>([]);
+  const [displayedHeight, setDisplayedHeight] = useState<number | null>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  useEffect(() => {
+    const changed = () => setPreviewRevision((value) => value + 1);
+    window.addEventListener("delta-preview-location", changed);
+    return () => window.removeEventListener("delta-preview-location", changed);
+  }, []);
 
   useEffect(() => {
     let active = true;
     setNativeVideo(null);
     setVideoSourceChecked(false);
     setNativeVideoFailed(false);
+    setAdaptiveFailed(false); setQuality("auto"); setLevels([]); setDisplayedHeight(null);
     void videoSource(root, stream.name).then((source) => {
       if (active) {
         setNativeVideo(source);
@@ -118,7 +131,7 @@ export const FramePanel = memo(function FramePanel({
       }
     });
     return () => { active = false; };
-  }, [root, stream.name]);
+  }, [root, stream.name, previewRevision]);
 
   useEffect(() => {
     onSourceFpsChange?.(stream.name, nativeVideo?.fps ?? null);
@@ -174,12 +187,48 @@ export const FramePanel = memo(function FramePanel({
       + (exactFrameSeek ? 0.5 / Math.max(nativeVideo.mediaFps, 1) : 0)
     : 0;
   requestedVideoTimeRef.current = Math.max(0, videoLocalSeconds);
+  const adaptiveUrl = nativeVideo?.adaptivePaths?.[videoSegmentIndex];
+  const useAdaptive = Boolean(adaptiveUrl && quality !== "original" && !adaptiveFailed);
+  const videoUrl = useAdaptive ? adaptiveUrl : nativeVideo?.paths[videoSegmentIndex];
+
+  useEffect(() => {
+    if (!useAdaptive || !videoUrl) return;
+    let active = true;
+    const video = videoRef.current;
+    if (!video) return;
+    void import("hls.js").then(({ default: Hls }) => {
+      if (!active) return;
+      if (!Hls.isSupported()) {
+        if (video.canPlayType("application/vnd.apple.mpegurl")) video.src = videoUrl;
+        else setAdaptiveFailed(true);
+        return;
+      }
+      const hls = new Hls({ startLevel: 0, startPosition: requestedVideoTimeRef.current,
+        maxBufferLength: isPrimary ? 8 : 4, maxMaxBufferLength: 16, backBufferLength: 4,
+        maxBufferSize: (isPrimary ? 16 : 8) * 1024 * 1024, capLevelToPlayerSize: true,
+        abrEwmaDefaultEstimate: 800000, abrBandWidthFactor: .7, abrBandWidthUpFactor: .5 });
+      hlsRef.current = hls;
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setLevels(hls.levels.map((level) => level.height));
+        hls.currentLevel = quality === "auto" ? -1 : hls.levels.findIndex((level) => level.height === Number(quality));
+      });
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => setDisplayedHeight(hls.levels[data.level]?.height ?? null));
+      hls.on(Hls.Events.ERROR, (_event, data) => { if (data.fatal) { setAdaptiveFailed(true); hls.destroy(); } });
+      hls.attachMedia(video); hls.loadSource(videoUrl);
+    }).catch(() => { if (active) setAdaptiveFailed(true); });
+    return () => { active = false; hlsRef.current?.destroy(); hlsRef.current = null; video.pause(); video.removeAttribute("src"); video.load(); };
+  }, [videoUrl, useAdaptive, isPrimary]);
+
+  useEffect(() => {
+    const hls = hlsRef.current;
+    if (hls) hls.nextLevel = quality === "auto" ? -1 : hls.levels.findIndex((level) => level.height === Number(quality));
+  }, [quality]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!nativeVideoActive || !video) return;
     video.playbackRate = speed * mediaClockRatio;
-  }, [mediaClockRatio, nativeVideoActive, speed, videoSegmentIndex]);
+  }, [mediaClockRatio, nativeVideoActive, speed, videoSegmentIndex, videoUrl]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -236,7 +285,7 @@ export const FramePanel = memo(function FramePanel({
       video.removeEventListener("canplay", resume);
       video.removeEventListener("seeked", resume);
     };
-  }, [exactFrameSeek, isPrimary, nativePlaybackEnabled, nativeVideoActive, onBufferingChange, stream.name, videoSegmentIndex]);
+  }, [exactFrameSeek, isPrimary, nativePlaybackEnabled, nativeVideoActive, onBufferingChange, stream.name, videoSegmentIndex, videoUrl]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -275,7 +324,7 @@ export const FramePanel = memo(function FramePanel({
     if (Math.abs(video.currentTime - videoLocalSeconds) > 0.001) {
       video.currentTime = Math.max(0, videoLocalSeconds);
     }
-  }, [exactFrameSeek, frameId, isPrimary, nativeVideoActive, playing, videoLocalSeconds, videoSegmentIndex]);
+  }, [exactFrameSeek, frameId, isPrimary, nativeVideoActive, playing, videoLocalSeconds, videoSegmentIndex, videoUrl]);
 
   useEffect(() => {
     if (!nativeVideoActive) return;
@@ -309,7 +358,7 @@ export const FramePanel = memo(function FramePanel({
         video.cancelVideoFrameCallback(callbackId);
       }
     };
-  }, [frameId, isPrimary, nativePlaybackEnabled, nativeVideoActive, onFrameSettled, playing, stream.name]);
+  }, [frameId, isPrimary, nativePlaybackEnabled, nativeVideoActive, onFrameSettled, playing, stream.name, videoUrl]);
 
   useEffect(() => {
     if (!isPrimary || !nativePlaybackEnabled || !nativeVideoActive || !nativeVideo) return undefined;
@@ -366,6 +415,7 @@ export const FramePanel = memo(function FramePanel({
     playbackFps,
     stream.name,
     videoSegmentIndex,
+    videoUrl,
   ]);
 
   useEffect(() => {
@@ -530,10 +580,10 @@ export const FramePanel = memo(function FramePanel({
     <figure className={`frame-panel ${className}`}>
       {nativeVideoActive && nativeVideo ? (
         <video
-          key={nativeVideo.paths[videoSegmentIndex]}
+          key={videoUrl}
           ref={videoRef}
           className="frame-image"
-          src={nativeVideo.paths[videoSegmentIndex]}
+          src={useAdaptive ? undefined : videoUrl}
           muted
           playsInline
           preload="auto"
@@ -562,6 +612,7 @@ export const FramePanel = memo(function FramePanel({
           }}
           onPause={() => { if (!nativePlaybackEnabled) setVideoStatus("ready"); }}
           onError={() => {
+            if (useAdaptive) { setAdaptiveFailed(true); return; }
             setVideoStatus("fallback");
             setNativeVideoFailed(true);
             onBufferingChange?.(stream.name, false);
@@ -588,8 +639,12 @@ export const FramePanel = memo(function FramePanel({
       <figcaption>
         <span>{stream.label}</span>
         <span className="frame-resolution">
-          {stream.width && stream.height ? `${stream.width}×${stream.height}` : "—"}
+          {useAdaptive && displayedHeight ? `${displayedHeight}p` : stream.width && stream.height ? `${stream.width}×${stream.height}` : "—"}
         </span>
+        {adaptiveUrl && <select className="preview-quality" aria-label={`${stream.label}清晰度`} title="播放清晰度" value={quality} onChange={(event) => { setAdaptiveFailed(false); setQuality(event.target.value); }}>
+          <option value="auto">自动</option>{[...new Set(levels)].sort((a, b) => b - a).map((height) => <option key={height} value={height}>{height}p</option>)}<option value="original">原片</option>
+        </select>}
+        {(nativeVideo?.previewError || adaptiveFailed) && <span className="preview-warning" title={nativeVideo?.previewError ?? "预览播放失败，已回退原片"}>预览不可用</span>}
         {nativeVideo ? (
           <span className="video-playback-status">
             {nativeVideoFailed || videoStatus === "fallback" ? "逐帧回退" : videoStatus === "playing" ? "原生播放" : videoStatus === "buffering" ? "缓冲中" : "原生就绪"}

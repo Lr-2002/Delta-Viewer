@@ -6,6 +6,7 @@
 - [快速开始](Quick-Start)
 - [数据检查](Data-Validation)
 - [回放与裁剪](Playback-and-Clipping)
+- [NAS 自适应预览](Adaptive-Playback)
 - [账号与数据标注](Accounts-and-Annotations)
 - [用户中心部署](User-Center-Deployment)
 - [数据导出](Data-Export)

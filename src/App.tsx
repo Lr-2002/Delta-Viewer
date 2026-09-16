@@ -39,6 +39,7 @@ import { BatchExportPanel } from "./components/BatchExportPanel";
 import { ChecksPanel } from "./components/ChecksPanel";
 import { ExportPanel } from "./components/ExportPanel";
 import { FramePanel } from "./components/FramePanel";
+import { PreviewSettings } from "./components/PreviewSettings";
 import { ProgressStrip } from "./components/ProgressStrip";
 import { PersonalTaskPanel } from "./components/PersonalTaskPanel";
 import { SkeletonViewer } from "./components/SkeletonViewer";
@@ -2001,6 +2002,7 @@ function App() {
                         <h2>多路回放</h2>
                       </div>
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
+                      <PreviewSettings />
                     </div>
                     <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
                       <div className={`camera-grid stream-count-${availableStreams.length}`}>

@@ -891,6 +891,10 @@ pub struct FramePayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoSource {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive_paths: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_error: Option<String>,
     pub fps: f64,
     pub media_fps: f64,
     pub segment_seconds: f64,

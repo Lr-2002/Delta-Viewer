@@ -17,6 +17,12 @@ pub struct MediaStreamServer {
 
 #[derive(Clone)]
 enum MediaRoute {
+    Playlist(Arc<Vec<u8>>),
+    PreviewFragment {
+        root: PathBuf,
+        path: PathBuf,
+        size: u64,
+    },
     File {
         path: PathBuf,
         mime_type: &'static str,
@@ -25,6 +31,49 @@ enum MediaRoute {
 }
 
 impl MediaStreamServer {
+    pub fn register_playlist(&self, body: String) -> AppResult<String> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&self.nonce);
+        hasher.update(body.as_bytes());
+        self.register_preview_route(
+            hasher.finalize().to_hex().to_string(),
+            MediaRoute::Playlist(Arc::new(body.into_bytes())),
+        )
+    }
+
+    pub fn register_preview_fragment(
+        &self,
+        root: &Path,
+        relative: &Path,
+        size: u64,
+    ) -> AppResult<String> {
+        let path = root.join(relative);
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&self.nonce);
+        hasher.update(path.as_os_str().as_encoded_bytes());
+        hasher.update(&size.to_le_bytes());
+        self.register_preview_route(
+            hasher.finalize().to_hex().to_string(),
+            MediaRoute::PreviewFragment {
+                root: root.to_path_buf(),
+                path,
+                size,
+            },
+        )
+    }
+
+    fn register_preview_route(&self, token: String, route: MediaRoute) -> AppResult<String> {
+        let mut routes = self
+            .routes
+            .lock()
+            .map_err(|_| AppError::Message("预览路由不可用".into()))?;
+        if routes.len() >= 200_000 && !routes.contains_key(&token) {
+            return Err(AppError::Message("预览路由已达上限，请重启 Viewer".into()));
+        }
+        routes.insert(token.clone(), route);
+        Ok(format!("http://{}/media/{token}", self.address))
+    }
+
     pub fn start() -> AppResult<Self> {
         let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
         let address = match listener.local_addr()? {
@@ -144,6 +193,33 @@ fn serve_connection(
         return write_empty_response(&mut stream, "404 Not Found", &[]);
     };
     let (path, mime_type) = match (route, frame_id) {
+        (MediaRoute::Playlist(body), None) => {
+            write_headers(
+                &mut stream,
+                "200 OK",
+                &[
+                    ("Content-Type", "application/vnd.apple.mpegurl".into()),
+                    ("Content-Length", body.len().to_string()),
+                    ("Cache-Control", "private, max-age=3600".into()),
+                ],
+            )?;
+            if request.method == "GET" {
+                stream.write_all(&body)?;
+            }
+            return Ok(());
+        }
+        (MediaRoute::PreviewFragment { root, path, size }, None) => {
+            let Ok(canonical) = path.canonicalize() else {
+                return write_empty_response(&mut stream, "404 Not Found", &[]);
+            };
+            if !canonical.starts_with(&root)
+                || !canonical.is_file()
+                || canonical.metadata()?.len() != size
+            {
+                return write_empty_response(&mut stream, "404 Not Found", &[]);
+            }
+            (canonical, "video/mp2t")
+        }
         (MediaRoute::File { path, mime_type }, None) => (path, mime_type),
         (MediaRoute::JpegDirectory(directory), Some(frame_id)) => {
             let path = directory.join(format!("{frame_id}.jpg"));

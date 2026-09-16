@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.33 - 2026-09-16
+
+- 新增 NAS/SMB 预览生成器：服务器在独立目录生成 1080p、720p、480p HLS 预览，原片保持只读。
+- 播放器按网络吞吐自动切换预览清晰度，支持手动选择并在预览失效时回退 4K 原片。
+- 新增预览源目录和输出目录设置，校验清单、帧数、帧率、尺寸及原片指纹，避免使用过期预览。
+
 ## 1.0.32 - 2026-09-16
 
 - 软件统一更名为 Delta Viewer：应用窗口、登录页、安装包、GitHub Release、README 和 Wiki 同步更新。
