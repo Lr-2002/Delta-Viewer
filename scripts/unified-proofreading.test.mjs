@@ -509,13 +509,33 @@ test("review audit links drag, label changes and successful approval to the same
   } finally { await page.close(); }
 });
 
-test("missing machine JSON still allows five-camera playback and seeking", async () => {
+test("missing machine JSON creates a full-video human segment, splits and reloads saved edits", async () => {
   const page = await browser.newPage();
   await open(page, "machineAnnotation=missing&trajectoryWarning=static");
-  await page.getByText("未发现 机标 JSON", { exact: true }).waitFor();
+  await page.waitForFunction(() => !document.querySelector('[aria-label="新增片段"]').disabled);
+  assert.equal(await page.locator(".machine-segment").count(), 0);
   await page.getByLabel("校对播放帧").fill("80");
   await page.waitForFunction(() => document.querySelector(".frame-counter").textContent === "帧 80 / 195");
   assert.equal(await page.getByRole("button", { name: "通过", exact: true }).isEnabled(), false);
   assert.equal(await page.locator(".frame-panel").count(), 5);
+  await page.getByRole("button", { name: "新增片段", exact: true }).click();
+  assert.equal(await page.locator(".machine-segment").count(), 1);
+  assert.equal(await page.getByLabel("复核起始帧", { exact: true }).inputValue(), "0");
+  assert.equal(await page.getByLabel("复核结束帧", { exact: true }).inputValue(), "196");
+  await page.getByLabel("复核动作描述").fill("人工整段");
+  await page.getByLabel("校对播放帧").fill("80");
+  await page.getByRole("button", { name: "分帧", exact: true }).click();
+  await page.getByLabel("复核动作描述").fill("人工后半段");
+  await page.waitForFunction(() => !document.querySelector(".quality-save-state").textContent.includes("正在保存"));
+  await page.getByRole("button", { name: "重新读取机标", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('[aria-label="新增片段"]').disabled);
+  assert.equal(await page.locator(".machine-segment").count(), 2);
+  const state = await page.evaluate(async () => (await import("/src/lib/backend.ts")).loadMachineReview("/demo/2026-07-13_07-34-12", "manual"));
+  assert.deepEqual(state.segments.map((row) => [row.startFrame, row.endFrame, row.description]), [[0,79,"人工整段"],[80,195,"人工后半段"]]);
+  await page.screenshot({ path: "artifacts/unified-proofreading/manual-only-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "新增片段", exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "artifacts/unified-proofreading/manual-only-mobile.png", fullPage: true });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.close();
 });

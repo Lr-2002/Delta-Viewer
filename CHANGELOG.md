@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.30 - 2026-09-16
+
+- 修复 1.0.29 无机标 JSON 时加号仍不可用：自动模式建立只读人工审核模板，加载、切割、保存、审核与重载使用同一套持久化流程。
+- 空列表点击加号创建覆盖 Camera 0 全部视频帧的片段，不受当前播放位置影响，不使用状态数据条数代替视频帧数；无需生成伪机标文件。
+- 新增无机标整段创建、切割、保存重载、跨本机草稿恢复与审核通过回归，保留非法机标报错及源媒体只读约束。
+
 ## 1.0.29 - 2026-09-15
 
 - 无机标结果但已有人工审核状态时允许直接新增人工片段，默认按整段视频帧范围创建切割标注。

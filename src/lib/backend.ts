@@ -486,7 +486,10 @@ export async function loadMachineAnnotation(sourcePath: string, sourceName?: str
   if (isTauriRuntime()) return invoke<MachineAnnotation | null>("load_machine_annotation", { sourcePath, sourceName });
   demoActor();
   const scenario = new URLSearchParams(window.location.search).get("machineAnnotation");
-  if (!scenario || scenario === "missing") return null;
+  if (!scenario || scenario === "missing" || sourceName === "manual") return {
+    sourceName: "manual", sourceHash: "demo-manual", episodeId: sourcePath.split("/").at(-1) ?? "demo",
+    model: null, completedAt: null, validationStatus: null, frameCount: 196, warnings: [], segments: [],
+  };
   if (scenario === "invalid") throw new Error("MACHINE_ANNOTATION_INVALID: 机标 JSON 格式无效");
   return {
     sourceName: sourceName ?? "bailian_annotation.json",
