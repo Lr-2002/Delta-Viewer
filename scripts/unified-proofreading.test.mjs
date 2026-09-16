@@ -415,7 +415,7 @@ test("rejection uses buttons, requires other text, persists the reason and clear
     assert.equal(await dialog.getByRole("button", { name: "确认不通过" }).isEnabled(), false);
     await dialog.getByRole("button", { name: "取消", exact: true }).click();
     assert.equal((await saved()).revision, before.revision);
-    for (const reason of ["骨架抖动", "镜头污渍", "动作错误", "画面过曝", "其他原因"]) {
+    for (const reason of ["骨架抖动", "镜头污渍", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "其他原因"]) {
       await page.getByRole("button", { name: "不通过", exact: true }).click();
       await dialog.getByRole("button", { name: reason, exact: true }).click();
       let expected = reason;
@@ -506,6 +506,47 @@ test("review audit links drag, label changes and successful approval to the same
     assert.ok(Math.abs(approved.elapsedMs - (approved.occurredAtMs - loaded.occurredAtMs)) < 100);
     assert.ok(rows.find((row) => row.action === "drag").details.durationMs > 0);
     assert.equal(await page.locator(".review-audit-error").count(), 0);
+  } finally { await page.close(); }
+});
+
+test("click selects the nudged handle without jumping and X splits except in text inputs", async () => {
+  const page = await browser.newPage();
+  try {
+    await open(page, "machineAnnotation=present");
+    await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    const start = page.getByLabel("复核起始帧", { exact: true });
+    const end = page.getByLabel("复核结束帧", { exact: true });
+    const startHandle = page.getByRole("slider", { name: "微调起始帧" });
+    const endHandle = page.getByRole("slider", { name: "微调结束帧" });
+    await startHandle.click();
+    assert.equal(await start.inputValue(), "0");
+    await page.keyboard.press("ArrowRight");
+    assert.equal(await start.inputValue(), "1");
+    assert.equal(await end.inputValue(), "60");
+    await endHandle.click();
+    assert.equal(await end.inputValue(), "60");
+    await page.keyboard.press("ArrowLeft");
+    assert.equal(await end.inputValue(), "59");
+    assert.equal(await start.inputValue(), "1");
+    const playhead = page.getByLabel("校对播放帧");
+    await playhead.fill("30");
+    await playhead.focus();
+    await page.keyboard.press("ArrowRight");
+    assert.equal(await playhead.inputValue(), "31");
+    assert.equal(await end.inputValue(), "59");
+    await page.keyboard.press("x");
+    assert.equal(await page.locator(".machine-segment").count(), 4);
+    await page.keyboard.press("x");
+    assert.equal(await page.locator(".machine-segment").count(), 4, "cannot split at the selected segment start");
+    await page.getByLabel("复核动作描述").fill("test");
+    await page.keyboard.press("x");
+    assert.equal(await page.getByLabel("复核动作描述").inputValue(), "testx");
+    assert.equal(await page.locator(".machine-segment").count(), 4);
+    await startHandle.click();
+    await page.keyboard.press("ArrowRight");
+    assert.equal(await start.inputValue(), "32");
+    await page.waitForFunction(() => !document.querySelector(".quality-save-state").textContent.includes("正在保存"));
+    await page.screenshot({ path: "artifacts/unified-proofreading/selected-handle.png", fullPage: true });
   } finally { await page.close(); }
 });
 

@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.31 - 2026-09-16
+
+- 不通过原因新增“轨迹不动”“无效数据”“任务不符”“动作过快”，支持写入 QC、历史审核和重载。
+- 单击起始/结束手柄只选中、不跳帧；高亮当前手柄，左右箭头微调所选边界。选中播放头后左右箭头逐帧定位。
+- 校对快捷键 X 在当前帧分割片段，沿用裁剪按钮的边界限制；输入框、弹窗、组合键与按键长按不误触发。
+
 ## 1.0.30 - 2026-09-16
 
 - 修复 1.0.29 无机标 JSON 时加号仍不可用：自动模式建立只读人工审核模板，加载、切割、保存、审核与重载使用同一套持久化流程。

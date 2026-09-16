@@ -1,4 +1,4 @@
-import { useRef, type PointerEvent } from "react";
+import { useRef, useState, type PointerEvent } from "react";
 import type { ReviewSegment } from "../types";
 
 const COLORS = ["#087e79", "#5489a3", "#b3914b", "#797895", "#628969"];
@@ -11,14 +11,22 @@ interface Props {
   onSeek: (frame: number) => void;
   onBoundary: (kind: "startFrame" | "endFrame", value: number) => void;
   onChoose: (sourceIndex: number) => void;
-  onBoundaryFocus?: (kind: "startFrame" | "endFrame") => void;
+  onBoundaryFocus?: (kind: "startFrame" | "endFrame" | "playhead") => void;
 }
 
 export function ReviewTimeline({ frame, frameCount, start, end, editable, segments, selected, onSeek, onBoundary, onChoose, onBoundaryFocus }: Props) {
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef<"startFrame" | "endFrame" | null>(null);
+  const origin = useRef({ x: 0, moved: false });
+  const [selectedControl, setSelectedControl] = useState("endFrame");
+  const selectControl = (kind: "startFrame" | "endFrame" | "playhead") => {
+    setSelectedControl(kind);
+    onBoundaryFocus?.(kind);
+  };
   const update = (event: PointerEvent<HTMLButtonElement>) => {
     if (!drag.current || !track.current || !editable) return;
+    if (!origin.current.moved && Math.abs(event.clientX - origin.current.x) < 3) return;
+    origin.current.moved = true;
     const bounds = track.current.getBoundingClientRect();
     const edge = Math.round(Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * frameCount);
     onBoundary(drag.current, drag.current === "endFrame" ? edge - 1 : edge);
@@ -29,17 +37,17 @@ export function ReviewTimeline({ frame, frameCount, start, end, editable, segmen
         title={`${segment.description || "暂无中文描述"} [${segment.startFrame}, ${segment.endFrame + 1})`}
         aria-label={`选择机标片段 ${index + 1}`} aria-pressed={segment.sourceIndex === selected}
         onClick={() => onChoose(segment.sourceIndex)} style={{ left: `${segment.startFrame / frameCount * 100}%`, width: `${(segment.endFrame + 1 - segment.startFrame) / frameCount * 100}%`, background: segmentColor(index) }} />)}
-      <input type="range" className="review-playhead-input" min={0} max={frameCount - 1} value={frame} step={1} aria-label="校对播放帧" onChange={(event) => onSeek(event.currentTarget.valueAsNumber)} />
+      <input type="range" className={`review-playhead-input${selectedControl === "playhead" ? " selected-control" : ""}`} min={0} max={frameCount - 1} value={frame} step={1} aria-label="校对播放帧" onFocus={() => selectControl("playhead")} onPointerDown={() => selectControl("playhead")} onChange={(event) => onSeek(event.currentTarget.valueAsNumber)} />
       <i className="review-playhead" style={{ left: `${frame / frameCount * 100}%` }} />
       {editable && (["startFrame", "endFrame"] as const).map((kind) => {
         const isStart = kind === "startFrame";
         const value = isStart ? start : end + 1;
-        return <button key={kind} type="button" role="slider" className={`review-edge ${isStart ? "start" : "end"}`}
+        return <button key={kind} type="button" role="slider" className={`review-edge ${isStart ? "start" : "end"}${selectedControl === kind ? " selected-control" : ""}`}
           aria-label={isStart ? "微调起始帧" : "微调结束帧"} title={isStart ? "拖动起始帧" : "拖动结束帧"}
           aria-valuemin={isStart ? 0 : start + 1} aria-valuemax={isStart ? end : frameCount} aria-valuenow={value}
           style={{ left: `${value / frameCount * 100}%` }}
-          onFocus={() => onBoundaryFocus?.(kind)}
-          onPointerDown={(event) => { event.preventDefault(); event.currentTarget.focus(); onBoundaryFocus?.(kind); drag.current = kind; event.currentTarget.setPointerCapture(event.pointerId); }}
+          onFocus={() => selectControl(kind)} onClick={() => selectControl(kind)}
+          onPointerDown={(event) => { event.preventDefault(); event.currentTarget.focus(); selectControl(kind); origin.current = { x: event.clientX, moved: false }; drag.current = kind; event.currentTarget.setPointerCapture(event.pointerId); }}
           onPointerMove={update} onPointerUp={(event) => { update(event); drag.current = null; event.currentTarget.releasePointerCapture(event.pointerId); }}
           onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }}
           onKeyDown={(event) => {

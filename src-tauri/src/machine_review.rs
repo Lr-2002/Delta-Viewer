@@ -974,7 +974,17 @@ fn validated_rejection_reason(status: &str, reason: Option<&str>) -> AppResult<S
         return Ok(String::new());
     }
     let reason = reason.unwrap_or_default().trim();
-    let fixed = ["骨架抖动", "镜头污渍", "镜头遮挡", "动作错误", "画面过曝"];
+    let fixed = [
+        "骨架抖动",
+        "镜头污渍",
+        "镜头遮挡",
+        "动作错误",
+        "画面过曝",
+        "轨迹不动",
+        "无效数据",
+        "任务不符",
+        "动作过快",
+    ];
     if fixed.contains(&reason) {
         return Ok(reason.into());
     }
@@ -1429,6 +1439,10 @@ mod tests {
         .unwrap();
         let mut state = load(&f.local, &f.root).unwrap();
         let reasons = [
+            "轨迹不动",
+            "无效数据",
+            "任务不符",
+            "动作过快",
             "骨架抖动",
             "镜头污渍",
             "动作错误",

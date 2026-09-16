@@ -26,7 +26,7 @@ interface Props {
 type Status = "pending" | "approved" | "rejected";
 type Snapshot = { segments: ReviewSegment[]; status: Status; rejectionReason?: string };
 type LabelLibraryItem = { id: string; text: string; createdAt: number };
-const REJECTION_REASONS = ["骨架抖动", "镜头污渍", "镜头遮挡", "动作错误", "画面过曝", "其他原因"];
+const REJECTION_REASONS = ["骨架抖动", "镜头污渍", "镜头遮挡", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "其他原因"];
 const LABEL_LIBRARY_LIMIT = 80;
 const saves = new Map<string, Promise<boolean>>();
 
@@ -78,7 +78,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const [labelLibrary, setLabelLibrary] = useState<LabelLibraryItem[]>([]);
   const [labelLibraryError, setLabelLibraryError] = useState("");
   const rejectButton = useRef<HTMLButtonElement>(null);
-  const boundaryFocus = useRef<"startFrame" | "endFrame">("endFrame");
+  const boundaryFocus = useRef<"startFrame" | "endFrame" | "playhead">("endFrame");
   const mounted = useRef(true);
   const stateRef = useRef<MachineReview | null>(null);
   const pending = useRef<Snapshot | null>(null);
@@ -318,7 +318,15 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation();
-        if (active) boundary(boundaryFocus.current, active[boundaryFocus.current] + (event.key === "ArrowLeft" ? -1 : 1));
+        const delta = event.key === "ArrowLeft" ? -1 : 1;
+        if (boundaryFocus.current === "playhead" && result) seek(Math.max(0, Math.min(result.frameCount - 1, visibleFrame + delta)));
+        else if (active && boundaryFocus.current !== "playhead") boundary(boundaryFocus.current, active[boundaryFocus.current] + delta);
+      } else if (event.code === "KeyX") {
+        event.preventDefault(); event.stopImmediatePropagation();
+        if (!event.repeat) {
+          recordReviewInteraction("shortcut", { value: event.code }, root);
+          splitSegment();
+        }
       } else if (event.key === "Enter" && !event.repeat) {
         recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation(); void finish("approved");
@@ -374,7 +382,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
 
   return <div className="quality-review proofreading-view">
     {playback ? <section className="quality-timeline" aria-label="校对时间轴">
-      <div className="proofreading-transport">{playback.controls}<button className="icon-button" aria-label="分帧" title="分帧：在当前帧分割片段" disabled={!canEdit || !active || visibleFrame <= active.startFrame || visibleFrame > active.endFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
+      <div className="proofreading-transport">{playback.controls}<button className="icon-button" aria-label="分帧" aria-keyshortcuts="X" title="分帧：在当前帧分割片段 (X)" disabled={!canEdit || !active || visibleFrame <= active.startFrame || visibleFrame > active.endFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
       {valid && <ReviewTimeline frame={visibleFrame} frameCount={result.frameCount} start={active?.startFrame ?? 0}
         end={active?.endFrame ?? result.frameCount - 1} editable={canEdit && Boolean(active)} segments={rows}
         selected={active?.sourceIndex} onSeek={seek} onBoundary={boundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }} />}
@@ -385,7 +393,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       <header className="quality-heading"><h2>机标校对</h2><span className="frame-counter">帧 {frame} / {result ? result.frameCount - 1 : "--"}</span></header>
       {valid && <ProofreadPlayer root={root} stream={primary} offset={mapping.offset} step={mapping.step} frameCount={result.frameCount}
         skeleton={data.skeleton} skeletonError={data.skeletonError} segments={rows} selected={active?.sourceIndex}
-        editable={canEdit && Boolean(active)} onBoundary={boundary} onChoose={choose}
+        editable={canEdit && Boolean(active)} onBoundary={boundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }}
         frame={frame} start={active?.startFrame ?? 0} end={active?.endFrame ?? result.frameCount - 1} playing={playing} onFrame={setFrame} onPlaying={setPlaying} />}
     </section>}
     <section className="quality-inspector" aria-label="机标结果">
