@@ -1316,6 +1316,15 @@ export async function videoSource(root: string, stream: string): Promise<VideoSo
   }
 }
 
+export async function getPreviewLocation(): Promise<{ sourceRoot: string; previewRoot: string }> {
+  if (!isTauriRuntime()) return { sourceRoot: "", previewRoot: "" };
+  return invoke("get_preview_location");
+}
+
+export async function setPreviewLocation(location: { sourceRoot: string; previewRoot: string }): Promise<void> {
+  if (isTauriRuntime()) await invoke("set_preview_location", { location });
+}
+
 export async function cancelTask(operationId: number): Promise<boolean> {
   if (isTauriRuntime()) return invoke<boolean>("cancel_task", { operationId });
   return false;

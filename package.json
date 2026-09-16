@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.0.32",
+  "version": "1.0.33",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -38,7 +38,9 @@
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-opener": "^2.5.4",
+    "hls.js": "1.7.3",
     "lucide-react": "^0.468.0",
+    "m3u8-parser": "7.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "three": "^0.185.1"

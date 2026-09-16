@@ -190,6 +190,16 @@
 .review-edge { position: absolute; z-index: 2; top: -4px; height: 28px; width: 12px; padding: 0; border: 2px solid white; border-radius: 3px; background: #087e79; box-shadow: 0 0 0 1px #305754; transform: translateX(-50%); touch-action: none; cursor: ew-resize; }
 .review-edge.end { background: #a26b20; box-shadow: 0 0 0 1px #73501f; }
 .review-edge:focus-visible { outline: 2px solid #171717; outline-offset: 3px; }
+.preview-settings { width: min(620px, calc(100vw - 32px)); padding: 22px; background: white; border: 1px solid #ccc; border-radius: 6px; display: grid; gap: 18px; }
+.preview-settings header, .preview-settings footer, .preview-path { display: flex; gap: 10px; align-items: center; }
+.preview-settings header { justify-content: space-between; }
+.preview-settings h2 { font-size: 20px; margin: 0; }
+.preview-settings label { display: grid; gap: 8px; }
+.preview-path input { min-width: 0; width: 100%; }
+.preview-settings footer { justify-content: flex-end; }
+.preview-settings [role="alert"] { color: #a02020; overflow-wrap: anywhere; }
+.preview-quality { width: 76px; min-width: 58px; padding: 2px; font-size: 11px; color: #fff; background: #222; border: 1px solid #777; border-radius: 3px; }
+.preview-warning { font-size: 11px; color: #f0c262; }
 .review-edge.selected-control { outline: 2px solid #171717; outline-offset: 3px; z-index: 3; }
 .review-playhead-input.selected-control { outline: 2px solid #171717; outline-offset: 2px; }
 .review-frame-fields { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; }

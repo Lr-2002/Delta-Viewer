@@ -786,6 +786,8 @@ pub(crate) fn video_source(
         .and_then(|path| probed_mp4_fps(Path::new(path), app))
         .unwrap_or(fps);
     Ok(VideoSource {
+        adaptive_paths: None,
+        preview_error: None,
         fps,
         media_fps,
         segment_seconds: manifest.segment_seconds.unwrap_or(300.0).max(1.0),

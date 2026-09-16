@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod adaptive_preview;
 mod annotations;
 mod assigned_source;
 mod episode_metadata;
@@ -1406,6 +1407,35 @@ fn cancel_task(control: State<'_, TaskControl>, operation_id: u64) -> bool {
 }
 
 #[tauri::command]
+async fn get_preview_location(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<adaptive_preview::PreviewLocation, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        adaptive_preview::read_location(&data_root).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn set_preview_location(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    location: adaptive_preview::PreviewLocation,
+) -> Result<adaptive_preview::PreviewLocation, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        adaptive_preview::save_location(&data_root, location).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn get_video_source(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -1414,10 +1444,23 @@ async fn get_video_source(
     stream: String,
 ) -> Result<VideoSource, String> {
     auth.require_user().map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?;
     let media_stream_server = media_stream_server.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut source = source::video_source(Path::new(&root), &stream, Some(&app))
             .map_err(|error| error.to_string())?;
+        if let Some(server) = media_stream_server.as_ref() {
+            match adaptive_preview::register_preview(
+                &data_root,
+                Path::new(&root),
+                &stream,
+                &source,
+                server,
+            ) {
+                Ok(paths) => source.adaptive_paths = paths,
+                Err(error) => source.preview_error = Some(error.to_string()),
+            }
+        }
         let scope = app.asset_protocol_scope();
         for path in &mut source.paths {
             let file_path = PathBuf::from(path.as_str());
@@ -1600,7 +1643,9 @@ pub fn run() {
             cancel_task,
             get_video_source,
             get_jpeg_stream_source,
-            read_frame
+            read_frame,
+            get_preview_location,
+            set_preview_location
         ])
         .run(tauri::generate_context!())
         .expect("error while running Delta Viewer");

@@ -356,6 +356,8 @@ export interface StreamSummary {
 }
 
 export interface VideoSource {
+  adaptivePaths?: string[];
+  previewError?: string;
   fps: number;
   mediaFps: number;
   segmentSeconds: number;
