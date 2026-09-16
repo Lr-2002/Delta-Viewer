@@ -190,6 +190,8 @@
 .review-edge { position: absolute; z-index: 2; top: -4px; height: 28px; width: 12px; padding: 0; border: 2px solid white; border-radius: 3px; background: #087e79; box-shadow: 0 0 0 1px #305754; transform: translateX(-50%); touch-action: none; cursor: ew-resize; }
 .review-edge.end { background: #a26b20; box-shadow: 0 0 0 1px #73501f; }
 .review-edge:focus-visible { outline: 2px solid #171717; outline-offset: 3px; }
+.review-edge.selected-control { outline: 2px solid #171717; outline-offset: 3px; z-index: 3; }
+.review-playhead-input.selected-control { outline: 2px solid #171717; outline-offset: 2px; }
 .review-frame-fields { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; }
 .review-frame-fields label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
 .review-frame-fields input { width: 72px; min-width: 0; height: 28px; padding: 3px; font: inherit; border: 1px solid var(--line-strong); border-radius: 3px; }
