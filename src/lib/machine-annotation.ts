@@ -75,7 +75,12 @@ export function restoreReviewSegments(segments: ReviewSegment[]): ReviewSegment[
 }
 
 export function addReviewSegment(segments: ReviewSegment[], frame: number, frameCount: number): ReviewSegment[] {
+  if (!Number.isSafeInteger(frameCount) || frameCount < 1) return segments;
   if (!Number.isSafeInteger(frame) || frame < 0 || frame >= frameCount) return segments;
+  if (!segments.some((item) => !item.deleted)) {
+    const nextIndex = Math.max(-1, ...segments.map((item) => item.sourceIndex)) + 1;
+    return [...segments, { sourceIndex: nextIndex, startFrame: 0, endFrame: frameCount - 1, description: "", deleted: false, decision: "pending" }];
+  }
   const containing = segments.find((item) => !item.deleted && item.startFrame <= frame && frame <= item.endFrame);
   if (containing) {
     return splitReviewSegment(segments, containing.sourceIndex, Math.max(containing.startFrame + 1, frame));

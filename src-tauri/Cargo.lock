@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "dohc-viewer"
-version = "1.0.29"
+version = "1.0.30"
 dependencies = [
  "arrow-array",
  "base64 0.22.1",

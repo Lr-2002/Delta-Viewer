@@ -421,7 +421,7 @@ pub fn load_selected(
 ) -> AppResult<ReviewState> {
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
     let root = root.canonicalize()?;
-    let annotation = machine_annotation::load_selected(&root, source_name)?
+    let annotation = machine_annotation::load_for_review(&root, source_name)?
         .ok_or_else(|| failure("未找到机标文件"))?;
     load_inner(data_root, &root, &annotation)
 }
@@ -750,7 +750,7 @@ pub fn save_for_user(
 ) -> AppResult<ReviewState> {
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
     let root = Path::new(&request.source_path).canonicalize()?;
-    let annotation = machine_annotation::load_selected(
+    let annotation = machine_annotation::load_for_review(
         &root,
         request
             .source_name
@@ -761,7 +761,7 @@ pub fn save_for_user(
     let write_root = storage::review_write_root(&root)?;
     if write_root != root {
         let write_annotation =
-            machine_annotation::load_selected(&write_root, Some(&annotation.source_name))?
+            machine_annotation::load_for_review(&write_root, Some(&annotation.source_name))?
                 .ok_or_else(|| failure("CIFS 目录中未找到相同机标文件"))?;
         if write_annotation.source_hash != annotation.source_hash {
             return Err(failure("CIFS 目录与当前机标不一致，拒绝写入"));
@@ -1132,6 +1132,95 @@ pub fn is_review_path(root: &Path, path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn manual_without_machine_json_saves_splits_reopens_and_approves() {
+        let fixture = Fixture::new(0, true);
+        fs::remove_file(fixture.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap();
+        fs::create_dir_all(fixture.root.join(".session_meta")).unwrap();
+        fs::create_dir_all(fixture.root.join("cam0")).unwrap();
+        fs::write(fixture.root.join("cam0/part.mp4"), b"unchanged media").unwrap();
+        fs::write(fixture.root.join(".session_meta/manifest.json"), serde_json::to_vec(&json!({
+            "storage_format":"h264-split-mp4-v1", "segment_seconds":300,
+            "streams":{"cam0":{"fps":30,"frame_count":1065,"width":320,"height":180,"segments":[{"path":"cam0/part.mp4"}]}}
+        })).unwrap()).unwrap();
+        let annotation = machine_annotation::load_for_review(&fixture.root, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(annotation.frame_count, 1065);
+        assert_eq!(annotation.source_name, machine_annotation::MANUAL_SOURCE);
+        let mut state = load_selected(&fixture.local, &fixture.root, None).unwrap();
+        assert!(state.segments.is_empty());
+        assert!(!fixture.root.join(OUTPUT).exists());
+        let persist = |state: &ReviewState, segments: Vec<ReviewSegment>, status: &str| {
+            save_for_user(
+                &fixture.local,
+                SaveReviewRequest {
+                    source_path: fixture.root.to_string_lossy().into(),
+                    source_name: Some(machine_annotation::MANUAL_SOURCE.into()),
+                    source_hash: state.source_hash.clone(),
+                    expected_revision: state.revision,
+                    segments,
+                    status: Some(status.into()),
+                    rejection_reason: None,
+                },
+                "Human",
+                "manual-reviewer",
+            )
+            .unwrap()
+        };
+        let full = ReviewSegment {
+            source_index: 0,
+            start_frame: 0,
+            end_frame: 1064,
+            description: "人工整段".into(),
+            deleted: false,
+            decision: "pending".into(),
+        };
+        state = persist(&state, vec![full.clone()], "pending");
+        assert_eq!(
+            fixture.output()["episode_results"][0]["annotations"][0]["end_frame"],
+            1065
+        );
+        state = persist(
+            &state,
+            vec![
+                ReviewSegment {
+                    end_frame: 577,
+                    ..full.clone()
+                },
+                ReviewSegment {
+                    source_index: 1,
+                    start_frame: 578,
+                    description: "人工后半段".into(),
+                    ..full
+                },
+            ],
+            "approved",
+        );
+        let reopened =
+            load_selected(&fixture.temp.join("fresh-host"), &fixture.root, None).unwrap();
+        assert_eq!(reopened.status, "approved");
+        assert_eq!(reopened.revision, state.revision);
+        assert_eq!(reopened.segments.len(), 2);
+        assert_eq!(reopened.segments[1].start_frame, 578);
+        assert_eq!(reopened.segments[1].end_frame, 1064);
+        assert_eq!(reopened.segments[1].description, "人工后半段");
+        assert_eq!(
+            fs::read(fixture.root.join("cam0/part.mp4")).unwrap(),
+            b"unchanged media"
+        );
+        assert!(!fixture
+            .root
+            .join(machine_annotation::DEFAULT_SOURCE)
+            .exists());
+        fs::write(
+            fixture.root.join(machine_annotation::DEFAULT_SOURCE),
+            b"invalid json",
+        )
+        .unwrap();
+        assert!(machine_annotation::load_for_review(&fixture.root, None).is_err());
+    }
 
     struct Fixture {
         temp: PathBuf,

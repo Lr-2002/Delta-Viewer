@@ -3,6 +3,13 @@ import { test } from "node:test";
 import { addReviewSegment, splitReviewSegment, deleteReviewSegment, restoreReviewSegments, adjustReviewBoundary, machineSegmentRange, machineTimelineMapping } from "../src/lib/machine-annotation.ts";
 import type { ReviewSegment } from "../src/types.ts";
 
+test("the first human segment covers the full video even when playback is in the middle", () => {
+  const rows = addReviewSegment([], 578, 1065);
+  assert.deepEqual(rows.map((row) => [row.startFrame, row.endFrame]), [[0, 1064]]);
+  assert.deepEqual(splitReviewSegment(rows, 0, 578).map((row) => [row.startFrame, row.endFrame]), [[0, 577], [578, 1064]]);
+  assert.deepEqual(addReviewSegment([], 0, 0), []);
+});
+
 test("deletion aligns actual frames, preserves the following end, and restores coverage", () => {
   const original: ReviewSegment[] = [[0,99],[100,199],[200,299]].map(([startFrame,endFrame], sourceIndex) => ({startFrame,endFrame,sourceIndex,description:`action ${sourceIndex}`,deleted:false,decision:"approved"}));
   const deleted = deleteReviewSegment(original, 1);

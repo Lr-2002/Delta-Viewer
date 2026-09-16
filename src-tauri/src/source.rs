@@ -794,6 +794,20 @@ pub(crate) fn video_source(
     })
 }
 
+pub(crate) fn review_camera_summary(root: &Path) -> AppResult<StreamSummary> {
+    if let Some(manifest) = read_mp4_manifest(root)? {
+        return Ok(mp4_stream_summary(root, "cam0", &manifest));
+    }
+    let cancelled = AtomicBool::new(false);
+    if let Some(folder) = segment_folder_for_episode(root) {
+        if let Some(segment) = segment_bin::scan_segment_folder(&folder, &cancelled)? {
+            return segment_stream_summary(&segment, "cam0");
+        }
+    }
+    let files = collect_stream_files(root, "cam0", &cancelled)?;
+    Ok(preview_stream_summary("cam0", &files))
+}
+
 pub fn scan_episode(
     root: &Path,
     app: Option<&AppHandle>,

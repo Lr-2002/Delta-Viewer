@@ -11,6 +11,42 @@ const MAX_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SEGMENTS: usize = 2000;
 pub const DEFAULT_SOURCE: &str = "bailian_annotation.json";
 pub const FLASH_SOURCE: &str = "bailian_annotation.qwen3.8-flash.json";
+pub const MANUAL_SOURCE: &str = "manual";
+
+// A read-only template lets human-only reviews use the same persistence contract.
+pub fn load_for_review(
+    root: &Path,
+    source_name: Option<&str>,
+) -> AppResult<Option<MachineAnnotation>> {
+    if source_name != Some(MANUAL_SOURCE) {
+        let annotation = load_selected(root, source_name)?;
+        if annotation.is_some() || source_name.is_some() {
+            return Ok(annotation);
+        }
+    }
+    let root = root.canonicalize()?;
+    let camera = crate::source::review_camera_summary(&root)?;
+    if camera.frame_count == 0 {
+        return Ok(None);
+    }
+    let episode_id = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let document = serde_json::json!({
+        "schema_version": 4,
+        "annotation_source": "human",
+        "episode_results": [{
+            "episode_id": episode_id,
+            "media": {"frame_count": camera.frame_count, "frame_index_base": 0, "interval_convention": "[start,end)"},
+            "annotations": [], "segments": []
+        }]
+    });
+    let mut annotation = parse_human(&serde_json::to_vec(&document)?, episode_id)?;
+    annotation.source_name = MANUAL_SOURCE.into();
+    annotation.warnings.clear();
+    Ok(Some(annotation))
+}
 
 pub(crate) fn validate_source_name(name: &str) -> AppResult<()> {
     let file = name

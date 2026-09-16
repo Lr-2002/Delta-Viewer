@@ -219,7 +219,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const rows = useMemo(() => edits.filter((segment) => !segment.deleted).sort((a, b) => a.startFrame - b.startFrame || a.sourceIndex - b.sourceIndex), [edits]);
   const active = rows.find((segment) => segment.sourceIndex === selected) ?? rows[0];
   const valid = result && primary && mapping && !mapping.error && !error;
-  const canEdit = Boolean(review && !busy && !loading && !finishing && (valid || (!result && data.states.length > 0)));
+  const canEdit = Boolean(valid && review && !busy && !loading && !finishing);
   const outputName = "description.json";
   const seek = useCallback((next: number) => {
     setFrame(next); setPlaying(false);
@@ -328,9 +328,8 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     return () => window.removeEventListener("keydown", handler, true);
   });
   function addSegment() {
-    if (!canEdit) return;
-    const frameCount = result?.frameCount ?? Math.max(1, data.states.length);
-    const next = addReviewSegment(editsRef.current, visibleFrame, frameCount);
+    if (!canEdit || !result) return;
+    const next = addReviewSegment(editsRef.current, visibleFrame, result.frameCount);
     if (next === editsRef.current) return;
     change(next); setSelected(next[next.length - 1].sourceIndex); seek(next[next.length - 1].startFrame);
   }

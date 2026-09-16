@@ -871,7 +871,7 @@ async fn load_machine_annotation(
     auth.require_user().map_err(|error| error.to_string())?;
     ensure_source_directory_responsive(&source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
-        machine_annotation::load_selected(Path::new(&source_path), source_name.as_deref())
+        machine_annotation::load_for_review(Path::new(&source_path), source_name.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
