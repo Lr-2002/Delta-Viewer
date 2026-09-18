@@ -644,7 +644,7 @@ export const FramePanel = memo(function FramePanel({
         {adaptiveUrl && <select className="preview-quality" aria-label={`${stream.label}清晰度`} title="播放清晰度" value={quality} onChange={(event) => { setAdaptiveFailed(false); setQuality(event.target.value); }}>
           <option value="auto">自动</option>{[...new Set(levels)].sort((a, b) => b - a).map((height) => <option key={height} value={height}>{height}p</option>)}<option value="original">原片</option>
         </select>}
-        {(nativeVideo?.previewError || adaptiveFailed) && <span className="preview-warning" title={nativeVideo?.previewError ?? "预览播放失败，已回退原片"}>预览不可用</span>}
+        {(nativeVideo?.previewError || adaptiveFailed) && <span className="preview-warning" title={nativeVideo?.previewError ?? "预览播放失败，已回退原片"}>{nativeVideo?.previewError ? "预览校验失败" : "预览回退原片"}</span>}
         {nativeVideo ? (
           <span className="video-playback-status">
             {nativeVideoFailed || videoStatus === "fallback" ? "逐帧回退" : videoStatus === "playing" ? "原生播放" : videoStatus === "buffering" ? "缓冲中" : "原生就绪"}

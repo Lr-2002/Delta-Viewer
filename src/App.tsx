@@ -1940,7 +1940,7 @@ function App() {
                         <h2>多路回放</h2>
                       </div>
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
-                      {import.meta.env.DEV && <PreviewSettings />}
+                      <PreviewSettings />
                     </div>
                     <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
                       <div className={`camera-grid stream-count-${availableStreams.length}`}>

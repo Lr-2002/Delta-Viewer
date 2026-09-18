@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.35 - 2026-09-18
+
+- 缺少 NAS 预览目录时静默回退原片，不再误报“预览不可用”；真实清单校验失败时显示“预览校验失败”。
+- 将开发预览设置按钮恢复到多路回放标题栏，审核员默认仍使用自动预览路径，开发人员可直接覆盖原片和预览目录。
+
 ## 1.0.34 - 2026-09-18
 
 - 个人任务详情替换为任务中心，按真实文件夹树展示批次领取人、审核进度和 session QC；通过与不通过均计入已审核，异常不计完成。

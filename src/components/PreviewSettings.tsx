@@ -24,7 +24,7 @@ export function PreviewSettings() {
     finally { setBusy(false); }
   }
   return <>
-    <button className="icon-button" title="开发设置：覆盖自动预览目录" aria-label="开发预览设置" onClick={() => { setError(""); setOpen(true); }}><Settings2 size={17} /></button>
+    <button className="icon-button" title="预览设置（开发）" aria-label="预览设置（开发）" onClick={() => { setError(""); setOpen(true); }}><Settings2 size={17} /></button>
     {open && <div className="modal-backdrop"><section className="preview-settings" role="dialog" aria-modal="true" aria-labelledby="preview-title">
       <header><h2 id="preview-title">开发预览设置</h2><button className="icon-button" aria-label="关闭预览设置" disabled={busy} onClick={() => setOpen(false)}><X size={18} /></button></header>
       {(["sourceRoot", "previewRoot"] as const).map((key) => <label key={key}>

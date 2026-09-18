@@ -204,9 +204,14 @@ pub fn register_preview(
     let Ok(relative) = root.strip_prefix(&source_root) else {
         return Ok(None);
     };
-    let preview_root = Path::new(&location.preview_root)
-        .canonicalize()
-        .map_err(|_| invalid("服务器尚未生成预览或预览目录不可访问"))?;
+    let preview_root = match Path::new(&location.preview_root).canonicalize() {
+        Ok(path) => path,
+        // A missing preview is a normal deployment state: keep the original
+        // video path and let the player use its frame fallback until the NAS
+        // generator publishes the first complete manifest.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(invalid(&format!("预览目录不可访问：{error}"))),
+    };
     let directory = match preview_root.join(relative).canonicalize() {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
