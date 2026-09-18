@@ -3,6 +3,13 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.34 - 2026-09-18
+
+- 个人任务详情替换为任务中心，按真实文件夹树展示批次领取人、审核进度和 session QC；通过与不通过均计入已审核，异常不计完成。
+- 用户中心原子保存批次领取，拒绝重复抢占；管理员可释放、转交，归属及操作历史重启后保留，需同步升级用户中心。
+- 默认发现已挂载的 Delta-D1 数据目录，并自动映射独立预览目录；普通审核界面不再显示预览配置，开发模式保留覆盖与恢复自动入口。
+- 修复目录缩放未生效，支持 75%–135% 显示比例及百分比反馈。
+
 ## 1.0.33 - 2026-09-16
 
 - 新增 NAS/SMB 预览生成器：服务器在独立目录生成 1080p、720p、480p HLS 预览，原片保持只读。

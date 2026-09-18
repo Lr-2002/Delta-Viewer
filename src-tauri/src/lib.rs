@@ -24,6 +24,7 @@ mod storage;
 pub mod stress;
 mod supervision;
 mod supervision_report;
+mod task_center;
 mod updater;
 mod user_center;
 mod validation;
@@ -729,6 +730,69 @@ async fn get_assigned_task_activity(
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
     user_center::assigned_task_activity(&app_data_root(&app)?, auth.inner(), &date)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_task_center_root(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Option<String>, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    let data_root = app_data_root(&app)?.join("task-center");
+    tauri::async_runtime::spawn_blocking(move || {
+        assigned_source::load_for_user(&data_root, &user.username)
+            .map(|root| root.or_else(task_center::default_source))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_task_center_root(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    source_root: String,
+) -> Result<String, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    ensure_source_directory_responsive(&source_root).await?;
+    let data_root = app_data_root(&app)?.join("task-center");
+    tauri::async_runtime::spawn_blocking(move || {
+        assigned_source::save_for_user(&data_root, &user.username, Path::new(&source_root))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn scan_task_center(
+    auth: State<'_, AuthState>,
+    source_root: String,
+) -> Result<task_center::TaskCatalog, String> {
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
+    ensure_source_directory_responsive(&source_root).await?;
+    tauri::async_runtime::spawn_blocking(move || task_center::scan(Path::new(&source_root)))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn task_center_claims(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    action: String,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    user_center::task_claims(&app_data_root(&app)?, auth.inner(), &action, body)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1614,6 +1678,10 @@ pub fn run() {
             get_assigned_tasks,
             get_assigned_task_activity,
             get_assigned_source_root,
+            scan_task_center,
+            get_task_center_root,
+            set_task_center_root,
+            task_center_claims,
             set_assigned_source_root,
             create_task_definition,
             import_task_template_config,

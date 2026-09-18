@@ -373,6 +373,43 @@ pub async fn review_dashboard(
         .map_err(|error| AppError::Message(error.to_string()))
 }
 
+pub async fn task_claims(
+    data_root: &Path,
+    state: &AuthState,
+    action: &str,
+    body: serde_json::Value,
+) -> AppResult<serde_json::Value> {
+    state.require_managed_user()?;
+    if !["lookup", "claim", "release", "transfer"].contains(&action) {
+        return Err(AppError::Message("任务操作无效".into()));
+    }
+    let token = state.managed_token()?;
+    let config = load_config(data_root)?;
+    let client = client_for(&config)?;
+    let health = request_health(&client, &config).await?;
+    if !health
+        .capabilities
+        .iter()
+        .any(|cap| cap == "reviewTaskClaimsV1")
+    {
+        return Err(AppError::Message("用户中心需要升级以启用任务领取".into()));
+    }
+    let response = client
+        .post(endpoint(&config, &format!("api/v1/tasks/claims/{action}"))?)
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(error.to_string()))
+}
+
 pub async fn assigned_tasks(data_root: &Path, state: &AuthState) -> AppResult<Vec<AssignedTask>> {
     let token = state.managed_token()?;
     let config = load_config(data_root)?;

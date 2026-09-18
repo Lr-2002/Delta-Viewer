@@ -36,13 +36,15 @@ import {
 } from "../lib/review-audit-types";
 import type { UserIdentity } from "../types";
 import "./review-supervision.css";
+import { TaskCenter } from "./TaskCenter";
 
-type View = "overview" | "events" | "sessions" | "accounts";
+type View = "overview" | "events" | "sessions" | "accounts" | "tasks";
 const tabs: [View, string][] = [
   ["overview", "审核总览"],
   ["events", "实时行为"],
   ["sessions", "审核记录"],
   ["accounts", "审核账号"],
+  ["tasks", "任务中心"],
 ];
 const time = (value: number | null) =>
   value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "--";
@@ -403,7 +405,8 @@ export function SupervisionDashboard({
           </button>
         ))}
       </nav>
-      <div className="review-supervision-filters">
+      {view === "tasks" && <TaskCenter currentUser={currentUser} />}
+      <div className="review-supervision-filters" hidden={view === "tasks"}>
         <label>
           审核账号
           <select

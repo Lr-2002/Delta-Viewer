@@ -78,6 +78,14 @@ pub fn read_location(data_root: &Path) -> AppResult<PreviewLocation> {
 }
 
 pub fn save_location(data_root: &Path, location: PreviewLocation) -> AppResult<PreviewLocation> {
+    if location.source_root.is_empty() && location.preview_root.is_empty() {
+        match fs::remove_file(data_root.join("preview-location.json")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        return Ok(location);
+    }
     let source = Path::new(&location.source_root).canonicalize()?;
     let preview = Path::new(&location.preview_root).canonicalize()?;
     if !source.is_dir()
@@ -159,6 +167,22 @@ fn verify_source(root: &Path, stamp: &SourceStamp, expected_path: &str) -> AppRe
     Ok(())
 }
 
+pub fn automatic_location(root: &Path) -> Option<PreviewLocation> {
+    // Keep the same session-relative mapping on UNC paths, mapped drives and mounts.
+    for ancestor in root.ancestors() {
+        let name = ancestor.file_name()?;
+        let parent = ancestor.parent()?;
+        let preview = parent.join("Delta-Viewer-Previews").join(name);
+        if name.to_string_lossy().eq_ignore_ascii_case("Delta-D1") || preview.is_dir() {
+            return Some(PreviewLocation {
+                source_root: ancestor.to_string_lossy().into_owned(),
+                preview_root: preview.to_string_lossy().into_owned(),
+            });
+        }
+    }
+    None
+}
+
 pub fn register_preview(
     data_root: &Path,
     root: &Path,
@@ -166,16 +190,23 @@ pub fn register_preview(
     source: &VideoSource,
     server: &MediaStreamServer,
 ) -> AppResult<Option<Vec<String>>> {
-    let location = read_location(data_root)?;
-    if location.source_root.is_empty() || location.preview_root.is_empty() {
-        return Ok(None);
-    }
-    let source_root = Path::new(&location.source_root).canonicalize()?;
+    let saved = read_location(data_root)?;
     let root = root.canonicalize()?;
+    let location = if saved.source_root.is_empty() || saved.preview_root.is_empty() {
+        match automatic_location(&root) {
+            Some(location) => location,
+            None => return Ok(None),
+        }
+    } else {
+        saved
+    };
+    let source_root = Path::new(&location.source_root).canonicalize()?;
     let Ok(relative) = root.strip_prefix(&source_root) else {
         return Ok(None);
     };
-    let preview_root = Path::new(&location.preview_root).canonicalize()?;
+    let preview_root = Path::new(&location.preview_root)
+        .canonicalize()
+        .map_err(|_| invalid("服务器尚未生成预览或预览目录不可访问"))?;
     let directory = match preview_root.join(relative).canonicalize() {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -285,4 +316,21 @@ pub fn register_preview(
         playlists.push(server.register_playlist(master)?);
     }
     Ok(Some(playlists))
+}
+
+#[cfg(test)]
+mod automatic_tests {
+    use super::*;
+    #[test]
+    fn maps_sessions_to_sibling_preview_root_without_manual_configuration() {
+        let root = std::env::temp_dir().join("Delta-D1");
+        let location = automatic_location(&root.join("batch/session")).unwrap();
+        assert_eq!(Path::new(&location.source_root), root);
+        assert_eq!(
+            Path::new(&location.preview_root),
+            root.parent()
+                .unwrap()
+                .join("Delta-Viewer-Previews/Delta-D1")
+        );
+    }
 }

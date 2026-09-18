@@ -41,7 +41,7 @@ import { ExportPanel } from "./components/ExportPanel";
 import { FramePanel } from "./components/FramePanel";
 import { PreviewSettings } from "./components/PreviewSettings";
 import { ProgressStrip } from "./components/ProgressStrip";
-import { PersonalTaskPanel } from "./components/PersonalTaskPanel";
+import { TaskCenter } from "./components/TaskCenter";
 import { SkeletonViewer } from "./components/SkeletonViewer";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
 import { beginReviewAudit, configureReviewAudit, endReviewAudit, observeReviewInteractions, recordReviewInteraction, recordReviewSeek, updateReviewFrame } from "./lib/review-audit";
@@ -59,7 +59,6 @@ import {
   exportEpisode,
   exportValidationReport,
   getAuthStatus,
-  getAssignedTaskActivity,
   getAssignedSourceRoot,
   getAssignedTasks,
   flushPendingAnnotationAudits,
@@ -104,7 +103,6 @@ import {
 import type {
   AnnotatedEpisodeSummary,
   AssignedTask,
-  AssignedTaskActivity,
   AnnotationAuditAction,
   AppUpdateInfo,
   AuthStatus,
@@ -139,11 +137,6 @@ interface PendingAnnotationConfirmation {
   maxFrame: number;
 }
 
-function localDateInput(): string {
-  const now = new Date();
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
 
 
 const METRICS: { key: MetricKey; label: string }[] = [
@@ -267,10 +260,6 @@ function App() {
   const [authStartupError, setAuthStartupError] = useState("");
   const [tasks, setTasks] = useState<TaskDefinition[]>([]);
   const [assignedTasks, setAssignedTasks] = useState<AssignedTask[]>([]);
-  const [assignedSourceRoot, setAssignedSourceRootState] = useState<string | null>(null);
-  const [assignedActivity, setAssignedActivity] = useState<AssignedTaskActivity | null>(null);
-  const [assignedActivityDate, setAssignedActivityDate] = useState(() => localDateInput());
-  const [assignedActivityLoading, setAssignedActivityLoading] = useState(false);
   const [personalTaskOpen, setPersonalTaskOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [assignedEpisodeTasks, setAssignedEpisodeTasks] = useState<Record<string, string>>({});
@@ -543,14 +532,10 @@ function App() {
       setPendingSourceRestore(null);
       setTasks([]);
       setAssignedTasks([]);
-      setAssignedSourceRootState(null);
-      setAssignedActivity(null);
       setPersonalTaskOpen(false);
       return;
     }
     if (isManagedWorkspace && authStatus?.currentUser?.role === "operator") {
-      const date = localDateInput();
-      setAssignedActivityDate(date);
       void flushPendingAnnotationAudits()
         .then((remaining) => setAuditUploadPending(remaining > 0))
         .catch((reason) => {
@@ -561,17 +546,13 @@ function App() {
       const failed = (reason: unknown) => { if (active) setError(`无法加载已分配任务：${toMessage(reason)}`); };
       void listAssignedTaskDefinitions().then((value) => { if (active) setTasks(value); }).catch(failed);
       void getAssignedTasks().then((value) => { if (active) setAssignedTasks(value); }).catch(failed);
-      void getAssignedTaskActivity(date).then((value) => { if (active) setAssignedActivity(value); }).catch(failed);
       void getAssignedSourceRoot().then((root) => {
         if (!active) return;
-        setAssignedSourceRootState(root);
         setPendingSourceRestore(root);
       }).catch((reason) => { if (active) setError(`无法恢复数据目录：${toMessage(reason)}`); });
       return () => { active = false; };
     }
     setAssignedTasks([]);
-    setAssignedSourceRootState(null);
-    setAssignedActivity(null);
     void listTaskDefinitions().then(setTasks)
       .catch((reason) => setError(`无法加载任务目录：${toMessage(reason)}`));
   }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
@@ -584,22 +565,6 @@ function App() {
     void openSource(root, true);
   }, [pendingSourceRestore, busy, workspaceActive, authStatus?.currentUser?.username]);
 
-  async function refreshAssignedActivity(date: string) {
-    if (!isManagedWorkspace || authStatus?.currentUser?.role !== "operator") return;
-    setAssignedActivityLoading(true);
-    try {
-      setAssignedActivity(await getAssignedTaskActivity(date));
-    } catch (reason) {
-      setError(`无法加载标注记录：${toMessage(reason)}`);
-    } finally {
-      setAssignedActivityLoading(false);
-    }
-  }
-
-  function changeAssignedActivityDate(date: string) {
-    setAssignedActivityDate(date);
-    void refreshAssignedActivity(date);
-  }
 
   useEffect(() => {
     if (!workspaceActive || (isManagedWorkspace && !authStatus?.currentUser)) {
@@ -824,7 +789,6 @@ function App() {
         const selectedPath = isManagedWorkspace && authStatus?.currentUser?.role === "operator"
           ? await setAssignedSourceRoot(path)
           : path;
-        if (isManagedWorkspace && authStatus?.currentUser?.role === "operator") setAssignedSourceRootState(selectedPath);
         await openSource(selectedPath, true);
       }
     } catch (reason) {
@@ -834,27 +798,6 @@ function App() {
     }
   }
 
-  async function continueAssignedTask() {
-    setPersonalTaskOpen(false);
-    if (selectedEpisode) {
-      await loadEpisodeForReview(selectedEpisode, true);
-    } else if (assignedSourceRoot) {
-      await openSource(assignedSourceRoot, true, assignedTasks);
-    } else {
-      await chooseSource();
-    }
-  }
-
-  async function openNextAssignedTask() {
-    setPersonalTaskOpen(false);
-    const visible = scan?.episodes ?? [];
-    const currentIndex = selectedEpisode
-      ? visible.findIndex((episode) => episode.root === selectedEpisode.root)
-      : -1;
-    const next = visible[currentIndex + 1] ?? visible[0];
-    if (next) await loadEpisodeForReview(next, true);
-    else await continueAssignedTask();
-  }
 
   async function loadEpisodeForReview(
     episode: EpisodeSummary,
@@ -1798,8 +1741,8 @@ function App() {
                 </div>
               )}
               {currentUser.role === "operator" ? (
-                <button className="icon-button personal-task-trigger" type="button" onClick={() => setPersonalTaskOpen((open) => !open)} title="查看个人任务详情" aria-label="查看个人任务详情" aria-expanded={personalTaskOpen}>
-                  <ListChecks size={16} />
+                <button className="button button-secondary personal-task-trigger" type="button" onClick={() => setPersonalTaskOpen((open) => !open)} title="任务中心" aria-label="任务中心" aria-expanded={personalTaskOpen}>
+                  <ListChecks size={16} />任务中心
                 </button>
               ) : null}
               <button className="icon-button" type="button" onClick={() => void logout()} disabled={busy} title="退出登录" aria-label="退出登录">
@@ -1815,17 +1758,12 @@ function App() {
 
       {isManagedWorkspace && currentUser?.role === "operator" && personalTaskOpen ? (
         <div className="personal-task-overlay" role="presentation" onClick={() => setPersonalTaskOpen(false)}>
-        <PersonalTaskPanel
-          sourceRoot={assignedSourceRoot}
-          tasks={assignedTasks}
-          activity={assignedActivity}
-          date={assignedActivityDate}
-          loading={assignedActivityLoading}
-          onDateChange={changeAssignedActivityDate}
-          onRefresh={() => void refreshAssignedActivity(assignedActivityDate)}
-          onChooseSource={() => void chooseSource()}
-          onContinue={() => void continueAssignedTask()}
-          onNext={() => void openNextAssignedTask()}
+        <TaskCenter
+          currentUser={currentUser}
+          onOpen={async (root) => {
+            if (reviewUnsaved.current || busy) throw new Error("当前操作尚未完成，请稍后打开任务");
+            await openSource(root, true, []);
+          }}
           onClose={() => setPersonalTaskOpen(false)}
         />
         </div>
@@ -1914,7 +1852,7 @@ function App() {
               </button>
             </div>
           </div>
-          {!sidebarCollapsed ? <label className="sidebar-zoom">目录缩放<input type="range" min="0.85" max="1.15" step="0.05" value={sidebarScale} onChange={(event) => setSidebarScale(event.currentTarget.valueAsNumber)} /></label> : null}
+          {!sidebarCollapsed ? <label className="sidebar-zoom">目录缩放<input aria-label="目录缩放" type="range" min="0.75" max="1.35" step="0.05" value={sidebarScale} onChange={(event) => setSidebarScale(event.currentTarget.valueAsNumber)} /><output>{Math.round(sidebarScale * 100)}%</output></label> : null}
           <div className="sidebar-path" title={sourcePath}>{sourcePath ? shortPath(sourcePath, 38) : "等待 SD 卡"}</div>
           {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
           <div className="episode-list">
@@ -2002,7 +1940,7 @@ function App() {
                         <h2>多路回放</h2>
                       </div>
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
-                      <PreviewSettings />
+                      {import.meta.env.DEV && <PreviewSettings />}
                     </div>
                     <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
                       <div className={`camera-grid stream-count-${availableStreams.length}`}>
