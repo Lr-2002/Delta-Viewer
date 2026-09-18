@@ -20,6 +20,8 @@ node scripts/generate-previews.mjs \
 
 ## 客户端配置
 
-在播放器的“预览设置”中选择客户端可访问的原片根目录和预览根目录。Windows 映射盘可填写例如 `\\10.1.40.2\Datasets\Delta-D1` 与 `\\10.1.40.2\Datasets\Delta-Viewer-Previews\Delta-D1`；两者必须指向同一相对 session 树。
+1.0.34 起审核员无需配置。打开 Delta-D1 中的数据时，客户端自动寻找同级 `Delta-Viewer-Previews/Delta-D1`，沿用当前挂载路径或映射盘，保留相对 session 路径。Windows 默认数据目录为 `\\10.1.40.2\Datasets\Delta-D1`，Linux/macOS 使用已挂载目录；应用不建立新的 NAS 连接。
+
+仅开发模式显示“开发预览设置”，可覆盖目录或“恢复自动”。服务器仍须先生成预览；尚未生成时不能通过自动配置减少原片传输量。
 
 播放器会验证预览清单和原片指纹。预览缺失、过期或播放失败时自动回退原始视频，并显示提示。

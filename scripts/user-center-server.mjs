@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openReviewAuditStore } from "./review-audit-store.mjs";
+import { openTaskClaims, validateBatchKey } from "./task-claims-store.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CONFIG_PATH = path.join(repositoryRoot, "user-center.config.json");
@@ -1009,6 +1010,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
   const registrations = new Map();
   const auditEventIds = new Set((await readAuditEvents(dataRoot)).map((event) => event.eventId));
   const reviewAudit = openReviewAuditStore(dataRoot);
+  const taskClaims = openTaskClaims(dataRoot);
   let stateMutationTail = Promise.resolve();
 
   async function writeState(state) {
@@ -1065,6 +1067,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             OPERATOR_PROFILE_CAPABILITY,
             OPERATIONS_COCKPIT_CAPABILITY,
             "reviewSupervisionV1",
+            "reviewTaskClaimsV1",
           ],
         });
       }
@@ -1224,6 +1227,32 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             && event.occurredAtMs >= range.startMs && event.occurredAtMs < range.endMs)
           .slice(-500).reverse();
         return sendJson(response, 200, { date: range.date, events });
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/tasks/claims/lookup") {
+        const session = authorize(request);
+        if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        const body = await parseJsonBody(request, 80 * 1024);
+        return sendJson(response, 200, { claims: taskClaims.lookup(body.keys) });
+      }
+      if (request.method === "POST" && ["/api/v1/tasks/claims/claim", "/api/v1/tasks/claims/release", "/api/v1/tasks/claims/transfer"].includes(url.pathname)) {
+        const body = await parseJsonBody(request);
+        const key = validateBatchKey(body.batchKey);
+        const action = url.pathname.split("/").at(-1);
+        return await serializeStateMutation(async () => {
+          const session = authorize(request, action !== "claim");
+          if (!session) return sendJson(response, 403, { error: action === "claim" ? "AUTH_REQUIRED" : "ADMIN_REQUIRED" });
+          if (action === "claim" && session.user.role !== "operator") return sendJson(response, 403, { error: "REVIEWER_REQUIRED" });
+          let result;
+          if (action === "claim") result = taskClaims.claim(key, session.user);
+          else if (action === "release") result = taskClaims.release(key, session.user);
+          else {
+            const state = await readState(dataRoot);
+            const target = state.users.find((user) => user.username === body.username && user.role === "operator" && user.accountStatus !== "paused");
+            if (!target) return sendJson(response, 400, { error: "ACTIVE_REVIEWER_REQUIRED" });
+            result = taskClaims.transfer(key, session.user, target);
+          }
+          return sendJson(response, result.conflict ? 409 : 200, result.conflict ? { error: "BATCH_ALREADY_CLAIMED: 该批次已被领取", ...result } : result);
+        });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/review/events") {
         const session = authorize(request);
@@ -1666,6 +1695,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       server = undefined;
       reviewAudit.close();
+      taskClaims.close();
     },
     configuration,
     clientConfigPath: initialized.clientConfigPath,

@@ -90,6 +90,7 @@ test("user center supports operator self-registration and administrator account 
       "operatorProfileV1",
       "operationsCockpitV1",
       "reviewSupervisionV1",
+      "reviewTaskClaimsV1",
     ]);
     const pageHeaders = await requestHeaders(port, ca, "/");
     assert.match(pageHeaders["content-security-policy"], /(?:^|;)\s*connect-src 'self'(?:;|$)/);
@@ -288,6 +289,27 @@ test("user center supports operator self-registration and administrator account 
       { task: "BedMaking", quantity: 3, startIndex: 0, priority: "urgent", deadlineAtMs: assigned.body.user.assignmentPlans[0].deadlineAtMs, status: "active", order: 0, detail: "BedMaking", completed: 0, remaining: 3, estimatedCompletionAtMs: null },
       { task: "Bedsheet", quantity: 2, startIndex: 0, priority: "normal", deadlineAtMs: null, status: "paused", order: 1, detail: "整理床单并完成整段视频标注。", completed: 0, remaining: 2, estimatedCompletionAtMs: null },
     ]);
+    const batchKey = "b".repeat(64);
+    const batchRequest = (action, body, token) => request(port, ca, "POST", `/api/v1/tasks/claims/${action}`, body, token);
+    assert.equal((await batchRequest("lookup", { keys: [batchKey] })).status, 401);
+    assert.equal((await batchRequest("claim", { batchKey }, login.body.token)).status, 403);
+    const racers = await Promise.all([
+      batchRequest("claim", { batchKey }, operator.body.token),
+      batchRequest("claim", { batchKey }, selfRegistered.body.token),
+    ]);
+    assert.deepEqual(racers.map((result) => result.status).sort(), [200, 409]);
+    const winner = racers.find((result) => result.status === 200).body.claim;
+    const winnerToken = winner.username === "operator" ? operator.body.token : selfRegistered.body.token;
+    assert.deepEqual((await batchRequest("claim", { batchKey }, winnerToken)).body.claim, winner);
+    assert.equal((await batchRequest("release", { batchKey }, operator.body.token)).status, 403);
+    assert.equal((await batchRequest("transfer", { batchKey, username: "operator2" }, operator.body.token)).status, 403);
+    const moved = await batchRequest("transfer", { batchKey, username: "operator2" }, login.body.token);
+    assert.equal(moved.body.claim.username, "operator2");
+    assert.equal((await batchRequest("release", { batchKey }, login.body.token)).status, 200);
+    assert.equal((await batchRequest("claim", { batchKey }, operator.body.token)).status, 200);
+    assert.equal((await batchRequest("lookup", { keys: [batchKey] }, selfRegistered.body.token)).body.claims[0].username, "operator");
+    assert.equal((await batchRequest("claim", { batchKey: "../../private" }, operator.body.token)).status, 400);
+
     const startedAtMs = Date.now() - 60_000;
     const stableEventId = randomUUID();
     const started = await request(port, ca, "POST", "/api/v1/audit/events", {
@@ -487,6 +509,8 @@ test("user center supports operator self-registration and administrator account 
       username: "supervisor", password: "admin-password",
     });
     assert.equal(restartedAdmin.status, 200);
+    const persistentClaim = await request(port, ca, "POST", "/api/v1/tasks/claims/lookup", { keys: [batchKey] }, restartedAdmin.body.token);
+    assert.equal(persistentClaim.body.claims[0].username, "operator");
     const history = await request(port, ca, "GET", "/api/v1/admin/reviews?username=selfoperator", null, restartedAdmin.body.token);
     assert.equal(history.status, 200);
     assert.ok(history.body.events.some((event) => event.eventId === reviewEvent.eventId));
