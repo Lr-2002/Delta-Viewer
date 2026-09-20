@@ -26,6 +26,7 @@ pub mod stress;
 mod supervision;
 mod supervision_report;
 mod task_center;
+mod task_index;
 mod updater;
 mod user_center;
 mod validation;
@@ -806,6 +807,38 @@ async fn set_task_center_root(
     let data_root = app_data_root(&app)?.join("task-center");
     tauri::async_runtime::spawn_blocking(move || {
         assigned_source::save_for_user(&data_root, &user.username, Path::new(&source_root))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn read_task_index(
+    auth: State<'_, AuthState>,
+    source_root: String,
+    relative_path: String,
+) -> Result<serde_json::Value, String> {
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        task_index::load(Path::new(&source_root), &relative_path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn rebuild_task_index(auth: State<'_, AuthState>, source_root: String) -> Result<(), String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("ADMIN_REQUIRED: 仅管理员可启动服务器统计".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        task_index::request_rebuild(Path::new(&source_root))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1745,6 +1778,8 @@ pub fn run() {
             get_assigned_task_activity,
             get_assigned_source_root,
             scan_task_center,
+            read_task_index,
+            rebuild_task_index,
             get_task_center_root,
             set_task_center_root,
             task_center_claims,

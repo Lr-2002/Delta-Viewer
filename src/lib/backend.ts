@@ -4,6 +4,11 @@ import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import packageInfo from "../../package.json";
 import { createAuditFlusher } from "./audit-flush";
+import type { TaskIndexResult } from "./task-center";
+
+export const readTaskIndex = (sourceRoot: string, relativePath = "") =>
+  invoke<TaskIndexResult>("read_task_index", { sourceRoot, relativePath });
+export const rebuildTaskIndex = (sourceRoot: string) => invoke<void>("rebuild_task_index", { sourceRoot });
 import {
   createDemoSkeleton,
   createDemoStates,
