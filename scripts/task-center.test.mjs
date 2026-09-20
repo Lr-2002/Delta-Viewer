@@ -15,7 +15,12 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
       import {TaskCenter} from '/src/components/TaskCenter.tsx'; import '/src/styles.css';
       const root = createRoot(document.getElementById('root'));
       window.hideTask = () => root.render(null);
-      window.showTask = (role='operator') => root.render(React.createElement('div', {className:'personal-task-overlay'}, React.createElement(TaskCenter, {currentUser:{username:'alice',displayName:'审核甲',role},onClose:()=>{},onOpen:async(root)=>{window.openedTask=root;}})));
+      window.showTask = (role='operator') => root.render(React.createElement('div', {className:'personal-task-overlay'}, React.createElement(TaskCenter, {currentUser:{username:'alice',displayName:'审核甲',role},onClose:()=>{window.taskFixture.closed++;},onOpen:async(root)=>{
+        window.taskFixture.openCalls.push(root);
+        if(window.taskFixture.delayOpen) await new Promise(resolve=>{window.taskFixture.finishOpen=resolve;});
+        if(window.taskFixture.openError) throw Error(window.taskFixture.openError);
+        window.openedTask=root;
+      }})));
       window.showTask();
     </script></body></html>`));
     });
@@ -34,7 +39,7 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
       tree.relativePath = "";
       const root = "\\\\10.1.40.2\\Datasets\\Delta-D1";
       const claims = { ["a".repeat(64)]: { batchKey: "a".repeat(64), username: "bob", displayName: "审核乙", claimedAtMs: Date.now() } };
-      window.taskFixture = { tree, claims, offline: false, calls: [], nodeCalls: [], serverError: '', running: false };
+      window.taskFixture = { tree, claims, offline: false, calls: [], nodeCalls: [], openCalls: [], claimCalls: 0, closed: 0, serverError: '', running: false };
       window.__TAURI_INTERNALS__ = { transformCallback: () => 1, unregisterCallback: () => {}, invoke: async (command, args) => {
         window.taskFixture.calls.push(command);
         if (command === "get_task_center_root") return root;
@@ -51,6 +56,8 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
         if (command === "task_center_claims") {
           if (window.taskFixture.offline) throw Error("用户中心连接中断");
           if (args.action === "lookup") return { claims: Object.values(claims) };
+          window.taskFixture.claimCalls++;
+          if (window.taskFixture.claimError) throw Error(window.taskFixture.claimError);
           if (claims[args.body.batchKey]) throw Error("该批次已被领取");
           const claim = { batchKey: args.body.batchKey, username: "alice", displayName: "审核甲", claimedAtMs: Date.now() };
           claims[claim.batchKey] = claim; return { claim };
@@ -70,9 +77,32 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).click();
     await page.getByRole("button", { name: "Fridge2_001", exact: true }).waitFor();
     assert.equal(await page.getByText("已审核 · 不通过", { exact: true }).count(), 1);
-    await page.getByRole("button", { name: "领取", exact: true }).first().click();
-    await page.getByRole("button", { name: "已领取", exact: true }).waitFor();
-    assert.equal(await page.getByRole("button", { name: "已领取", exact: true }).isDisabled(), true);
+    await page.evaluate(() => { window.taskFixture.delayOpen = true; });
+    await page.getByRole("button", { name: "领取", exact: true }).first().evaluate((button) => { button.click(); button.click(); });
+    await page.getByRole("button", { name: "正在加载", exact: true }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.taskFixture.openCalls), ['\\\\10.1.40.2\\Datasets\\Delta-D1/2026-09-02-Oven']);
+    assert.equal(await page.evaluate(() => window.taskFixture.claimCalls), 1, 'double click claims once');
+    assert.equal(await page.evaluate(() => window.taskFixture.closed), 0, 'dialog remains until batch has loaded');
+    assert.equal(await page.getByRole("button", { name: "正在加载", exact: true }).isDisabled(), true);
+    await page.evaluate(() => { window.taskFixture.delayOpen = false; window.taskFixture.finishOpen(); });
+    await page.getByRole("button", { name: "进入审核", exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.taskFixture.closed), 1);
+    await page.evaluate(() => { window.taskFixture.openError = '共享目录暂时断开'; });
+    await page.getByRole("button", { name: "进入审核", exact: true }).click();
+    await page.getByRole('alert').filter({hasText:'共享目录暂时断开'}).waitFor();
+    assert.equal(await page.evaluate(() => window.taskFixture.closed), 1, 'failed load must not close');
+    await page.getByRole('button', {name:'刷新任务进度',exact:true}).click();
+    await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
+    assert.equal(await page.getByRole('alert').filter({hasText:'共享目录暂时断开'}).isVisible(), true, 'claim polling must not clear a loading error');
+    await page.evaluate(() => { window.taskFixture.openError = ''; });
+    await page.getByRole('button', {name:'进入审核',exact:true}).click();
+    await page.waitForFunction(() => window.taskFixture.closed === 2);
+    assert.equal(await page.evaluate(() => window.taskFixture.claimCalls), 1, 're-entering an owned batch must not claim again');
+    await page.evaluate(() => { window.taskFixture.claimError = '该批次已被其他人领取'; });
+    await page.getByRole('button', {name:'领取',exact:true}).click();
+    await page.waitForFunction(() => window.taskFixture.claimCalls === 2);
+    assert.equal(await page.evaluate(() => window.taskFixture.openCalls.length), 3, 'rejected claim must never open a batch');
+    await page.evaluate(() => { window.taskFixture.claimError = ''; });
     await page.evaluate(() => { window.hideTask(); window.taskFixture.delayListing = true; });
     await page.locator(".task-center").waitFor({ state: "detached" });
     await page.evaluate(() => window.showTask());

@@ -189,8 +189,10 @@ try {
       height: 1,
       channels: 3,
     }));
+    const taskCenterMode = location.search === '?task-center';
+    const sourceRoot = taskCenterMode ? '/source/batch' : '/source';
     const makeEpisode = (name, indexed = false) => ({
-      root: `/source/${name}`,
+      root: `${sourceRoot}/${name}`,
       name,
       indexed,
       totalFiles: indexed ? 6 : 0,
@@ -213,7 +215,7 @@ try {
     const previewEpisode = { ...makeEpisode("episode-1", true), indexed: false, totalBytes: 0 };
     const indexedEpisode = makeEpisode("episode-1", true);
     const scan = {
-      sourceRoot: "/source",
+      sourceRoot,
       episodes,
       totalFiles: 0,
       totalBytes: 0,
@@ -323,7 +325,7 @@ try {
             return {
               workspaceMode: "managed",
               userCenter: { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" },
-              currentUser: { username: "tester", displayName: "Tester" },
+              currentUser: { username: "tester", displayName: "Tester", role: taskCenterMode ? "operator" : undefined },
             };
           case "check_for_app_update":
             return {
@@ -344,6 +346,16 @@ try {
             return [];
           case "get_assigned_task_activity":
             return { date: args.date, events: [] };
+          case "get_task_center_root":
+            return '/source';
+          case "read_task_index": {
+            const batch = { name: 'batch', relativePath: 'batch', batchKey: 'a'.repeat(64), session: false, status: 'pending', total: 2, reviewed: 0, approved: 0, rejected: 0, errors: 0, incomplete: false, children: [] };
+            return { catalog: { sourceRoot: '/source', tree: { ...batch, name: 'source', relativePath: '', children: [batch] } }, server: { completedAtMs: Date.now(), heartbeatAtMs: Date.now(), running: false } };
+          }
+          case "task_center_claims":
+            if (args.action === 'lookup') return { claims: window.__concurrencyMock.claim ? [window.__concurrencyMock.claim] : [] };
+            window.__concurrencyMock.claim = { batchKey: args.body.batchKey, username: 'tester', displayName: 'Tester', claimedAtMs: Date.now() };
+            return { claim: window.__concurrencyMock.claim };
           case "record_operation_error":
             return {
               formatVersion: 1,
@@ -358,13 +370,16 @@ try {
           case "scan_source":
             calls.scanSource += 1;
             calls.scanOperationIds.push(args.operationId);
+            calls.lastSourcePath = args.path;
+            if (taskCenterMode && calls.scanSource === 1) throw Error('NAS disconnected');
             return beginTask("scan", args.operationId);
           case "import_episode":
             calls.importEpisode += 1;
             throw new Error("Direct-source UI must not invoke import_episode");
           case "load_episode":
             calls.loadEpisode += 1;
-            if (calls.loadEpisode === 1) return beginTask("load", args.operationId);
+            if (calls.loadEpisode === 1 && !taskCenterMode) return beginTask("load", args.operationId);
+            calls.lastEpisodeRoot = args.path;
             return {
               summary: previewEpisode,
               states: [{
@@ -380,7 +395,7 @@ try {
             };
           case "validate_episode":
             calls.validateEpisode += 1;
-            if (calls.validateEpisode === 1) return beginTask("validate", args.operationId);
+            if (calls.validateEpisode === 1 && !taskCenterMode) return beginTask("validate", args.operationId);
             return { report, summary: indexedEpisode };
           case "load_episode_annotation":
             return null;
@@ -532,6 +547,28 @@ try {
     );
   }
   console.log("browser-smoke: completed flow renders five images without responsive overflow");
+
+  await page.setViewportSize({ width: 1440, height: 920 });
+  await page.goto(`${url}?task-center`, { waitUntil: 'networkidle' });
+  await page.getByRole('button', { name: '任务中心', exact: true }).click();
+  await page.getByRole('button', { name: '领取', exact: true }).click();
+  const taskDialog = page.getByRole('dialog', { name: '任务中心' });
+  await taskDialog.getByRole('alert').filter({ hasText: 'NAS disconnected' }).waitFor();
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.lastSourcePath), '/source/batch');
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.claim.username), 'tester');
+  await taskDialog.getByRole('button', { name: '进入审核', exact: true }).click();
+  await page.waitForFunction(() => window.__concurrencyMock.activeTask()?.kind === 'scan');
+  await page.evaluate(() => window.__concurrencyMock.resolveActiveTask({ sourceRoot: '/source/batch', episodes: [], volume: {} }));
+  await taskDialog.getByRole('alert').filter({ hasText: '未发现可加载的数据' }).waitFor();
+  await taskDialog.getByRole('button', { name: '进入审核', exact: true }).click();
+  await page.waitForFunction(() => window.__concurrencyMock.activeTask()?.kind === 'scan');
+  await page.evaluate(() => window.__concurrencyMock.resolveActiveTask());
+  await taskDialog.waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.loadEpisode), 1);
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.lastEpisodeRoot), '/source/batch/episode-1');
+  assert.equal(await page.locator('.episode-item').count(), 2);
+  await page.locator('.camera-grid img').first().waitFor();
+  console.log('browser-smoke: task claim opens batch and first episode; NAS/empty-directory failures retain claim and allow retry');
 
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);

@@ -21,8 +21,10 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [claimError, setClaimError] = useState("");
+  const [openError, setOpenError] = useState("");
   const [claimsReady, setClaimsReady] = useState(false);
   const [pending, setPending] = useState("");
+  const [opening, setOpening] = useState(false);
   const [revision, setRevision] = useState(0);
   const [claimRevision, setClaimRevision] = useState(0);
   const [server, setServer] = useState<TaskIndexStatus | null>(null);
@@ -32,6 +34,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const [transferKey, setTransferKey] = useState("");
   const [transferUser, setTransferUser] = useState("");
   const alive = useRef(true);
+  const actionActive = useRef(false);
   const panelRef = useRef<HTMLElement>(null);
   const rootRef = useRef(root); rootRef.current = root;
   const expandedRef = useRef(expanded); expandedRef.current = expanded;
@@ -61,7 +64,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   useEffect(() => {
     const cached = getCachedTaskCatalog(currentUser.username, root);
     setCatalog(cached?.catalog ?? null); setServer(null); setLoadingNodes(new Set()); setRequestNotice("");
-    setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setError(""); setClaimError("");
+    setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setError(""); setClaimError(""); setOpenError("");
   }, [root, currentUser.username]);
   useEffect(() => {
     if (!root) return;
@@ -139,28 +142,37 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     } catch (reason) { if (alive.current) setError(String(reason)); }
   }
   async function changeClaim(action: "claim" | "release" | "transfer", node: TaskNode) {
-    if (pending || !claimsReady) return;
+    if (actionActive.current || !claimsReady) return;
+    actionActive.current = true;
     const currentRoot = root;
-    setPending(node.batchKey); setClaimError("");
+    setPending(node.batchKey); setClaimError(""); setOpenError("");
     try {
       if (action === "release" && !await confirmAction(`释放 ${node.name} 的领取归属？`, "释放批次")) return;
       const result = await mutateClaim(action, node.batchKey, action === "transfer" ? transferUser.trim() : undefined);
       if (!alive.current || rootRef.current !== currentRoot) return;
       setClaims((previous) => { const next = { ...previous }; if (result.claim) next[node.batchKey] = result.claim; else delete next[node.batchKey]; return next; });
       setTransferKey(""); setTransferUser("");
+      if (action === "claim" && result.claim?.username === currentUser.username) await enterNode(node, currentRoot);
     } catch (reason) {
       if (alive.current && rootRef.current === currentRoot) setClaimError(String(reason));
-    } finally { if (alive.current) { setPending(""); setClaimRevision((value) => value + 1); } }
+    } finally { actionActive.current = false; if (alive.current) { setPending(""); setClaimRevision((value) => value + 1); } }
   }
-  async function openSession(node: TaskNode) {
-    if (!onOpen || pending || error) return;
-    setPending(node.relativePath);
+  async function enterNode(node: TaskNode, selectedRoot: string) {
+    if (!onOpen || !alive.current || rootRef.current !== selectedRoot) return;
+    setOpening(true); setOpenError("");
     try {
-      if (!alive.current || rootRef.current !== root) return;
       await onOpen(`${catalog?.sourceRoot ?? root}/${node.relativePath}`);
-      if (alive.current) onClose?.();
-    } catch (reason) { if (alive.current) setError(String(reason)); }
-    finally { if (alive.current) setPending(""); }
+      if (alive.current && rootRef.current === selectedRoot) onClose?.();
+    } catch (reason) {
+      if (alive.current && rootRef.current === selectedRoot) setOpenError(`数据加载失败：${String(reason)}`);
+    } finally { if (alive.current) setOpening(false); }
+  }
+  async function openNode(node: TaskNode) {
+    if (!onOpen || actionActive.current || error) return;
+    actionActive.current = true;
+    setPending(node.batchKey);
+    try { await enterNode(node, root); }
+    finally { actionActive.current = false; if (alive.current) setPending(""); }
   }
   async function toggle(node: TaskNode) {
     const path = node.relativePath;
@@ -187,7 +199,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       <div className={`task-tree-row${isRoot ? " task-tree-root" : ""}${node.session ? " task-tree-session" : ""}`} style={{ "--tree-depth": depth } as React.CSSProperties}>
         <button className="task-node-name" type="button" title={isRoot ? root : node.name} aria-expanded={node.session ? undefined : open}
           disabled={node.session && (!onOpen || Boolean(pending) || Boolean(error))}
-          onClick={() => node.session ? void openSession(node) : void toggle(node)}>
+          onClick={() => node.session ? void openNode(node) : void toggle(node)}>
           {node.session ? <span className="task-chevron-spacer" /> : open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           {open && !node.session ? <FolderOpen size={17} /> : <Folder size={17} />}
           <span>{isRoot ? root : node.name}</span>
@@ -199,8 +211,8 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
             </span></>}
         {isBatch && <div className="task-claim-actions">
           {admin ? claim ? <><button type="button" className="button button-secondary" disabled={Boolean(pending) || !claimsReady} onClick={() => { setTransferKey(node.batchKey); setTransferUser(""); }}>转交</button><button type="button" className="button button-secondary" disabled={Boolean(pending) || !claimsReady} onClick={() => void changeClaim("release", node)}>释放</button></> : <span>未领取</span>
-            : <button type="button" className="button button-secondary" disabled={Boolean(claim) || Boolean(pending) || Boolean(error) || !claimsReady || !node.total || node.incomplete || node.scanning} onClick={() => void changeClaim("claim", node)}>
-              {claim ? <Check size={14} /> : <UserCheck size={14} />}{pending === node.batchKey ? "提交中" : claim?.username === currentUser.username ? "已领取" : claim ? "已被领取" : "领取"}
+            : <button type="button" className="button button-secondary" disabled={Boolean(claim && claim.username !== currentUser.username) || Boolean(pending) || Boolean(error) || !claimsReady || !onOpen || !node.total || node.incomplete || node.scanning} onClick={() => claim?.username === currentUser.username ? void openNode(node) : void changeClaim("claim", node)}>
+              {claim?.username === currentUser.username ? <FolderOpen size={14} /> : claim ? <Check size={14} /> : <UserCheck size={14} />}{pending === node.batchKey ? opening ? "正在加载" : "提交中" : claim?.username === currentUser.username ? "进入审核" : claim ? "已被领取" : "领取"}
             </button>}
         </div>}
       </div>
@@ -216,7 +228,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   return <section ref={panelRef} className="task-center" role={onClose ? "dialog" : undefined} aria-modal={onClose ? true : undefined} aria-label="任务中心" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !pending) onClose?.(); }}>
     <header><h2>任务中心</h2><div>{admin && <button className="button button-secondary" disabled={requesting || server?.running} onClick={() => void rebuild()}><Database size={16} />立即统计</button>}<button className="icon-button" aria-label="刷新任务进度" title="刷新任务进度" disabled={loading || Boolean(pending)} onClick={() => { setRevision((value) => value + 1); setClaimRevision((value) => value + 1); }}><RefreshCw size={17} className={loading ? "spin" : ""} /></button>{onClose && <button className="icon-button" aria-label="关闭任务中心" title="关闭任务中心" onClick={onClose}><X size={18} /></button>}</div></header>
     <div className="task-root-setting"><span title={root}>默认根目录：{root || "未找到已挂载的数据目录"}</span><button type="button" className="button button-secondary" disabled={Boolean(pending)} onClick={() => void chooseRoot()}><FolderOpen size={16} />更改目录</button></div>
-    {(error || claimError) && <p role="alert" className="task-center-error">{error || claimError}</p>}
+    {(error || claimError || openError) && <p role="alert" className="task-center-error">{error || claimError || openError}</p>}
     <div className="task-scan-status" role="status">
       <span>服务器最近统计完成：{server?.completedAtMs ? new Date(server.completedAtMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "尚无完整统计"}（北京时间）</span>
       <span>每日 23:00 自动统计</span>

@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.40 - 2026-09-20
+
+- 任务中心领取成功后自动打开对应批次目录并加载数据，加载成功后关闭任务中心。
+- 本人已领取批次提供“进入审核”，可再次进入；目录断开、无可加载数据等失败保留领取归属与重试入口，避免误报进入成功。
+- 连续点击仅提交一次领取；其他账号已领取的批次仍不可领取，管理员释放和转交规则保持不变。
+
 ## 1.0.39 - 2026-09-20
 
 - 任务中心直接读取 NAS 预计算索引，打开和刷新不再重复全量扫描 QC，目录明细按展开加载。
