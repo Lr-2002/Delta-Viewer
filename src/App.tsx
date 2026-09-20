@@ -13,6 +13,7 @@ import {
   HardDrive,
   History,
   Images,
+  Video,
   ListChecks,
   LoaderCircle,
   LogOut,
@@ -1952,8 +1953,10 @@ function App() {
                       <PreviewSettings />
                     </div>
                     <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
-                      <div className={`camera-grid stream-count-${availableStreams.length}`}>
-                        {availableStreams.map((stream, index) => (
+                      <div className="camera-grid camera-grid-expanded">
+                        {["cam0", "cam1", "cam2", "t265_left", "t265_right", "cam3", "cam4"].map((name, index) => {
+                          const stream = availableStreams.find((stream) => stream.name === name);
+                          return stream ? (
                           <FramePanel
                             key={stream.name}
                             root={data.summary.root}
@@ -1986,7 +1989,12 @@ function App() {
                             onFramePresented={handlePrimaryFramePresented}
                             onBufferingChange={handleNativeBufferingChange}
                           />
-                        ))}
+                        ) : (
+                          <figure key={name} className={`frame-panel camera-${index} camera-placeholder`} aria-label={`${name} 未接入`}>
+                            <div className="camera-placeholder-content"><Video size={22} /><span>未接入</span></div>
+                            <figcaption><span>{name.startsWith("cam") ? `Camera ${name.slice(3)}` : name === "t265_left" ? "T265 Left" : "T265 Right"}</span></figcaption>
+                          </figure>
+                        );})}
                       </div>
                       <div className="skeleton-side-panel">
                         {data.skeleton ? (

@@ -3,6 +3,13 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.43 - 2026-09-20
+
+- 回放区在现有五路流与骨架之间预置 Camera 3、Camera 4 两个等尺寸画面槽位；旧数据显示“未接入”，新数据检测到 `cam3`/`cam4` 后自动使用同一帧读取和播放逻辑。
+- 支持 JPEG 目录和 MP4 manifest 中的可选 `cam3`/`cam4` 流，预览生成器也会处理这两路；桌面和窄屏布局均保持无溢出。
+
+## 1.0.42 - 2026-09-20
+
 ## 1.0.42 - 2026-09-20
 
 - 包含任务中心批次“仅未审核”筛选，支持一键查询、显示结果数量、打开记录与恢复完整列表；1.0.41 安装包未发布。

@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { Parser } from "m3u8-parser";
 
 const profiles = [{ height: 480, bitrate: 700000 }, { height: 720, bitrate: 1500000 }, { height: 1080, bitrate: 3500000 }];
-const streams = new Set(["cam0", "cam1", "cam2", "t265_left", "t265_right"]);
+const streams = new Set(["cam0", "cam1", "cam2", "t265_left", "t265_right", "cam3", "cam4"]);
 const inside = (root, file) => file === root || file.startsWith(root + path.sep);
 
 async function run(binary, args, signal) {

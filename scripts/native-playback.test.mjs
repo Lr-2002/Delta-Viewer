@@ -38,7 +38,7 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
       "-i", "testsrc2=size=320x180:rate=30", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
       "-movflags", "+faststart", mediaPath], { windowsHide: true, encoding: "utf8" });
     assert.equal(result.status, 0, result.error?.message ?? result.stderr);
-    sources = ["cam0", "cam1"].map((name) => ({ name, fps: 30, frames: 180,
+    sources = ["cam0", "cam1", "cam3", "cam4"].map((name) => ({ name, fps: 30, frames: 180,
       width: 320, height: 180, segmentSeconds: 3, files: [mediaPath, mediaPath] }));
     end = 180;
   }
