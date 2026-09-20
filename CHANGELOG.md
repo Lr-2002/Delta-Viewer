@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.38 - 2026-09-20
+
+- 包含 1.0.37 的本地监管队列、缓存迁移和原地登录补传修复；1.0.37 未发布安装包。
+- 验证原生队列返回状态，空值或非法确认保留待存记录并提示重试；补齐并发浏览器测试的新增 IPC 契约。
+
 ## 1.0.37 - 2026-09-20
 
 - 审核监管待补传记录改用应用本地 SQLite 持久化队列，不再占用浏览器缓存配额；旧缓存按账号和服务安全迁移，确认落盘后才移除旧记录。

@@ -6,6 +6,13 @@ export interface ReviewOutboxBackend {
   flush(retryBlocked: boolean): Promise<ReviewOutboxStatus>;
 }
 
+function checkedStatus(value: ReviewOutboxStatus): ReviewOutboxStatus {
+  if (!value || !Number.isSafeInteger(value.pending) || value.pending < 0
+    || !Number.isSafeInteger(value.blocked) || value.blocked < 0 || value.blocked > value.pending
+    || typeof value.error !== "string") throw Error("监管记录保存状态无效，记录已保留待重试");
+  return value;
+}
+
 export function durableReviewAuditQueue(storage: Storage, owner: string, backend: ReviewOutboxBackend, notify: (message: string) => void) {
   const prefix = `dohc.review-audit.v1:${encodeURIComponent(owner)}:`;
   const memory = new Map<string, ReviewAuditEvent>();
@@ -44,7 +51,7 @@ export function durableReviewAuditQueue(storage: Storage, owner: string, backend
         } catch { invalid++; }
       }
       if (!batch.length) continue;
-      const saved = await backend.persist(batch.map((row) => row.event));
+      const saved = checkedStatus(await backend.persist(batch.map((row) => row.event)));
       status = { ...saved, error: status.error || saved.error };
       // Delete old storage ONLY after the native database transaction has committed.
       for (const row of batch) if (storage.getItem(row.key) === row.raw) storage.removeItem(row.key);
@@ -59,7 +66,7 @@ export function durableReviewAuditQueue(storage: Storage, owner: string, backend
       try {
         while (memory.size) {
           const batch = [...memory.values()].slice(0, 20);
-          const saved = await backend.persist(batch);
+          const saved = checkedStatus(await backend.persist(batch));
           status = { ...saved, error: status.error || saved.error };
           for (const event of batch) if (memory.get(event.eventId) === event) memory.delete(event.eventId);
         }
@@ -81,7 +88,7 @@ export function durableReviewAuditQueue(storage: Storage, owner: string, backend
       if (flushing) return flushing;
       flushing = (async () => {
         await persist();
-        try { status = await backend.flush(retryBlocked); }
+        try { status = checkedStatus(await backend.flush(retryBlocked)); }
         catch (error) { status.error = String(error); }
         report();
         return status.pending + memory.size + unmigrated;

@@ -145,3 +145,19 @@ test("native migration handles concurrent additions and retains malformed legacy
   assert.equal(storage.getItem(prefix+"broken"),"{bad");
   assert.match(message,/无法解析/);
 });
+
+test("invalid native acknowledgements retain both memory and legacy events", async () => {
+  const storage=new Storage(), a=event();
+  const key="dohc.review-audit.v1:service%3Aalice:"+a.eventId;
+  storage.setItem(key,JSON.stringify(a));
+  let message="";
+  const queue=durableReviewAuditQueue(storage,"service:alice",{
+    persist:async()=>null,flush:async()=>null,
+  },value=>{message=value;});
+  queue.push(event());
+  await assert.rejects(queue.persist(),/状态无效/);
+  await queue.flush();
+  assert.equal(queue.volatileCount(),1);
+  assert.ok(storage.getItem(key));
+  assert.match(message,/状态无效/);
+});
