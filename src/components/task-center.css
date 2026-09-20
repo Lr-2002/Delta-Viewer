@@ -33,6 +33,8 @@
 .review-supervision-filters[hidden] { display: none; }
 .review-supervision > .task-center { width: 100%; margin-top: 16px; max-height: calc(100vh - 180px); border: 0; border-radius: 0; }
 .task-empty { padding: 24px; color: var(--muted); text-align: center; }
+.task-scan-status { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 8px 16px; min-height: 32px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.task-scan-status span { min-width: 0; overflow-wrap: anywhere; }
 .task-transfer { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; padding: 12px 20px; background: #f1f5f5; }
 .task-transfer label { display: grid; gap: 4px; font-size: 12px; }
 @media (max-width: 600px) {

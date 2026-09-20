@@ -1,11 +1,15 @@
 use crate::error::{AppError, AppResult};
+use rayon::prelude::*;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskNode {
     name: String,
@@ -20,14 +24,96 @@ pub struct TaskNode {
     rejected: usize,
     errors: usize,
     incomplete: bool,
+    scanning: bool,
     children: Vec<TaskNode>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskCatalog {
     source_root: String,
     tree: TaskNode,
+    stats: ScanStats,
+}
+
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanStats {
+    elapsed_ms: u64,
+    qc_reads: usize,
+    cache_hits: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ScanUpdate {
+    Catalog {
+        catalog: TaskCatalog,
+    },
+    Batch {
+        node: TaskNode,
+    },
+    Progress {
+        sessions: usize,
+        path: String,
+        elapsed_ms: u64,
+    },
+}
+
+#[derive(Default)]
+pub struct QcCache(Mutex<HashMap<PathBuf, CachedQc>>);
+
+struct CachedQc {
+    modified: SystemTime,
+    size: u64,
+    checked: Instant,
+    status: String,
+}
+
+struct ScanContext<'a> {
+    root: &'a Path,
+    dataset: &'a Path,
+    namespace: &'a str,
+    remaining: AtomicUsize,
+    sessions: AtomicUsize,
+    qc_reads: AtomicUsize,
+    cache_hits: AtomicUsize,
+    started: Instant,
+    last_progress: Mutex<Instant>,
+    cancelled: &'a AtomicBool,
+    cache: &'a QcCache,
+    force: bool,
+    update: &'a (dyn Fn(ScanUpdate) + Sync),
+}
+
+impl ScanContext<'_> {
+    fn check_cancelled(&self) -> AppResult<()> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(AppError::Message("任务目录扫描已取消".into()));
+        }
+        Ok(())
+    }
+
+    fn progress(&self, path: &Path) {
+        if let Ok(mut last) = self.last_progress.lock() {
+            if last.elapsed() >= Duration::from_millis(250) {
+                *last = Instant::now();
+                (self.update)(ScanUpdate::Progress {
+                    sessions: self.sessions.load(Ordering::Relaxed),
+                    path: path
+                        .strip_prefix(self.root)
+                        .unwrap_or(path)
+                        .to_string_lossy()
+                        .into_owned(),
+                    elapsed_ms: self.started.elapsed().as_millis() as u64,
+                });
+            }
+        }
+    }
 }
 
 pub fn default_source() -> Option<String> {
@@ -70,7 +156,24 @@ pub fn default_source() -> Option<String> {
     }
 }
 
+#[cfg(test)]
 pub fn scan(root: &Path) -> AppResult<TaskCatalog> {
+    scan_streaming(
+        root,
+        &QcCache::default(),
+        false,
+        &AtomicBool::new(false),
+        &|_| {},
+    )
+}
+
+pub fn scan_streaming(
+    root: &Path,
+    cache: &QcCache,
+    force: bool,
+    cancelled: &AtomicBool,
+    update: &(dyn Fn(ScanUpdate) + Sync),
+) -> AppResult<TaskCatalog> {
     let root = root.canonicalize()?;
     // Reuse the verified mapping to an already-mounted identical SMB share.
     // Kernel CIFS avoids serial GVFS round trips; all operations here are reads.
@@ -90,43 +193,57 @@ pub fn scan(root: &Path) -> AppResult<TaskCatalog> {
         .unwrap_or_default()
         .to_string_lossy()
         .to_lowercase();
-    let remaining = AtomicUsize::new(100_000);
-    let tree = visit(&root, &root, dataset, &namespace, 0, &remaining)?;
+    let context = ScanContext {
+        root: &root,
+        dataset,
+        namespace: &namespace,
+        remaining: AtomicUsize::new(100_000),
+        sessions: AtomicUsize::new(0),
+        qc_reads: AtomicUsize::new(0),
+        cache_hits: AtomicUsize::new(0),
+        started: Instant::now(),
+        last_progress: Mutex::new(Instant::now() - Duration::from_secs(1)),
+        cancelled,
+        cache,
+        force,
+        update,
+    };
+    // One bounded pool shares work across batches AND sessions in a large batch.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(8)
+        .build()
+        .map_err(|error| AppError::Message(error.to_string()))?;
+    let tree = pool.install(|| visit(&root, 0, &context))?;
     Ok(TaskCatalog {
         source_root: root.to_string_lossy().into_owned(),
         tree,
+        stats: ScanStats {
+            elapsed_ms: context.started.elapsed().as_millis() as u64,
+            qc_reads: context.qc_reads.load(Ordering::Relaxed),
+            cache_hits: context.cache_hits.load(Ordering::Relaxed),
+        },
     })
 }
 
-fn visit(
-    root: &Path,
-    path: &Path,
-    dataset: &Path,
-    namespace: &str,
-    depth: usize,
-    remaining: &AtomicUsize,
-) -> AppResult<TaskNode> {
-    if depth > 32
-        || remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_sub(1)
-            })
-            .is_err()
-    {
-        return Err(AppError::Message("任务目录超过扫描上限".into()));
-    }
+fn empty_node(path: &Path, context: &ScanContext<'_>) -> TaskNode {
+    let ScanContext {
+        root,
+        dataset,
+        namespace,
+        ..
+    } = context;
     let relative = path
         .strip_prefix(root)
-        .unwrap()
+        .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/");
     let dataset_relative = path
         .strip_prefix(dataset)
-        .unwrap()
+        .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/");
     let batch = dataset_relative.split('/').next().unwrap_or("");
-    let mut node = TaskNode {
+    TaskNode {
         name: path
             .file_name()
             .unwrap_or_default()
@@ -146,23 +263,72 @@ fn visit(
         rejected: 0,
         errors: 0,
         incomplete: false,
+        scanning: true,
         children: vec![],
-    };
-    let metadata = fs::symlink_metadata(path)?;
+    }
+}
+
+fn linked(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
-    let linked = {
+    {
         use std::os::windows::fs::MetadataExt;
         metadata.file_attributes() & 0x400 != 0
-    };
+    }
     #[cfg(not(windows))]
-    let linked = metadata.file_type().is_symlink();
-    if linked {
+    metadata.file_type().is_symlink()
+}
+
+fn visit(path: &Path, depth: usize, context: &ScanContext<'_>) -> AppResult<TaskNode> {
+    context.check_cancelled()?;
+    if depth > 32
+        || context
+            .remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_sub(1)
+            })
+            .is_err()
+    {
+        return Err(AppError::Message("任务目录超过扫描上限".into()));
+    }
+    context.progress(path);
+    let mut node = empty_node(path, context);
+    node.scanning = false;
+    let metadata = fs::symlink_metadata(path)?;
+    if linked(&metadata) {
         node.error = "跳过链接目录，统计不完整".into();
         node.errors = 1;
         node.incomplete = true;
         return Ok(node);
     }
-    let session_json = crate::machine_annotation::read_bytes(&path.join("session.json"));
+    let qc_path = path.join("session.json");
+    let stamp = fs::symlink_metadata(&qc_path)
+        .ok()
+        .filter(|info| info.file_type().is_file() && !linked(info))
+        .and_then(|info| Some((info.modified().ok()?, info.len())));
+    if !context.force {
+        if let (Some((modified, size)), Ok(cache)) = (stamp, context.cache.0.lock()) {
+            if let Some(cached) = cache.get(&qc_path).filter(|cached| {
+                cached.modified == modified
+                    && cached.size == size
+                    && cached.checked.elapsed() < Duration::from_secs(300)
+            }) {
+                // Identity is relative to the selected root, so never reuse cached paths.
+                node.session = true;
+                node.total = 1;
+                node.status.clone_from(&cached.status);
+                node.approved = usize::from(cached.status == "approved");
+                node.rejected = usize::from(cached.status == "rejected");
+                node.reviewed = node.approved + node.rejected;
+                context.sessions.fetch_add(1, Ordering::Relaxed);
+                context.cache_hits.fetch_add(1, Ordering::Relaxed);
+                return Ok(node);
+            }
+        }
+    }
+    let session_json = crate::machine_annotation::read_bytes(&qc_path);
+    if matches!(&session_json, Ok(Some(_))) {
+        context.qc_reads.fetch_add(1, Ordering::Relaxed);
+    }
     let entries = if matches!(&session_json, Ok(Some(_))) {
         Vec::new()
     } else {
@@ -184,8 +350,12 @@ fn visit(
                 Some("session.json" | "states.jsonl" | "manifest.json" | "cam0")
             )
         })
-        || path.join(".session_meta/manifest.json").is_file();
+        || (fs::symlink_metadata(path.join(".session_meta"))
+            .is_ok_and(|info| info.is_dir() && !linked(&info))
+            && fs::symlink_metadata(path.join(".session_meta/manifest.json"))
+                .is_ok_and(|info| info.is_file() && !linked(&info)));
     if node.session {
+        context.sessions.fetch_add(1, Ordering::Relaxed);
         node.total = 1;
         match session_json {
             Ok(Some(bytes)) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -221,6 +391,23 @@ fn visit(
             node.errors = 1;
             node.status = "error".into();
         }
+        if node.error.is_empty() {
+            if let (Some((modified, size)), Ok(mut cache)) = (stamp, context.cache.0.lock()) {
+                // Bound memory independently of how many datasets were opened.
+                if cache.len() >= 100_000 {
+                    cache.clear();
+                }
+                cache.insert(
+                    qc_path,
+                    CachedQc {
+                        modified,
+                        size,
+                        checked: Instant::now(),
+                        status: node.status.clone(),
+                    },
+                );
+            }
+        }
     } else {
         let mut entries = entries;
         entries.sort_by_key(|entry| entry.file_name());
@@ -238,37 +425,45 @@ fn visit(
                 directories.push(entry.path());
             }
         }
-        let children = if depth == 0 && directories.len() > 1 {
-            std::thread::scope(|scope| -> AppResult<Vec<TaskNode>> {
-                let handles: Vec<_> = directories
-                    .chunks(directories.len().div_ceil(8))
-                    .map(|chunk| {
-                        scope.spawn(move || {
-                            chunk
-                                .iter()
-                                .map(|child| {
-                                    visit(root, child, dataset, namespace, depth + 1, remaining)
-                                })
-                                .collect::<AppResult<Vec<_>>>()
-                        })
-                    })
-                    .collect();
-                let mut children = Vec::new();
-                for handle in handles {
-                    children.extend(
-                        handle
-                            .join()
-                            .map_err(|_| AppError::Message("目录扫描线程失败".into()))??,
-                    );
-                }
-                Ok(children)
-            })?
-        } else {
-            directories
+        if depth == 0 {
+            let mut listing = node.clone();
+            listing.scanning = !directories.is_empty();
+            listing.children = directories
                 .iter()
-                .map(|child| visit(root, child, dataset, namespace, depth + 1, remaining))
-                .collect::<AppResult<Vec<_>>>()?
-        };
+                .map(|path| empty_node(path, context))
+                .collect();
+            (context.update)(ScanUpdate::Catalog {
+                catalog: TaskCatalog {
+                    source_root: context.root.to_string_lossy().into_owned(),
+                    tree: listing,
+                    stats: ScanStats::default(),
+                },
+            });
+        }
+        let children = directories
+            .par_iter()
+            .map(|child| {
+                let result = visit(child, depth + 1, context);
+                context.check_cancelled()?;
+                let child = match result {
+                    Ok(node) => node,
+                    Err(error) => {
+                        let mut node = empty_node(child, context);
+                        node.scanning = false;
+                        node.incomplete = true;
+                        node.errors = 1;
+                        node.error = error.to_string();
+                        node
+                    }
+                };
+                if depth == 0 {
+                    (context.update)(ScanUpdate::Batch {
+                        node: child.clone(),
+                    });
+                }
+                Ok(child)
+            })
+            .collect::<AppResult<Vec<_>>>()?;
         for child in children {
             node.total += child.total;
             node.reviewed += child.reviewed;
@@ -279,12 +474,115 @@ fn visit(
             node.children.push(child);
         }
     }
+    context.check_cancelled()?;
     Ok(node)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn streaming_lists_before_qc_and_cache_refreshes_changes_and_manual_scans() {
+        let root = std::env::temp_dir().join(format!(
+            "task-stream-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for index in 0..1000 {
+            let folder = root.join(format!("batch-{}/session-{index}", index % 4));
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("session.json"), r#"{"qc":"通过"}"#).unwrap();
+        }
+        let cache = QcCache::default();
+        let updates = Mutex::new(Vec::new());
+        let first = scan_streaming(&root, &cache, false, &AtomicBool::new(false), &|update| {
+            if let ScanUpdate::Catalog { catalog } = &update {
+                assert_eq!(catalog.tree.children.len(), 4);
+                assert!(catalog
+                    .tree
+                    .children
+                    .iter()
+                    .all(|node| node.scanning && node.total == 0));
+                assert!(
+                    cache.0.lock().unwrap().is_empty(),
+                    "listing must precede QC reads"
+                );
+            }
+            updates.lock().unwrap().push(update);
+        })
+        .unwrap();
+        assert_eq!(first.tree.reviewed, 1000);
+        assert_eq!(first.stats.qc_reads, 1000);
+        assert_eq!(
+            updates
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, ScanUpdate::Batch { .. }))
+                .count(),
+            4
+        );
+        let second =
+            scan_streaming(&root, &cache, false, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(second.stats.qc_reads, 0);
+        assert_eq!(second.stats.cache_hits, 1000);
+        let changed = root.join("batch-0/session-0/session.json");
+        fs::write(&changed, r#"{"qc":"不通过"}"#).unwrap();
+        let third = scan_streaming(&root, &cache, false, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(
+            (
+                third.tree.rejected,
+                third.stats.qc_reads,
+                third.stats.cache_hits
+            ),
+            (1, 1, 999)
+        );
+        let forced = scan_streaming(&root, &cache, true, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!((forced.stats.qc_reads, forced.stats.cache_hits), (1000, 0));
+        // Reopening a batch has different relative paths but shares QC cache safely.
+        let nested = scan_streaming(
+            &root.join("batch-0"),
+            &cache,
+            false,
+            &AtomicBool::new(false),
+            &|_| {},
+        )
+        .unwrap();
+        assert!(nested
+            .tree
+            .children
+            .iter()
+            .all(|node| !node.relative_path.contains('/')));
+        fs::remove_file(changed).unwrap();
+        let removed =
+            scan_streaming(&root, &cache, false, &AtomicBool::new(false), &|_| {}).unwrap();
+        assert_eq!(removed.tree.reviewed, 999);
+        println!(
+            "1000 sessions: cold={}ms, cached={}ms; QC reads 1000 -> 0",
+            first.stats.elapsed_ms, second.stats.elapsed_ms
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_after_listing_prevents_session_reads() {
+        let root = std::env::temp_dir().join(format!("task-cancel-{}", std::process::id()));
+        fs::create_dir_all(root.join("batch/session")).unwrap();
+        fs::write(root.join("batch/session/session.json"), "{}").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let cache = QcCache::default();
+        let result = scan_streaming(&root, &cache, false, &cancelled, &|event| {
+            if matches!(event, ScanUpdate::Catalog { .. }) {
+                cancelled.store(true, Ordering::Release);
+            }
+        });
+        assert!(result.is_err());
+        assert!(cache.0.lock().unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     #[ignore = "requires an explicitly selected mounted task root; reads QC only"]
     fn scans_selected_mounted_root_read_only() {
