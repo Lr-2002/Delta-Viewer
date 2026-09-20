@@ -1,7 +1,7 @@
 use crate::error::{AppError, AppResult};
 use crate::model::{
     EpisodeData, EpisodeSummary, ProgressPayload, RawStateRecord, ScanResult, StateRecord,
-    StreamSummary, TaskProgressEvent, VideoSource, STREAM_NAMES,
+    StreamSummary, TaskProgressEvent, VideoSource, OPTIONAL_STREAM_NAMES, STREAM_NAMES,
 };
 use crate::segment_bin::{self, SegmentEpisodeIndex};
 use crate::storage;
@@ -178,7 +178,8 @@ pub fn load_episode_preview(
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
     let mut frame_file_count = 0_u64;
     let mp4_manifest = read_mp4_manifest(root)?;
-    for (index, stream_name) in STREAM_NAMES.iter().enumerate() {
+    let stream_names = episode_stream_names(root, mp4_manifest.as_ref());
+    for (index, stream_name) in stream_names.iter().enumerate() {
         check_cancelled(cancelled)?;
         if let Some(manifest) = mp4_manifest.as_ref() {
             let summary = mp4_stream_summary(root, stream_name, manifest);
@@ -195,7 +196,7 @@ pub fn load_episode_preview(
                 task: "scan".into(),
                 phase: "准备预览".into(),
                 current: (index + 1) as u64,
-                total: STREAM_NAMES.len() as u64,
+                total: stream_names.len() as u64,
                 bytes_done: 0,
                 total_bytes: 0,
                 current_path: root.join(stream_name).display().to_string(),
@@ -293,7 +294,7 @@ pub fn read_frame_with_index(
     index: Option<&EpisodeIndex>,
     app: Option<&AppHandle>,
 ) -> AppResult<(String, Vec<u8>)> {
-    if !STREAM_NAMES.contains(&stream) {
+    if !supported_stream(stream) {
         return Err(AppError::InvalidStream(stream.to_string()));
     }
     if let Some(segment) = index
@@ -332,7 +333,7 @@ pub fn read_frame_with_index(
 }
 
 pub fn jpeg_stream_directory(root: &Path, stream: &str) -> AppResult<Option<PathBuf>> {
-    if !STREAM_NAMES.contains(&stream) {
+    if !supported_stream(stream) {
         return Err(AppError::InvalidStream(stream.to_string()));
     }
     // MP4 streams use the same per-stream directory as legacy JPEG sources.
@@ -597,6 +598,20 @@ struct Mp4Manifest {
     stream_start_frames: BTreeMap<String, u64>,
 }
 
+fn supported_stream(name: &str) -> bool {
+    STREAM_NAMES.contains(&name) || OPTIONAL_STREAM_NAMES.contains(&name)
+}
+
+fn episode_stream_names(root: &Path, manifest: Option<&Mp4Manifest>) -> Vec<&'static str> {
+    STREAM_NAMES
+        .into_iter()
+        .chain(OPTIONAL_STREAM_NAMES.into_iter().filter(|name| {
+            is_regular_directory(&root.join(name))
+                || manifest.is_some_and(|manifest| manifest.streams.contains_key(*name))
+        }))
+        .collect()
+}
+
 impl Mp4Manifest {
     fn stream_start_frame(&self, stream: &str) -> u64 {
         self.stream_start_frames
@@ -680,7 +695,7 @@ fn recording_timeline(
             first.get_or_insert((frame, time));
             last = Some((frame, time));
         }
-        for stream in STREAM_NAMES {
+        for stream in STREAM_NAMES.into_iter().chain(OPTIONAL_STREAM_NAMES) {
             if value["availability"][stream].as_bool() == Some(true) {
                 starts.entry(stream.into()).or_insert(frame);
             }
@@ -746,7 +761,7 @@ pub(crate) fn video_source(
     stream: &str,
     app: Option<&AppHandle>,
 ) -> AppResult<VideoSource> {
-    if !STREAM_NAMES.contains(&stream) {
+    if !supported_stream(stream) {
         return Err(AppError::InvalidStream(stream.to_string()));
     }
     let canonical_root = root.canonicalize()?;
@@ -847,7 +862,7 @@ pub fn scan_episode_index(
     let fingerprint = fingerprint_indexed_files(&indexed_files);
     if let Some(segment) = segment {
         let mp4_manifest = read_mp4_manifest(root)?;
-        let streams = STREAM_NAMES
+        let streams = episode_stream_names(root, mp4_manifest.as_ref())
             .iter()
             .map(|stream_name| {
                 if segment.streams.contains_key(*stream_name) {
@@ -889,9 +904,10 @@ pub fn scan_episode_index(
     let (state_count, start_time_ns, end_time_ns) = summarize_states(&states_path, cancelled)?;
 
     let mp4_manifest = read_mp4_manifest(root)?;
+    let stream_names = episode_stream_names(root, mp4_manifest.as_ref());
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
     let mut stream_files_by_name = BTreeMap::new();
-    for (index, stream_name) in STREAM_NAMES.iter().enumerate() {
+    for (index, stream_name) in stream_names.iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Err(AppError::Cancelled);
         }
@@ -915,7 +931,7 @@ pub fn scan_episode_index(
                 task: "scan".into(),
                 phase: "读取流索引".into(),
                 current: (index + 1) as u64,
-                total: STREAM_NAMES.len() as u64,
+                total: stream_names.len() as u64,
                 bytes_done: 0,
                 total_bytes,
                 current_path: root.join(stream_name).display().to_string(),
@@ -1246,6 +1262,7 @@ fn inspect_episode_directory(
             }
             if STREAM_NAMES
                 .iter()
+                .chain(OPTIONAL_STREAM_NAMES.iter())
                 .any(|stream_name| name == OsStr::new(stream_name))
             {
                 return Ok((true, Vec::new()));
@@ -1292,6 +1309,8 @@ fn stream_label(stream_name: &str) -> &str {
         "cam0" => "Camera 0",
         "cam1" => "Camera 1",
         "cam2" => "Camera 2",
+        "cam3" => "Camera 3",
+        "cam4" => "Camera 4",
         "t265_left" => "T265 Left",
         "t265_right" => "T265 Right",
         _ => stream_name,
@@ -1805,6 +1824,87 @@ mod tests {
         fs::write(path, b"different length").unwrap();
         let after = episode_fingerprint(&root, &cancelled).unwrap();
         assert_ne!(before, after);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn optional_cameras_load_jpeg_and_mp4_without_changing_legacy_streams() {
+        use super::{jpeg_stream_directory, OPTIONAL_STREAM_NAMES};
+        use std::collections::BTreeMap;
+        let root = test_output("optional-cameras");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("states.jsonl"), "").unwrap();
+        let cancelled = AtomicBool::new(false);
+        assert_eq!(
+            load_episode_preview(&root, None, &cancelled)
+                .unwrap()
+                .summary
+                .streams
+                .len(),
+            5
+        );
+        for name in OPTIONAL_STREAM_NAMES {
+            fs::create_dir(root.join(name)).unwrap();
+            image::RgbImage::from_pixel(8, 6, image::Rgb([100, 150, 200]))
+                .save(root.join(name).join("0.jpg"))
+                .unwrap();
+        }
+        let preview = load_episode_preview(&root, None, &cancelled).unwrap();
+        let index = scan_episode_index(&root, None, &cancelled).unwrap();
+        assert_eq!(preview.summary.streams.len(), 7);
+        assert_eq!(index.summary.streams.len(), 7);
+        for name in OPTIONAL_STREAM_NAMES {
+            let summary = index
+                .summary
+                .streams
+                .iter()
+                .find(|stream| stream.name == name)
+                .unwrap();
+            assert_eq!(summary.frame_count, 1);
+            assert_eq!(summary.width, Some(8));
+            let (_, bytes) = read_frame_with_index(&root, name, 0, Some(&index), None).unwrap();
+            assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 8);
+            assert!(jpeg_stream_directory(&root, name).unwrap().is_some());
+            fs::remove_file(root.join(name).join("0.jpg")).unwrap();
+            fs::write(root.join(name).join("video.mp4"), b"placeholder").unwrap();
+        }
+        fs::create_dir(root.join(".session_meta")).unwrap();
+        let streams = OPTIONAL_STREAM_NAMES
+            .into_iter()
+            .map(|name| {
+                (
+                    name,
+                    serde_json::json!({
+                        "fps":30, "frame_count":30, "width":1280, "height":720,
+                        "segments":[{"path":format!("{name}/video.mp4"),"size":11}], "size":11
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        fs::write(
+            root.join(".session_meta/manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "storage_format":"h264-split-mp4-v1", "segment_seconds":1, "streams":streams
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let index = scan_episode_index(&root, None, &cancelled).unwrap();
+        for name in OPTIONAL_STREAM_NAMES {
+            assert_eq!(
+                index
+                    .summary
+                    .streams
+                    .iter()
+                    .find(|stream| stream.name == name)
+                    .unwrap()
+                    .frame_count,
+                30
+            );
+            assert_eq!(video_source(&root, name, None).unwrap().paths.len(), 1);
+            assert!(jpeg_stream_directory(&root, name).unwrap().is_none());
+        }
+        assert!(read_frame(&root, "../cam3", 0, None).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
