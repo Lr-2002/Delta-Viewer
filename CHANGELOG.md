@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.42 - 2026-09-20
+
+- 包含任务中心批次“仅未审核”筛选，支持一键查询、显示结果数量、打开记录与恢复完整列表；1.0.41 安装包未发布。
+- 查询覆盖当前批次的多层子目录，以最多 4 个并发请求读取服务器索引；按相对路径区分同名 session，不扫描媒体或其他批次。
+- 查询失败、统计不完整和加载中明确显示状态，避免误报没有未审核数据；刷新保留筛选，切换批次忽略旧请求结果。
+
 ## 1.0.41 - 2026-09-20
 
 - 任务中心每个批次新增“仅未审核”快捷筛选，自动展开并读取当前批次明细，只显示 QC 未审核 session；支持一键恢复完整列表。
