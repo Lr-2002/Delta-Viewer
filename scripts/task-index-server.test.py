@@ -76,6 +76,10 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(self.index.nodes[""]["reviewed"], 0)
         self.assertTrue(self.index.nodes[""]["incomplete"])
         self.assertEqual(self.index.nodes[""]["errors"], 2)
+        self.session("batch/one", "通过")
+        self.index.update({one})
+        self.assertTrue(self.index.nodes[""]["incomplete"], "incremental aggregation must preserve skipped links")
+        self.assertEqual(self.index.nodes[""]["errors"], 1)
 
     def test_watcher_detects_atomic_qc_replacement_and_ignores_media(self):
         one = self.session("batch/one", "通过")

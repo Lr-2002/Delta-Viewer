@@ -238,7 +238,8 @@ class TaskIndex:
     def aggregate(node):
         for key in COUNTS:
             node[key] = sum(child[key] for child in node["children"])
-        node["incomplete"] = any(child["incomplete"] for child in node["children"])
+        node["errors"] += int(bool(node["error"]))
+        node["incomplete"] = bool(node["error"]) or any(child["incomplete"] for child in node["children"])
 
     def publish(self, completed=False):
         mapping = {}
