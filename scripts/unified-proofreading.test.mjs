@@ -168,7 +168,7 @@ async function open(page, query, username = "review-test") {
   await page.locator('input[type="password"]').nth(1).fill("demo-password-123");
   await page.getByRole("button", { name: "创建并登录" }).click();
   await page.getByRole("navigation", { name: "工作区视图" }).waitFor();
-  await page.waitForFunction(() => document.querySelectorAll(".camera-grid .frame-panel").length === 5);
+  await page.waitForFunction(() => document.querySelectorAll(".camera-grid .frame-panel").length === 7);
 }
 
 test("review controls support segment/global play, shortcuts, splitting and saved edits", async () => {
@@ -558,7 +558,8 @@ test("missing machine JSON creates a full-video human segment, splits and reload
   await page.getByLabel("校对播放帧").fill("80");
   await page.waitForFunction(() => document.querySelector(".frame-counter").textContent === "帧 80 / 195");
   assert.equal(await page.getByRole("button", { name: "通过", exact: true }).isEnabled(), false);
-  assert.equal(await page.locator(".frame-panel").count(), 5);
+  assert.equal(await page.locator(".frame-panel").count(), 7);
+  assert.equal(await page.locator(".camera-placeholder").count(), 2);
   await page.getByRole("button", { name: "新增片段", exact: true }).click();
   assert.equal(await page.locator(".machine-segment").count(), 1);
   assert.equal(await page.getByLabel("复核起始帧", { exact: true }).inputValue(), "0");
