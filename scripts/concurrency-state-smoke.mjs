@@ -311,6 +311,7 @@ try {
           return args.handler;
         }
         if (command === "plugin:event|unlisten") return null;
+        if (command === "persist_review_audit" || command === "flush_review_audit_queue") return { pending: 0, blocked: 0, error: "" };
         if (command === "plugin:dialog|open") return "/source";
         if (command === "plugin:dialog|message") {
           return args.buttons?.OkCancelCustom?.[0] ?? args.buttons?.OkCustom ?? "Ok";
