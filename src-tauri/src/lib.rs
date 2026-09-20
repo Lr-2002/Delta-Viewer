@@ -15,6 +15,7 @@ mod model;
 mod mp4_preview_cache;
 mod operation_history;
 mod review_catalog;
+mod review_outbox;
 mod segment_bin;
 mod skeleton;
 mod source;
@@ -340,6 +341,46 @@ async fn record_review_audit(
         &username,
         &service_id,
         events,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn persist_review_audit(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    username: String,
+    service_id: String,
+    events: Vec<serde_json::Value>,
+) -> Result<review_outbox::OutboxStatus, String> {
+    let root = app_data_root(&app)?;
+    user_center::check_review_owner(&root, auth.inner(), &username, &service_id)
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        review_outbox::enqueue(&root, &service_id, &username, &events)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn flush_review_audit_queue(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    outbox: State<'_, review_outbox::OutboxState>,
+    username: String,
+    service_id: String,
+    retry_blocked: bool,
+) -> Result<review_outbox::OutboxStatus, String> {
+    user_center::flush_review_outbox(
+        &app_data_root(&app)?,
+        auth.inner(),
+        outbox.inner(),
+        &username,
+        &service_id,
+        retry_blocked,
     )
     .await
     .map_err(|error| error.to_string())
@@ -1660,6 +1701,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AuthState::default())
         .manage(TaskControl::default())
+        .manage(review_outbox::OutboxState::default())
         .manage(Arc::new(task_center::QcCache::default()))
         .manage(ValidationCache::default())
         .manage(SourceIndexCache::default())
@@ -1679,6 +1721,8 @@ pub fn run() {
             logout_account,
             record_annotation_audit,
             record_review_audit,
+            persist_review_audit,
+            flush_review_audit_queue,
             get_review_dashboard,
             get_supervision_dashboard,
             batch_create_supervision_accounts,

@@ -119,6 +119,9 @@ test("user center supports operator self-registration and administrator account 
     assert.equal((await request(port, ca, "GET", "/api/v1/admin/reviews")).status, 403);
     assert.equal((await request(port, ca, "GET", "/api/v1/admin/reviews", null, selfRegistered.body.token)).status, 403);
     assert.equal((await request(port, ca, "POST", "/api/v1/review/events", { events: [reviewEvent] }, login.body.token)).status, 403);
+    const expiredAudit = await request(port, ca, "POST", "/api/v1/review/events", { events: [reviewEvent] }, "expired-token");
+    assert.equal(expiredAudit.status, 401);
+    assert.equal(expiredAudit.body.error, "AUTH_REQUIRED");
     assert.equal((await request(port, ca, "POST", "/api/v1/review/events", { events: [{ ...reviewEvent, username: "supervisor" }] }, selfRegistered.body.token)).status, 400);
     for (let retry = 0; retry < 2; retry++) assert.equal((await request(port, ca, "POST", "/api/v1/review/events", { events: [reviewEvent] }, selfRegistered.body.token)).status, 200);
     const reviewDashboard = await request(port, ca, "GET", "/api/v1/admin/reviews", null, login.body.token);
@@ -482,7 +485,7 @@ test("user center supports operator self-registration and administrator account 
     assert.equal((await request(port, ca, "DELETE", deletePath, null, login.body.token)).status, 200, "retry is idempotent");
     for (const token of [relogin.body.token, selfRegistered.body.token]) {
       assert.equal((await request(port, ca, "GET", "/api/v1/auth/me", null, token)).status, 401);
-      assert.equal((await request(port, ca, "POST", "/api/v1/review/events", { events: [reviewEvent] }, token)).status, 403);
+      assert.equal((await request(port, ca, "POST", "/api/v1/review/events", { events: [reviewEvent] }, token)).status, 401);
     }
     assert.equal((await request(port, ca, "POST", "/api/v1/auth/login", {
       username: "selfoperator", password: "self-operator-password",

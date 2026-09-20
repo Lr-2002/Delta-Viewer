@@ -217,6 +217,11 @@ export async function sendReviewAudit(username: string, serviceId: string, event
   return { eventIds: events.map((event) => event.eventId) };
 }
 
+export const persistReviewAudit = (username: string, serviceId: string, events: import("./review-audit-types").ReviewAuditEvent[]) =>
+  invoke<import("./durable-review-audit-queue").ReviewOutboxStatus>("persist_review_audit", { username, serviceId, events });
+export const flushReviewAuditQueue = (username: string, serviceId: string, retryBlocked = false) =>
+  invoke<import("./durable-review-audit-queue").ReviewOutboxStatus>("flush_review_audit_queue", { username, serviceId, retryBlocked });
+
 export async function getReviewDashboard(query: Record<string, string> = {}): Promise<import("./review-audit-types").ReviewDashboardData> {
   if (isTauriRuntime()) return invoke("get_review_dashboard", { query });
   const stored = JSON.parse(localStorage.getItem("dohc.demo.review-events") ?? "[]") as import("./review-audit-types").ReviewEvent[];

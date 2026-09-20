@@ -304,6 +304,160 @@ pub async fn record_annotation_audit(
     Ok(())
 }
 
+pub(crate) fn check_review_owner(
+    data_root: &Path,
+    state: &AuthState,
+    username: &str,
+    service_id: &str,
+) -> AppResult<()> {
+    let user = state.require_managed_user()?;
+    let config = load_config(data_root)?;
+    if user.username != username
+        || user.role.as_deref() != Some("operator")
+        || config.service_id != service_id
+    {
+        return Err(AppError::Message("REVIEW_AUDIT_ACCOUNT_MISMATCH".into()));
+    }
+    Ok(())
+}
+
+async fn outbox_io<T: Send + 'static>(
+    job: impl FnOnce() -> AppResult<T> + Send + 'static,
+) -> AppResult<T> {
+    tauri::async_runtime::spawn_blocking(job)
+        .await
+        .map_err(|error| AppError::Message(error.to_string()))?
+}
+
+pub(crate) async fn flush_review_outbox(
+    data_root: &Path,
+    state: &AuthState,
+    outbox: &crate::review_outbox::OutboxState,
+    username: &str,
+    service_id: &str,
+    retry_blocked: bool,
+) -> AppResult<crate::review_outbox::OutboxStatus> {
+    use crate::review_outbox as store;
+    check_review_owner(data_root, state, username, service_id)?;
+    let guard = outbox.start();
+    let mut failure = String::new();
+    if guard.is_some() {
+        // Bound each flush; leave new/concurrent events durable for the next pass.
+        for pass in 0..20 {
+            let (root, service, user) = (
+                data_root.to_path_buf(),
+                service_id.to_string(),
+                username.to_string(),
+            );
+            let events =
+                outbox_io(move || store::batch(&root, &service, &user, retry_blocked && pass == 0))
+                    .await?;
+            if events.is_empty() {
+                break;
+            }
+            let result = review_audit(
+                data_root,
+                state,
+                username,
+                service_id,
+                serde_json::json!(events),
+            )
+            .await;
+            let results = match result {
+                Ok(ack) => vec![(events, Ok(ack))],
+                Err(error) if error.to_string().contains("REVIEW_EVENT_INVALID") => {
+                    // Isolate rejected events without changing timestamps or losing evidence.
+                    let mut results = Vec::new();
+                    for event in events {
+                        let ack = review_audit(
+                            data_root,
+                            state,
+                            username,
+                            service_id,
+                            serde_json::json!([event]),
+                        )
+                        .await;
+                        let stop = ack.as_ref().is_err_and(|error| {
+                            !error.to_string().contains("REVIEW_EVENT_INVALID")
+                        });
+                        results.push((vec![event], ack));
+                        if stop {
+                            break;
+                        }
+                    }
+                    results
+                }
+                Err(error) => {
+                    failure = error.to_string();
+                    break;
+                }
+            };
+            for (sent, result) in results {
+                let (root, service, user) = (
+                    data_root.to_path_buf(),
+                    service_id.to_string(),
+                    username.to_string(),
+                );
+                match result {
+                    Ok(ack) => {
+                        let acknowledged =
+                            ack.get("eventIds").and_then(serde_json::Value::as_array);
+                        let ids: Vec<String> = sent
+                            .iter()
+                            .filter_map(|event| {
+                                event.get("eventId").and_then(serde_json::Value::as_str)
+                            })
+                            .filter(|id| {
+                                acknowledged.is_some_and(|ids| {
+                                    ids.iter().any(|value| value.as_str() == Some(id))
+                                })
+                            })
+                            .map(str::to_owned)
+                            .collect();
+                        if ids.len() != sent.len() {
+                            failure = "审核事件尚未被服务确认".into();
+                        }
+                        outbox_io(move || store::acknowledge(&root, &service, &user, &ids)).await?;
+                    }
+                    Err(error)
+                        if error.to_string().contains("REVIEW_EVENT_INVALID")
+                            && sent.len() == 1 =>
+                    {
+                        let id = sent[0]
+                            .get("eventId")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let reason = error.to_string();
+                        outbox_io(move || store::block(&root, &service, &user, &id, &reason))
+                            .await?;
+                    }
+                    Err(error) => {
+                        failure = error.to_string();
+                    }
+                }
+            }
+            if !failure.is_empty() {
+                break;
+            }
+        }
+    }
+    let (root, service, user) = (
+        data_root.to_path_buf(),
+        service_id.to_string(),
+        username.to_string(),
+    );
+    let mut status = outbox_io(move || store::status(&root, &service, &user)).await?;
+    if !failure.is_empty() {
+        status.error = if status.error.is_empty() {
+            failure
+        } else {
+            format!("{failure}；{}", status.error)
+        };
+    }
+    Ok(status)
+}
+
 pub async fn review_audit(
     data_root: &Path,
     state: &AuthState,
@@ -327,7 +481,15 @@ pub async fn review_audit(
         .await
         .map_err(user_center_request_error)?;
     if !response.status().is_success() {
-        return Err(AppError::Message(remote_error(response).await));
+        let message = remote_error(response).await;
+        // Older servers reported an expired reviewer token as a role error.
+        return Err(AppError::Message(
+            if message.contains("REVIEWER_REQUIRED") {
+                "AUTH_REQUIRED: 审核登录已失效，请在当前页面重新登录后补传".into()
+            } else {
+                message
+            },
+        ));
     }
     response
         .json()

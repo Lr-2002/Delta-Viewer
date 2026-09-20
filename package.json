@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.0.36",
+  "version": "1.0.37",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -25,6 +25,7 @@
     "test:user-center": "node --test scripts/user-center-server.test.mjs && node --test --experimental-strip-types scripts/review-audit.test.mjs",
     "test:supervision-assignment": "node --test --experimental-strip-types scripts/supervision-assignment.test.ts",
     "test:task-center": "node --test scripts/task-center.test.mjs",
+    "test:review-audit:browser": "node --test scripts/review-audit-browser.test.mjs",
     "check:wiki": "node scripts/check-wiki.mjs",
     "check:windows-cross": "node scripts/windows-cross-check.mjs",
     "preview": "vite preview --host 0.0.0.0",

@@ -901,6 +901,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .alert-actions .text-button { margin-left: 0; }
 .audit-sync-notice { flex-wrap: wrap; padding-top: 6px; padding-bottom: 6px; }
 .audit-sync-notice > svg { flex: 0 0 auto; }
+.audit-sync-notice > span { min-width: 0; overflow-wrap: anywhere; }
 .audit-sync-login { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .audit-sync-login input { width: 180px; max-width: 100%; min-width: 0; }
 .audit-sync-login > span { overflow-wrap: anywhere; }

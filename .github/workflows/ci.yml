@@ -78,6 +78,9 @@ jobs:
       - name: Run task center interaction regressions
         run: pnpm test:task-center
 
+      - name: Run review audit recovery regressions
+        run: pnpm test:review-audit:browser
+
       - name: Run native MP4 playback regression coverage
         env:
           PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome

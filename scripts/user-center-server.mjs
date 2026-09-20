@@ -1256,7 +1256,8 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       }
       if (request.method === "POST" && url.pathname === "/api/v1/review/events") {
         const session = authorize(request);
-        if (!session || session.user.role !== "operator") return sendJson(response, 403, { error: "REVIEWER_REQUIRED" });
+        if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        if (session.user.role !== "operator") return sendJson(response, 403, { error: "REVIEWER_REQUIRED" });
         const body = await parseJsonBody(request, 256 * 1024);
         return sendJson(response, 200, reviewAudit.append(session.user, body.events));
       }

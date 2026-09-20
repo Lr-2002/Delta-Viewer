@@ -44,7 +44,7 @@ import { ProgressStrip } from "./components/ProgressStrip";
 import { TaskCenter } from "./components/TaskCenter";
 import { SkeletonViewer } from "./components/SkeletonViewer";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
-import { beginReviewAudit, configureReviewAudit, endReviewAudit, observeReviewInteractions, recordReviewInteraction, recordReviewSeek, updateReviewFrame } from "./lib/review-audit";
+import { beginReviewAudit, configureReviewAudit, endReviewAudit, observeReviewInteractions, persistPendingReviewAudit, recordReviewInteraction, recordReviewSeek, retryReviewAudit, updateReviewFrame } from "./lib/review-audit";
 import { TelemetryChart } from "./components/TelemetryChart";
 import {
   APP_VERSION,
@@ -1098,6 +1098,7 @@ function App() {
     if (operationScopeRef.current.current()) return;
     try {
       endReviewAudit();
+      await persistPendingReviewAudit();
       await logoutLocalAccount();
       resetWorkspaceData();
       setAuthStatus((current) => current ? { ...current, currentUser: null } : current);
@@ -1885,7 +1886,7 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {reviewAuditError && <p role="alert" className="review-audit-error">{reviewAuditError}</p>}
+          {reviewAuditError && currentUser && <AuditSyncNotice username={currentUser.username} error={reviewAuditError} onError={setReviewAuditError} onPendingChange={() => {}} flush={retryReviewAudit} autoRetry={false} message="监管记录同步状态" />}
           {data || view === "batch" ? (
             <>
               <nav className="view-tabs" aria-label="工作区视图">
