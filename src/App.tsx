@@ -721,16 +721,23 @@ function App() {
     return () => window.cancelAnimationFrame(animationFrame);
   }, [availableStreams, data, playbackFps, playing, primaryPlaybackEndFrame, primarySourceFps, primaryStreamName, speed]);
 
-  async function openSource(path: string, autoLoad = false, assignment = assignedTasks) {
-    if (reviewUnsaved.current) { setNotice("正在保存当前修改，请稍候。"); return; }
+  async function openSource(path: string, autoLoad = false, assignment = assignedTasks, propagateFailure = false) {
+    if (reviewUnsaved.current) {
+      if (propagateFailure) throw new Error("正在保存当前修改，请稍候。");
+      setNotice("正在保存当前修改，请稍候。"); return;
+    }
     const owner = beginOperation();
-    if (!owner) return;
+    if (!owner) {
+      if (propagateFailure) throw new Error("当前操作尚未完成，请稍后打开任务");
+      return;
+    }
     resetOperationFeedback(owner);
     let operation = "scan_source";
     let loadingEpisode: EpisodeSummary | null = null;
     try {
       const result = await scanSource(path, owner.id);
       ensureOperationActive(owner);
+      if (propagateFailure && autoLoad && !result.episodes.length) throw new Error("该目录未发现可加载的数据，请检查批次目录是否完整。");
       const assignmentView = assignmentFilterForSource(
         result.episodes,
         assignment,
@@ -774,6 +781,7 @@ function App() {
         }));
       }
       await reportFailure(operation, reason, path, owner);
+      if (propagateFailure) throw reason;
     } finally {
       finishOperation(owner);
     }
@@ -1763,7 +1771,7 @@ function App() {
           currentUser={currentUser}
           onOpen={async (root) => {
             if (reviewUnsaved.current || busy) throw new Error("当前操作尚未完成，请稍后打开任务");
-            await openSource(root, true, []);
+            await openSource(root, true, [], true);
           }}
           onClose={() => setPersonalTaskOpen(false)}
         />
