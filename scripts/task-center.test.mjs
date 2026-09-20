@@ -13,7 +13,10 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     response.end(await server.transformIndexHtml(request.url, `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module">
       import React from 'react'; import {createRoot} from 'react-dom/client';
       import {TaskCenter} from '/src/components/TaskCenter.tsx'; import '/src/styles.css';
-      createRoot(document.getElementById('root')).render(React.createElement('div', {className:'personal-task-overlay'}, React.createElement(TaskCenter, {currentUser:{username:'alice',displayName:'审核甲',role:'operator'},onClose:()=>{},onOpen:async(root)=>{window.openedTask=root;}})));
+      const root = createRoot(document.getElementById('root'));
+      window.hideTask = () => root.render(null);
+      window.showTask = () => root.render(React.createElement('div', {className:'personal-task-overlay'}, React.createElement(TaskCenter, {currentUser:{username:'alice',displayName:'审核甲',role:'operator'},onClose:()=>{},onOpen:async(root)=>{window.openedTask=root;}})));
+      window.showTask();
     </script></body></html>`));
     });
   } }] });
@@ -21,7 +24,8 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
   const executablePath = process.env.PLAYWRIGHT_CHROMIUM ?? ["/usr/bin/google-chrome", "/usr/bin/chromium"].find(existsSync) ?? chromium.executablePath();
   const browser = await chromium.launch({ executablePath, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  page.on("pageerror", (error) => console.error(error));
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
   try {
     await page.addInitScript(() => {
       const leaf = (name, status) => ({ name, relativePath: `2026-09-03-Fridge2/${name}`, batchKey: "c".repeat(64), session: true, status, error: "", total: 1, reviewed: status === "pending" ? 0 : 1, approved: Number(status === "approved"), rejected: Number(status === "rejected"), errors: 0, incomplete: false, children: [] });
@@ -30,14 +34,22 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
       tree.relativePath = "";
       const root = "\\\\10.1.40.2\\Datasets\\Delta-D1";
       const claims = { ["a".repeat(64)]: { batchKey: "a".repeat(64), username: "bob", displayName: "审核乙", claimedAtMs: Date.now() } };
-      window.taskFixture = { tree, claims, offline: false, calls: [] };
-      window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+      window.taskFixture = { tree, claims, offline: false, calls: [], delayScan: true };
+      window.__TAURI_INTERNALS__ = { transformCallback: () => 1, unregisterCallback: () => {}, invoke: async (command, args) => {
         window.taskFixture.calls.push(command);
         if (command === "get_task_center_root") return root;
         if (command === "scan_task_center") {
+          if (window.taskFixture.delayListing) await new Promise((resolve) => { window.taskFixture.finishListing = resolve; });
+          const listing = structuredClone(tree);
+          listing.scanning = true;
+          listing.children = listing.children.map((child) => ({ ...child, total: 0, reviewed: 0, scanning: true, children: [] }));
+          args.onUpdate.onmessage({ kind: "catalog", catalog: { sourceRoot: root, tree: listing } });
+          args.onUpdate.onmessage({ kind: "batch", node: { ...structuredClone(tree.children[0]), scanning: false } });
+          args.onUpdate.onmessage({ kind: "progress", sessions: 2, path: "2026-09-02-Oven/Oven_001", elapsedMs: 123 });
           if (window.taskFixture.delayScan) await new Promise((resolve) => { window.taskFixture.finishScan = resolve; });
           return { sourceRoot: root, tree: structuredClone(tree) };
         }
+        if (command === "cancel_task") { window.taskFixture.finishScan?.(); return true; }
         if (command === "task_center_claims") {
           if (window.taskFixture.offline) throw Error("用户中心连接中断");
           if (args.action === "lookup") return { claims: Object.values(claims) };
@@ -50,6 +62,13 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     });
     await page.goto(`${server.resolvedUrls.local[0]}__task-center-test`);
     await page.getByRole("button", { name: "已被领取", exact: true }).waitFor();
+    assert.equal(await page.locator(".task-tree").getAttribute("aria-busy"), "true", "batch rows must be visible before full scan completes");
+    assert.equal(await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).isVisible(), true);
+    assert.equal(await page.getByRole("button", { name: "领取", exact: true }).first().isDisabled(), true, "unknown totals must not authorize claims");
+    await page.getByText("2026-09-02-Oven/Oven_001", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.taskFixture.calls.filter((command) => command === "task_center_claims").length), 1, "claims lookup must start before QC finishes");
+    await page.evaluate(() => { window.taskFixture.delayScan = false; window.taskFixture.finishScan(); });
+    await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
     assert.equal(await page.getByRole("button", { name: "已被领取", exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "领取", exact: true }).count(), 2);
     await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).click();
@@ -58,6 +77,15 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.getByRole("button", { name: "领取", exact: true }).first().click();
     await page.getByRole("button", { name: "已领取", exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "已领取", exact: true }).isDisabled(), true);
+    await page.evaluate(() => { window.hideTask(); window.taskFixture.delayListing = true; });
+    await page.locator(".task-center").waitFor({ state: "detached" });
+    await page.evaluate(() => window.showTask());
+    await page.waitForFunction(() => typeof window.taskFixture.finishListing === "function");
+    assert.equal(await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).isVisible(), true, "cached batches must display before NAS listing responds");
+    assert.equal(await page.getByRole("button", { name: "领取", exact: true }).isDisabled(), true, "cached totals need revalidation before claiming");
+    await page.evaluate(() => { window.taskFixture.delayListing = false; window.taskFixture.finishListing(); });
+    await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
+    await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).click();
     await page.getByRole("button", { name: "刷新任务进度", exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
     assert.equal(await page.getByRole("button", { name: "Fridge2_001", exact: true }).isVisible(), true);
@@ -66,7 +94,9 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.waitForFunction(() => typeof window.taskFixture.finishScan === "function");
     await page.getByRole("button", { name: "Fridge2_001", exact: true }).click();
     assert.match(await page.evaluate(() => window.openedTask), /Fridge2_001$/);
-    await page.evaluate(() => { window.taskFixture.delayScan = false; window.taskFixture.finishScan(); });
+    await page.evaluate(() => { window.taskFixture.delayScan = false; });
+    await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
+    await page.getByRole("button", { name: "刷新任务进度", exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
     await mkdir("artifacts/task-center", { recursive: true });
     await page.screenshot({ path: "artifacts/task-center/desktop.png", fullPage: true });
@@ -85,5 +115,6 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.getByRole("alert").waitFor();
     assert.equal(await page.getByRole("button", { name: "领取", exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "Fridge2_001", exact: true }).isVisible(), true);
+    assert.deepEqual(errors, []);
   } finally { await browser.close(); await server.close(); }
 });

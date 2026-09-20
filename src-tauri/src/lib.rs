@@ -774,15 +774,36 @@ async fn set_task_center_root(
 #[tauri::command]
 async fn scan_task_center(
     auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    cache: State<'_, Arc<task_center::QcCache>>,
     source_root: String,
+    operation_id: u64,
+    force: bool,
+    on_update: tauri::ipc::Channel<task_center::ScanUpdate>,
 ) -> Result<task_center::TaskCatalog, String> {
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let cache = cache.inner().clone();
     ensure_source_directory_responsive(&source_root).await?;
-    tauri::async_runtime::spawn_blocking(move || task_center::scan(Path::new(&source_root)))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = task;
+        task_center::scan_streaming(
+            Path::new(&source_root),
+            &cache,
+            force,
+            &cancelled,
+            &|update| {
+                if on_update.send(update).is_err() {
+                    cancelled.store(true, Ordering::Release);
+                }
+            },
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1639,6 +1660,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AuthState::default())
         .manage(TaskControl::default())
+        .manage(Arc::new(task_center::QcCache::default()))
         .manage(ValidationCache::default())
         .manage(SourceIndexCache::default())
         .manage(Mp4PreviewCache::default())
