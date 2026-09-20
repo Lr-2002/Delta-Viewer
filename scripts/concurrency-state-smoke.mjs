@@ -176,7 +176,7 @@ try {
       cancelOperationIds: [],
     };
     const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JrJ4AAAAASUVORK5CYII=";
-    const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right", ...(location.search === '?task-center' ? ['cam3', 'cam4'] : [])].map((name) => ({
+    const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right", ...(location.search === '?task-center' ? ['wrist_left', '右手相机'] : [])].map((name) => ({
       name,
       label: name,
       frameCount: 1,

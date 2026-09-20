@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const STREAM_NAMES: [&str; 5] = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
-pub const OPTIONAL_STREAM_NAMES: [&str; 2] = ["cam3", "cam4"];
 pub const VALIDATION_REPORT_FORMAT_VERSION: u32 = 7;
 pub const EXPECTED_STATE_FRAME_RATE_FPS: u32 = 30;
 pub const STATE_FRAME_RATE_TOLERANCE_PERCENT: u8 = 5;

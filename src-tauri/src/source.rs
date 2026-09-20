@@ -1,7 +1,7 @@
 use crate::error::{AppError, AppResult};
 use crate::model::{
     EpisodeData, EpisodeSummary, ProgressPayload, RawStateRecord, ScanResult, StateRecord,
-    StreamSummary, TaskProgressEvent, VideoSource, OPTIONAL_STREAM_NAMES, STREAM_NAMES,
+    StreamSummary, TaskProgressEvent, VideoSource, STREAM_NAMES,
 };
 use crate::segment_bin::{self, SegmentEpisodeIndex};
 use crate::storage;
@@ -178,7 +178,7 @@ pub fn load_episode_preview(
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
     let mut frame_file_count = 0_u64;
     let mp4_manifest = read_mp4_manifest(root)?;
-    let stream_names = episode_stream_names(root, mp4_manifest.as_ref());
+    let stream_names = episode_stream_names(root, mp4_manifest.as_ref())?;
     for (index, stream_name) in stream_names.iter().enumerate() {
         check_cancelled(cancelled)?;
         if let Some(manifest) = mp4_manifest.as_ref() {
@@ -599,17 +599,55 @@ struct Mp4Manifest {
 }
 
 fn supported_stream(name: &str) -> bool {
-    STREAM_NAMES.contains(&name) || OPTIONAL_STREAM_NAMES.contains(&name)
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | ':'))
 }
 
-fn episode_stream_names(root: &Path, manifest: Option<&Mp4Manifest>) -> Vec<&'static str> {
-    STREAM_NAMES
+fn episode_stream_names(root: &Path, manifest: Option<&Mp4Manifest>) -> AppResult<Vec<String>> {
+    let mut extra = BTreeSet::new();
+    if let Some(manifest) = manifest {
+        for name in manifest.streams.keys() {
+            if supported_stream(name) && !STREAM_NAMES.contains(&name.as_str()) {
+                extra.insert(name.clone());
+            }
+        }
+    } else {
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !entry.file_type()?.is_dir()
+                || !supported_stream(&name)
+                || STREAM_NAMES.contains(&name.as_str())
+            {
+                continue;
+            }
+            for file in fs::read_dir(entry.path())? {
+                let file = file?;
+                let path = file.path();
+                if file.file_type()?.is_file()
+                    && path
+                        .extension()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("jpg"))
+                    && path
+                        .file_stem()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(|stem| stem.parse::<u64>().is_ok())
+                {
+                    extra.insert(name);
+                    break;
+                }
+            }
+        }
+    }
+    Ok(STREAM_NAMES
         .into_iter()
-        .chain(OPTIONAL_STREAM_NAMES.into_iter().filter(|name| {
-            is_regular_directory(&root.join(name))
-                || manifest.is_some_and(|manifest| manifest.streams.contains_key(*name))
-        }))
-        .collect()
+        .map(String::from)
+        .chain(extra)
+        .collect())
 }
 
 impl Mp4Manifest {
@@ -695,9 +733,9 @@ fn recording_timeline(
             first.get_or_insert((frame, time));
             last = Some((frame, time));
         }
-        for stream in STREAM_NAMES.into_iter().chain(OPTIONAL_STREAM_NAMES) {
+        for stream in streams.keys() {
             if value["availability"][stream].as_bool() == Some(true) {
-                starts.entry(stream.into()).or_insert(frame);
+                starts.entry(stream.clone()).or_insert(frame);
             }
         }
     }
@@ -862,10 +900,10 @@ pub fn scan_episode_index(
     let fingerprint = fingerprint_indexed_files(&indexed_files);
     if let Some(segment) = segment {
         let mp4_manifest = read_mp4_manifest(root)?;
-        let streams = episode_stream_names(root, mp4_manifest.as_ref())
+        let streams = episode_stream_names(root, mp4_manifest.as_ref())?
             .iter()
             .map(|stream_name| {
-                if segment.streams.contains_key(*stream_name) {
+                if segment.streams.contains_key(stream_name) {
                     segment_stream_summary(&segment, stream_name)
                 } else if let Some(manifest) = mp4_manifest.as_ref() {
                     Ok(mp4_stream_summary(root, stream_name, manifest))
@@ -904,7 +942,7 @@ pub fn scan_episode_index(
     let (state_count, start_time_ns, end_time_ns) = summarize_states(&states_path, cancelled)?;
 
     let mp4_manifest = read_mp4_manifest(root)?;
-    let stream_names = episode_stream_names(root, mp4_manifest.as_ref());
+    let stream_names = episode_stream_names(root, mp4_manifest.as_ref())?;
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
     let mut stream_files_by_name = BTreeMap::new();
     for (index, stream_name) in stream_names.iter().enumerate() {
@@ -1248,6 +1286,11 @@ fn inspect_episode_directory(
     root: &Path,
     cancelled: &AtomicBool,
 ) -> AppResult<(bool, Vec<PathBuf>)> {
+    if is_regular_file(&root.join("manifest.json"))
+        || is_regular_file(&root.join(".session_meta/manifest.json"))
+    {
+        return Ok((true, Vec::new()));
+    }
     let mut child_directories = Vec::new();
     for entry in fs::read_dir(root)? {
         check_cancelled(cancelled)?;
@@ -1262,7 +1305,6 @@ fn inspect_episode_directory(
             }
             if STREAM_NAMES
                 .iter()
-                .chain(OPTIONAL_STREAM_NAMES.iter())
                 .any(|stream_name| name == OsStr::new(stream_name))
             {
                 return Ok((true, Vec::new()));
@@ -1309,8 +1351,6 @@ fn stream_label(stream_name: &str) -> &str {
         "cam0" => "Camera 0",
         "cam1" => "Camera 1",
         "cam2" => "Camera 2",
-        "cam3" => "Camera 3",
-        "cam4" => "Camera 4",
         "t265_left" => "T265 Left",
         "t265_right" => "T265 Right",
         _ => stream_name,
@@ -1829,8 +1869,9 @@ mod tests {
 
     #[test]
     fn optional_cameras_load_jpeg_and_mp4_without_changing_legacy_streams() {
-        use super::{jpeg_stream_directory, OPTIONAL_STREAM_NAMES};
+        use super::jpeg_stream_directory;
         use std::collections::BTreeMap;
+        const OPTIONAL_STREAM_NAMES: [&str; 2] = ["wrist_left", "右手相机"];
         let root = test_output("optional-cameras");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("states.jsonl"), "").unwrap();

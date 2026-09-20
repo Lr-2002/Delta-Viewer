@@ -228,7 +228,8 @@ test("keeps decoded tiles visible through delayed playback and retains the works
       document.querySelector(".alert-error")?.textContent?.includes("FRAME_UNAVAILABLE")
     ));
     assert.equal(await page.locator(".camera-grid").count(), 1);
-    assert.equal(await page.locator(".frame-panel").count(), 5);
+    assert.equal(await page.locator(".frame-panel:not(.camera-placeholder)").count(), 5);
+    assert.equal(await page.locator(".camera-placeholder").count(), 2);
     await page.getByRole("button", { name: "上一帧", exact: true }).click();
     await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 60 / 195"));
     await page.waitForFunction(() => [...document.querySelectorAll(".camera-grid img[aria-hidden='false']")].some((image) => image.alt === "Camera 0 frame 60"));
