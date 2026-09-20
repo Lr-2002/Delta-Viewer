@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, ListFilter, X } from "lucide-react";
 import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex } from "../lib/backend";
 import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus } from "../lib/task-center";
 import type { UserIdentity } from "../types";
@@ -18,6 +18,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const [catalog, setCatalog] = useState<TaskCatalog | null>(null);
   const [claims, setClaims] = useState<Record<string, BatchClaim>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
+  const [pendingOnlyBatch, setPendingOnlyBatch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [claimError, setClaimError] = useState("");
@@ -64,7 +65,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   useEffect(() => {
     const cached = getCachedTaskCatalog(currentUser.username, root);
     setCatalog(cached?.catalog ?? null); setServer(null); setLoadingNodes(new Set()); setRequestNotice("");
-    setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setError(""); setClaimError(""); setOpenError("");
+    setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setPendingOnlyBatch(""); setError(""); setClaimError(""); setOpenError("");
   }, [root, currentUser.username]);
   useEffect(() => {
     if (!root) return;
@@ -174,11 +175,9 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     try { await enterNode(node, root); }
     finally { actionActive.current = false; if (alive.current) setPending(""); }
   }
-  async function toggle(node: TaskNode) {
+  async function loadChildren(node: TaskNode) {
     const path = node.relativePath;
-    const opening = !expanded.has(path);
-    setExpanded((previous) => { const next = new Set(previous); if (next.has(path)) next.delete(path); else next.add(path); return next; });
-    if (!opening || node.childrenLoaded !== false || loadingNodes.has(path)) return;
+    if (node.childrenLoaded !== false || loadingNodes.has(path)) return;
     const selectedRoot = root;
     setLoadingNodes((previous) => new Set(previous).add(path));
     try {
@@ -189,11 +188,28 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     } catch (reason) { if (alive.current && rootRef.current === selectedRoot) setError(String(reason)); }
     finally { if (alive.current && rootRef.current === selectedRoot) setLoadingNodes((previous) => { const next = new Set(previous); next.delete(path); return next; }); }
   }
+  async function toggle(node: TaskNode) {
+    const path = node.relativePath;
+    const opening = !expanded.has(path);
+    setExpanded((previous) => { const next = new Set(previous); if (next.has(path)) next.delete(path); else next.add(path); return next; });
+    if (opening) await loadChildren(node);
+  }
+  async function togglePendingOnly(node: TaskNode) {
+    if (pendingOnlyBatch === node.batchKey) {
+      setPendingOnlyBatch("");
+      return;
+    }
+    setPendingOnlyBatch(node.batchKey);
+    setExpanded((previous) => new Set(previous).add(node.relativePath));
+    await loadChildren(node);
+  }
   function row(node: TaskNode, depth: number): React.ReactNode {
     const isRoot = depth === 0;
     const isBatch = depth === 1 || (isRoot && node.session);
     const open = expanded.has(node.relativePath);
     const claim = claims[node.batchKey];
+    const filteringThisBatch = pendingOnlyBatch === node.batchKey;
+    const children = filteringThisBatch ? node.children.filter((child) => child.session && child.status === "pending") : node.children;
     const percent = node.total && !node.incomplete && !node.scanning ? Math.floor(node.reviewed * 100 / node.total) : null;
     return <div key={node.relativePath} className="task-tree-node">
       <div className={`task-tree-row${isRoot ? " task-tree-root" : ""}${node.session ? " task-tree-session" : ""}`} style={{ "--tree-depth": depth } as React.CSSProperties}>
@@ -210,6 +226,9 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
               <b>{percent === null ? "--" : `${percent}%`}</b><small>{node.scanning ? loading ? "统计中" : "未完成" : `${node.reviewed}/${node.total}`}{node.errors ? ` · ${node.errors} 异常` : ""}</small>
             </span></>}
         {isBatch && <div className="task-claim-actions">
+          <button type="button" className="button button-secondary task-pending-filter" disabled={Boolean(pending) || Boolean(loadingNodes.has(node.relativePath))} onClick={() => void togglePendingOnly(node)}>
+            <ListFilter size={14} />{filteringThisBatch ? "显示全部" : "仅未审核"}
+          </button>
           {admin ? claim ? <><button type="button" className="button button-secondary" disabled={Boolean(pending) || !claimsReady} onClick={() => { setTransferKey(node.batchKey); setTransferUser(""); }}>转交</button><button type="button" className="button button-secondary" disabled={Boolean(pending) || !claimsReady} onClick={() => void changeClaim("release", node)}>释放</button></> : <span>未领取</span>
             : <button type="button" className="button button-secondary" disabled={Boolean(claim && claim.username !== currentUser.username) || Boolean(pending) || Boolean(error) || !claimsReady || !onOpen || !node.total || node.incomplete || node.scanning} onClick={() => claim?.username === currentUser.username ? void openNode(node) : void changeClaim("claim", node)}>
               {claim?.username === currentUser.username ? <FolderOpen size={14} /> : claim ? <Check size={14} /> : <UserCheck size={14} />}{pending === node.batchKey ? opening ? "正在加载" : "提交中" : claim?.username === currentUser.username ? "进入审核" : claim ? "已被领取" : "领取"}
@@ -221,7 +240,8 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
         <button type="submit" className="button button-primary" disabled={!transferUser.trim() || Boolean(pending)}>确认转交</button>
         <button type="button" className="button" onClick={() => setTransferKey("")}>取消</button>
       </form>}
-      {open && !node.session && node.children.map((child) => row(child, depth + 1))}
+      {open && !node.session && children.map((child) => row(child, depth + 1))}
+      {open && filteringThisBatch && !loadingNodes.has(node.relativePath) && children.length === 0 && <p className="task-empty">当前批次没有未审核数据</p>}
       {open && loadingNodes.has(node.relativePath) && <p className="task-empty">正在读取目录明细…</p>}
     </div>;
   }

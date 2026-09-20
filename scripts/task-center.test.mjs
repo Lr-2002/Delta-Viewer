@@ -77,6 +77,14 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).click();
     await page.getByRole("button", { name: "Fridge2_001", exact: true }).waitFor();
     assert.equal(await page.getByText("已审核 · 不通过", { exact: true }).count(), 1);
+    const pendingFilter = page.getByRole("button", { name: "仅未审核", exact: true }).nth(2);
+    await pendingFilter.click();
+    await page.getByRole("button", { name: "显示全部", exact: true }).waitFor();
+    assert.equal(await page.getByText("已审核 · 通过", { exact: true }).count(), 0, "pending filter hides approved sessions");
+    assert.equal(await page.getByText("已审核 · 不通过", { exact: true }).count(), 0, "pending filter hides rejected sessions");
+    assert.equal(await page.getByText("未审核", { exact: true }).count(), 2, "pending filter keeps only unreviewed sessions");
+    await page.getByRole("button", { name: "显示全部", exact: true }).click();
+    await page.getByText("已审核 · 不通过", { exact: true }).waitFor();
     await page.evaluate(() => { window.taskFixture.delayOpen = true; });
     await page.getByRole("button", { name: "领取", exact: true }).first().evaluate((button) => { button.click(); button.click(); });
     await page.getByRole("button", { name: "正在加载", exact: true }).waitFor();
