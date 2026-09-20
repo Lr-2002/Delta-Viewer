@@ -15,7 +15,7 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
       import {TaskCenter} from '/src/components/TaskCenter.tsx'; import '/src/styles.css';
       const root = createRoot(document.getElementById('root'));
       window.hideTask = () => root.render(null);
-      window.showTask = () => root.render(React.createElement('div', {className:'personal-task-overlay'}, React.createElement(TaskCenter, {currentUser:{username:'alice',displayName:'审核甲',role:'operator'},onClose:()=>{},onOpen:async(root)=>{window.openedTask=root;}})));
+      window.showTask = (role='operator') => root.render(React.createElement('div', {className:'personal-task-overlay'}, React.createElement(TaskCenter, {currentUser:{username:'alice',displayName:'审核甲',role},onClose:()=>{},onOpen:async(root)=>{window.openedTask=root;}})));
       window.showTask();
     </script></body></html>`));
     });
@@ -34,22 +34,20 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
       tree.relativePath = "";
       const root = "\\\\10.1.40.2\\Datasets\\Delta-D1";
       const claims = { ["a".repeat(64)]: { batchKey: "a".repeat(64), username: "bob", displayName: "审核乙", claimedAtMs: Date.now() } };
-      window.taskFixture = { tree, claims, offline: false, calls: [], delayScan: true };
+      window.taskFixture = { tree, claims, offline: false, calls: [], nodeCalls: [], serverError: '', running: false };
       window.__TAURI_INTERNALS__ = { transformCallback: () => 1, unregisterCallback: () => {}, invoke: async (command, args) => {
         window.taskFixture.calls.push(command);
         if (command === "get_task_center_root") return root;
-        if (command === "scan_task_center") {
+        if (command === "read_task_index") {
           if (window.taskFixture.delayListing) await new Promise((resolve) => { window.taskFixture.finishListing = resolve; });
-          const listing = structuredClone(tree);
-          listing.scanning = true;
-          listing.children = listing.children.map((child) => ({ ...child, total: 0, reviewed: 0, scanning: true, children: [] }));
-          args.onUpdate.onmessage({ kind: "catalog", catalog: { sourceRoot: root, tree: listing } });
-          args.onUpdate.onmessage({ kind: "batch", node: { ...structuredClone(tree.children[0]), scanning: false } });
-          args.onUpdate.onmessage({ kind: "progress", sessions: 2, path: "2026-09-02-Oven/Oven_001", elapsedMs: 123 });
-          if (window.taskFixture.delayScan) await new Promise((resolve) => { window.taskFixture.finishScan = resolve; });
-          return { sourceRoot: root, tree: structuredClone(tree) };
+          window.taskFixture.nodeCalls.push(args.relativePath);
+          const listing = structuredClone(args.relativePath ? tree.children.find((node) => node.relativePath === args.relativePath) : tree);
+          listing.childrenLoaded = true;
+          listing.children = listing.children.map((child) => ({ ...child, childrenLoaded: child.session, children: [] }));
+          return { catalog: { sourceRoot: root, tree: listing }, server: { completedAtMs: Date.UTC(2026,8,19,15,18), updatedAtMs: Date.UTC(2026,8,19,15,18), heartbeatAtMs: Date.now(), running: window.taskFixture.running, sessions: 5418, error: window.taskFixture.serverError, schedule: '23:00 Asia/Shanghai' } };
         }
-        if (command === "cancel_task") { window.taskFixture.finishScan?.(); return true; }
+        if (command === "plugin:dialog|message") return '确认';
+        if (command === "rebuild_task_index") return;
         if (command === "task_center_claims") {
           if (window.taskFixture.offline) throw Error("用户中心连接中断");
           if (args.action === "lookup") return { claims: Object.values(claims) };
@@ -62,13 +60,11 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     });
     await page.goto(`${server.resolvedUrls.local[0]}__task-center-test`);
     await page.getByRole("button", { name: "已被领取", exact: true }).waitFor();
-    assert.equal(await page.locator(".task-tree").getAttribute("aria-busy"), "true", "batch rows must be visible before full scan completes");
     assert.equal(await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).isVisible(), true);
-    assert.equal(await page.getByRole("button", { name: "领取", exact: true }).first().isDisabled(), true, "unknown totals must not authorize claims");
-    await page.getByText("2026-09-02-Oven/Oven_001", { exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => window.taskFixture.calls.filter((command) => command === "task_center_claims").length), 1, "claims lookup must start before QC finishes");
-    await page.evaluate(() => { window.taskFixture.delayScan = false; window.taskFixture.finishScan(); });
     await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
+    assert.match(await page.locator('.task-scan-status').innerText(), /服务器最近统计完成.*2026\/9\/19 23:18/);
+    assert.deepEqual(await page.evaluate(() => window.taskFixture.nodeCalls), [''], 'opening reads one summary and no session directories');
+    assert.equal(await page.getByRole('button', {name:'立即统计', exact:true}).count(), 0);
     assert.equal(await page.getByRole("button", { name: "已被领取", exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "领取", exact: true }).count(), 2);
     await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).click();
@@ -82,19 +78,15 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.evaluate(() => window.showTask());
     await page.waitForFunction(() => typeof window.taskFixture.finishListing === "function");
     assert.equal(await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).isVisible(), true, "cached batches must display before NAS listing responds");
-    assert.equal(await page.getByRole("button", { name: "领取", exact: true }).isDisabled(), true, "cached totals need revalidation before claiming");
+    assert.equal(await page.getByText('领取人：审核乙 (@bob)', {exact:true}).isVisible(), true);
     await page.evaluate(() => { window.taskFixture.delayListing = false; window.taskFixture.finishListing(); });
     await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
     await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).click();
     await page.getByRole("button", { name: "刷新任务进度", exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
     assert.equal(await page.getByRole("button", { name: "Fridge2_001", exact: true }).isVisible(), true);
-    await page.evaluate(() => { window.taskFixture.delayScan = true; });
-    await page.getByRole("button", { name: "刷新任务进度", exact: true }).click();
-    await page.waitForFunction(() => typeof window.taskFixture.finishScan === "function");
     await page.getByRole("button", { name: "Fridge2_001", exact: true }).click();
     assert.match(await page.evaluate(() => window.openedTask), /Fridge2_001$/);
-    await page.evaluate(() => { window.taskFixture.delayScan = false; });
     await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
     await page.getByRole("button", { name: "刷新任务进度", exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
@@ -110,11 +102,25 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
       }
     }
     await page.screenshot({ path: "artifacts/task-center/mobile.png", fullPage: true });
+    await page.evaluate(() => { window.taskFixture.running = true; });
+    await page.getByRole('button', { name: '刷新任务进度', exact: true }).click();
+    await page.getByText('服务器正在统计 · 已统计 5418 条 · 显示上次结果', {exact:true}).waitFor();
+    assert.equal(await page.getByRole('button', {name:'领取',exact:true}).isDisabled(), false, 'background rebuild does not block existing batches');
+    await page.evaluate(() => { window.taskFixture.running = false; window.taskFixture.serverError = '统计失败：权限不足'; });
+    await page.getByRole('button', { name: '刷新任务进度', exact: true }).click();
+    await page.getByText('统计失败：权限不足；保留上次成功结果', {exact:true}).waitFor();
+    assert.match(await page.locator('.task-scan-status').innerText(), /2026\/9\/19 23:18/);
+    await page.evaluate(() => { window.taskFixture.serverError = ''; window.showTask('admin'); });
+    await page.getByRole('button', {name:'立即统计',exact:true}).click();
+    await page.getByText('已请求服务器统计', {exact:true}).waitFor();
+    assert.equal(await page.evaluate(() => window.taskFixture.calls.filter((cmd) => cmd === 'rebuild_task_index').length), 1);
+    await page.evaluate(() => window.showTask());
     await page.evaluate(() => { window.taskFixture.offline = true; });
     await page.getByRole("button", { name: "刷新任务进度", exact: true }).click();
     await page.getByRole("alert").waitFor();
     assert.equal(await page.getByRole("button", { name: "领取", exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "Fridge2_001", exact: true }).isVisible(), true);
+    assert.equal(await page.evaluate(() => window.taskFixture.calls.includes('scan_task_center')), false, 'open/refresh/expand must never invoke a full source scan');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); await server.close(); }
 });

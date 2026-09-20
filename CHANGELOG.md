@@ -3,6 +3,13 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.39 - 2026-09-20
+
+- 任务中心直接读取 NAS 预计算索引，打开和刷新不再重复全量扫描 QC，目录明细按展开加载。
+- 服务器每天北京时间 23:00 自动完整统计；白天监听 QC 原子保存并增量更新，服务重启后自动校准。
+- 顶部显示服务器最近统计完成时间、增量更新时间、后台统计进度及服务异常；失败保留上次成功结果。
+- 管理员可立即启动服务器统计，普通刷新只获取已有结果；批次领取归属与原 QC 审核规则保持一致。
+
 ## 1.0.38 - 2026-09-20
 
 - 包含 1.0.37 的本地监管队列、缓存迁移和原地登录补传修复；1.0.37 未发布安装包。

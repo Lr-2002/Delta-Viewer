@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Square, UserCheck, X } from "lucide-react";
-import { chooseDirectory, confirmAction } from "../lib/backend";
-import { cacheTaskCatalog, cancelTaskCenterScan, getCachedTaskCatalog, getTaskCenterRoot, markTaskCatalogStale, mergeTaskBatch, setTaskCenterRoot, lookupClaims, mutateClaim, scanTaskCenter, type BatchClaim, type TaskCatalog, type TaskNode, type TaskScanUpdate } from "../lib/task-center";
+import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, X } from "lucide-react";
+import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex } from "../lib/backend";
+import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus } from "../lib/task-center";
 import type { UserIdentity } from "../types";
 import "./task-center.css";
 
@@ -25,17 +25,17 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const [pending, setPending] = useState("");
   const [revision, setRevision] = useState(0);
   const [claimRevision, setClaimRevision] = useState(0);
-  const [scanStatus, setScanStatus] = useState({ sessions: 0, path: "", startedAt: 0 });
-  const [elapsed, setElapsed] = useState(0);
-  const [updatedAt, setUpdatedAt] = useState(0);
-  const [stopping, setStopping] = useState(false);
+  const [server, setServer] = useState<TaskIndexStatus | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const [requestNotice, setRequestNotice] = useState("");
+  const [loadingNodes, setLoadingNodes] = useState<Set<string>>(new Set());
   const [transferKey, setTransferKey] = useState("");
   const [transferUser, setTransferUser] = useState("");
   const alive = useRef(true);
   const panelRef = useRef<HTMLElement>(null);
   const rootRef = useRef(root); rootRef.current = root;
-  const stopRequested = useRef(false);
-  const forceRefresh = useRef(false);
+  const expandedRef = useRef(expanded); expandedRef.current = expanded;
+  const catalogRef = useRef(catalog); catalogRef.current = catalog;
   const admin = currentUser.role === "admin";
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
@@ -60,14 +60,9 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   }, [root]);
   useEffect(() => {
     const cached = getCachedTaskCatalog(currentUser.username, root);
-    setCatalog(cached ? markTaskCatalogStale(cached.catalog) : null); setUpdatedAt(cached?.updatedAt ?? 0);
+    setCatalog(cached?.catalog ?? null); setServer(null); setLoadingNodes(new Set()); setRequestNotice("");
     setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setError(""); setClaimError("");
   }, [root, currentUser.username]);
-  useEffect(() => {
-    if (!loading) return;
-    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - scanStatus.startedAt) / 1000)), 1000);
-    return () => window.clearInterval(timer);
-  }, [loading, scanStatus.startedAt]);
   useEffect(() => {
     if (!root) return;
     let active = true;
@@ -75,39 +70,34 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     async function refresh() {
       if (!active) return;
       if (document.hidden) { timer = window.setTimeout(refresh, 60000); return; }
-      stopRequested.current = false;
-      setLoading(true); setStopping(false); setElapsed(0); setError("");
-      setCatalog((previous) => previous ? markTaskCatalogStale(previous) : previous);
-      setScanStatus({ sessions: 0, path: "", startedAt: Date.now() });
-      const force = forceRefresh.current; forceRefresh.current = false;
-      let acceptingUpdates = true;
-      const update = (event: TaskScanUpdate) => {
-        if (!active || !acceptingUpdates || stopRequested.current) return;
-        if (event.kind === "progress") setScanStatus((previous) => ({ ...previous, sessions: event.sessions, path: event.path }));
-        else if (event.kind === "catalog") setCatalog((previous) => {
-          const children = event.catalog.tree.children.map((node) => {
-            const cached = previous?.tree.children.find((child) => child.relativePath === node.relativePath);
-            return cached ? { ...cached, scanning: true } : node;
-          });
-          return { ...event.catalog, tree: { ...event.catalog.tree, children } };
-        });
-        else setCatalog((previous) => previous ? mergeTaskBatch(previous, event.node) : previous);
-      };
+      setLoading(true);
       try {
-        const next = await scanTaskCenter(root, update, force);
-        acceptingUpdates = false;
+        const next = await readTaskIndex(root);
         if (!active) return;
-        if (!stopRequested.current) {
-          cacheTaskCatalog(currentUser.username, root, next);
-          setCatalog(next); setUpdatedAt(Date.now()); setError("");
+        setServer(next.server); setError("");
+        if (next.server.running) setRequestNotice("");
+        if (next.catalog) {
+          cacheTaskCatalog(currentUser.username, root, next.catalog);
+          let current = catalogRef.current ? { ...next.catalog, tree: mergeIndexedNode(catalogRef.current.tree, next.catalog.tree) } : next.catalog;
+          setCatalog(current);
+          // Only expanded directories are fetched; a refresh never scans source QC.
+          for (const path of [...expandedRef.current].filter(Boolean).sort((a, b) => a.length - b.length)) {
+            const contains = (node: TaskNode): boolean => node.relativePath === path || node.children.some(contains);
+            if (!contains(current.tree)) continue;
+            const detail = await readTaskIndex(root, path);
+            if (!active) return;
+            if (detail.catalog) {
+              current = { ...current, tree: mergeIndexedNode(current.tree, detail.catalog.tree) };
+              setCatalog((previous) => previous ? { ...previous, tree: mergeIndexedNode(previous.tree, detail.catalog!.tree) } : previous);
+            }
+          }
         }
-      } catch (reason) { if (active && !stopRequested.current) { setError(String(reason)); setClaimsReady(false); } }
-      finally { acceptingUpdates = false; if (active) { setLoading(false); setStopping(false); if (!stopRequested.current) timer = window.setTimeout(refresh, 300000); } }
+      } catch (reason) { if (active) setError(String(reason)); }
+      finally { if (active) { setLoading(false); timer = window.setTimeout(refresh, 15000); } }
     }
     void refresh();
     return () => {
       active = false; window.clearTimeout(timer);
-      void cancelTaskCenterScan(root).catch(() => {});
     };
   }, [root, revision, currentUser.username]);
   const claimKeys = JSON.stringify(catalog ? catalog.tree.session ? [catalog.tree.batchKey] : catalog.tree.children.map((node) => node.batchKey) : []);
@@ -129,17 +119,20 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const timer = window.setInterval(() => { if (!document.hidden) void refreshClaims(); }, 15000);
     return () => { active = false; window.clearInterval(timer); };
   }, [claimKeys, claimRevision, root, currentUser.username]);
-  async function stopScan() {
-    stopRequested.current = true; setStopping(true);
-    try { await cancelTaskCenterScan(root); }
-    catch (reason) { if (alive.current) setError(String(reason)); }
-    finally { if (alive.current) { setStopping(false); setLoading(false); } }
+  async function rebuild() {
+    if (!admin || requesting) return;
+    setRequesting(true);
+    try {
+      if (!await confirmAction("立即启动服务器完整统计？现有统计结果仍可使用。", "服务器统计")) return;
+      await rebuildTaskIndex(root);
+      setRequestNotice("已请求服务器统计"); setRevision((value) => value + 1);
+    } catch (reason) { if (alive.current) setError(String(reason)); }
+    finally { if (alive.current) setRequesting(false); }
   }
   async function chooseRoot() {
     try {
       const chosen = await chooseDirectory("选择任务数据根目录");
       if (!chosen || !alive.current) return;
-      await stopScan();
       const saved = await setTaskCenterRoot(chosen);
       if (!alive.current) return;
       setRoot(saved); onSourceChange?.(saved);
@@ -163,14 +156,27 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     if (!onOpen || pending || error) return;
     setPending(node.relativePath);
     try {
-      await stopScan();
       if (!alive.current || rootRef.current !== root) return;
       await onOpen(`${catalog?.sourceRoot ?? root}/${node.relativePath}`);
       if (alive.current) onClose?.();
     } catch (reason) { if (alive.current) setError(String(reason)); }
     finally { if (alive.current) setPending(""); }
   }
-  function toggle(path: string) { setExpanded((previous) => { const next = new Set(previous); if (next.has(path)) next.delete(path); else next.add(path); return next; }); }
+  async function toggle(node: TaskNode) {
+    const path = node.relativePath;
+    const opening = !expanded.has(path);
+    setExpanded((previous) => { const next = new Set(previous); if (next.has(path)) next.delete(path); else next.add(path); return next; });
+    if (!opening || node.childrenLoaded !== false || loadingNodes.has(path)) return;
+    const selectedRoot = root;
+    setLoadingNodes((previous) => new Set(previous).add(path));
+    try {
+      const next = await readTaskIndex(root, path);
+      if (alive.current && rootRef.current === selectedRoot && next.catalog) {
+        setCatalog((previous) => previous ? { ...previous, tree: mergeIndexedNode(previous.tree, next.catalog!.tree) } : previous);
+      }
+    } catch (reason) { if (alive.current && rootRef.current === selectedRoot) setError(String(reason)); }
+    finally { if (alive.current && rootRef.current === selectedRoot) setLoadingNodes((previous) => { const next = new Set(previous); next.delete(path); return next; }); }
+  }
   function row(node: TaskNode, depth: number): React.ReactNode {
     const isRoot = depth === 0;
     const isBatch = depth === 1 || (isRoot && node.session);
@@ -181,7 +187,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       <div className={`task-tree-row${isRoot ? " task-tree-root" : ""}${node.session ? " task-tree-session" : ""}`} style={{ "--tree-depth": depth } as React.CSSProperties}>
         <button className="task-node-name" type="button" title={isRoot ? root : node.name} aria-expanded={node.session ? undefined : open}
           disabled={node.session && (!onOpen || Boolean(pending) || Boolean(error))}
-          onClick={() => node.session ? void openSession(node) : toggle(node.relativePath)}>
+          onClick={() => node.session ? void openSession(node) : void toggle(node)}>
           {node.session ? <span className="task-chevron-spacer" /> : open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           {open && !node.session ? <FolderOpen size={17} /> : <Folder size={17} />}
           <span>{isRoot ? root : node.name}</span>
@@ -204,16 +210,21 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
         <button type="button" className="button" onClick={() => setTransferKey("")}>取消</button>
       </form>}
       {open && !node.session && node.children.map((child) => row(child, depth + 1))}
+      {open && loadingNodes.has(node.relativePath) && <p className="task-empty">正在读取目录明细…</p>}
     </div>;
   }
   return <section ref={panelRef} className="task-center" role={onClose ? "dialog" : undefined} aria-modal={onClose ? true : undefined} aria-label="任务中心" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !pending) onClose?.(); }}>
-    <header><h2>任务中心</h2><div>{loading && <button className="icon-button" aria-label="停止扫描" title="停止扫描" disabled={stopping} onClick={() => void stopScan()}><Square size={16} /></button>}<button className="icon-button" aria-label="刷新任务进度" title="刷新任务进度" disabled={loading || Boolean(pending)} onClick={() => { forceRefresh.current = true; setRevision((value) => value + 1); setClaimRevision((value) => value + 1); }}><RefreshCw size={17} className={loading ? "spin" : ""} /></button>{onClose && <button className="icon-button" aria-label="关闭任务中心" title="关闭任务中心" onClick={onClose}><X size={18} /></button>}</div></header>
+    <header><h2>任务中心</h2><div>{admin && <button className="button button-secondary" disabled={requesting || server?.running} onClick={() => void rebuild()}><Database size={16} />立即统计</button>}<button className="icon-button" aria-label="刷新任务进度" title="刷新任务进度" disabled={loading || Boolean(pending)} onClick={() => { setRevision((value) => value + 1); setClaimRevision((value) => value + 1); }}><RefreshCw size={17} className={loading ? "spin" : ""} /></button>{onClose && <button className="icon-button" aria-label="关闭任务中心" title="关闭任务中心" onClick={onClose}><X size={18} /></button>}</div></header>
     <div className="task-root-setting"><span title={root}>默认根目录：{root || "未找到已挂载的数据目录"}</span><button type="button" className="button button-secondary" disabled={Boolean(pending)} onClick={() => void chooseRoot()}><FolderOpen size={16} />更改目录</button></div>
     {(error || claimError) && <p role="alert" className="task-center-error">{error || claimError}</p>}
     <div className="task-scan-status" role="status">
-      <span>{loading ? `${stopping ? "正在停止" : "正在更新"} · 已统计 ${scanStatus.sessions} 条 · ${elapsed} 秒` : stopRequested.current ? "扫描已停止，未完成的统计保留为未知" : updatedAt ? `最近更新 ${new Date(updatedAt).toLocaleTimeString()}` : "等待扫描"}{loading && updatedAt ? " · 已有条目保留上次结果" : ""}</span>
-      {loading && scanStatus.path && <span title={scanStatus.path}>{scanStatus.path}</span>}
+      <span>服务器最近统计完成：{server?.completedAtMs ? new Date(server.completedAtMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "尚无完整统计"}（北京时间）</span>
+      <span>每日 23:00 自动统计</span>
+      {server?.updatedAtMs && server.updatedAtMs !== server.completedAtMs ? <span>进度更新：{new Date(server.updatedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</span> : null}
+      {server && Date.now() - server.heartbeatAtMs > 90000 ? <span className="task-center-error">统计服务未响应，显示上次结果</span> : server?.running ? <span>服务器正在统计 · 已统计 {server.sessions} 条 · 显示上次结果</span> : null}
+      {server?.error && <span role="alert" className="task-center-error">{server.error}；保留上次成功结果</span>}
+      {requestNotice && <span>{requestNotice}</span>}
     </div>
-    <div className="task-tree" aria-busy={loading}>{catalog ? row(catalog.tree, 0) : <p className="task-empty">{loading ? "正在读取任务目录…" : error ? "目录读取失败" : "暂无任务"}</p>}</div>
+    <div className="task-tree" aria-busy={loading}>{catalog ? row(catalog.tree, 0) : <p className="task-empty">{loading ? "正在读取服务器统计…" : error ? "统计读取失败" : "等待服务器首次统计完成"}</p>}</div>
   </section>;
 }

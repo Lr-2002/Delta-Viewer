@@ -1,0 +1,17 @@
+[Unit]
+Description=Delta Viewer nightly and incremental QC index
+After=network.target
+
+[Service]
+Type=simple
+User=Researcher
+PermissionsStartOnly=true
+ExecStartPre=/sbin/sysctl -p /volume8/@DeltaViewerTaskIndex/delta-viewer-task-index.sysctl.conf
+ExecStart=/bin/python3 /volume8/@DeltaViewerTaskIndex/task-index-server.py --source-root /volume8/Datasets/Delta-D1 --index-root /volume8/Datasets/Delta-Viewer-TaskIndex/Delta-D1
+Restart=on-failure
+RestartSec=15
+Nice=10
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

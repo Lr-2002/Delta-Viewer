@@ -4,6 +4,22 @@ export interface TaskNode {
   name: string; relativePath: string; batchKey: string; session: boolean;
   status: string; error: string; total: number; reviewed: number;
   approved: number; rejected: number; errors: number; incomplete: boolean; scanning: boolean; children: TaskNode[];
+  childrenLoaded?: boolean;
+}
+export interface TaskIndexStatus {
+  completedAtMs?: number; updatedAtMs?: number; generation?: string;
+  running: boolean; startedAtMs: number; heartbeatAtMs: number; sessions: number; error: string; schedule: string;
+}
+export interface TaskIndexResult { catalog: TaskCatalog | null; server: TaskIndexStatus }
+export function mergeIndexedNode(tree: TaskNode, incoming: TaskNode): TaskNode {
+  if (tree.relativePath === incoming.relativePath) {
+    return { ...incoming, children: incoming.children.map((child) => {
+      const cached = tree.children.find((item) => item.relativePath === child.relativePath);
+      return cached && child.childrenLoaded === false && cached.childrenLoaded
+        ? { ...child, children: cached.children, childrenLoaded: true } : child;
+    }) };
+  }
+  return { ...tree, children: tree.children.map((child) => mergeIndexedNode(child, incoming)) };
 }
 export interface TaskCatalog { sourceRoot: string; tree: TaskNode; stats?: { elapsedMs: number; qcReads: number; cacheHits: number } }
 export interface BatchClaim { batchKey: string; username: string; displayName: string; claimedAtMs: number }
