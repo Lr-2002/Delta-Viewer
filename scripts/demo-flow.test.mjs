@@ -298,13 +298,13 @@ if (!browserExecutable) {
       const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
       const page = await context.newPage();
       await registerDemoAccount(page, `${baseUrl}/?frameQualityIssue=${code}`, `quality-${code.toLowerCase()}`);
-      assert.equal(await page.locator(".camera-grid .frame-panel").count(), 5);
+      assert.equal(await page.locator(".camera-grid .frame-panel").count(), 7);
       await page.getByLabel("裁剪起始帧").fill("30");
       await page.getByLabel("裁剪结束帧").fill("90");
       await page.getByRole("button", { name: "检查", exact: true }).click();
       await page.getByText(code, { exact: true }).waitFor();
       await page.getByRole("button", { name: "回放", exact: true }).click();
-      assert.equal(await page.locator(".camera-grid .frame-panel").count(), 5);
+      assert.equal(await page.locator(".camera-grid .frame-panel").count(), 7);
       assert.equal(await page.getByLabel("裁剪结束帧").inputValue(), "90");
       const status = await page.evaluate(async () => {
         const backend = await import("/src/lib/backend.ts");

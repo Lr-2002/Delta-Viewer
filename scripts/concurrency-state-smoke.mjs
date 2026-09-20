@@ -176,7 +176,7 @@ try {
       cancelOperationIds: [],
     };
     const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JrJ4AAAAASUVORK5CYII=";
-    const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right"].map((name) => ({
+    const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right", ...(location.search === '?task-center' ? ['wrist_left', '右手相机'] : [])].map((name) => ({
       name,
       label: name,
       frameCount: 1,
@@ -547,6 +547,7 @@ try {
     );
   }
   console.log("browser-smoke: completed flow renders five images without responsive overflow");
+  assert.equal(await page.locator('.camera-placeholder').count(), 2);
 
   await page.setViewportSize({ width: 1440, height: 920 });
   await page.goto(`${url}?task-center`, { waitUntil: 'networkidle' });
@@ -568,6 +569,23 @@ try {
   assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.lastEpisodeRoot), '/source/batch/episode-1');
   assert.equal(await page.locator('.episode-item').count(), 2);
   await page.locator('.camera-grid img').first().waitFor();
+  await page.waitForFunction(() => [...document.querySelectorAll('.camera-grid img[aria-hidden="false"]')].filter(image => image.naturalWidth > 0).length === 7);
+  assert.equal(await page.locator('.camera-placeholder').count(), 0);
+  const slots = await page.locator('.camera-grid').evaluate(grid => {
+    const bounds = i => { const r = grid.querySelector('.camera-' + i).getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; };
+    return [1,2,3,4,5,6].map(bounds);
+  });
+  for (const slot of slots) {
+    assert.ok(Math.abs(slot.w - slots[0].w) < 1, 'all secondary cameras have equal width');
+    assert.ok(Math.abs(slot.h - slots[0].h) < 1, 'all secondary cameras have equal height');
+  }
+  assert.ok(slots[4].x > slots[1].x && slots[5].y > slots[4].y, 'new cameras occupy the rightmost column');
+  await mkdir('artifacts/extra-cameras', {recursive:true});
+  await page.screenshot({path:'artifacts/extra-cameras/seven-desktop.png',fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  await waitForLayoutSettle(page);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({path:'artifacts/extra-cameras/seven-mobile.png',fullPage:true});
   console.log('browser-smoke: task claim opens batch and first episode; NAS/empty-directory failures retain claim and allow retry');
 
   assert.deepEqual(consoleErrors, []);

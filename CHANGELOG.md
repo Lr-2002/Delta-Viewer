@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.43 - 2026-09-20
+
+- 回放区在现有五路流与骨架之间预置两个等尺寸画面槽位；新数据按实际相机目录名自动发现并使用同一帧读取和播放逻辑，未接入时保留明确占位。
+- 支持 JPEG 相机目录和 MP4 manifest 中的任意安全流名称，预览生成器同步处理新增流；桌面和窄屏布局均保持无溢出。
+
 ## 1.0.42 - 2026-09-20
 
 - 包含任务中心批次“仅未审核”筛选，支持一键查询、显示结果数量、打开记录与恢复完整列表；1.0.41 安装包未发布。

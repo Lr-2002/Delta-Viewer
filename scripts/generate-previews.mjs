@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { Parser } from "m3u8-parser";
 
 const profiles = [{ height: 480, bitrate: 700000 }, { height: 720, bitrate: 1500000 }, { height: 1080, bitrate: 3500000 }];
-const streams = new Set(["cam0", "cam1", "cam2", "t265_left", "t265_right"]);
+const isStreamName = name => name.length > 0 && !name.startsWith('.') && !/[\\/:\x00-\x1f\x7f]/.test(name);
 const inside = (root, file) => file === root || file.startsWith(root + path.sep);
 
 async function run(binary, args, signal) {
@@ -65,7 +65,7 @@ export async function generateEpisode(episode, destination, { ffmpeg = "ffmpeg",
   try {
     const result = { schemaVersion: 1, sourceManifest: { path: manifestPath, sha256: createHash("sha256").update(raw).digest("hex") }, streams: {} };
     const previous = await readFile(path.join(destination, "preview.json"), "utf8").then(JSON.parse).catch(() => null);
-    const entries = Object.entries(source.streams).filter(([name, info]) => streams.has(name) && info.segments?.length);
+    const entries = Object.entries(source.streams).filter(([name, info]) => isStreamName(name) && info.segments?.length);
     if (!entries.length) throw Error("Recording contains no supported MP4 streams");
     const stamps = {};
     for (const [name, info] of entries) stamps[name] = await Promise.all(info.segments.map((segment) => sourceStamp(episode, segment.path)));

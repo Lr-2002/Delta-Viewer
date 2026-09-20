@@ -13,6 +13,7 @@ import {
   HardDrive,
   History,
   Images,
+  Video,
   ListChecks,
   LoaderCircle,
   LogOut,
@@ -358,6 +359,17 @@ function App() {
     () => data?.summary.streams.filter((stream) => stream.frameCount > 0) ?? [],
     [data],
   );
+  const cameraSlots = useMemo(() => {
+    const standard = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
+    // Keep declared extra stream names even when their first frame is not
+    // available yet; the reserved slots then explain which directory is
+    // expected instead of replacing it with a generic placeholder.
+    const extra = (data?.summary.streams ?? [])
+      .filter(stream => !standard.includes(stream.name))
+      .map(stream => stream.name);
+    while (extra.length < 2) extra.push(`新增摄像头 ${extra.length + 1}`);
+    return [...standard, ...extra];
+  }, [data?.summary.streams]);
   const primaryStreamName = availableStreams.find((stream) => stream.name === "cam0")?.name
     ?? availableStreams[0]?.name
     ?? null;
@@ -1952,8 +1964,10 @@ function App() {
                       <PreviewSettings />
                     </div>
                     <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
-                      <div className={`camera-grid stream-count-${availableStreams.length}`}>
-                        {availableStreams.map((stream, index) => (
+                      <div className="camera-grid camera-grid-expanded" style={{ "--extra-camera-columns": Math.ceil((cameraSlots.length - 5) / 2) } as CSSProperties}>
+                        {cameraSlots.map((name, index) => {
+                          const stream = availableStreams.find((stream) => stream.name === name);
+                          return stream ? (
                           <FramePanel
                             key={stream.name}
                             root={data.summary.root}
@@ -1986,7 +2000,12 @@ function App() {
                             onFramePresented={handlePrimaryFramePresented}
                             onBufferingChange={handleNativeBufferingChange}
                           />
-                        ))}
+                        ) : (
+                          <figure key={name} className={`frame-panel camera-${index} camera-placeholder`} aria-label={`${name} 未接入`}>
+                            <div className="camera-placeholder-content"><Video size={22} /><span>未接入</span></div>
+                            <figcaption><span>{name.startsWith("cam") ? `Camera ${name.slice(3)}` : name === "t265_left" ? "T265 Left" : name === "t265_right" ? "T265 Right" : name}</span></figcaption>
+                          </figure>
+                        );})}
                       </div>
                       <div className="skeleton-side-panel">
                         {data.skeleton ? (
