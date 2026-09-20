@@ -1,5 +1,6 @@
-import { sendReviewAudit } from "./backend";
+import { flushReviewAuditQueue, isTauriRuntime, persistReviewAudit, sendReviewAudit } from "./backend";
 import { reviewAuditQueue } from "./review-audit-queue";
+import { durableReviewAuditQueue } from "./durable-review-audit-queue";
 import type { ReviewAction, ReviewDetails } from "./review-audit-types";
 
 type Session = {
@@ -11,7 +12,9 @@ type Session = {
   clock: number;
 };
 let session: Session | null = null;
-let queue: ReturnType<typeof reviewAuditQueue> | null = null;
+type Queue = ReturnType<typeof reviewAuditQueue> | ReturnType<typeof durableReviewAuditQueue>;
+let queue: Queue | null = null;
+const nativeQueues = new Map<string, ReturnType<typeof durableReviewAuditQueue>>();
 let lastFrame = 0;
 let storageError = "";
 let uploadError = "";
@@ -19,12 +22,26 @@ let pendingWrites = Promise.resolve();
 const report = () =>
   window.dispatchEvent(
     new CustomEvent("review-audit-status", {
-      detail: storageError || uploadError,
+      detail: [storageError, uploadError].filter(Boolean).join("；"),
     }),
   );
 
 export function configureReviewAudit(username: string, serviceId: string) {
-  const next = reviewAuditQueue(
+  const owner = `${serviceId}:${username}`;
+  let next: Queue;
+  if (isTauriRuntime()) {
+    let native = nativeQueues.get(owner);
+    if (!native) {
+      native = durableReviewAuditQueue(localStorage, owner, {
+        persist: (events) => persistReviewAudit(username, serviceId, events),
+        flush: (retryBlocked) => flushReviewAuditQueue(username, serviceId, retryBlocked),
+      }, (message) => {
+        if (queue === native) { storageError = message; uploadError = ""; report(); }
+      });
+      nativeQueues.set(owner, native);
+    }
+    next = native;
+  } else next = reviewAuditQueue(
     localStorage,
     `${serviceId}:${username}`,
     (events) => sendReviewAudit(username, serviceId, events),
@@ -38,7 +55,7 @@ export function configureReviewAudit(username: string, serviceId: string) {
       await next.flush();
       if (queue === next) {
         uploadError = "";
-        if (!next.volatileCount()) storageError = "";
+        if (!isTauriRuntime() && !next.volatileCount()) storageError = "";
         report();
       }
     } catch (error) {
@@ -58,6 +75,18 @@ export function configureReviewAudit(username: string, serviceId: string) {
     window.removeEventListener("online", flush);
     if (queue === next) queue = null;
   };
+}
+
+export async function retryReviewAudit(): Promise<number> {
+  await pendingWrites;
+  if (!queue) return 0;
+  return "persist" in queue ? queue.flush(true) : queue.flush();
+}
+
+export async function persistPendingReviewAudit(): Promise<void> {
+  await pendingWrites;
+  if (queue && "persist" in queue) await queue.persist();
+  if (queue?.volatileCount()) throw Error("监管记录尚未保存，暂不能退出登录");
 }
 
 export function beginReviewAudit(root: string, name: string) {
@@ -151,6 +180,9 @@ export function recordReviewSeek(
 }
 
 export function observeReviewInteractions() {
+  const beforeUnload = (event: BeforeUnloadEvent) => {
+    if ([...nativeQueues.values()].some((item) => item.volatileCount()) || queue?.volatileCount()) event.preventDefault();
+  };
   let drag: {
     target: string;
     start: number;
@@ -248,6 +280,7 @@ export function observeReviewInteractions() {
   document.addEventListener("visibilitychange", focus);
   document.addEventListener("scroll", scroll, true);
   window.addEventListener("pagehide", endReviewAudit);
+  window.addEventListener("beforeunload", beforeUnload);
   return () => {
     clearTimeout(scrollTimer);
     document.removeEventListener("click", click, true);
@@ -258,5 +291,6 @@ export function observeReviewInteractions() {
     document.removeEventListener("visibilitychange", focus);
     document.removeEventListener("scroll", scroll, true);
     window.removeEventListener("pagehide", endReviewAudit);
+    window.removeEventListener("beforeunload", beforeUnload);
   };
 }

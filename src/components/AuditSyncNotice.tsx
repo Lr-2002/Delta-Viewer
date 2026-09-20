@@ -7,22 +7,25 @@ interface AuditSyncNoticeProps {
   error: string;
   onError: (message: string) => void;
   onPendingChange: (pending: boolean) => void;
+  flush?: () => Promise<number>;
+  message?: string;
+  autoRetry?: boolean;
 }
 
-export function AuditSyncNotice({ username, error, onError, onPendingChange }: AuditSyncNoticeProps) {
+export function AuditSyncNotice({ username, error, onError, onPendingChange, flush = flushPendingAnnotationAudits, message, autoRetry = true }: AuditSyncNoticeProps) {
   const [loginOpen, setLoginOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
-  const needsLogin = error.includes("AUTH_REQUIRED") || loginOpen;
+  const needsLogin = error.includes("AUTH_REQUIRED") || error.includes("REVIEWER_REQUIRED") || loginOpen;
 
   const retry = useCallback(async () => {
     if (running.current) return;
     running.current = true;
     setBusy(true);
     try {
-      const remaining = await flushPendingAnnotationAudits();
-      onError("");
+      const remaining = await flush();
+      if (!remaining) onError("");
       onPendingChange(remaining > 0);
     } catch (reason) {
       onError(String(reason));
@@ -30,10 +33,10 @@ export function AuditSyncNotice({ username, error, onError, onPendingChange }: A
       running.current = false;
       setBusy(false);
     }
-  }, [onError, onPendingChange]);
+  }, [onError, onPendingChange, flush]);
 
   useEffect(() => {
-    if (needsLogin) return;
+    if (needsLogin || !autoRetry) return;
     const timer = window.setInterval(() => void retry(), 30_000);
     const online = () => void retry();
     window.addEventListener("online", online);
@@ -41,7 +44,7 @@ export function AuditSyncNotice({ username, error, onError, onPendingChange }: A
       window.clearInterval(timer);
       window.removeEventListener("online", online);
     };
-  }, [needsLogin, retry]);
+  }, [needsLogin, retry, autoRetry]);
 
   async function renewSession(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -70,7 +73,7 @@ export function AuditSyncNotice({ username, error, onError, onPendingChange }: A
       <CircleAlert size={17} aria-hidden="true" />
       <span>{needsLogin
         ? "监管登录已失效，记录待上传。当前工作仍保留。"
-        : "监管记录待上传，正在等待重试。"}</span>
+        : message ?? "监管记录待上传，正在等待重试。"}</span>
       {loginOpen ? (
         <form onSubmit={(event) => void renewSession(event)} className="audit-sync-login">
           <span>@{username}</span>

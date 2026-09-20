@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { openReviewAuditStore, validateReviewEvent } from "./review-audit-store.mjs";
 import { reviewAuditQueue } from "../src/lib/review-audit-queue.ts";
+import { durableReviewAuditQueue } from "../src/lib/durable-review-audit-queue.ts";
 
 const user = { username: "alice", displayName: "Alice", role: "operator" };
 const event = (overrides = {}) => ({ eventId: randomUUID(), sessionId: randomUUID(), episodeKey: "a".repeat(64), episodeName: "episode-001", action: "loaded", occurredAtMs: Date.now(), elapsedMs: 0, details: {}, ...overrides });
@@ -78,4 +79,69 @@ test("queue retains failed sends across reload, isolates accounts and preserves 
   assert.equal(restored.volatileCount(), 1);
   assert.equal(await restored.flush(), 0);
   assert.equal(restored.volatileCount(), 0);
+});
+
+test("native queue migrates full browser storage only after disk commit and preserves offline records", async () => {
+  const storage = new Storage(), a = event(), b = event();
+  const prefix = "dohc.review-audit.v1:service%3Aalice:";
+  storage.setItem(prefix + a.eventId, JSON.stringify(a));
+  storage.setItem("dohc.review-audit.v1:service%3Abob:" + b.eventId, JSON.stringify(b));
+  storage.setItem("label-library", "keep");
+  storage.setItem = () => { throw Error("quota"); };
+  const disk = new Map();
+  let online = false, failDisk = true;
+  const backend = {
+    async persist(events) {
+      if (failDisk) throw Error("disk unavailable");
+      for (const row of events) disk.set(row.eventId,row);
+      return { pending: disk.size, blocked: 0, error: "" };
+    },
+    async flush() {
+      if (!online) return { pending: disk.size, blocked: 0, error: "AUTH_REQUIRED" };
+      disk.clear(); return { pending: 0, blocked: 0, error: "" };
+    },
+  };
+  let message = "";
+  const queue = durableReviewAuditQueue(storage,"service:alice",backend,(value) => { message=value; });
+  queue.push(b);
+  await assert.rejects(queue.persist(), /disk unavailable/);
+  assert.equal(queue.volatileCount(),1);
+  assert.ok(storage.getItem(prefix+a.eventId),"failed migration must preserve old record");
+  failDisk=false;
+  assert.equal(await queue.flush(),2);
+  assert.equal(queue.volatileCount(),0);
+  assert.equal(storage.getItem(prefix+a.eventId),null);
+  assert.equal(storage.getItem("label-library"),"keep");
+  assert.ok(storage.getItem("dohc.review-audit.v1:service%3Abob:"+b.eventId));
+  assert.match(message,/AUTH_REQUIRED/);
+  assert.match(message,/已保存在本机/);
+  queue.push(event());
+  await queue.persist();
+  assert.match(message,/AUTH_REQUIRED/,"new disk writes must not hide the reauthentication prompt");
+  const reopened=durableReviewAuditQueue(storage,"service:alice",backend,()=>{});
+  assert.equal(await reopened.flush(),3);
+  online=true;
+  assert.equal(await reopened.flush(),0);
+});
+
+test("native migration handles concurrent additions and retains malformed legacy records", async () => {
+  const storage=new Storage(), a=event(), b=event();
+  const prefix="dohc.review-audit.v1:service%3Aalice:";
+  storage.setItem(prefix+"broken","{bad");
+  let release, started;
+  const ready=new Promise((resolve)=>{started=resolve;});
+  const disk=new Map(); let first=true, message="";
+  const queue=durableReviewAuditQueue(storage,"service:alice",{
+    async persist(events) {
+      if(first) { first=false; started(); await new Promise((resolve)=>{release=resolve;}); }
+      for(const row of events) disk.set(row.eventId,row);
+      return {pending:disk.size,blocked:0,error:""};
+    },
+    async flush(){return {pending:disk.size,blocked:0,error:"offline"};},
+  },(value)=>{message=value;});
+  queue.push(a); await ready; queue.push(b); release(); await queue.persist();
+  assert.equal(disk.size,2);
+  assert.equal(queue.volatileCount(),0);
+  assert.equal(storage.getItem(prefix+"broken"),"{bad");
+  assert.match(message,/无法解析/);
 });
