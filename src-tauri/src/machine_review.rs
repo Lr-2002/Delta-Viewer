@@ -744,9 +744,79 @@ pub fn save(
 
 pub fn save_for_user(
     data_root: &Path,
+    request: SaveReviewRequest,
+    reviewer: &str,
+    username: &str,
+) -> AppResult<ReviewState> {
+    save_for_user_mode(data_root, request, reviewer, username, false)
+}
+
+fn pending_qc(root: &Path) -> AppResult<bool> {
+    let session: Value = machine_annotation::read_bytes(&root.join("session.json"))?
+        .map(|bytes| serde_json::from_slice(&bytes))
+        .transpose()?
+        .unwrap_or_else(|| json!({}));
+    if !session.is_object() {
+        return Err(failure("session.json 不是对象"));
+    }
+    match session.get("qc") {
+        None | Some(Value::Null) => Ok(true),
+        Some(Value::String(qc)) => match qc.trim() {
+            "" | "待审核" | "未审核" => Ok(true),
+            "通过" | "不通过" => Ok(false),
+            value if value.starts_with("不通过：") || value.starts_with("不通过:") => {
+                Ok(false)
+            }
+            _ => Err(failure("QC 结果无法识别，未修改")),
+        },
+        _ => Err(failure("QC 结果无法识别，未修改")),
+    }
+}
+
+pub fn reject_pending_for_user(
+    data_root: &Path,
+    root: &Path,
+    reason: &str,
+    reviewer: &str,
+    username: &str,
+) -> AppResult<Option<ReviewState>> {
+    let reason = validated_rejection_reason("rejected", Some(reason))?;
+    if !pending_qc(root)? {
+        return Ok(None);
+    }
+    let annotation = machine_annotation::load_for_review(root, None)?
+        .ok_or_else(|| failure("未找到可审核的数据，未修改"))?;
+    let current = load_selected(data_root, root, Some(&annotation.source_name))?;
+    if current.status != "pending" {
+        return Ok(None);
+    }
+    let result = save_for_user_mode(
+        data_root,
+        SaveReviewRequest {
+            source_path: root.to_string_lossy().into(),
+            source_name: Some(annotation.source_name),
+            source_hash: current.source_hash,
+            expected_revision: current.revision,
+            segments: current.segments,
+            status: Some("rejected".into()),
+            rejection_reason: Some(reason),
+        },
+        reviewer,
+        username,
+        true,
+    );
+    match result {
+        Err(AppError::Message(message)) if message == "BATCH_REVIEW_SKIPPED" => Ok(None),
+        result => result.map(Some),
+    }
+}
+
+fn save_for_user_mode(
+    data_root: &Path,
     mut request: SaveReviewRequest,
     reviewer: &str,
     username: &str,
+    only_pending: bool,
 ) -> AppResult<ReviewState> {
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
     let root = Path::new(&request.source_path).canonicalize()?;
@@ -773,7 +843,13 @@ pub fn save_for_user(
     let output = output_name(&annotation);
     let lock_path = write_root.join(format!(".{}.lock", output.trim_end_matches(".json")));
     let _output_lock = lock_file(&lock_path)?;
+    if only_pending && !pending_qc(&write_root)? {
+        return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
+    }
     let current = load_inner(data_root, &root, &annotation)?;
+    if only_pending && current.status != "pending" {
+        return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
+    }
     let previous_draft = machine_annotation::read_bytes(&draft)?
         .map(|bytes| serde_json::from_slice::<ReviewState>(&bytes))
         .transpose()?;
@@ -782,6 +858,9 @@ pub fn save_for_user(
         || previous_draft
             .as_ref()
             .is_some_and(|saved| saved.output_hash != current.output_hash);
+    if only_pending && rebased {
+        return Err(failure("审核内容已改变，请刷新后重试，未批量覆盖"));
+    }
     if rebased {
         // Preserve the displaced shared result before accepting the operator's snapshot.
         if let Some(bytes) = machine_annotation::read_bytes(&write_root.join(output))? {
@@ -1142,6 +1221,123 @@ pub fn is_review_path(root: &Path, path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn batch_rejection_preserves_completed_qc_and_rejects_pending_with_reason() {
+        let fixture = Fixture::new(0, true);
+        for qc in [
+            json!("通过"),
+            json!("不通过：旧原因"),
+            json!(true),
+            json!("异常标记"),
+        ] {
+            let session = serde_json::to_vec(&json!({"qc":qc,"capture":"keep"})).unwrap();
+            fs::write(fixture.root.join("session.json"), &session).unwrap();
+            let result = reject_pending_for_user(
+                &fixture.local,
+                &fixture.root,
+                "其他原因：批量检查发现遮挡",
+                "审核甲",
+                "alice",
+            );
+            if qc.is_boolean() || qc == "异常标记" {
+                assert!(result.is_err());
+            } else {
+                assert!(result.unwrap().is_none());
+            }
+            assert_eq!(
+                fs::read(fixture.root.join("session.json")).unwrap(),
+                session
+            );
+            assert!(!fixture.root.join(OUTPUT).exists());
+        }
+        fs::write(
+            fixture.root.join("session.json"),
+            br#"{"qc":"","capture":"keep"}"#,
+        )
+        .unwrap();
+        assert!(reject_pending_for_user(
+            &fixture.local,
+            &fixture.root,
+            "其他原因：  ",
+            "审核甲",
+            "alice"
+        )
+        .is_err());
+        assert!(!fixture.root.join(OUTPUT).exists());
+        let result = reject_pending_for_user(
+            &fixture.local,
+            &fixture.root,
+            "其他原因：批量检查发现遮挡",
+            "审核甲",
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.status, "rejected");
+        assert_eq!(result.segments.len(), 3);
+        let session: Value =
+            serde_json::from_slice(&fs::read(fixture.root.join("session.json")).unwrap()).unwrap();
+        assert_eq!(session["capture"], "keep");
+        assert_eq!(session["qc"], "不通过：其他原因：批量检查发现遮挡");
+        assert_eq!(session["reviewerUsername"], "alice");
+        assert_eq!(
+            list_account_reviews(
+                &fixture.local,
+                &[fixture.root.to_string_lossy().into()],
+                "alice"
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        let before = fs::read(fixture.root.join(OUTPUT)).unwrap();
+        assert!(reject_pending_for_user(
+            &fixture.local,
+            &fixture.root,
+            "其他原因：重试",
+            "审核甲",
+            "alice"
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(fs::read(fixture.root.join(OUTPUT)).unwrap(), before);
+        assert_eq!(
+            fs::read(fixture.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            fixture.original
+        );
+    }
+
+    #[test]
+    fn batch_rejection_rechecks_qc_under_save_lock() {
+        let fixture = Fixture::new(0, true);
+        let state = load_selected(&fixture.local, &fixture.root, None).unwrap();
+        fs::write(
+            fixture.root.join("session.json"),
+            serde_json::to_vec(&json!({"qc":"通过"})).unwrap(),
+        )
+        .unwrap();
+        let result = save_for_user_mode(
+            &fixture.local,
+            SaveReviewRequest {
+                source_path: fixture.root.to_string_lossy().into(),
+                source_name: None,
+                source_hash: state.source_hash,
+                expected_revision: state.revision,
+                segments: state.segments,
+                status: Some("rejected".into()),
+                rejection_reason: Some("轨迹不动".into()),
+            },
+            "审核甲",
+            "alice",
+            true,
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("BATCH_REVIEW_SKIPPED"));
+        assert!(!fixture.root.join(OUTPUT).exists());
+    }
 
     #[test]
     fn manual_without_machine_json_saves_splits_reopens_and_approves() {

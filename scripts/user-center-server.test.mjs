@@ -304,7 +304,14 @@ test("user center supports operator self-registration and administrator account 
     const winner = racers.find((result) => result.status === 200).body.claim;
     const winnerToken = winner.username === "operator" ? operator.body.token : selfRegistered.body.token;
     assert.deepEqual((await batchRequest("claim", { batchKey }, winnerToken)).body.claim, winner);
-    assert.equal((await batchRequest("release", { batchKey }, operator.body.token)).status, 403);
+    const loserToken = winner.username === "operator" ? selfRegistered.body.token : operator.body.token;
+    assert.equal((await batchRequest("release", { batchKey }, loserToken)).status, 403);
+    assert.deepEqual((await batchRequest("lookup", { keys: [batchKey] }, winnerToken)).body.claims[0], winner);
+    assert.equal((await batchRequest("release", { batchKey })).status, 403);
+    assert.equal((await batchRequest("release", { batchKey }, winnerToken)).body.claim, null);
+    assert.equal((await batchRequest("release", { batchKey }, winnerToken)).status, 200);
+    assert.equal((await batchRequest("claim", { batchKey }, loserToken)).status, 200);
+    assert.equal((await batchRequest("release", { batchKey }, winnerToken)).status, 403, "a stale release cannot remove the next owner's claim");
     assert.equal((await batchRequest("transfer", { batchKey, username: "operator2" }, operator.body.token)).status, 403);
     const moved = await batchRequest("transfer", { batchKey, username: "operator2" }, login.body.token);
     assert.equal(moved.body.claim.username, "operator2");

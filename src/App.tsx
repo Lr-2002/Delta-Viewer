@@ -262,6 +262,7 @@ function App() {
   const [tasks, setTasks] = useState<TaskDefinition[]>([]);
   const [assignedTasks, setAssignedTasks] = useState<AssignedTask[]>([]);
   const [personalTaskOpen, setPersonalTaskOpen] = useState(false);
+  const [batchReviewRevision, setBatchReviewRevision] = useState(0);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [assignedEpisodeTasks, setAssignedEpisodeTasks] = useState<Record<string, string>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -1771,6 +1772,14 @@ function App() {
         <div className="personal-task-overlay" role="presentation" onClick={() => setPersonalTaskOpen(false)}>
         <TaskCenter
           currentUser={currentUser}
+          onBeforeReject={() => {
+            if (reviewUnsaved.current || busy) throw new Error("请先完成当前操作并保存审核修改，再批量不通过");
+            setPlaying(false);
+          }}
+          onReviewsSaved={(paths) => {
+            setReviewedEpisodes(previous => ({...previous, ...Object.fromEntries(paths.map(path => [path, "rejected" as const]))}));
+            setBatchReviewRevision(value => value + 1);
+          }}
           onOpen={async (root) => {
             if (reviewUnsaved.current || busy) throw new Error("当前操作尚未完成，请稍后打开任务");
             await openSource(root, true, [], true);
@@ -2027,7 +2036,7 @@ function App() {
                       />
                     ) : null}
                   </section>
-                    <MachineAnnotationPanel username={authStatus.currentUser?.username ?? ""} key={`machine:${data.summary.root}`} data={data} busy={busy || annotationReadyRoot !== data.summary.root}
+                    <MachineAnnotationPanel username={authStatus.currentUser?.username ?? ""} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} busy={busy || annotationReadyRoot !== data.summary.root}
                       playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onPlay: playSegment, onToggle: togglePlayback, controls: (
 <>
                           <div className="transport-buttons">

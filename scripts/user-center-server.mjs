@@ -1239,8 +1239,8 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const key = validateBatchKey(body.batchKey);
         const action = url.pathname.split("/").at(-1);
         return await serializeStateMutation(async () => {
-          const session = authorize(request, action !== "claim");
-          if (!session) return sendJson(response, 403, { error: action === "claim" ? "AUTH_REQUIRED" : "ADMIN_REQUIRED" });
+          const session = authorize(request, action === "transfer");
+          if (!session) return sendJson(response, 403, { error: action === "transfer" ? "ADMIN_REQUIRED" : "AUTH_REQUIRED" });
           if (action === "claim" && session.user.role !== "operator") return sendJson(response, 403, { error: "REVIEWER_REQUIRED" });
           let result;
           if (action === "claim") result = taskClaims.claim(key, session.user);
@@ -1251,6 +1251,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             if (!target) return sendJson(response, 400, { error: "ACTIVE_REVIEWER_REQUIRED" });
             result = taskClaims.transfer(key, session.user, target);
           }
+          if (result.forbidden) return sendJson(response, 403, { error: "BATCH_RELEASE_FORBIDDEN: 只能释放本人领取的批次，请刷新领取状态" });
           return sendJson(response, result.conflict ? 409 : 200, result.conflict ? { error: "BATCH_ALREADY_CLAIMED: 该批次已被领取", ...result } : result);
         });
       }
