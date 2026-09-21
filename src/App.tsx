@@ -37,6 +37,7 @@ import { MachineAnnotationPanel } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
 import { AuditSyncNotice } from "./components/AuditSyncNotice";
 import { BatchExportPanel } from "./components/BatchExportPanel";
+import { BatchRejectionDialog, type RejectionTarget } from "./components/BatchRejectionDialog";
 import { ChecksPanel } from "./components/ChecksPanel";
 import { ExportPanel } from "./components/ExportPanel";
 import { FramePanel } from "./components/FramePanel";
@@ -263,6 +264,8 @@ function App() {
   const [assignedTasks, setAssignedTasks] = useState<AssignedTask[]>([]);
   const [personalTaskOpen, setPersonalTaskOpen] = useState(false);
   const [batchReviewRevision, setBatchReviewRevision] = useState(0);
+  const [batchRejection, setBatchRejection] = useState<{ folder?: string; selected?: RejectionTarget[] } | null>(null);
+  const [batchRejectionSelection, setBatchRejectionSelection] = useState<Record<string, RejectionTarget>>({});
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [assignedEpisodeTasks, setAssignedEpisodeTasks] = useState<Record<string, string>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -298,7 +301,8 @@ function App() {
   const [speed, setSpeed] = useState(1);
   const [fpsOverride, setFpsOverride] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [operationBusy, setBusy] = useState(false);
+  const busy = operationBusy || Boolean(batchRejection);
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -432,6 +436,7 @@ function App() {
   }, [playbackStart, primaryPlaybackEndFrame, primaryStreamName]);
 
   function beginOperation(): OperationToken | null {
+    if (batchRejection) return null;
     const operation = operationScopeRef.current.begin();
     if (!operation) return null;
     setBusy(true);
@@ -752,6 +757,8 @@ function App() {
       setAssignedEpisodeTasks(assignmentView?.taskByRoot ?? {});
       setSourcePath(visibleResult.sourceRoot);
       setScan(visibleResult);
+      setBatchRejectionSelection({});
+      setBatchRejection(null);
       void refreshAnnotationTags();
       setSkippedEpisodeRoots({});
       setQueuedEpisodeRoot(null);
@@ -1064,6 +1071,7 @@ function App() {
 
   function resetWorkspaceData() {
     setReviewedEpisodes({});
+    setBatchRejectionSelection({});
     episodeFocusRestoreToken.current += 1;
     setEpisodeFocusRestoreRequest(null);
     resetLoadedData();
@@ -1582,9 +1590,44 @@ function App() {
     () => scan?.episodes.filter((episode) => (!skippedEpisodeRoots[episode.root] || Boolean(reviewedEpisodes[episode.root]))) ?? [],
     [scan?.episodes, skippedEpisodeRoots, reviewedEpisodes],
   );
-  const episodeActions = useRef({ select: selectEpisode, load: loadEpisodeForReview, skip: skipEpisode });
-  episodeActions.current = { select: selectEpisode, load: loadEpisodeForReview, skip: skipEpisode };
+  function toggleRejection(episode: EpisodeSummary, checked: boolean) {
+    setBatchRejectionSelection(previous => {
+      const next = { ...previous };
+      if (checked) next[episode.root] = { path: episode.root, name: episode.name };
+      else delete next[episode.root];
+      return next;
+    });
+  }
+  const episodeActions = useRef({ select: selectEpisode, load: loadEpisodeForReview, skip: skipEpisode, toggleRejection });
+  episodeActions.current = { select: selectEpisode, load: loadEpisodeForReview, skip: skipEpisode, toggleRejection };
   const skippedEpisodeCount = (scan?.episodes.length ?? 0) - visibleEpisodes.length;
+
+  function startBatchRejection(folder?: string) {
+    if (busy || operationScopeRef.current.current() || !scan) return;
+    if (reviewUnsaved.current) {
+      setNotice("请先完成当前操作并保存审核修改，再执行批量不通过。");
+      return;
+    }
+    const selected = scan.episodes.filter(episode => batchRejectionSelection[episode.root])
+      .map(episode => ({ path: episode.root, name: episode.name }));
+    if (!folder && !selected.length) return;
+    if (!folder && selected.length > 20000) {
+      setNotice("单次最多处理 20000 条，请减少选择数量。");
+      return;
+    }
+    setQueuedEpisodeRoot(null);
+    setPlaying(false);
+    setBatchRejection(folder ? { folder: scan.sourceRoot } : { selected });
+  }
+
+  function handleBatchRejectionSaved(path: string) {
+    setBatchRejectionSelection((previous) => {
+      const next = { ...previous };
+      delete next[path];
+      return next;
+    });
+    setReviewedEpisodes((previous) => ({ ...previous, [path]: "rejected" }));
+  }
 
   useEffect(() => {
     if (!selectedEpisode) return;
@@ -1772,14 +1815,6 @@ function App() {
         <div className="personal-task-overlay" role="presentation" onClick={() => setPersonalTaskOpen(false)}>
         <TaskCenter
           currentUser={currentUser}
-          onBeforeReject={() => {
-            if (reviewUnsaved.current || busy) throw new Error("请先完成当前操作并保存审核修改，再批量不通过");
-            setPlaying(false);
-          }}
-          onReviewsSaved={(paths) => {
-            setReviewedEpisodes(previous => ({...previous, ...Object.fromEntries(paths.map(path => [path, "rejected" as const]))}));
-            setBatchReviewRevision(value => value + 1);
-          }}
           onOpen={async (root) => {
             if (reviewUnsaved.current || busy) throw new Error("当前操作尚未完成，请稍后打开任务");
             await openSource(root, true, [], true);
@@ -1788,6 +1823,11 @@ function App() {
         />
         </div>
       ) : null}
+
+      {batchRejection && <BatchRejectionDialog {...batchRejection} onSaved={handleBatchRejectionSaved} onClose={() => {
+        setBatchRejection(null);
+        setBatchReviewRevision(value => value + 1);
+      }} />}
 
       {isManagedWorkspace && currentUser?.role === "operator" && profileEditorOpen ? (
         <DisplayNameDialog
@@ -1874,6 +1914,13 @@ function App() {
           </div>
           {!sidebarCollapsed ? <label className="sidebar-zoom">目录缩放<input aria-label="目录缩放" type="range" min="0.75" max="1.35" step="0.05" value={sidebarScale} onChange={(event) => setSidebarScale(event.currentTarget.valueAsNumber)} /><output>{Math.round(sidebarScale * 100)}%</output></label> : null}
           <div className="sidebar-path" title={sourcePath}>{sourcePath ? shortPath(sourcePath, 38) : "等待 SD 卡"}</div>
+          {!sidebarCollapsed && isManagedWorkspace && currentUser?.role === "operator" && scan && <div className="sidebar-review-toolbar" aria-label="当前目录批量审核">
+            <div className="sidebar-review-actions">
+              <button type="button" className="button button-secondary" disabled={busy || !Object.keys(batchRejectionSelection).length} onClick={() => startBatchRejection()}><X size={14} />批量不通过</button>
+              <button type="button" className="button button-secondary" disabled={busy} onClick={() => startBatchRejection(scan.sourceRoot)}><FolderOpen size={14} />整文件夹不通过</button>
+            </div>
+            <label><input type="checkbox" aria-label="全选当前目录列表" disabled={busy || !visibleEpisodes.length} checked={visibleEpisodes.length > 0 && visibleEpisodes.every(episode => Boolean(batchRejectionSelection[episode.root]))} onChange={event => setBatchRejectionSelection(event.target.checked ? Object.fromEntries(visibleEpisodes.map(episode => [episode.root, { path: episode.root, name: episode.name }])) : {})} />全选<span>已选 {Object.keys(batchRejectionSelection).length} 条</span></label>
+          </div>}
           {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
           <div className="episode-list">
             {visibleEpisodes.length ? (
@@ -1881,6 +1928,8 @@ function App() {
                 key={episode.root} episode={episode} selected={selectedEpisode?.root === episode.root}
                 sourceState={episodeSourceStates[episode.root] ?? "available"}
                 savedAnnotation={annotationTags[episode.root]} reviewStatus={reviewedEpisodes[episode.root]} busy={busy}
+                rejectionSelectable={isManagedWorkspace && currentUser?.role === "operator"}
+                rejectionSelected={Boolean(batchRejectionSelection[episode.root])}
                 actions={episodeActions} buttonRefs={episodeButtonRefs}
               />)
             ) : skippedEpisodeCount ? (
@@ -2192,7 +2241,7 @@ function EmptyWorkspace({
 // Keep the NAS catalog out of the per-frame video render work. Action refs
 // retain current application state without invalidating every row on a tick.
 const EpisodeListRow = memo(function EpisodeListRow({
-  episode, selected, sourceState, savedAnnotation, reviewStatus, busy, actions, buttonRefs,
+  episode, selected, sourceState, savedAnnotation, reviewStatus, busy, actions, buttonRefs, rejectionSelectable, rejectionSelected,
 }: {
   episode: EpisodeSummary;
   selected: boolean;
@@ -2200,10 +2249,13 @@ const EpisodeListRow = memo(function EpisodeListRow({
   savedAnnotation?: EpisodeAnnotation;
   reviewStatus?: "pending" | "approved" | "rejected";
   busy: boolean;
+  rejectionSelectable: boolean;
+  rejectionSelected: boolean;
   actions: RefObject<{
     select: (episode: EpisodeSummary) => void;
     load: (episode: EpisodeSummary, imported: boolean, focus: boolean) => Promise<void>;
     skip: (episode: EpisodeSummary) => void;
+    toggleRejection: (episode: EpisodeSummary, checked: boolean) => void;
   }>;
   buttonRefs: RefObject<Map<string, HTMLButtonElement>>;
 }) {
@@ -2214,7 +2266,8 @@ const EpisodeListRow = memo(function EpisodeListRow({
     && savedAnnotation.segments.length && savedAnnotation.clipStartFrame !== null && savedAnnotation.clipEndFrame !== null);
   const episodeTitle = completed && savedAnnotation
     ? `已标注 · ${savedAnnotation.trajectoryCode}；${activationHint}` : activationHint;
-  return <div className="episode-entry">
+  return <div className={`episode-entry${rejectionSelectable ? " episode-entry-selectable" : ""}`}>
+    {rejectionSelectable && <input type="checkbox" className="episode-rejection-select" aria-label={`选择 ${episode.name}`} checked={rejectionSelected} disabled={busy} onChange={event => actions.current.toggleRejection(episode, event.target.checked)} />}
     <button type="button" className={`episode-item${selected ? " selected" : ""}`}
       ref={(element) => {
         if (element) buttonRefs.current.set(episode.root, element);

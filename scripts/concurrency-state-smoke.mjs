@@ -314,7 +314,7 @@ try {
         }
         if (command === "plugin:event|unlisten") return null;
         if (command === "persist_review_audit" || command === "flush_review_audit_queue") return { pending: 0, blocked: 0, error: "" };
-        if (command === "plugin:dialog|open") return "/source";
+        if (command === "plugin:dialog|open") return window.__concurrencyMock.chosenDirectory ?? "/source";
         if (command === "plugin:dialog|message") {
           return args.buttons?.OkCancelCustom?.[0] ?? args.buttons?.OkCustom ?? "Ok";
         }
@@ -348,6 +348,15 @@ try {
             return { date: args.date, events: [] };
           case "get_task_center_root":
             return '/source';
+          case "scan_task_center":
+            (calls.folderRejectionRoots ??= []).push(args.sourceRoot);
+            return { sourceRoot: args.sourceRoot, tree: { name: 'batch', relativePath: '', session: false, children: [
+              { name: 'episode-1', relativePath: 'episode-1', session: true, status: 'pending', children: [] },
+              { name: 'episode-2', relativePath: 'episode-2', session: true, status: 'approved', children: [] },
+            ] } };
+          case "reject_pending_machine_review":
+            (calls.batchRejections ??= []).push(args);
+            return args.sourcePath.endsWith('episode-2') ? null : { revision: 1, status: 'rejected' };
           case "read_task_index": {
             const batch = { name: 'batch', relativePath: 'batch', batchKey: 'a'.repeat(64), session: false, status: 'pending', total: 2, reviewed: 0, approved: 0, rejected: 0, errors: 0, incomplete: false, children: [] };
             return { catalog: { sourceRoot: '/source', tree: { ...batch, name: 'source', relativePath: '', children: [batch] } }, server: { completedAtMs: Date.now(), heartbeatAtMs: Date.now(), running: false } };
@@ -554,6 +563,9 @@ try {
   await page.setViewportSize({ width: 1440, height: 920 });
   await page.goto(`${url}?task-center`, { waitUntil: 'networkidle' });
   await page.getByRole('button', { name: '任务中心', exact: true }).click();
+  const taskDialogBeforeClaim = page.getByRole('dialog', { name: '任务中心' });
+  assert.equal(await taskDialogBeforeClaim.getByRole('button', { name: '批量不通过', exact: true }).count(), 0);
+  assert.equal(await taskDialogBeforeClaim.getByRole('button', { name: '文件夹不通过', exact: true }).count(), 0);
   await page.getByRole('button', { name: '领取', exact: true }).click();
   const taskDialog = page.getByRole('dialog', { name: '任务中心' });
   await taskDialog.getByRole('alert').filter({ hasText: 'NAS disconnected' }).waitFor();
@@ -570,6 +582,9 @@ try {
   assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.loadEpisode), 1);
   assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.lastEpisodeRoot), '/source/batch/episode-1');
   assert.equal(await page.locator('.episode-item').count(), 2);
+  await page.getByRole('checkbox', { name: '选择 episode-1' }).check();
+  assert.equal(await page.getByRole('button', { name: '批量不通过', exact: true }).isVisible(), true);
+  await page.getByRole('checkbox', { name: '选择 episode-1' }).uncheck();
   await page.locator('.camera-grid img').first().waitFor();
   await page.waitForFunction(() => [...document.querySelectorAll('.camera-grid img[aria-hidden="false"]')].filter(image => image.naturalWidth > 0).length === 7);
   assert.equal(await page.locator('.camera-placeholder').count(), 0);
@@ -605,6 +620,48 @@ try {
     await page.screenshot({path:`artifacts/extra-cameras/seven-${width}.png`,fullPage:true});
   }
   console.log('browser-smoke: task claim opens batch and first episode; NAS/empty-directory failures retain claim and allow retry');
+
+  // Bulk review belongs to the loaded source list, never the task catalog.
+  const toolbar = page.locator('.sidebar-review-toolbar');
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({width, height: 900});
+    await waitForLayoutSettle(page);
+    assert.equal(await toolbar.evaluate(el => el.scrollWidth <= el.clientWidth), true);
+    assert.equal(await toolbar.getByRole('button', {name: '整文件夹不通过', exact: true}).isVisible(), true);
+    await page.screenshot({path:`artifacts/batch-rejection/sidebar-${width}.png`,fullPage:true});
+  }
+  await page.setViewportSize({width:1440,height:900});
+  await page.getByRole('checkbox', {name:'选择 episode-1', exact:true}).check();
+  await toolbar.getByRole('button', {name:'批量不通过', exact:true}).click();
+  const rejectDialog = page.locator('.batch-rejection-dialog');
+  await rejectDialog.getByText('待处理 1 条', {exact:true}).waitFor();
+  assert.equal(await page.getByRole('button', {name:'选择数据目录', exact:true}).isDisabled(), true);
+  await rejectDialog.getByRole('textbox', {name:'批量不通过原因'}).fill('无效数据');
+  await rejectDialog.getByRole('checkbox').check();
+  await rejectDialog.getByRole('button', {name:'确认不通过', exact:true}).click();
+  await rejectDialog.getByText('成功 1 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__concurrencyMock.calls.batchRejections.map(call => call.sourcePath)), ['/source/batch/episode-1']);
+  await rejectDialog.getByRole('button', {name:'完成', exact:true}).click();
+  await page.getByRole('checkbox', {name:'选择 episode-2', exact:true}).check();
+  await page.evaluate(() => { window.__concurrencyMock.chosenDirectory = '/source/other-batch'; });
+  await page.getByRole('button', {name:'选择数据目录', exact:true}).click();
+  await page.waitForFunction(() => window.__concurrencyMock.activeTask()?.kind === 'scan');
+  await page.evaluate(() => window.__concurrencyMock.resolveActiveTask({
+    sourceRoot:'/source/other-batch', volume:{driveType:'remote'},
+    episodes:[1,2].map(i => ({root:'/source/other-batch/episode-'+i,name:'episode-'+i,indexed:false,streams:[]})),
+  }));
+  await toolbar.getByText('已选 0 条', {exact:true}).waitFor();
+  assert.equal(await page.getByRole('checkbox', {name:'选择 episode-2', exact:true}).isChecked(), false);
+  await toolbar.getByRole('button', {name:'整文件夹不通过', exact:true}).click();
+  await rejectDialog.getByText('待处理 1 条 · 已排除已审核或异常数据 1 条', {exact:true}).waitFor();
+  await rejectDialog.getByRole('textbox', {name:'批量不通过原因'}).fill('任务不符');
+  await rejectDialog.getByRole('checkbox').check();
+  await rejectDialog.getByRole('button', {name:'确认不通过', exact:true}).click();
+  await rejectDialog.getByText('成功 1 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.folderRejectionRoots.at(-1)), '/source/other-batch');
+  assert.deepEqual(await page.evaluate(() => window.__concurrencyMock.calls.batchRejections.map(call => call.sourcePath)), ['/source/batch/episode-1', '/source/other-batch/episode-1']);
+  await rejectDialog.getByRole('button', {name:'完成', exact:true}).click();
+  console.log('browser-smoke: sidebar bulk rejection is limited to the loaded batch, directory changes clear selection and folder review skips completed QC');
 
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);

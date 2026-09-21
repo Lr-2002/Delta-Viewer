@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.47 - 2026-09-21
+
+- 将批量不通过与整文件夹不通过移到当前已加载目录上方；批量操作只作用于当前目录列表，整文件夹操作只作用于当前加载根目录。
+- 两种操作均只处理未审核 QC，已有通过、不通过和异常结果保留；任务中心继续专注批次领取、进入、释放和进度查询。
+
 ## 1.0.46 - 2026-09-21
 
 - 任务中心新增审核员释放本人批次入口，确认后恢复可领取，保留审核结果和进度；管理员仍可释放任意批次或转交。
