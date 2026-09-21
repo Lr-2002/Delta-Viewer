@@ -355,17 +355,11 @@ function App() {
   const batchSelectionInitialized = useRef(false);
   const didAutoUpdate = useRef(false);
   const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
+  const cameraSlots = useMemo(() => ["cam0", "cam1", "cam2", "t265_left", "t265_right", "extension_left", "extension_right"], []);
   const availableStreams = useMemo(
-    () => data?.summary.streams.filter((stream) => stream.frameCount > 0) ?? [],
-    [data],
+    () => data?.summary.streams.filter((stream) => cameraSlots.includes(stream.name) && stream.frameCount > 0) ?? [],
+    [cameraSlots, data],
   );
-  const cameraSlots = useMemo(() => {
-    const standard = ["cam0", "cam1", "cam2", "t265_left", "t265_right", "extension_left", "extension_right"];
-    const extra = (data?.summary.streams ?? [])
-      .filter(stream => !standard.includes(stream.name))
-      .map(stream => stream.name);
-    return [...standard, ...extra];
-  }, [data?.summary.streams]);
   const primaryStreamName = availableStreams.find((stream) => stream.name === "cam0")?.name
     ?? availableStreams[0]?.name
     ?? null;
@@ -1960,7 +1954,7 @@ function App() {
                       <PreviewSettings />
                     </div>
                     <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
-                      <div className="camera-grid camera-grid-expanded" style={{ "--extra-camera-columns": Math.ceil((cameraSlots.length - 5) / 2) } as CSSProperties}>
+                      <div className="camera-grid camera-grid-expanded">
                         {cameraSlots.map((name, index) => {
                           const stream = availableStreams.find((stream) => stream.name === name);
                           return stream ? (
