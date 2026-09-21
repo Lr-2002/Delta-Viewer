@@ -40,6 +40,15 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
     assert.equal(result.status, 0, result.error?.message ?? result.stderr);
     sources = ["cam0", "cam1"].map((name) => ({ name, fps: 30, frames: 180,
       width: 320, height: 180, segmentSeconds: 3, files: [mediaPath, mediaPath] }));
+    for (const [name, width, height] of [["extension_left", 640, 360], ["extension_right", 480, 320]]) {
+      const file = path.join(artifactRoot, `${name}.mp4`);
+      const encoded = spawnSync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+        "-i", `testsrc2=size=${width}x${height}:rate=30`, "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", file], { windowsHide: true, encoding: "utf8" });
+      assert.equal(encoded.status, 0, encoded.error?.message ?? encoded.stderr);
+      // Exercise resolution discovery when the source summary omits dimensions.
+      sources.push({ name, fps: 30, frames: 180, width: null, height: null, segmentSeconds: 3, files: [file, file] });
+    }
     end = 180;
   }
   streams = sources.map((source) => ({ name: source.name, label: source.name, width: source.width,
@@ -129,6 +138,13 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
       || [...document.querySelectorAll("video")].length > 0
       && [...document.querySelectorAll("video")].every((v) => v.readyState >= 2), null, { timeout: 90000 });
     assert.equal(await page.evaluate(() => window.__nativeStats.fallbacks), 0);
+    if (!sampleRoot) {
+      for (const [name, dimensions] of [["extension_left", "640×360"], ["extension_right", "480×320"]]) {
+        const panel = page.locator('.frame-panel').filter({ has: page.locator('.frame-camera-name', { hasText: name }) });
+        assert.equal(await panel.locator('.frame-resolution').textContent(), dimensions);
+        assert.equal(await panel.locator('video').evaluate(video => `${video.videoWidth}×${video.videoHeight}`), dimensions);
+      }
+    }
     await page.evaluate(() => { window.__nativeStats.events = []; window.__nativePlayback.play(true); });
     await page.waitForFunction(() => { const v = document.querySelector("video"); return v && !v.paused && v.currentTime > .1; }, null, { timeout: 60000 });
     const started = await page.evaluate(() => ({ wall: performance.now(), media: document.querySelector("video").currentTime }));

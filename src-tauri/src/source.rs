@@ -1871,7 +1871,7 @@ mod tests {
     fn optional_cameras_load_jpeg_and_mp4_without_changing_legacy_streams() {
         use super::jpeg_stream_directory;
         use std::collections::BTreeMap;
-        const OPTIONAL_STREAM_NAMES: [&str; 2] = ["wrist_left", "右手相机"];
+        const OPTIONAL_STREAM_NAMES: [&str; 2] = ["extension_left", "extension_right"];
         let root = test_output("optional-cameras");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("states.jsonl"), "").unwrap();
@@ -1884,9 +1884,9 @@ mod tests {
                 .len(),
             5
         );
-        for name in OPTIONAL_STREAM_NAMES {
+        for (index, name) in OPTIONAL_STREAM_NAMES.into_iter().enumerate() {
             fs::create_dir(root.join(name)).unwrap();
-            image::RgbImage::from_pixel(8, 6, image::Rgb([100, 150, 200]))
+            image::RgbImage::from_pixel(8 + index as u32 * 2, 6, image::Rgb([100, 150, 200]))
                 .save(root.join(name).join("0.jpg"))
                 .unwrap();
         }
@@ -1894,7 +1894,7 @@ mod tests {
         let index = scan_episode_index(&root, None, &cancelled).unwrap();
         assert_eq!(preview.summary.streams.len(), 7);
         assert_eq!(index.summary.streams.len(), 7);
-        for name in OPTIONAL_STREAM_NAMES {
+        for (stream_index, name) in OPTIONAL_STREAM_NAMES.into_iter().enumerate() {
             let summary = index
                 .summary
                 .streams
@@ -1902,9 +1902,12 @@ mod tests {
                 .find(|stream| stream.name == name)
                 .unwrap();
             assert_eq!(summary.frame_count, 1);
-            assert_eq!(summary.width, Some(8));
+            let width = 8 + stream_index as u32 * 2;
+            assert_eq!(summary.label, name);
+            assert_eq!(summary.width, Some(width));
+            assert_eq!(summary.height, Some(6));
             let (_, bytes) = read_frame_with_index(&root, name, 0, Some(&index), None).unwrap();
-            assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 8);
+            assert_eq!(image::load_from_memory(&bytes).unwrap().width(), width);
             assert!(jpeg_stream_directory(&root, name).unwrap().is_some());
             fs::remove_file(root.join(name).join("0.jpg")).unwrap();
             fs::write(root.join(name).join("video.mp4"), b"placeholder").unwrap();
@@ -1942,7 +1945,23 @@ mod tests {
                     .frame_count,
                 30
             );
-            assert_eq!(video_source(&root, name, None).unwrap().paths.len(), 1);
+            assert_eq!(
+                video_source(&root, name, None).unwrap().paths,
+                vec![root
+                    .join(name)
+                    .join("video.mp4")
+                    .canonicalize()
+                    .unwrap()
+                    .display()
+                    .to_string()]
+            );
+            let summary = index
+                .summary
+                .streams
+                .iter()
+                .find(|stream| stream.name == name)
+                .unwrap();
+            assert_eq!((summary.width, summary.height), (Some(1280), Some(720)));
             assert!(jpeg_stream_directory(&root, name).unwrap().is_none());
         }
         assert!(read_frame(&root, "../cam3", 0, None).is_err());

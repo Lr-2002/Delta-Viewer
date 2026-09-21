@@ -109,6 +109,13 @@ export const FramePanel = memo(function FramePanel({
   const [adaptiveFailed, setAdaptiveFailed] = useState(false);
   const [levels, setLevels] = useState<number[]>([]);
   const [displayedHeight, setDisplayedHeight] = useState<number | null>(null);
+  const [decodedSize, setDecodedSize] = useState<{ streamKey: string; width: number; height: number } | null>(null);
+  const dimensions = decodedSize?.streamKey === streamKey ? decodedSize : stream;
+  function rememberDimensions(width: number, height: number) {
+    if (width <= 0 || height <= 0) return;
+    setDecodedSize(current => current?.streamKey === streamKey && current.width === width && current.height === height
+      ? current : { streamKey, width, height });
+  }
   const hlsRef = useRef<Hls | null>(null);
   useEffect(() => {
     const changed = () => setPreviewRevision((value) => value + 1);
@@ -587,11 +594,13 @@ export const FramePanel = memo(function FramePanel({
           muted
           playsInline
           preload="auto"
-          onLoadedMetadata={() => {
+          onLoadedMetadata={(event) => {
+            rememberDimensions(event.currentTarget.videoWidth, event.currentTarget.videoHeight);
             if (videoRef.current && Math.abs(videoRef.current.currentTime - requestedVideoTimeRef.current) > 0.001) {
               videoRef.current.currentTime = requestedVideoTimeRef.current;
             }
           }}
+          onResize={(event) => rememberDimensions(event.currentTarget.videoWidth, event.currentTarget.videoHeight)}
           onLoadedData={() => {
             setVideoStatus("ready");
             if (!nativePlaybackEnabled) onFrameSettled?.(stream.name, frameId);
@@ -631,15 +640,20 @@ export const FramePanel = memo(function FramePanel({
             src={frame.source}
             alt={`${stream.label} frame ${frame.frameId}`}
             aria-hidden={!isVisible}
-            onLoad={() => showStagedFrame(slotIndex, frame)}
+            onLoad={(event) => {
+              if (frame.streamKey === streamKey && requestedKeyRef.current === frame.key) {
+                rememberDimensions(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
+              }
+              showStagedFrame(slotIndex, frame);
+            }}
             onError={() => handleFrameError(slotIndex, frame)}
           />
         );
       }) : null}
       <figcaption>
-        <span>{stream.label}</span>
+        <span className="frame-camera-name" title={stream.label}>{stream.label}</span>
         <span className="frame-resolution">
-          {useAdaptive && displayedHeight ? `${displayedHeight}p` : stream.width && stream.height ? `${stream.width}×${stream.height}` : "—"}
+          {useAdaptive && displayedHeight ? `${displayedHeight}p` : dimensions.width && dimensions.height ? `${dimensions.width}×${dimensions.height}` : "—"}
         </span>
         {adaptiveUrl && <select className="preview-quality" aria-label={`${stream.label}清晰度`} title="播放清晰度" value={quality} onChange={(event) => { setAdaptiveFailed(false); setQuality(event.target.value); }}>
           <option value="auto">自动</option>{[...new Set(levels)].sort((a, b) => b - a).map((height) => <option key={height} value={height}>{height}p</option>)}<option value="original">原片</option>

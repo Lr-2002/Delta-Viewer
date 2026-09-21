@@ -176,7 +176,7 @@ try {
       cancelOperationIds: [],
     };
     const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JrJ4AAAAASUVORK5CYII=";
-    const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right", ...(location.search === '?task-center' ? ['wrist_left', '右手相机'] : [])].map((name) => ({
+    const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right", ...(location.search === '?task-center' ? ['extension_right', 'extension_left'] : [])].map((name) => ({
       name,
       label: name,
       frameCount: 1,
@@ -185,8 +185,8 @@ try {
       missingFrames: [],
       missingFrameCount: 0,
       totalBytes: 1,
-      width: 1,
-      height: 1,
+      width: name.startsWith('extension_') ? null : 1,
+      height: name.startsWith('extension_') ? null : 1,
       channels: 3,
     }));
     const taskCenterMode = location.search === '?task-center';
@@ -548,6 +548,8 @@ try {
   }
   console.log("browser-smoke: completed flow renders five images without responsive overflow");
   assert.equal(await page.locator('.camera-placeholder').count(), 2);
+  assert.equal(await page.locator('.camera-5 figcaption').textContent(), 'extension_left');
+  assert.equal(await page.locator('.camera-6 figcaption').textContent(), 'extension_right');
 
   await page.setViewportSize({ width: 1440, height: 920 });
   await page.goto(`${url}?task-center`, { waitUntil: 'networkidle' });
@@ -571,6 +573,11 @@ try {
   await page.locator('.camera-grid img').first().waitFor();
   await page.waitForFunction(() => [...document.querySelectorAll('.camera-grid img[aria-hidden="false"]')].filter(image => image.naturalWidth > 0).length === 7);
   assert.equal(await page.locator('.camera-placeholder').count(), 0);
+  for (const [index, name] of [[5, 'extension_left'], [6, 'extension_right']]) {
+    assert.equal(await page.locator(`.camera-${index} .frame-camera-name`).textContent(), name);
+    assert.equal(await page.locator(`.camera-${index} img`).first().getAttribute('alt'), `${name} frame 0`);
+    assert.equal(await page.locator(`.camera-${index} .frame-resolution`).textContent(), '1×1');
+  }
   const slots = await page.locator('.camera-grid').evaluate(grid => {
     const bounds = i => { const r = grid.querySelector('.camera-' + i).getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; };
     return [1,2,3,4,5,6].map(bounds);
@@ -582,10 +589,18 @@ try {
   assert.ok(slots[4].x > slots[1].x && slots[5].y > slots[4].y, 'new cameras occupy the rightmost column');
   await mkdir('artifacts/extra-cameras', {recursive:true});
   await page.screenshot({path:'artifacts/extra-cameras/seven-desktop.png',fullPage:true});
-  await page.setViewportSize({width:390,height:844});
-  await waitForLayoutSettle(page);
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-  await page.screenshot({path:'artifacts/extra-cameras/seven-mobile.png',fullPage:true});
+  for (const width of [960, 390]) {
+    await page.setViewportSize({width,height:844});
+    await waitForLayoutSettle(page);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    for (const index of [5, 6]) {
+      assert.equal(await page.locator(`.camera-${index} .frame-resolution`).isVisible(), true);
+      assert.equal(await page.locator(`.camera-${index} figcaption`).evaluate(caption =>
+        caption.scrollWidth <= caption.clientWidth && [...caption.children].every(child =>
+          child.getBoundingClientRect().right <= caption.getBoundingClientRect().right)), true);
+    }
+    await page.screenshot({path:`artifacts/extra-cameras/seven-${width}.png`,fullPage:true});
+  }
   console.log('browser-smoke: task claim opens batch and first episode; NAS/empty-directory failures retain claim and allow retry');
 
   assert.deepEqual(consoleErrors, []);
