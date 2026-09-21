@@ -176,7 +176,7 @@ try {
       cancelOperationIds: [],
     };
     const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JrJ4AAAAASUVORK5CYII=";
-    const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right", ...(location.search === '?task-center' ? ['extension_right', 'extension_left'] : [])].map((name) => ({
+    const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right", ...(location.search === '?task-center' ? ['extension_right', 't265_pose', 'extension_left'] : [])].map((name) => ({
       name,
       label: name,
       frameCount: 1,
@@ -573,6 +573,9 @@ try {
   await page.locator('.camera-grid img').first().waitFor();
   await page.waitForFunction(() => [...document.querySelectorAll('.camera-grid img[aria-hidden="false"]')].filter(image => image.naturalWidth > 0).length === 7);
   assert.equal(await page.locator('.camera-placeholder').count(), 0);
+  assert.equal(await page.locator('.camera-grid .frame-panel').count(), 7);
+  assert.equal(await page.locator('.camera-grid').getByText('t265_pose', {exact:true}).count(), 0);
+  await page.waitForFunction(() => document.querySelector('.frame-render-progress-count')?.textContent.includes('7/7'));
   for (const [index, name] of [[5, 'extension_left'], [6, 'extension_right']]) {
     assert.equal(await page.locator(`.camera-${index} .frame-camera-name`).textContent(), name);
     assert.equal(await page.locator(`.camera-${index} img`).first().getAttribute('alt'), `${name} frame 0`);

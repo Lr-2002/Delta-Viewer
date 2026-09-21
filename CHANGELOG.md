@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.45 - 2026-09-21
+
+- 回放网格固定为五路原有相机加 `extension_left`、`extension_right`，隐藏不属于摄像头的额外流（例如 `t265_pose`），并恢复完整对齐布局。
+
 ## 1.0.44 - 2026-09-21
 
 - 新增相机槽位固定对应 `extension_left`、`extension_right`，各自读取同名目录的视频，缺少任一路时保留对应占位，不交换左右画面。

@@ -1082,7 +1082,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .camera-section { --time-axis-left: 55px; --time-axis-right: 17px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
 .replay-visual-row.with-skeleton { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(170px, .48fr); gap: 7px; align-items: stretch; }
 .camera-grid { height: clamp(320px, 52vh, 560px); min-height: 320px; display: grid; grid-template-columns: 2.2fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 7px; }
-.camera-grid-expanded { grid-template-columns: minmax(0, 2.2fr) repeat(calc(2 + var(--extra-camera-columns, 1)), minmax(0, 1fr)); grid-auto-flow: column; }
+.camera-grid-expanded { grid-template-columns: minmax(0, 2.2fr) repeat(3, minmax(0, 1fr)); grid-auto-flow: column; }
 .camera-grid.stream-count-1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
 .camera-grid.stream-count-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: 1fr; }
 .camera-grid.stream-count-1 .frame-panel,
