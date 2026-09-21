@@ -360,14 +360,10 @@ function App() {
     [data],
   );
   const cameraSlots = useMemo(() => {
-    const standard = ["cam0", "cam1", "cam2", "t265_left", "t265_right"];
-    // Keep declared extra stream names even when their first frame is not
-    // available yet; the reserved slots then explain which directory is
-    // expected instead of replacing it with a generic placeholder.
+    const standard = ["cam0", "cam1", "cam2", "t265_left", "t265_right", "extension_left", "extension_right"];
     const extra = (data?.summary.streams ?? [])
       .filter(stream => !standard.includes(stream.name))
       .map(stream => stream.name);
-    while (extra.length < 2) extra.push(`新增摄像头 ${extra.length + 1}`);
     return [...standard, ...extra];
   }, [data?.summary.streams]);
   const primaryStreamName = availableStreams.find((stream) => stream.name === "cam0")?.name
@@ -2003,7 +1999,7 @@ function App() {
                         ) : (
                           <figure key={name} className={`frame-panel camera-${index} camera-placeholder`} aria-label={`${name} 未接入`}>
                             <div className="camera-placeholder-content"><Video size={22} /><span>未接入</span></div>
-                            <figcaption><span>{name.startsWith("cam") ? `Camera ${name.slice(3)}` : name === "t265_left" ? "T265 Left" : name === "t265_right" ? "T265 Right" : name}</span></figcaption>
+                            <figcaption><span className="frame-camera-name" title={name}>{name.startsWith("cam") ? `Camera ${name.slice(3)}` : name === "t265_left" ? "T265 Left" : name === "t265_right" ? "T265 Right" : name}</span></figcaption>
                           </figure>
                         );})}
                       </div>

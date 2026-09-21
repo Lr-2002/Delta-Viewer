@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.44 - 2026-09-21
+
+- 新增相机槽位固定对应 `extension_left`、`extension_right`，各自读取同名目录的视频，缺少任一路时保留对应占位，不交换左右画面。
+- 所有相机名称旁保留分辨率，修复窄窗口隐藏分辨率；清单缺少尺寸时从已解码 JPEG 或视频元数据补齐，较长目录名支持换行。
+
 ## 1.0.43 - 2026-09-20
 
 - 回放区在现有五路流与骨架之间预置两个等尺寸画面槽位；新数据按实际相机目录名自动发现并使用同一帧读取和播放逻辑，未接入时保留明确占位。
