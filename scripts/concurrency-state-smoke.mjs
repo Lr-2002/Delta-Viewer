@@ -356,6 +356,7 @@ try {
             ] } };
           case "reject_pending_machine_review":
             (calls.batchRejections ??= []).push(args);
+            if (window.__concurrencyMock.failMediaLoad) return { revision: 1, status: 'rejected' };
             return args.sourcePath.endsWith('episode-2') ? null : { revision: 1, status: 'rejected' };
           case "read_task_index": {
             const batch = { name: 'batch', relativePath: 'batch', batchKey: 'a'.repeat(64), session: false, status: 'pending', total: 2, reviewed: 0, approved: 0, rejected: 0, errors: 0, incomplete: false, children: [] };
@@ -386,6 +387,7 @@ try {
             calls.importEpisode += 1;
             throw new Error("Direct-source UI must not invoke import_episode");
           case "load_episode":
+            if (window.__concurrencyMock.failMediaLoad) throw Error('FRAME_UNAVAILABLE: no readable media');
             calls.loadEpisode += 1;
             if (calls.loadEpisode === 1 && !taskCenterMode) return beginTask("load", args.operationId);
             calls.lastEpisodeRoot = args.path;
@@ -662,6 +664,23 @@ try {
   assert.deepEqual(await page.evaluate(() => window.__concurrencyMock.calls.batchRejections.map(call => call.sourcePath)), ['/source/batch/episode-1', '/source/other-batch/episode-1']);
   await rejectDialog.getByRole('button', {name:'完成', exact:true}).click();
   console.log('browser-smoke: sidebar bulk rejection is limited to the loaded batch, directory changes clear selection and folder review skips completed QC');
+
+  await page.evaluate(() => { window.__concurrencyMock.failMediaLoad = true; });
+  await page.locator('.episode-item').filter({hasText:'episode-2'}).dblclick();
+  await page.getByRole('alert').filter({hasText:'FRAME_UNAVAILABLE'}).waitFor();
+  const failedRejection = page.locator('.empty-workspace').getByRole('button', {name:'不通过', exact:true});
+  await failedRejection.waitFor();
+  await page.screenshot({path:'artifacts/batch-rejection/failed-session.png',fullPage:true});
+  await failedRejection.click();
+  await rejectDialog.getByRole('textbox', {name:'批量不通过原因'}).fill('视频无法读取，无效数据');
+  await rejectDialog.getByRole('checkbox').check();
+  await rejectDialog.getByRole('button', {name:'确认不通过', exact:true}).click();
+  await rejectDialog.getByText('成功 1 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.batchRejections.at(-1).sourcePath), '/source/other-batch/episode-2');
+  await rejectDialog.getByRole('button', {name:'完成', exact:true}).click();
+  await page.locator('.episode-item').filter({hasText:'episode-2'}).getByText('我已审·不通过', {exact:true}).waitFor();
+  assert.equal(await failedRejection.count(), 0);
+  console.log('browser-smoke: unreadable session can be rejected from the failure page and is marked reviewed');
 
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);

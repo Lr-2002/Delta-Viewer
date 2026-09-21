@@ -784,9 +784,15 @@ pub fn reject_pending_for_user(
     if !pending_qc(root)? {
         return Ok(None);
     }
-    let annotation = machine_annotation::load_for_review(root, None)?
-        .ok_or_else(|| failure("未找到可审核的数据，未修改"))?;
-    let current = load_selected(data_root, root, Some(&annotation.source_name))?;
+    // An unreadable annotation or capture can still receive a QC-only rejection.
+    let annotation = machine_annotation::load_for_review(root, None).unwrap_or(None);
+    let Some(annotation) = annotation else {
+        return reject_pending_without_media(root, &reason, reviewer, username);
+    };
+    let current = match load_selected(data_root, root, Some(&annotation.source_name)) {
+        Ok(current) => current,
+        Err(_) => return reject_pending_without_media(root, &reason, reviewer, username),
+    };
     if current.status != "pending" {
         return Ok(None);
     }
@@ -809,6 +815,102 @@ pub fn reject_pending_for_user(
         Err(AppError::Message(message)) if message == "BATCH_REVIEW_SKIPPED" => Ok(None),
         result => result.map(Some),
     }
+}
+
+// A rejected QC decision does not need a playable frame or an annotation
+// document. Keep the decision auditable so a broken capture cannot remain
+// permanently in the pending count.
+fn reject_pending_without_media(
+    root: &Path,
+    reason: &str,
+    reviewer: &str,
+    username: &str,
+) -> AppResult<Option<ReviewState>> {
+    let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
+    let root = root.canonicalize()?;
+    let write_root = storage::review_write_root(&root)?;
+    let _output_lock = lock_file(&write_root.join(".description.lock"))?;
+    if !pending_qc(&write_root)? {
+        return Ok(None);
+    }
+    for name in [OUTPUT, LEGACY_OUTPUT, LEGACY_FLASH_OUTPUT] {
+        if let Some(bytes) = machine_annotation::read_bytes(&write_root.join(name))? {
+            if let Ok(document) = serde_json::from_slice::<Value>(&bytes) {
+                if matches!(
+                    document["_human_review"]["status"].as_str(),
+                    Some("approved" | "rejected")
+                ) {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    let session_path = write_root.join("session.json");
+    let session_bytes = machine_annotation::read_bytes(&session_path)?
+        .ok_or_else(|| failure("未找到 session.json，未修改"))?;
+    let mut session: Value = serde_json::from_slice(&session_bytes)?;
+    if !session.is_object() {
+        return Err(failure("session.json 不是对象，未修改"));
+    }
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).map_err(|_| failure("无法生成唯一质检版本号"))?;
+    let version_id: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    let revision = 1;
+    let revision_label = format!("{version_id} · 媒体不可用；不通过");
+    let updated_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    session["qc"] = json!(format!("不通过：{reason}"));
+    session["revision"] = json!(&revision_label);
+    session["appVersion"] = json!(env!("CARGO_PKG_VERSION"));
+    session["reviewerUsername"] = json!(username);
+    session["reviewerName"] = json!(reviewer);
+    let reviewed_at =
+        time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(updated_at_ms) * 1_000_000)
+            .map_err(|_| failure("审核时间格式化失败"))?
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|_| failure("审核时间格式化失败"))?;
+    session["reviewedAt"] = json!(reviewed_at);
+    let record = AccountReview {
+        source_path: root.to_string_lossy().into(),
+        username: username.into(),
+        reviewer_name: reviewer.into(),
+        status: "rejected".into(),
+        rejection_reason: reason.into(),
+        revision: revision_label.clone(),
+        updated_at_ms,
+    };
+    let accounts = session
+        .as_object_mut()
+        .ok_or_else(|| failure("session.json 不是对象，未修改"))?
+        .entry("qcReviewers")
+        .or_insert_with(|| json!({}));
+    let mut shared = serde_json::to_value(&record)?;
+    shared.as_object_mut().unwrap().remove("sourcePath");
+    accounts
+        .as_object_mut()
+        .ok_or_else(|| failure("session.qcReviewers 必须是对象，未修改"))?
+        .insert(username.into(), shared);
+    atomic_json(&session_path, &session)?;
+    Ok(Some(ReviewState {
+        reviewer_username: username.into(),
+        rejection_reason: reason.into(),
+        change_summary: "媒体不可用；不通过".into(),
+        revision_label,
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        workflow_version: 4,
+        status: "rejected".into(),
+        version_id,
+        previous_version_id: String::new(),
+        source_hash: blake3::hash(&session_bytes).to_hex().to_string(),
+        revision,
+        segments: Vec::new(),
+        published: true,
+        output_hash: None,
+        updated_at_ms: record.updated_at_ms,
+        reviewer: reviewer.into(),
+    }))
 }
 
 fn save_for_user_mode(
@@ -1221,6 +1323,129 @@ pub fn is_review_path(root: &Path, path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn batch_rejection_without_media_completes_qc_without_inventing_annotations() {
+        for broken_json in [false, true] {
+            let f = Fixture::new(0, true);
+            fs::remove_file(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap();
+            fs::write(
+                f.root.join("session.json"),
+                br#"{"capture":"preserved","qc":""}"#,
+            )
+            .unwrap();
+            fs::create_dir_all(f.root.join(".session_meta")).unwrap();
+            let manifest = br#"{"storage_format":"jpeg-stream-v1","result":"PARTIAL","batch_count":0,"streams":{}}"#;
+            fs::write(f.root.join(".session_meta/manifest.json"), manifest).unwrap();
+            fs::create_dir_all(f.root.join("cam0")).unwrap();
+            fs::write(
+                f.root.join("cam0/cam0-00000.mp4"),
+                b"original capture bytes",
+            )
+            .unwrap();
+            if broken_json {
+                fs::write(
+                    f.root.join(machine_annotation::DEFAULT_SOURCE),
+                    b"broken JSON",
+                )
+                .unwrap();
+                fs::write(f.root.join(OUTPUT), b"broken human JSON").unwrap();
+            }
+            let state = reject_pending_for_user(&f.local, &f.root, "无效数据", "Reviewer", "alice")
+                .unwrap()
+                .unwrap();
+            assert_eq!(state.status, "rejected");
+            assert!(state.segments.is_empty());
+            let session: Value =
+                serde_json::from_slice(&fs::read(f.root.join("session.json")).unwrap()).unwrap();
+            assert_eq!(session["qc"], "不通过：无效数据");
+            assert_eq!(session["capture"], "preserved");
+            assert_eq!(session["reviewerUsername"], "alice");
+            assert!(session["qcReviewers"]["alice"].get("sourcePath").is_none());
+            assert_eq!(
+                list_account_reviews(
+                    &f.temp.join("another-host"),
+                    &[f.root.to_string_lossy().into()],
+                    "alice"
+                )
+                .unwrap()[0]
+                    .status,
+                "rejected"
+            );
+            let catalog = serde_json::to_value(crate::task_center::scan(&f.root).unwrap()).unwrap();
+            assert_eq!(catalog["tree"]["total"], 1);
+            assert_eq!(catalog["tree"]["reviewed"], 1);
+            assert_eq!(catalog["tree"]["rejected"], 1);
+            assert_eq!(
+                fs::read(f.root.join("cam0/cam0-00000.mp4")).unwrap(),
+                b"original capture bytes"
+            );
+            assert_eq!(
+                fs::read(f.root.join(".session_meta/manifest.json")).unwrap(),
+                manifest
+            );
+            if broken_json {
+                assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), b"broken human JSON");
+            } else {
+                assert!(!f.root.join(OUTPUT).exists());
+            }
+            let before = fs::read(f.root.join("session.json")).unwrap();
+            assert!(
+                reject_pending_for_user(&f.local, &f.root, "任务不符", "Other", "bob")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(fs::read(f.root.join("session.json")).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn batch_rejection_without_media_preserves_invalid_qc_and_completed_human_results() {
+        let f = Fixture::new(0, true);
+        fs::remove_file(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap();
+        for session in [
+            br#"{"qc":true}"#.as_slice(),
+            b"{invalid",
+            br#"{"qcReviewers":[]}"#,
+        ] {
+            fs::write(f.root.join("session.json"), session).unwrap();
+            assert!(
+                reject_pending_for_user(&f.local, &f.root, "无效数据", "Reviewer", "alice")
+                    .is_err()
+            );
+            assert_eq!(fs::read(f.root.join("session.json")).unwrap(), session);
+        }
+        fs::write(f.root.join("session.json"), b"{}").unwrap();
+        fs::write(
+            f.root.join(OUTPUT),
+            br#"{"_human_review":{"status":"approved"}}"#,
+        )
+        .unwrap();
+        assert!(
+            reject_pending_for_user(&f.local, &f.root, "无效数据", "Reviewer", "alice")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(fs::read(f.root.join("session.json")).unwrap(), b"{}");
+        fs::remove_file(f.root.join(OUTPUT)).unwrap();
+        let lock = lock_file(&f.root.join(".description.lock")).unwrap();
+        assert!(
+            reject_pending_for_user(&f.local, &f.root, "无效数据", "Reviewer", "alice").is_err()
+        );
+        assert_eq!(fs::read(f.root.join("session.json")).unwrap(), b"{}");
+        drop(lock);
+        // A decision made after discovery must win when the shared lock is acquired.
+        fs::write(
+            f.root.join("session.json"),
+            serde_json::to_vec(&json!({"qc":"通过"})).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            reject_pending_without_media(&f.root, "无效数据", "Reviewer", "alice")
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn batch_rejection_preserves_completed_qc_and_rejects_pending_with_reason() {
