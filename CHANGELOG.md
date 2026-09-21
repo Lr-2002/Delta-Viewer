@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.48 - 2026-09-21
+
+- 修复没有可读取媒体、机标或恢复清单损坏的数据无法批量判为不通过的问题；在共享锁内复核未审核 QC，仅原子保存不通过原因、审核人和修订，不创建虚假片段或改写媒体。
+- 加载失败页面提供单条不通过入口，保留原因和确认流程；根级 QC 保存后计入任务完成进度，已有结论和非法 QC 不覆盖。
+
 ## 1.0.47 - 2026-09-21
 
 - 将批量不通过与整文件夹不通过移到当前已加载目录上方；批量操作只作用于当前目录列表，整文件夹操作只作用于当前加载根目录。

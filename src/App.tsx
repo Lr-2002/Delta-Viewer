@@ -1629,6 +1629,12 @@ function App() {
     setReviewedEpisodes((previous) => ({ ...previous, [path]: "rejected" }));
   }
 
+  function rejectFailedEpisode() {
+    if (!selectedEpisode || busy || operationScopeRef.current.current() || reviewUnsaved.current) return;
+    setPlaying(false);
+    setBatchRejection({ selected: [{ path: selectedEpisode.root, name: selectedEpisode.name }] });
+  }
+
   useEffect(() => {
     if (!selectedEpisode) return;
     const assignedTask = assignedEpisodeTasks[selectedEpisode.root];
@@ -2169,6 +2175,7 @@ function App() {
             <EmptyWorkspace
               selectedEpisode={selectedEpisode}
               busy={busy}
+              onReject={currentUser?.role === "operator" && selectedEpisode && episodeSourceStates[selectedEpisode.root] === "error" && !["approved", "rejected"].includes(reviewedEpisodes[selectedEpisode.root] ?? "") ? rejectFailedEpisode : undefined}
               onChoose={chooseSource}
               onBatch={openBatchExport}
             />
@@ -2184,11 +2191,13 @@ function EmptyWorkspace({
   busy,
   onChoose,
   onBatch,
+  onReject,
 }: {
   selectedEpisode: EpisodeSummary | null;
   busy: boolean;
   onChoose: () => Promise<void>;
   onBatch: () => void;
+  onReject?: () => void;
 }) {
   return (
       <div className="empty-workspace">
@@ -2220,6 +2229,7 @@ function EmptyWorkspace({
           <small>支持包含一个或多个记录目录的卷</small>
         </button>
       )}
+      {onReject && <button className="button button-secondary" type="button" disabled={busy} onClick={onReject}><X size={16} />不通过</button>}
       <button
         className="button button-secondary empty-batch-action"
         type="button"
