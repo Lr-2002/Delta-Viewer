@@ -1076,6 +1076,39 @@ async fn save_machine_review(
 }
 
 #[tauri::command]
+async fn reject_pending_machine_review(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    source_path: String,
+    reason: String,
+    operation_id: u64,
+) -> Result<Option<machine_review::ReviewState>, String> {
+    let user = auth
+        .require_managed_user()
+        .map_err(|error| error.to_string())?;
+    if user.role.as_deref() != Some("operator") {
+        return Err("REVIEWER_REQUIRED".into());
+    }
+    let task = control.start(operation_id)?;
+    let data_root = app_data_root(&app)?;
+    ensure_source_directory_responsive(&source_path).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = task;
+        machine_review::reject_pending_for_user(
+            &data_root,
+            Path::new(&source_path),
+            &reason,
+            &user.display_name,
+            &user.username,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn list_my_machine_reviews(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -1793,6 +1826,7 @@ pub fn run() {
             list_machine_annotation_sources,
             load_machine_review,
             save_machine_review,
+            reject_pending_machine_review,
             list_my_machine_reviews,
             save_episode_annotation,
             list_annotated_episodes,

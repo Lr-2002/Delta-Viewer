@@ -26,6 +26,16 @@ export function openTaskClaims(dataRoot) {
     db.exec("BEGIN IMMEDIATE");
     try {
       const previous = read.get(key);
+      if (action === "release") {
+        if (actor.role !== "admin" && (actor.role !== "operator" || (previous && previous.username !== actor.username))) {
+          db.exec("COMMIT");
+          return { forbidden: true, claim: previous ?? null };
+        }
+        if (!previous) {
+          db.exec("COMMIT");
+          return { conflict: false, claim: null };
+        }
+      }
       if (action === "claim" && previous) {
         db.exec("COMMIT");
         return { conflict: previous.username !== actor.username, claim: previous };

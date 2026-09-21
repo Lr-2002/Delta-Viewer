@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.46 - 2026-09-21
+
+- 任务中心新增审核员释放本人批次入口，确认后恢复可领取，保留审核结果和进度；管理员仍可释放任意批次或转交。
+- 用户中心在事务内校验释放归属并记录历史，拒绝释放他人或已转交任务；释放失败提示不再被后台状态刷新清除。
+
 ## 1.0.45 - 2026-09-21
 
 - 回放网格固定为五路原有相机加 `extension_left`、`extension_right`，隐藏不属于摄像头的额外流（例如 `t265_pose`），并恢复完整对齐布局。

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, ListFilter, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, UserMinus, ListFilter, X } from "lucide-react";
 import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex } from "../lib/backend";
 import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus } from "../lib/task-center";
 import type { UserIdentity } from "../types";
 import "./task-center.css";
+import { BatchRejectionDialog, type RejectionTarget } from "./BatchRejectionDialog";
 
 interface Props {
   currentUser: UserIdentity;
@@ -11,9 +12,11 @@ interface Props {
   onSourceChange?: (root: string) => void;
   onOpen?: (root: string) => Promise<void>;
   onClose?: () => void;
+  onBeforeReject?: () => void;
+  onReviewsSaved?: (paths: string[]) => void;
 }
 
-export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, onClose }: Props) {
+export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, onClose, onBeforeReject, onReviewsSaved }: Props) {
   const [root, setRoot] = useState(sourceRoot ?? "");
   const [catalog, setCatalog] = useState<TaskCatalog | null>(null);
   const [claims, setClaims] = useState<Record<string, BatchClaim>>({});
@@ -23,6 +26,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [claimError, setClaimError] = useState("");
+  const [claimActionError, setClaimActionError] = useState("");
   const [openError, setOpenError] = useState("");
   const [claimsReady, setClaimsReady] = useState(false);
   const [pending, setPending] = useState("");
@@ -42,6 +46,21 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const expandedRef = useRef(expanded); expandedRef.current = expanded;
   const catalogRef = useRef(catalog); catalogRef.current = catalog;
   const admin = currentUser.role === "admin";
+  const [rejectionSelection, setRejectionSelection] = useState<Record<string, RejectionTarget>>({});
+  const [rejection, setRejection] = useState<{ folder?: string; selected?: RejectionTarget[] } | null>(null);
+  const rejectedPaths = useRef<string[]>([]);
+  function rejectBatch(folder?: string) {
+    if (pending || rejection) return;
+    try {
+      onBeforeReject?.();
+      rejectedPaths.current = [];
+      setRejection(folder ? {folder} : {selected: Object.values(rejectionSelection)});
+    } catch (reason) { setClaimActionError(String(reason)); }
+  }
+  function reviewSaved(path: string) {
+    setRejectionSelection(previous => { const next = {...previous}; delete next[path]; return next; });
+    rejectedPaths.current.push(path);
+  }
   useEffect(() => {
     if (!pendingOnlyBatch) return;
     let active = true;
@@ -79,6 +98,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const previous = document.activeElement as HTMLElement | null;
     panelRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
     const keydown = (event: KeyboardEvent) => {
+      if ((event.target as Element)?.closest(".batch-rejection-dialog")) return;
       if (event.key !== "Tab") return;
       const controls = Array.from(panelRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled)") ?? []);
       const first = controls[0], last = controls.at(-1);
@@ -97,7 +117,8 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   useEffect(() => {
     const cached = getCachedTaskCatalog(currentUser.username, root);
     setCatalog(cached?.catalog ?? null); setServer(null); setLoadingNodes(new Set()); setRequestNotice("");
-    setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setPendingOnlyBatch(""); setError(""); setClaimError(""); setOpenError("");
+    setRejectionSelection({});
+    setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setPendingOnlyBatch(""); setError(""); setClaimError(""); setClaimActionError(""); setOpenError("");
   }, [root, currentUser.username]);
   useEffect(() => {
     if (!root) return;
@@ -178,16 +199,16 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     if (actionActive.current || !claimsReady) return;
     actionActive.current = true;
     const currentRoot = root;
-    setPending(node.batchKey); setClaimError(""); setOpenError("");
+    setPending(node.batchKey); setClaimActionError(""); setOpenError("");
     try {
-      if (action === "release" && !await confirmAction(`释放 ${node.name} 的领取归属？`, "释放批次")) return;
+      if (action === "release" && !await confirmAction(`释放 ${node.name} 的领取归属？已有审核结果和进度将保留，其他审核员可以重新领取。`, "释放批次")) return;
       const result = await mutateClaim(action, node.batchKey, action === "transfer" ? transferUser.trim() : undefined);
       if (!alive.current || rootRef.current !== currentRoot) return;
       setClaims((previous) => { const next = { ...previous }; if (result.claim) next[node.batchKey] = result.claim; else delete next[node.batchKey]; return next; });
       setTransferKey(""); setTransferUser("");
       if (action === "claim" && result.claim?.username === currentUser.username) await enterNode(node, currentRoot);
     } catch (reason) {
-      if (alive.current && rootRef.current === currentRoot) setClaimError(String(reason));
+      if (alive.current && rootRef.current === currentRoot) setClaimActionError(String(reason));
     } finally { actionActive.current = false; if (alive.current) { setPending(""); setClaimRevision((value) => value + 1); } }
   }
   async function enterNode(node: TaskNode, selectedRoot: string) {
@@ -246,6 +267,11 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const percent = node.total && !node.incomplete && !node.scanning ? Math.floor(node.reviewed * 100 / node.total) : null;
     return <div key={node.relativePath} className="task-tree-node">
       <div className={`task-tree-row${isRoot ? " task-tree-root" : ""}${node.session ? " task-tree-session" : ""}`} style={{ "--tree-depth": depth } as React.CSSProperties}>
+        {!admin && node.session && node.status === "pending" && <input type="checkbox" className="task-rejection-select" aria-label={`选择 ${node.name}`} checked={Boolean(rejectionSelection[`${catalog?.sourceRoot ?? root}/${node.relativePath}`])} disabled={Boolean(pending)} onChange={event => {
+          const path = `${catalog?.sourceRoot ?? root}/${node.relativePath}`;
+          const checked = event.target.checked;
+          setRejectionSelection(previous => { const next = {...previous}; if (checked) next[path] = {path, name:node.name}; else delete next[path]; return next; });
+        }} />}
         <button className="task-node-name" type="button" title={isRoot ? root : node.name} aria-expanded={node.session ? undefined : open}
           disabled={node.session && (!onOpen || Boolean(pending) || Boolean(error))}
           onClick={() => node.session ? void openNode(node) : void toggle(node)}>
@@ -259,10 +285,12 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
               <b>{percent === null ? "--" : `${percent}%`}</b><small>{node.scanning ? loading ? "统计中" : "未完成" : `${node.reviewed}/${node.total}`}{node.errors ? ` · ${node.errors} 异常` : ""}</small>
             </span></>}
         {isBatch && <div className="task-claim-actions">
+          {!admin && !node.session && <button type="button" className="button button-secondary" disabled={Boolean(pending) || Boolean(error)} onClick={() => rejectBatch(`${catalog?.sourceRoot ?? root}/${node.relativePath}`)}><X size={14} />文件夹不通过</button>}
           {!node.session && <button type="button" className="button button-secondary task-pending-filter" aria-pressed={filteringThisBatch} disabled={Boolean(pending)} onClick={() => void togglePendingOnly(node)}>
             <ListFilter size={14} />{filteringThisBatch ? "显示全部" : "仅未审核"}
           </button>}
-          {admin ? claim ? <><button type="button" className="button button-secondary" disabled={Boolean(pending) || !claimsReady} onClick={() => { setTransferKey(node.batchKey); setTransferUser(""); }}>转交</button><button type="button" className="button button-secondary" disabled={Boolean(pending) || !claimsReady} onClick={() => void changeClaim("release", node)}>释放</button></> : <span>未领取</span>
+          {claim && (admin || claim.username === currentUser.username) && <button type="button" className="button button-secondary" title="释放批次" disabled={Boolean(pending) || !claimsReady} onClick={() => void changeClaim("release", node)}><UserMinus size={14} />释放</button>}
+          {admin ? claim ? <button type="button" className="button button-secondary" disabled={Boolean(pending) || !claimsReady} onClick={() => { setTransferKey(node.batchKey); setTransferUser(""); }}>转交</button> : <span>未领取</span>
             : <button type="button" className="button button-secondary" disabled={Boolean(claim && claim.username !== currentUser.username) || Boolean(pending) || Boolean(error) || !claimsReady || !onOpen || !node.total || node.incomplete || node.scanning} onClick={() => claim?.username === currentUser.username ? void openNode(node) : void changeClaim("claim", node)}>
               {claim?.username === currentUser.username ? <FolderOpen size={14} /> : claim ? <Check size={14} /> : <UserCheck size={14} />}{pending === node.batchKey ? opening ? "正在加载" : "提交中" : claim?.username === currentUser.username ? "进入审核" : claim ? "已被领取" : "领取"}
             </button>}
@@ -278,10 +306,10 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       {open && loadingNodes.has(node.relativePath) && <p className="task-empty">正在读取目录明细…</p>}
     </div>;
   }
-  return <section ref={panelRef} className="task-center" role={onClose ? "dialog" : undefined} aria-modal={onClose ? true : undefined} aria-label="任务中心" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !pending) onClose?.(); }}>
+  return <section ref={panelRef} className="task-center" role={onClose ? "dialog" : undefined} aria-modal={onClose ? true : undefined} aria-label="任务中心" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !pending && !rejection) onClose?.(); }}>
     <header><h2>任务中心</h2><div>{admin && <button className="button button-secondary" disabled={requesting || server?.running} onClick={() => void rebuild()}><Database size={16} />立即统计</button>}<button className="icon-button" aria-label="刷新任务进度" title="刷新任务进度" disabled={loading || Boolean(pending)} onClick={() => { setRevision((value) => value + 1); setClaimRevision((value) => value + 1); }}><RefreshCw size={17} className={loading ? "spin" : ""} /></button>{onClose && <button className="icon-button" aria-label="关闭任务中心" title="关闭任务中心" onClick={onClose}><X size={18} /></button>}</div></header>
     <div className="task-root-setting"><span title={root}>默认根目录：{root || "未找到已挂载的数据目录"}</span><button type="button" className="button button-secondary" disabled={Boolean(pending)} onClick={() => void chooseRoot()}><FolderOpen size={16} />更改目录</button></div>
-    {(error || claimError || openError) && <p role="alert" className="task-center-error">{error || claimError || openError}</p>}
+    {(error || claimError || claimActionError || openError) && <p role="alert" className="task-center-error">{error || claimError || claimActionError || openError}</p>}
     <div className="task-scan-status" role="status">
       <span>服务器最近统计完成：{server?.completedAtMs ? new Date(server.completedAtMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "尚无完整统计"}（北京时间）</span>
       <span>每日 23:00 自动统计</span>
@@ -290,6 +318,8 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       {server?.error && <span role="alert" className="task-center-error">{server.error}；保留上次成功结果</span>}
       {requestNotice && <span>{requestNotice}</span>}
     </div>
+    {!admin && <div className="task-batch-rejection-toolbar"><span>已选择 {Object.keys(rejectionSelection).length} 条</span><button type="button" className="button button-secondary" disabled={!Object.keys(rejectionSelection).length || Boolean(pending)} onClick={() => rejectBatch()}><X size={14} />批量不通过</button><button type="button" className="button button-secondary" disabled={!Object.keys(rejectionSelection).length || Boolean(pending)} onClick={() => setRejectionSelection({})}>清空选择</button></div>}
     <div className="task-tree" aria-busy={loading}>{catalog ? row(catalog.tree, 0) : <p className="task-empty">{loading ? "正在读取服务器统计…" : error ? "统计读取失败" : "等待服务器首次统计完成"}</p>}</div>
+    {rejection && <BatchRejectionDialog {...rejection} onSaved={reviewSaved} onClose={() => { if (rejectedPaths.current.length) onReviewsSaved?.(rejectedPaths.current); setRejection(null); setRevision(value => value + 1); }} />}
   </section>;
 }

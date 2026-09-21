@@ -53,11 +53,18 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
           listing.children = listing.children.map((child) => ({ ...child, childrenLoaded: child.session, children: [] }));
           return { catalog: { sourceRoot: root, tree: listing }, server: { completedAtMs: Date.UTC(2026,8,19,15,18), updatedAtMs: Date.UTC(2026,8,19,15,18), heartbeatAtMs: Date.now(), running: window.taskFixture.running, sessions: 5418, error: window.taskFixture.serverError, schedule: '23:00 Asia/Shanghai' } };
         }
-        if (command === "plugin:dialog|message") return '确认';
+        if (command === "plugin:dialog|message") return window.taskFixture.cancelConfirm ? '取消' : '确认';
         if (command === "rebuild_task_index") return;
         if (command === "task_center_claims") {
           if (window.taskFixture.offline) throw Error("用户中心连接中断");
           if (args.action === "lookup") return { claims: Object.values(claims) };
+          if (args.action === "release") {
+            window.taskFixture.releaseCalls = (window.taskFixture.releaseCalls ?? 0) + 1;
+            if (window.taskFixture.delayRelease) await new Promise(resolve => { window.taskFixture.finishRelease = resolve; });
+            if (window.taskFixture.releaseError) throw Error(window.taskFixture.releaseError);
+            delete claims[args.body.batchKey];
+            return {claim:null};
+          }
           window.taskFixture.claimCalls++;
           if (window.taskFixture.claimError) throw Error(window.taskFixture.claimError);
           if (claims[args.body.batchKey]) throw Error("该批次已被领取");
@@ -76,6 +83,7 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     assert.equal(await page.getByRole('button', {name:'立即统计', exact:true}).count(), 0);
     assert.equal(await page.getByRole("button", { name: "已被领取", exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "领取", exact: true }).count(), 2);
+    assert.equal(await page.getByRole("button", { name: "释放", exact: true }).count(), 0, 'reviewers cannot release another owner');
     await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).click();
     await page.getByRole("button", { name: "Fridge2_001", exact: true }).waitFor();
     assert.equal(await page.getByText("已审核 · 不通过", { exact: true }).count(), 1);
@@ -171,6 +179,27 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
       }
     }
     await page.screenshot({ path: "artifacts/task-center/mobile.png", fullPage: true });
+    const release = page.getByRole('button', {name:'释放',exact:true});
+    assert.equal(await release.count(), 1, 'the owner can release their batch');
+    await page.evaluate(() => { window.taskFixture.cancelConfirm = true; });
+    await release.click();
+    assert.equal(await page.evaluate(() => window.taskFixture.releaseCalls ?? 0), 0);
+    await page.evaluate(() => { window.taskFixture.cancelConfirm = false; window.taskFixture.releaseError = '释放请求失败'; });
+    await release.click();
+    await page.getByRole('alert').filter({hasText:'释放请求失败'}).waitFor();
+    assert.equal(await page.getByRole('button', {name:'进入审核',exact:true}).count(), 1);
+    await page.evaluate(() => { window.taskFixture.releaseError = ''; window.taskFixture.delayRelease = true; });
+    await release.evaluate(button => { button.click(); button.click(); });
+    await page.waitForFunction(() => typeof window.taskFixture.finishRelease === 'function');
+    assert.equal(await release.isDisabled(), true);
+    assert.equal(await page.evaluate(() => window.taskFixture.releaseCalls), 2, 'double click submits only one release');
+    const beforeRelease = await page.evaluate(() => ({tree:window.taskFixture.tree, opens:window.taskFixture.openCalls.length}));
+    await page.evaluate(() => { window.taskFixture.finishRelease(); });
+    await release.waitFor({state:'detached'});
+    assert.equal(await page.getByRole('button', {name:'领取',exact:true}).count(), 2);
+    assert.deepEqual(await page.evaluate(() => ({tree:window.taskFixture.tree, opens:window.taskFixture.openCalls.length})), beforeRelease, 'release preserves QC and does not navigate');
+    await page.getByRole('button', {name:'领取',exact:true}).first().click();
+    await page.getByRole('button', {name:'进入审核',exact:true}).waitFor();
     await page.evaluate(() => { window.taskFixture.running = true; });
     await page.getByRole('button', { name: '刷新任务进度', exact: true }).click();
     await page.getByText('服务器正在统计 · 已统计 5418 条 · 显示上次结果', {exact:true}).waitFor();

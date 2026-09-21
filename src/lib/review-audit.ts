@@ -170,6 +170,17 @@ export function reviewAuditRecorder(root?: string) {
 export function updateReviewFrame(frame: number) {
   lastFrame = frame;
 }
+
+export async function recordBatchRejection(root: string, name: string, revision: string, reason: string, elapsedMs: number) {
+  const targetQueue = queue;
+  if (!targetQueue) throw Error("审核结果已保存，但监管队列未就绪，请勿关闭应用");
+  const episodeKey = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(root))), byte => byte.toString(16).padStart(2, "0")).join("");
+  targetQueue.push({ eventId: crypto.randomUUID(), sessionId: crypto.randomUUID(), episodeKey,
+    episodeName: name.slice(0, 256), action: "rejected", occurredAtMs: Date.now(), elapsedMs: Math.max(0, Math.round(elapsedMs)),
+    details: { target: "批量不通过", revision, reason } });
+  if ("persist" in targetQueue) await targetQueue.persist();
+  if (targetQueue.volatileCount()) throw Error("审核结果已保存，但监管记录尚未落盘，请先恢复同步");
+}
 export function recordReviewSeek(
   frame: number,
   mediaTimeMs: number,

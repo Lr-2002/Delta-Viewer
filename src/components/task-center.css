@@ -22,7 +22,17 @@
 .task-progress b { font-size: 19px; font-weight: 600; }
 .task-progress small { font-size: 10px; color: var(--muted); }
 .task-progress.complete { color: #397333; }
-.task-claim-actions { display: flex; gap: 6px; flex: 0 0 auto; justify-content: flex-end; font-size: 12px; }
+.task-claim-actions { display: flex; flex-wrap: wrap; gap: 6px; flex: 0 1 320px; max-width: 100%; justify-content: flex-end; font-size: 12px; }
+.task-rejection-select { flex: 0 0 16px; width: 16px; height: 16px; accent-color: var(--accent); }
+.task-batch-rejection-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.batch-rejection-dialog { width: min(640px, calc(100vw - 24px)); }
+.batch-rejection-warning { display: flex; gap: 8px; color: #9a3412; background: #fff4ed; padding: 12px; font-size: 13px; }
+.batch-rejection-warning svg { flex: 0 0 18px; }
+.batch-rejection-path, .batch-rejection-dialog [role="status"] { overflow-wrap: anywhere; font-size: 13px; }
+.batch-rejection-confirm { display: flex; align-items: center; gap: 8px; margin: 14px 0; font-size: 13px; }
+.batch-rejection-confirm input { width: 16px; height: 16px; flex: 0 0 16px; }
+.batch-rejection-results { max-height: 180px; overflow-y: auto; list-style: none; padding: 0; font-size: 12px; }
+.batch-rejection-results li { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 .task-claim-actions .button { min-height: 30px; padding: 5px 8px; font-size: 12px; white-space: nowrap; }
 .task-pending-filter { color: var(--muted); }
 .task-tree-session { min-height: 40px; }
