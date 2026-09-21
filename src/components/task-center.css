@@ -22,9 +22,7 @@
 .task-progress b { font-size: 19px; font-weight: 600; }
 .task-progress small { font-size: 10px; color: var(--muted); }
 .task-progress.complete { color: #397333; }
-.task-claim-actions { display: flex; flex-wrap: wrap; gap: 6px; flex: 0 1 320px; max-width: 100%; justify-content: flex-end; font-size: 12px; }
-.task-rejection-select { flex: 0 0 16px; width: 16px; height: 16px; accent-color: var(--accent); }
-.task-batch-rejection-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.task-claim-actions { display: flex; flex-wrap: wrap; gap: 6px; flex: 0 0 auto; max-width: 100%; justify-content: flex-end; font-size: 12px; }
 .batch-rejection-dialog { width: min(640px, calc(100vw - 24px)); }
 .batch-rejection-warning { display: flex; gap: 8px; color: #9a3412; background: #fff4ed; padding: 12px; font-size: 13px; }
 .batch-rejection-warning svg { flex: 0 0 18px; }
