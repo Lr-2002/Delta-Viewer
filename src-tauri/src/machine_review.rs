@@ -695,7 +695,7 @@ fn human_document(
     Ok(document)
 }
 
-fn atomic_json(path: &Path, document: &Value) -> AppResult<String> {
+pub(crate) fn atomic_json(path: &Path, document: &Value) -> AppResult<String> {
     let bytes = serde_json::to_vec_pretty(document)?;
     if bytes.len() > 8 * 1024 * 1024 {
         return Err(failure("复核文件超过 8 MiB"));
@@ -949,6 +949,13 @@ fn save_for_user_mode(
         return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
     }
     let current = load_inner(data_root, &root, &annotation)?;
+    if machine_annotation::read_bytes(&write_root.join(output))?
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|doc| doc.get("_text_correction").is_some())
+        && request.expected_revision != current.revision
+    {
+        return Err(failure("描述已由管理员勘误，请重新读取后继续审核"));
+    }
     if only_pending && current.status != "pending" {
         return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
     }
@@ -1263,7 +1270,7 @@ fn align_deleted_segments(previous: &[ReviewSegment], next: &mut [ReviewSegment]
     }
 }
 
-fn lock_file(path: &Path) -> AppResult<fs::File> {
+pub(crate) fn lock_file(path: &Path) -> AppResult<fs::File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]

@@ -521,6 +521,41 @@ export async function listMachineAnnotationSources(sourcePath: string): Promise<
   return ["description.json", "bailian_annotation.json", "bailian_annotation.qwen3.8-flash.json"];
 }
 
+export interface DescriptionRow { filePath: string; relativePath: string; fileHash: string; sessionHash: string; segmentIndex: number; startFrame: number; endFrame: number; description: string; reviewer: string; reviewedAt: string; qc: string; issues: import("./text-quality").TextIssue[] }
+export interface DescriptionScan { rows: DescriptionRow[]; errors: string[]; sessions: number }
+export interface DescriptionCorrection { filePath: string; fileHash: string; sessionHash: string; segmentIndex: number; original: string; replacement: string }
+export interface CorrectionResult { filePath: string; historyId: string | null; error: string }
+export interface CorrectionHistory { id: string; filePath: string; reviewer: string; atMs: number; mode: string; reason: string; status: string; needsReexport: boolean; changes: DescriptionCorrection[] }
+export interface TextPolicyResult { policy: import("./text-quality").TextPolicy; revision: string; location: string }
+export async function scanDescriptionIssues(sourceRoot: string, operationId: number): Promise<DescriptionScan> {
+  if (isTauriRuntime()) return invoke("scan_description_issues", { sourceRoot, operationId });
+  // The browser demo has no source filesystem. Keep the admin surface usable
+  // without pretending that a scan was performed.
+  return { rows: [], errors: ["浏览器演示模式不读取本机目录，请使用桌面版扫描"], sessions: 0 };
+}
+export async function applyDescriptionCorrections(sourceRoot: string, corrections: DescriptionCorrection[], mode: string, reason: string, operationId: number): Promise<CorrectionResult[]> {
+  if (isTauriRuntime()) return invoke("apply_description_corrections", { sourceRoot, corrections, mode, reason, operationId });
+  return [{ filePath: sourceRoot, historyId: null, error: "浏览器演示模式不写入源数据，请使用桌面版应用勘误" }];
+}
+export async function getTextPolicy(sourceRoot?: string): Promise<TextPolicyResult> {
+  if (isTauriRuntime()) return invoke("get_text_policy", { sourceRoot });
+  const { defaultTextPolicy } = await import("./text-quality");
+  return {policy: JSON.parse(localStorage.getItem("delta.text-policy") ?? JSON.stringify(defaultTextPolicy)), revision: "demo", location: "本机演示术语库"};
+}
+export async function saveTextPolicy(sourceRoot: string | undefined, policy: import("./text-quality").TextPolicy, revision: string): Promise<TextPolicyResult> {
+  if (isTauriRuntime()) return invoke("save_text_policy", {sourceRoot, policy, revision});
+  localStorage.setItem("delta.text-policy", JSON.stringify(policy)); return getTextPolicy(sourceRoot);
+}
+export async function correctionHistory(): Promise<CorrectionHistory[]> {
+  if (isTauriRuntime()) return invoke("description_correction_history");
+  return JSON.parse(localStorage.getItem("delta.text-correction-history") ?? "[]") as CorrectionHistory[];
+}
+export async function undoCorrection(id: string, operationId: number): Promise<void> {
+  if (isTauriRuntime()) return invoke("undo_description_correction", { id, operationId });
+  const history = await correctionHistory();
+  localStorage.setItem("delta.text-correction-history", JSON.stringify(history.map((item) => item.id === id ? { ...item, status: "undone" } : item)));
+}
+
 const demoMachineReviews = new Map<string, import("../types").MachineReview>();
 export async function listMyMachineReviews(sourcePaths: string[]): Promise<import("../types").AccountReview[]> {
   if (isTauriRuntime()) return invoke("list_my_machine_reviews", { sourcePaths });

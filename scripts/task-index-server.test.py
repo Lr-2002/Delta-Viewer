@@ -2,6 +2,7 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import tempfile
 import time
@@ -80,6 +81,68 @@ class IndexTests(unittest.TestCase):
         self.index.update({one})
         self.assertTrue(self.index.nodes[""]["incomplete"], "incremental aggregation must preserve skipped links")
         self.assertEqual(self.index.nodes[""]["errors"], 1)
+
+    def test_removed_session_during_visit_does_not_abort_rebuild(self):
+        removed = self.session("batch/one", "待审核")
+        self.session("batch/two", "通过")
+        self.assertTrue(self.index.rebuild())
+        visit = self.index.visit
+
+        def delete_before_visit(path, nodes, depth=0):
+            if path == removed:
+                shutil.rmtree(path)
+            return visit(path, nodes, depth)
+
+        with patch.object(self.index, "visit", side_effect=delete_before_visit):
+            self.assertTrue(self.index.rebuild())
+        self.assertNotIn("batch/one", self.index.nodes)
+        self.assertEqual(self.index.nodes[""]["total"], 1)
+        self.assertEqual(self.index.nodes[""]["reviewed"], 1)
+        self.assertEqual(self.index.status["error"], "")
+        restarted = module.TaskIndex(self.root, self.out)
+        restarted.load()
+        self.assertNotIn("batch/one", restarted.nodes)
+
+    def test_removed_subtree_discards_partially_scanned_nodes(self):
+        one = self.session("batch/one", "通过")
+        two = self.session("batch/two", "待审核")
+        self.session("other/one", "不通过")
+        visit = self.index.visit
+
+        def delete_during_visit(path, nodes, depth=0):
+            if path == two:
+                self.assertIn("batch/one", nodes)
+                shutil.rmtree(one.parent)
+            return visit(path, nodes, depth)
+
+        with patch.object(self.index, "visit", side_effect=delete_during_visit):
+            self.assertTrue(self.index.rebuild())
+        self.assertFalse(any(key.startswith("batch") for key in self.index.nodes))
+        self.assertEqual(self.index.status["sessions"], 1)
+        self.assertEqual(self.index.nodes[""]["total"], 1)
+
+    def test_missing_root_keeps_previous_snapshot(self):
+        self.session("batch/one", "通过")
+        self.assertTrue(self.index.rebuild())
+        before = (self.out / "index.json").read_bytes()
+        shutil.rmtree(self.root)
+        self.assertFalse(self.index.rebuild())
+        self.assertEqual((self.out / "index.json").read_bytes(), before)
+
+    def test_missing_file_error_with_existing_directory_is_not_ignored(self):
+        one = self.session("batch/one", "通过")
+        self.assertTrue(self.index.rebuild())
+        before = (self.out / "index.json").read_bytes()
+        visit = self.index.visit
+
+        def fail_visit(path, nodes, depth=0):
+            if path == one:
+                raise FileNotFoundError("unexpected missing resource")
+            return visit(path, nodes, depth)
+
+        with patch.object(self.index, "visit", side_effect=fail_visit):
+            self.assertFalse(self.index.rebuild())
+        self.assertEqual((self.out / "index.json").read_bytes(), before)
 
     def test_watcher_detects_atomic_qc_replacement_and_ignores_media(self):
         one = self.session("batch/one", "通过")

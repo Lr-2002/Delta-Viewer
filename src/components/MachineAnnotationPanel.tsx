@@ -1,11 +1,13 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
-import { listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
+import { getTextPolicy, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
 import { recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { addReviewSegment, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
 import type { EpisodeData, ExportRange, MachineAnnotation, MachineReview, ReviewSegment } from "../types";
+import { defaultTextPolicy, inspectDescription } from "../lib/text-quality";
+import "./text-quality.css";
 
 interface Props {
   data: EpisodeData;
@@ -77,6 +79,17 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const [labelLibraryOpen, setLabelLibraryOpen] = useState(false);
   const [labelLibrary, setLabelLibrary] = useState<LabelLibraryItem[]>([]);
   const [labelLibraryError, setLabelLibraryError] = useState("");
+  const [textPolicy, setTextPolicy] = useState(defaultTextPolicy);
+  const [textPolicyError, setTextPolicyError] = useState("");
+  const [ignoredText, setIgnoredText] = useState<Set<string>>(new Set());
+  const [textUndo, setTextUndo] = useState<{index: number; before: string; after: string} | null>(null);
+  const [textCheckOpen, setTextCheckOpen] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const refresh = () => void getTextPolicy(root).then(result => { if (active && result?.policy) {setTextPolicy(result.policy);setTextPolicyError("");} }).catch(e=>{if(active)setTextPolicyError(`术语库读取失败：${String(e)}，当前使用内置规则`);});
+    refresh(); const timer = window.setInterval(refresh, 60000);
+    return () => {active=false; clearInterval(timer);};
+  }, [root]);
   const rejectButton = useRef<HTMLButtonElement>(null);
   const boundaryFocus = useRef<"startFrame" | "endFrame" | "playhead">("endFrame");
   const mounted = useRef(true);
@@ -218,6 +231,9 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const mapping = useMemo(() => result ? machineTimelineMapping(result, primary) : null, [result, primary]);
   const rows = useMemo(() => edits.filter((segment) => !segment.deleted).sort((a, b) => a.startFrame - b.startFrame || a.sourceIndex - b.sourceIndex), [edits]);
   const active = rows.find((segment) => segment.sourceIndex === selected) ?? rows[0];
+  const issueKey = (index: number, description: string, original: string) => JSON.stringify([index,description,original]);
+  const descriptionIssues = active ? inspectDescription(active.description, textPolicy).filter(issue => !ignoredText.has(issueKey(active.sourceIndex, active.description, issue.original))) : [];
+  const allTextIssues = rows.flatMap(row => inspectDescription(row.description, textPolicy).filter(issue => !ignoredText.has(issueKey(row.sourceIndex,row.description,issue.original))).map(issue=>({...issue,row})));
   const valid = result && primary && mapping && !mapping.error && !error;
   const canEdit = Boolean(valid && review && !busy && !loading && !finishing);
   const outputName = "description.json";
@@ -357,9 +373,12 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     change(next);
     if (target) { setSelected(target.sourceIndex); seek(target.startFrame); }
   }
-  async function finish(status: "approved" | "rejected", rejectionReason?: string) {
+  async function finish(status: "approved" | "rejected", rejectionReason?: string, textConfirmed = false) {
     if (!canEdit || finishLock.current) return;
     if (status === "rejected" && !rejectionReason?.trim()) return;
+    if (status === "approved" && allTextIssues.length > 0 && !textConfirmed) {
+      playback?.onPause(); setPlaying(false); setTextCheckOpen(true); return;
+    }
     finishLock.current = true; setFinishing(true); setPlaying(false);
     playback?.onPause();
     const saved = await persist({ segments: editsRef.current, status, rejectionReason });
@@ -415,6 +434,9 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         <div className="quality-description-shell">
           <textarea aria-label="复核动作描述" placeholder="中文动作描述" value={active?.description ?? ""} disabled={!canEdit || !active}
             onChange={(event) => change(editsRef.current.map((item) => item.sourceIndex === active?.sourceIndex ? { ...item, description: event.currentTarget.value, decision: "pending" } : item))} />
+          {descriptionIssues.length > 0 && <div className="description-issues" role="status"><strong>疑似文字问题</strong>{descriptionIssues.map((issue) => <span key={`${issue.original}:${issue.suggestion}`}><button disabled={!canEdit} title={`${issue.reason}：替换为 ${issue.suggestion}`} type="button" onClick={() => { if (!active) return; const next = active.description.replaceAll(issue.original, issue.suggestion); setTextUndo({index:active.sourceIndex,before:active.description,after:next}); change(editsRef.current.map((item) => item.sourceIndex === active.sourceIndex ? { ...item, description: next, decision: "pending" } : item)); }}><Check size={13}/><mark>{issue.original}</mark> → {issue.suggestion}</button><button type="button" title="忽略本次提示" aria-label={`忽略 ${issue.original}`} disabled={!canEdit} onClick={()=>{if(active){setIgnoredText(current=>new Set([...current,issueKey(active.sourceIndex,active.description,issue.original)]));recordReviewInteraction("control",{value:`忽略文字提示：${issue.original}`,segmentIndex:active.sourceIndex},root);}}}><X size={13}/></button></span>)}</div>}
+          {textPolicyError && <p role="alert" className="machine-message">{textPolicyError}</p>}
+          {textUndo && <button type="button" className="icon-button" title="撤销文字修正" aria-label="撤销文字修正" disabled={!canEdit || edits.find(row=>row.sourceIndex===textUndo.index)?.description!==textUndo.after} onClick={()=>{change(editsRef.current.map(row=>row.sourceIndex===textUndo.index?{...row,description:textUndo.before,decision:"pending"}:row));setTextUndo(null);}}><Undo2 size={15}/></button>}
           <div className="quality-description-tools">
             <button type="button" className="label-library-trigger" aria-expanded={labelLibraryOpen} aria-haspopup="dialog"
               disabled={!canEdit || !active} onClick={() => setLabelLibraryOpen((open) => !open)}>
@@ -453,6 +475,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         </div>
       </footer>
     </section>
+    {textCheckOpen && <dialog className="text-quality-dialog" aria-label="通过前文字检查" ref={node=>{if(node&&!node.open)node.showModal();}} onCancel={()=>setTextCheckOpen(false)}><h2>通过前文字检查</h2><p>{allTextIssues.length} 个疑似问题</p><ul className="text-check-summary">{allTextIssues.map((issue,i)=><li key={i}><button className="review-user-link" onClick={()=>{setTextCheckOpen(false);setSelected(issue.row.sourceIndex);seek(issue.row.startFrame);}}>片段 {rows.indexOf(issue.row)+1}：{issue.row.description}</button><p>{issue.original} → {issue.suggestion}（{issue.reason}）</p></li>)}</ul><footer><button className="button button-secondary" autoFocus onClick={()=>setTextCheckOpen(false)}>返回检查</button><button className="button button-primary" disabled={finishing} onClick={()=>{recordReviewInteraction("control",{value:`已核对 ${allTextIssues.length} 项文字提示并继续通过`},root);setTextCheckOpen(false);void finish("approved",undefined,true);}}><Check size={16}/>已核对，继续通过</button></footer></dialog>}
     {rejectOpen && <dialog className="rejection-dialog" aria-labelledby="rejection-title" ref={(node) => { if (node && !node.open) node.showModal(); }}
       onCancel={(event) => { event.preventDefault(); closeRejection(); }}>
       <form onSubmit={(event) => { event.preventDefault(); if (reasonChoice && (reasonChoice !== "其他原因" || otherReason.trim())) void finish("rejected", reasonChoice === "其他原因" ? `其他原因：${otherReason.trim()}` : reasonChoice); }}>

@@ -27,6 +27,7 @@ mod supervision;
 mod supervision_report;
 mod task_center;
 mod task_index;
+mod text_quality;
 mod updater;
 mod user_center;
 mod validation;
@@ -1076,6 +1077,150 @@ async fn save_machine_review(
 }
 
 #[tauri::command]
+async fn scan_description_issues(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    source_root: String,
+    operation_id: u64,
+) -> Result<text_quality::ScanResult, String> {
+    let user = auth.require_managed_user().map_err(|e| e.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED".into());
+    }
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let data = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = task;
+        let policy = text_quality::get_policy(&data, Some(Path::new(&source_root)))?.policy;
+        text_quality::scan(
+            Path::new(&source_root),
+            &policy,
+            &cancelled,
+            &mut |_, path| emit_task_start(&app, operation_id, "text-scan", "扫描人工描述", path),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn apply_description_corrections(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    source_root: String,
+    corrections: Vec<text_quality::Correction>,
+    mode: String,
+    reason: String,
+    operation_id: u64,
+) -> Result<Vec<text_quality::ApplyResult>, String> {
+    let user = auth.require_managed_user().map_err(|e| e.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED".into());
+    }
+    let data = app_data_root(&app)?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = task;
+        text_quality::apply(
+            &data,
+            Path::new(&source_root),
+            corrections,
+            &mode,
+            &reason,
+            &user.username,
+            &cancelled,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_text_policy(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    source_root: Option<String>,
+) -> Result<text_quality::PolicyResult, String> {
+    auth.require_user().map_err(|e| e.to_string())?;
+    let data = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        text_quality::get_policy(&data, source_root.as_deref().map(Path::new))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn save_text_policy(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    source_root: Option<String>,
+    policy: text_quality::Policy,
+    revision: String,
+) -> Result<text_quality::PolicyResult, String> {
+    let user = auth.require_managed_user().map_err(|e| e.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED".into());
+    }
+    let data = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        text_quality::save_policy(
+            &data,
+            source_root.as_deref().map(Path::new),
+            policy,
+            &revision,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn description_correction_history(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Vec<text_quality::History>, String> {
+    let user = auth.require_managed_user().map_err(|e| e.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED".into());
+    }
+    let data = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || text_quality::history(&data))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn undo_description_correction(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    id: String,
+    operation_id: u64,
+) -> Result<(), String> {
+    let user = auth.require_managed_user().map_err(|e| e.to_string())?;
+    if user.role.as_deref() != Some("admin") {
+        return Err("SUPERVISOR_REQUIRED".into());
+    }
+    let data = app_data_root(&app)?;
+    let task = control.start(operation_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = task;
+        text_quality::undo(&data, &id, &user.username)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn reject_pending_machine_review(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -1826,6 +1971,12 @@ pub fn run() {
             list_machine_annotation_sources,
             load_machine_review,
             save_machine_review,
+            scan_description_issues,
+            apply_description_corrections,
+            get_text_policy,
+            save_text_policy,
+            description_correction_history,
+            undo_description_correction,
             reject_pending_machine_review,
             list_my_machine_reviews,
             save_episode_annotation,

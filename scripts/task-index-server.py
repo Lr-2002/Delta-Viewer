@@ -225,9 +225,24 @@ class TaskIndex:
                 if entry.name.startswith(".") or entry.name in ("@eaDir", "#recycle", "Delta-Viewer-Previews", "Delta-Viewer-TaskIndex"):
                     continue
                 if entry.is_dir(follow_symlinks=False) or entry.is_symlink():
-                    child = self.visit(Path(entry.path), nodes, depth + 1)
+                    try:
+                        child = self.visit(Path(entry.path), nodes, depth + 1)
+                    except FileNotFoundError:
+                        # A directory can disappear after scandir or during recursion.
+                        # Only omit confirmed removals; inaccessible parents still fail.
+                        try:
+                            os.lstat(entry.path)
+                        except FileNotFoundError:
+                            path.stat()
+                            prefix = Path(entry.path).relative_to(self.source).as_posix()
+                            for relative in list(nodes):
+                                if relative == prefix or relative.startswith(prefix + "/"):
+                                    self.sessions -= int(nodes.pop(relative)["session"])
+                            continue
+                        raise
                     node["children"].append(child)
             self.aggregate(node)
+        path.stat()
         nodes[node["relativePath"]] = node
         if time.monotonic() - self.last_progress > 2:
             self.last_progress = time.monotonic()

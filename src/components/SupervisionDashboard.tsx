@@ -29,6 +29,7 @@ import {
   setSupervisionAccountStatus,
   deleteSupervisionAccount,
 } from "../lib/backend";
+import { TextCorrectionsPanel } from "./TextCorrectionsPanel";
 import {
   reviewActionLabels,
   type ReviewDashboardData,
@@ -38,12 +39,13 @@ import type { UserIdentity } from "../types";
 import "./review-supervision.css";
 import { TaskCenter } from "./TaskCenter";
 
-type View = "overview" | "events" | "sessions" | "accounts" | "tasks";
+type View = "overview" | "events" | "sessions" | "accounts" | "corrections" | "tasks";
 const tabs: [View, string][] = [
   ["overview", "审核总览"],
   ["events", "实时行为"],
   ["sessions", "审核记录"],
   ["accounts", "审核账号"],
+  ["corrections", "文字勘误"],
   ["tasks", "任务中心"],
 ];
 const time = (value: number | null) =>
@@ -406,7 +408,7 @@ export function SupervisionDashboard({
         ))}
       </nav>
       {view === "tasks" && <TaskCenter currentUser={currentUser} />}
-      <div className="review-supervision-filters" hidden={view === "tasks"}>
+      <div className="review-supervision-filters" hidden={view === "tasks" || view === "corrections"}>
         <label>
           审核账号
           <select
@@ -518,6 +520,7 @@ export function SupervisionDashboard({
         </p>
       )}
       {notice && <p role="status">{notice}</p>}
+      {view === "corrections" && <TextCorrectionsPanel />}
       {view === "overview" && (
         <>
           <section className="review-kpis">
@@ -875,7 +878,7 @@ export function SupervisionDashboard({
           </form>
         </>
       )}
-      {!loading && !visibleEvents?.length && view !== "accounts" && (
+      {!loading && !visibleEvents?.length && ["overview", "events", "sessions"].includes(view) && (
         <p className="review-empty">暂无符合条件的审核操作</p>
       )}
       {deleteTarget && <dialog ref={deleteDialog} className="review-delete-dialog" aria-labelledby="delete-account-title"

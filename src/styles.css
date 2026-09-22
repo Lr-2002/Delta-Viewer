@@ -142,6 +142,8 @@
 .quality-editor { flex: 0 0 auto; border-top: 1px solid var(--line); padding-top: 8px; }
 .quality-editor .machine-heading { justify-content: space-between; margin-bottom: 6px; font-size: 12px; }
 .quality-description-shell { position: relative; min-width: 0; }
+.description-issues { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 6px 0; color: #8a5d00; font-size: 12px; }
+.description-issues button { padding: 3px 7px; border: 1px solid #d8b76b; border-radius: 4px; color: #704d00; background: #fff8df; cursor: pointer; }
 .quality-editor textarea { display: block; width: 100%; height: 86px; resize: vertical; max-height: 180px; padding: 8px; border: 1px solid var(--line-strong); border-radius: 4px; font: inherit; font-size: 12px; line-height: 1.6; }
 .quality-description-tools { display: flex; justify-content: flex-end; min-height: 28px; padding-top: 4px; }
 .label-library-trigger, .label-library-save { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: inherit; cursor: pointer; font: inherit; font-size: 11px; }
