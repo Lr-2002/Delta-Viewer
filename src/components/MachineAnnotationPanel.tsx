@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
-import { getTextPolicy, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
+import { listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
 import { recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { addReviewSegment, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
@@ -79,17 +79,10 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const [labelLibraryOpen, setLabelLibraryOpen] = useState(false);
   const [labelLibrary, setLabelLibrary] = useState<LabelLibraryItem[]>([]);
   const [labelLibraryError, setLabelLibraryError] = useState("");
-  const [textPolicy, setTextPolicy] = useState(defaultTextPolicy);
-  const [textPolicyError, setTextPolicyError] = useState("");
+  const textPolicy = defaultTextPolicy;
   const [ignoredText, setIgnoredText] = useState<Set<string>>(new Set());
   const [textUndo, setTextUndo] = useState<{index: number; before: string; after: string} | null>(null);
   const [textCheckOpen, setTextCheckOpen] = useState(false);
-  useEffect(() => {
-    let active = true;
-    const refresh = () => void getTextPolicy(root).then(result => { if (active && result?.policy) {setTextPolicy(result.policy);setTextPolicyError("");} }).catch(e=>{if(active)setTextPolicyError(`术语库读取失败：${String(e)}，当前使用内置规则`);});
-    refresh(); const timer = window.setInterval(refresh, 60000);
-    return () => {active=false; clearInterval(timer);};
-  }, [root]);
   const rejectButton = useRef<HTMLButtonElement>(null);
   const boundaryFocus = useRef<"startFrame" | "endFrame" | "playhead">("endFrame");
   const mounted = useRef(true);
@@ -435,7 +428,6 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
           <textarea aria-label="复核动作描述" placeholder="中文动作描述" value={active?.description ?? ""} disabled={!canEdit || !active}
             onChange={(event) => change(editsRef.current.map((item) => item.sourceIndex === active?.sourceIndex ? { ...item, description: event.currentTarget.value, decision: "pending" } : item))} />
           {descriptionIssues.length > 0 && <div className="description-issues" role="status"><strong>疑似文字问题</strong>{descriptionIssues.map((issue) => <span key={`${issue.original}:${issue.suggestion}`}><button disabled={!canEdit} title={`${issue.reason}：替换为 ${issue.suggestion}`} type="button" onClick={() => { if (!active) return; const next = active.description.replaceAll(issue.original, issue.suggestion); setTextUndo({index:active.sourceIndex,before:active.description,after:next}); change(editsRef.current.map((item) => item.sourceIndex === active.sourceIndex ? { ...item, description: next, decision: "pending" } : item)); }}><Check size={13}/><mark>{issue.original}</mark> → {issue.suggestion}</button><button type="button" title="忽略本次提示" aria-label={`忽略 ${issue.original}`} disabled={!canEdit} onClick={()=>{if(active){setIgnoredText(current=>new Set([...current,issueKey(active.sourceIndex,active.description,issue.original)]));recordReviewInteraction("control",{value:`忽略文字提示：${issue.original}`,segmentIndex:active.sourceIndex},root);}}}><X size={13}/></button></span>)}</div>}
-          {textPolicyError && <p role="alert" className="machine-message">{textPolicyError}</p>}
           {textUndo && <button type="button" className="icon-button" title="撤销文字修正" aria-label="撤销文字修正" disabled={!canEdit || edits.find(row=>row.sourceIndex===textUndo.index)?.description!==textUndo.after} onClick={()=>{change(editsRef.current.map(row=>row.sourceIndex===textUndo.index?{...row,description:textUndo.before,decision:"pending"}:row));setTextUndo(null);}}><Undo2 size={15}/></button>}
           <div className="quality-description-tools">
             <button type="button" className="label-library-trigger" aria-expanded={labelLibraryOpen} aria-haspopup="dialog"

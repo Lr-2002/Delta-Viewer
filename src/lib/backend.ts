@@ -538,7 +538,16 @@ export async function applyDescriptionCorrections(sourceRoot: string, correction
   return [{ filePath: sourceRoot, historyId: null, error: "浏览器演示模式不写入源数据，请使用桌面版应用勘误" }];
 }
 export async function getTextPolicy(sourceRoot?: string): Promise<TextPolicyResult> {
-  if (isTauriRuntime()) return invoke("get_text_policy", { sourceRoot });
+  if (isTauriRuntime()) {
+    try {
+      return await invoke("get_text_policy", { sourceRoot });
+    } catch (error) {
+      // Older embedded test hosts and staged clients may not expose the
+      // optional policy command yet; retain the bundled rules in that case.
+      const { defaultTextPolicy } = await import("./text-quality");
+      return { policy: defaultTextPolicy, revision: "bundled", location: "内置术语库" };
+    }
+  }
   const { defaultTextPolicy } = await import("./text-quality");
   return {policy: JSON.parse(localStorage.getItem("delta.text-policy") ?? JSON.stringify(defaultTextPolicy)), revision: "demo", location: "本机演示术语库"};
 }
