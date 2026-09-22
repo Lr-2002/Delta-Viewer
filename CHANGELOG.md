@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.50 - 2026-09-22
+
+- 不通过原因新增“状态异常”，前后端统一校验，保存后可重新加载并保留原因。
+
 ## 1.0.49 - 2026-09-22
 
 - 审核时实时检查错别字、重复字和术语，提供建议替换、忽略、撤销，并在通过前要求确认未处理提示。

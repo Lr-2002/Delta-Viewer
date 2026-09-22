@@ -415,7 +415,7 @@ test("rejection uses buttons, requires other text, persists the reason and clear
     assert.equal(await dialog.getByRole("button", { name: "确认不通过" }).isEnabled(), false);
     await dialog.getByRole("button", { name: "取消", exact: true }).click();
     assert.equal((await saved()).revision, before.revision);
-    for (const reason of ["骨架抖动", "镜头污渍", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "其他原因"]) {
+    for (const reason of ["骨架抖动", "镜头污渍", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "状态异常", "其他原因"]) {
       await page.getByRole("button", { name: "不通过", exact: true }).click();
       await dialog.getByRole("button", { name: reason, exact: true }).click();
       let expected = reason;

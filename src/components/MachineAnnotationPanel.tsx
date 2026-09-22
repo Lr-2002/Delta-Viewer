@@ -28,7 +28,7 @@ interface Props {
 type Status = "pending" | "approved" | "rejected";
 type Snapshot = { segments: ReviewSegment[]; status: Status; rejectionReason?: string };
 type LabelLibraryItem = { id: string; text: string; createdAt: number };
-const REJECTION_REASONS = ["骨架抖动", "镜头污渍", "镜头遮挡", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "其他原因"];
+const REJECTION_REASONS = ["骨架抖动", "镜头污渍", "镜头遮挡", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "状态异常", "其他原因"];
 const LABEL_LIBRARY_LIMIT = 80;
 const saves = new Map<string, Promise<boolean>>();
 

@@ -1172,6 +1172,7 @@ fn validated_rejection_reason(status: &str, reason: Option<&str>) -> AppResult<S
         "无效数据",
         "任务不符",
         "动作过快",
+        "状态异常",
     ];
     if fixed.contains(&reason) {
         return Ok(reason.into());
@@ -1871,6 +1872,7 @@ mod tests {
             "无效数据",
             "任务不符",
             "动作过快",
+            "状态异常",
             "骨架抖动",
             "镜头污渍",
             "动作错误",
