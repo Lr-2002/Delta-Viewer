@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.54 - 2026-09-23
+
+- 修复采集工作台打开时 `create_webview_window not allowed by ACL` 报错，补齐主窗口创建、显示和聚焦工作台窗口的权限，支持首次打开和重复唤起。
+
 ## 1.0.53 - 2026-09-23
 
 - 修正对话框恢复回归测试对顶部来源按钮的定位，避免与采集工作台入口冲突。
