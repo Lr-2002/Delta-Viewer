@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.52 - 2026-09-23
+
+- 修正新增采集工作台入口后浏览器并发 smoke test 的来源按钮定位，保持发布回归覆盖稳定。
+
 ## 1.0.51 - 2026-09-23
 
 - Viewer 顶栏新增真实采集工作台入口，打开 `10.1.41.17:44587` 的完整人工 QC 页面及其统计、行为、账号、任务和保存接口，并复用工作台原生认证与权限。

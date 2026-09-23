@@ -431,7 +431,7 @@ try {
   await page.waitForFunction(() => window.__concurrencyMock.listenerCount("task-progress") >= 1);
   console.log("browser-smoke: app and progress listener loaded");
 
-  const chooseSource = page.locator(".topbar-actions button.button-secondary");
+  const chooseSource = page.locator('.topbar-actions').getByRole('button', {name: /选择 (SD 卡|数据目录)/});
   const rescan = page.getByRole("button", { name: "重新扫描", exact: true });
   assert.equal(await chooseSource.isDisabled(), false);
   assert.equal(await rescan.isDisabled(), false);
