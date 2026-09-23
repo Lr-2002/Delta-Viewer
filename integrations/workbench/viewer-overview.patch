@@ -1,0 +1,70 @@
+--- a/annotation_desktop/static/qc-management.js
++++ b/annotation_desktop/static/qc-management.js
+@@ -1,4 +1,5 @@
+ (() => {
++  const overviewOnly = new URLSearchParams(location.search).get('viewer') === 'overview';
+   const $ = id => document.getElementById(id);
+   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+   const number = (value, places=0) => value == null ? '--' : Number(value).toLocaleString('zh-CN', {maximumFractionDigits:places});
+@@ -28,10 +29,11 @@
+   const admin = () => account?.current_user?.role === 'admin';
+   const empty = (cols, message) => `<tr><td colspan="${cols}" class="empty-row">${esc(message)}</td></tr>`;
+   async function api(path, body, retried=false) {
+-    const response = await fetch(path, {method:body ? 'POST':'GET', credentials:'include', headers:{'X-Local-Token':token,'Content-Type':'application/json'}, body:body ? JSON.stringify(body):undefined, signal:AbortSignal.timeout(20000)});
++    if(overviewOnly && (body || new URL(path,location.origin).pathname !== '/api/qc/management'))throw Error('审核总览仅支持读取统计');
++    const response = await fetch(path, {method:body ? 'POST':'GET', credentials:overviewOnly?'omit':'include', headers:{'X-Local-Token':token,'Content-Type':'application/json'}, body:body ? JSON.stringify(body):undefined, signal:AbortSignal.timeout(20000)});
+     const value = await response.json();
+     if (response.status===401 && !value.account_error && !retried) {
+-      const session = await fetch('/preview-session');
++      const session = await fetch('/preview-session', {credentials:overviewOnly?'omit':'same-origin'});
+       if(session.ok) {token=(await session.json()).token;sessionStorage.setItem('local-token',token);return api(path,body,true);}
+     }
+     if(!response.ok) {
+@@ -86,6 +88,7 @@
+     $('reviewer').value=chosen;
+     $('dailyMeta').textContent=data.reviewer_ready ? `${data.daily.length} 条日报 · 数据更新 ${time(data.indexed_at)} · 最近提交 ${time(data.latest_review_at)}` : '正在补读历史审核人';
+     renderDaily();
++    if(overviewOnly)return;
+     $('recordRows').innerHTML=data.rows.map(r=>`<tr><td>${esc(r.name)}<small>${esc(r.relative_path)}</small></td><td>${esc(r.reviewer_name || r.reviewer_username || '未记录')}<small>${r.reviewer_username?'@'+esc(r.reviewer_username):''}</small></td><td>${time(r.review_started_at)}</td><td>${time(r.review_completed_at || r.at)}</td><td class="number"><span>${number(r.review_seconds,3)}</span><small>${r.active_seconds==null?'操作轨迹待核实':'有效 '+duration(r.active_seconds)}</small>${r.rest_seconds?`<small class="review-rest-text">休息 ${duration(r.rest_seconds)}</small>`:''}</td><td class="${esc(r.status)}">${labels[r.status]}</td><td class="number">${number(r.seconds,3)}</td><td class="number">${number(r.quality_seconds,3)}</td></tr>`).join('') || empty(8,'当前范围无数据');
+     page=data.page;$('recordPage').textContent=`${number(data.total)} 条 · ${page} / ${data.pages} 页`;
+     $('recordPrevious').disabled=page<=1;$('recordNext').disabled=page>=data.pages;
+@@ -171,7 +174,7 @@
+   async function refresh() {
+     clearTimeout(timer);if(!visible())return;if(busy){pendingRefresh=true;return;}busy=true;const generation=revision;
+     try {
+-      account=await api('/api/account');renderAccount();
++      if(!overviewOnly){account=await api('/api/account');renderAccount();}
+       let next=await api('/api/qc/management?'+localQuery({page,status:view==='records'?$('recordStatus').value:'all',q:view==='records'?$('recordSearch').value:''}));
+       // Older running services do not expose the dedicated approved-original
+       // total yet; the approved-only aggregate is equivalent during rollout.
+@@ -182,7 +185,7 @@
+       }
+       if(generation!==revision)return;
+       data=next;
+-      try {sessionStorage.setItem('qc-management-last',JSON.stringify({savedAt:Date.now(),data:next}));} catch (_) {}
++      if(!overviewOnly)try {sessionStorage.setItem('qc-management-last',JSON.stringify({savedAt:Date.now(),data:next}));} catch (_) {}
+       renderLocal();
+       const warnings=[];
+       if(next.loading)warnings.push('正在读取目录统计');
+@@ -217,6 +220,7 @@
+   }
+   function reset() {revision++;page=1;cursor='';refresh();}
+   function selectView(next) {
++    if(overviewOnly)return;
+     view=next;revision++;
+     for(const name of ['overview','records','events','accounts','tasks'])$(name+'View').hidden=name!==view;
+     $('filters').hidden=['accounts','tasks'].includes(view);
+@@ -273,7 +277,12 @@
+   for(const [key,label] of Object.entries(actions)){const option=document.createElement('option');option.value=key;option.textContent=label;$('eventAction').append(option);}
+   document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(visible())refresh();});
+   window.addEventListener('message',e=>{if(e.source!==parent || e.origin!==location.origin)return;if(e.data?.type==='workbench:visibility'){active=!!e.data.active;clearTimeout(timer);if(visible())refresh();}if(e.data?.type==='workbench:refresh'){revision++;refresh();}if(e.data?.type==='workbench:view' && ['overview','records','events','accounts','tasks'].includes(e.data.view))selectView(e.data.view);});
+-  try {
++  if(overviewOnly){
++    document.title='审核总览 · Delta Viewer';
++    document.querySelector('.qc-heading h1').textContent='审核总览';
++    for(const id of ['managementTabs','identity','accountButton','recordsView','eventsView','accountsView','tasksView','loginDialog','createDialog','confirmDialog'])$(id).remove();
++  }
++  if(!overviewOnly)try {
+     const cached=JSON.parse(sessionStorage.getItem('qc-management-last') || 'null');
+     if(cached && Date.now()-Number(cached.savedAt || 0) < 3600000 && cached.data && !cached.data.loading){
+       data=cached.data;renderLocal();

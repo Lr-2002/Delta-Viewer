@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.55 - 2026-09-23
+
+- Viewer 顶部工作台入口改为免工作台账号登录的“审核总览”，隐藏实时行为、审核记录、账号、任务和复核入口。
+- 保留真实统计、日期和审核人筛选、效率时间轴、刷新与 CSV 导出；只读页面不调用账号或管理操作接口，不转发账号 Cookie。
+
 ## 1.0.54 - 2026-09-23
 
 - 修复采集工作台打开时 `create_webview_window not allowed by ACL` 报错，补齐主窗口创建、显示和聚焦工作台窗口的权限，支持首次打开和重复唤起。

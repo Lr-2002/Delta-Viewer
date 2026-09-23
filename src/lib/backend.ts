@@ -68,9 +68,9 @@ import type {
 
 export const DEMO_ROOT = DEMO_EPISODE_ROOT;
 export const APP_VERSION = packageInfo.version;
-export const CAPTURE_WORKBENCH_URL = "http://10.1.41.17:44587/dashboard.html#qc";
+export const CAPTURE_WORKBENCH_URL = "http://10.1.41.17:44587/qc.html?viewer=overview";
 
-/** Open the capture workbench itself so its authenticated API workflow remains intact. */
+/** Open the read-only overview backed by the workbench's live statistics API. */
 export async function openCaptureWorkbench(): Promise<void> {
   if (!isTauriRuntime()) {
     window.open(CAPTURE_WORKBENCH_URL, "_blank", "noopener,noreferrer");
@@ -85,7 +85,7 @@ export async function openCaptureWorkbench(): Promise<void> {
   }
   const workbench = new WebviewWindow("capture-workbench", {
     url: CAPTURE_WORKBENCH_URL,
-    title: "采集工作台 · 人工QC",
+    title: "审核总览 · Delta Viewer",
     width: 1600,
     height: 1000,
     minWidth: 1120,

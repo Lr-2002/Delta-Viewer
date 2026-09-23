@@ -398,10 +398,10 @@ export function SupervisionDashboard({
           <button
             className="button button-secondary"
             type="button"
-            title="打开真实采集工作台与人工QC接口"
-            onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`采集工作台打开失败：${String(reason)}`))}
+            title="打开审核总览"
+            onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`审核总览打开失败：${String(reason)}`))}
           >
-            采集工作台
+            审核总览
           </button>
         </div>
       </header>
