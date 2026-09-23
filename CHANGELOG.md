@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.53 - 2026-09-23
+
+- 修正对话框恢复回归测试对顶部来源按钮的定位，避免与采集工作台入口冲突。
+
 ## 1.0.52 - 2026-09-23
 
 - 修正新增采集工作台入口后浏览器并发 smoke test 的来源按钮定位，保持发布回归覆盖稳定。

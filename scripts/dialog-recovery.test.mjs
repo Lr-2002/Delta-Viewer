@@ -342,7 +342,7 @@ if (!browserExecutable && requireBrowser) {
     try {
       await page.goto(baseUrl, { waitUntil: "networkidle" });
       await page.locator(".app-shell").waitFor();
-      await page.locator(".topbar-actions .button-secondary").click();
+      await page.locator(".topbar-actions").getByRole("button", { name: /选择 (SD 卡|数据目录)/ }).click();
       await page.locator(".view-tabs").waitFor();
       await page.locator(".camera-grid img").first().waitFor();
 
