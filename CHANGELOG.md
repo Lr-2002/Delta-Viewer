@@ -3,6 +3,11 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.51 - 2026-09-23
+
+- Viewer 顶栏新增真实采集工作台入口，打开 `10.1.41.17:44587` 的完整人工 QC 页面及其统计、行为、账号、任务和保存接口，并复用工作台原生认证与权限。
+- 修复机标校对剪切按钮和 `X` 快捷键在片段边界失效的问题；边界位置自动选择最近可分割帧，输入框内仍不会误触发。
+
 ## 1.0.50 - 2026-09-22
 
 - 不通过原因新增“状态异常”，前后端统一校验，保存后可重新加载并保留原因。

@@ -837,6 +837,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-display > span:not(.source-dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-dot { width: 7px; height: 7px; flex: 0 0 7px; display: inline-block; border-radius: 50%; background: var(--accent); }
 .topbar-actions { display: flex; align-items: center; gap: 9px; }
+.workbench-trigger { white-space: nowrap; }
 .update-trigger { flex: 0 0 32px; }
 .update-trigger.update-failed { color: var(--ink); border-color: #8f8f8f; background: #e2e2e2; }
 .history-trigger { position: relative; flex: 0 0 32px; }

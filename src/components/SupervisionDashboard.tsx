@@ -28,6 +28,7 @@ import {
   isTauriRuntime,
   setSupervisionAccountStatus,
   deleteSupervisionAccount,
+  openCaptureWorkbench,
 } from "../lib/backend";
 import { TextCorrectionsPanel } from "./TextCorrectionsPanel";
 import {
@@ -393,6 +394,14 @@ export function SupervisionDashboard({
             onClick={() => void onLogout()}
           >
             <LogOut size={18} />
+          </button>
+          <button
+            className="button button-secondary"
+            type="button"
+            title="打开真实采集工作台与人工QC接口"
+            onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`采集工作台打开失败：${String(reason)}`))}
+          >
+            采集工作台
           </button>
         </div>
       </header>

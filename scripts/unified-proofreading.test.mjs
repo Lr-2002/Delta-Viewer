@@ -203,7 +203,7 @@ test("review controls support segment/global play, shortcuts, splitting and save
     assert.equal(await current(), 30);
     await page.getByRole("button", { name: "定位机标片段 1", exact: true }).click();
     await seek(30);
-    await page.getByRole("button", { name: "分帧", exact: true }).click();
+    await page.getByRole("button", { name: "剪切片段", exact: true }).click();
     assert.equal(await page.locator(".machine-segment").count(), 4);
     assert.equal(await page.getByLabel("复核起始帧", { exact: true }).inputValue(), "30");
     await page.getByRole("slider", { name: "微调起始帧" }).focus();
@@ -463,7 +463,7 @@ test("timeline colors remain distinct for adjacent segments after splitting and 
     await distinct();
     for (const frame of [10, 20, 30, 40, 50]) {
       await page.getByLabel("校对播放帧", { exact: true }).fill(String(frame));
-      await page.getByRole("button", { name: "分帧", exact: true }).click();
+      await page.getByRole("button", { name: "剪切片段", exact: true }).click();
       await distinct();
     }
     for (const index of [2, 3, 2]) {
@@ -537,14 +537,15 @@ test("click selects the nudged handle without jumping and X splits except in tex
     await page.keyboard.press("x");
     assert.equal(await page.locator(".machine-segment").count(), 4);
     await page.keyboard.press("x");
-    assert.equal(await page.locator(".machine-segment").count(), 4, "cannot split at the selected segment start");
+    assert.equal(await page.locator(".machine-segment").count(), 5, "edge-frame split clamps to the nearest interior frame");
     await page.getByLabel("复核动作描述").fill("test");
     await page.keyboard.press("x");
     assert.equal(await page.getByLabel("复核动作描述").inputValue(), "testx");
-    assert.equal(await page.locator(".machine-segment").count(), 4);
+    assert.equal(await page.locator(".machine-segment").count(), 5);
     await startHandle.click();
+    const beforeNudge = Number(await start.inputValue());
     await page.keyboard.press("ArrowRight");
-    assert.equal(await start.inputValue(), "32");
+    assert.equal(Number(await start.inputValue()), beforeNudge + 1);
     await page.waitForFunction(() => !document.querySelector(".quality-save-state").textContent.includes("正在保存"));
     await page.screenshot({ path: "artifacts/unified-proofreading/selected-handle.png", fullPage: true });
   } finally { await page.close(); }
@@ -566,7 +567,7 @@ test("missing machine JSON creates a full-video human segment, splits and reload
   assert.equal(await page.getByLabel("复核结束帧", { exact: true }).inputValue(), "196");
   await page.getByLabel("复核动作描述").fill("人工整段");
   await page.getByLabel("校对播放帧").fill("80");
-  await page.getByRole("button", { name: "分帧", exact: true }).click();
+  await page.getByRole("button", { name: "剪切片段", exact: true }).click();
   await page.getByLabel("复核动作描述").fill("人工后半段");
   await page.waitForFunction(() => !document.querySelector(".quality-save-state").textContent.includes("正在保存"));
   await page.getByRole("button", { name: "重新读取机标", exact: true }).click();

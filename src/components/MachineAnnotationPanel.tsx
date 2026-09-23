@@ -330,7 +330,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         const delta = event.key === "ArrowLeft" ? -1 : 1;
         if (boundaryFocus.current === "playhead" && result) seek(Math.max(0, Math.min(result.frameCount - 1, visibleFrame + delta)));
         else if (active && boundaryFocus.current !== "playhead") boundary(boundaryFocus.current, active[boundaryFocus.current] + delta);
-      } else if (event.code === "KeyX") {
+      } else if (event.code === "KeyX" || event.key.toLowerCase() === "x") {
         event.preventDefault(); event.stopImmediatePropagation();
         if (!event.repeat) {
           recordReviewInteraction("shortcut", { value: event.code }, root);
@@ -352,9 +352,12 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   }
   function splitSegment() {
     if (!canEdit || !active) return;
-    const next = splitReviewSegment(editsRef.current, active.sourceIndex, visibleFrame);
+    // Keep the command useful when the playhead is on an edge: split at the
+    // nearest valid interior frame instead of silently doing nothing.
+    const splitFrame = Math.max(active.startFrame + 1, Math.min(active.endFrame, visibleFrame));
+    const next = splitReviewSegment(editsRef.current, active.sourceIndex, splitFrame);
     if (next === editsRef.current) return;
-    change(next); setSelected(next[next.length - 1].sourceIndex); seek(visibleFrame);
+    change(next); setSelected(next[next.length - 1].sourceIndex); seek(splitFrame);
   }
   function deleteSegment(sourceIndex: number) {
     if (!canEdit) return;
@@ -394,7 +397,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
 
   return <div className="quality-review proofreading-view">
     {playback ? <section className="quality-timeline" aria-label="校对时间轴">
-      <div className="proofreading-transport">{playback.controls}<button className="icon-button" aria-label="分帧" aria-keyshortcuts="X" title="分帧：在当前帧分割片段 (X)" disabled={!canEdit || !active || visibleFrame <= active.startFrame || visibleFrame > active.endFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
+      <div className="proofreading-transport">{playback.controls}<button className="icon-button" type="button" aria-label="剪切片段" aria-keyshortcuts="X" title="剪切片段：在当前帧分割 (X)" disabled={!canEdit || !active || active.endFrame <= active.startFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
       {valid && <ReviewTimeline frame={visibleFrame} frameCount={result.frameCount} start={active?.startFrame ?? 0}
         end={active?.endFrame ?? result.frameCount - 1} editable={canEdit && Boolean(active)} segments={rows}
         selected={active?.sourceIndex} onSeek={seek} onBoundary={boundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }} />}

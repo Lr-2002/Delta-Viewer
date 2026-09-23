@@ -74,6 +74,7 @@ import {
   loadEpisodeAnnotation,
   loadEpisode,
   logoutLocalAccount,
+  openCaptureWorkbench,
   recordOperationError,
   recordAnnotationAudit,
   onTaskProgress,
@@ -1769,6 +1770,11 @@ function App() {
             <FolderOpen size={16} />
             {isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}
           </button>
+          {isManagedWorkspace && currentUser ? (
+            <button className="button button-secondary workbench-trigger" type="button" onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`采集工作台打开失败：${toMessage(reason)}`))} title="打开真实采集工作台与人工QC接口">
+              <Activity size={16} />采集工作台
+            </button>
+          ) : null}
           <button
             className="icon-button history-trigger"
             type="button"

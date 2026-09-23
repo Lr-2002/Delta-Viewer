@@ -68,6 +68,37 @@ import type {
 
 export const DEMO_ROOT = DEMO_EPISODE_ROOT;
 export const APP_VERSION = packageInfo.version;
+export const CAPTURE_WORKBENCH_URL = "http://10.1.41.17:44587/dashboard.html#qc";
+
+/** Open the capture workbench itself so its authenticated API workflow remains intact. */
+export async function openCaptureWorkbench(): Promise<void> {
+  if (!isTauriRuntime()) {
+    window.open(CAPTURE_WORKBENCH_URL, "_blank", "noopener,noreferrer");
+    return;
+  }
+  const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  const existing = await WebviewWindow.getByLabel("capture-workbench");
+  if (existing) {
+    await existing.show();
+    await existing.setFocus();
+    return;
+  }
+  const workbench = new WebviewWindow("capture-workbench", {
+    url: CAPTURE_WORKBENCH_URL,
+    title: "采集工作台 · 人工QC",
+    width: 1600,
+    height: 1000,
+    minWidth: 1120,
+    minHeight: 720,
+    resizable: true,
+  });
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    void workbench.once("tauri://created", () => { settled = true; resolve(); });
+    void workbench.once<string>("tauri://error", (event) => { settled = true; reject(new Error(event.payload)); });
+    setTimeout(() => { if (!settled) resolve(); }, 5000);
+  });
+}
 export const IS_DEVELOPMENT_EDITION = APP_VERSION.includes("-dev.");
 
 const SESSION_ACTIVATION_DEMO_SOURCE_ROOT = "demo://session-activation";
