@@ -79,6 +79,10 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const [labelLibraryOpen, setLabelLibraryOpen] = useState(false);
   const [labelLibrary, setLabelLibrary] = useState<LabelLibraryItem[]>([]);
   const [labelLibraryError, setLabelLibraryError] = useState("");
+  const [draggedLabelId, setDraggedLabelId] = useState<string | null>(null);
+  const [labelDropTarget, setLabelDropTarget] = useState<number | null>(null);
+  const descriptionInput = useRef<HTMLTextAreaElement>(null);
+  const applyLabelRef = useRef<(text: string) => void>(() => {});
   const textPolicy = defaultTextPolicy;
   const [ignoredText, setIgnoredText] = useState<Set<string>>(new Set());
   const [textUndo, setTextUndo] = useState<{index: number; before: string; after: string} | null>(null);
@@ -229,6 +233,51 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const allTextIssues = rows.flatMap(row => inspectDescription(row.description, textPolicy).filter(issue => !ignoredText.has(issueKey(row.sourceIndex,row.description,issue.original))).map(issue=>({...issue,row})));
   const valid = result && primary && mapping && !mapping.error && !error;
   const canEdit = Boolean(valid && review && !busy && !loading && !finishing);
+  applyLabelRef.current = applyLibraryLabel;
+  useEffect(() => {
+    if (!canEdit || !active || !labelLibrary.length) return;
+    let digits = "";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cancel = () => { clearTimeout(timer); digits = ""; };
+    const available = (target: HTMLElement | null) => {
+      if (document.querySelector("dialog[open], [role='dialog']:not(.label-library)") || draggedLabelId) return false;
+      if (target?.closest("input, select, textarea, [contenteditable]:not([contenteditable='false'])")) {
+        return labelLibraryOpen && target === descriptionInput.current;
+      }
+      return !target?.closest(".sidebar, .view-tabs");
+    };
+    const apply = () => {
+      const item = labelLibrary[Number(digits) - 1];
+      cancel();
+      if (!item || !available(document.activeElement as HTMLElement | null)) return;
+      recordReviewInteraction("shortcut", { value: `标签 ${labelLibrary.indexOf(item) + 1}`, labelId: item.id }, root);
+      applyLabelRef.current(item.text);
+    };
+    const handler = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing || event.keyCode === 229 || !/^[0-9]$/.test(event.key) || !available(event.target as HTMLElement | null)) { cancel(); return; }
+      if (event.repeat) { event.preventDefault(); return; }
+      const next = digits + event.key;
+      const number = Number(next);
+      if (!number || number > labelLibrary.length) { cancel(); return; }
+      event.preventDefault(); event.stopImmediatePropagation();
+      digits = next;
+      clearTimeout(timer);
+      // Wait only when the number can prefix a larger slot, e.g. 1 -> 10.
+      if (number * 10 <= labelLibrary.length) timer = setTimeout(apply, 650);
+      else apply();
+    };
+    window.addEventListener("keydown", handler, true);
+    window.addEventListener("pointerdown", cancel, true);
+    window.addEventListener("blur", cancel);
+    document.addEventListener("focusin", cancel);
+    return () => {
+      cancel();
+      window.removeEventListener("keydown", handler, true);
+      window.removeEventListener("pointerdown", cancel, true);
+      window.removeEventListener("blur", cancel);
+      document.removeEventListener("focusin", cancel);
+    };
+  }, [canEdit, active?.sourceIndex, labelLibrary, labelLibraryOpen, draggedLabelId, root]);
   const outputName = "description.json";
   const seek = useCallback((next: number) => {
     setFrame(next); setPlaying(false);
@@ -261,6 +310,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     }
   }
   function addCurrentDescriptionToLibrary() {
+    if (!canEdit) return;
     const text = (active?.description ?? "").trim();
     if (!text) return;
     const existing = labelLibrary.find((item) => item.text === text);
@@ -268,19 +318,19 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       setLabelLibraryOpen(true);
       return;
     }
+    if (labelLibrary.length >= LABEL_LIBRARY_LIMIT) { setLabelLibraryError("标签库已满，请删除不需要的标签后再添加"); return; }
     const label = { id: crypto.randomUUID(), text, createdAt: Date.now() };
     const saved = saveLabelLibrary([
-      label,
       ...labelLibrary,
-    ].slice(0, LABEL_LIBRARY_LIMIT));
+      label,
+    ]);
     if (saved) {
       recordReviewInteraction("label_add", { value: text, labelId: label.id }, root);
-      for (const removed of labelLibrary.slice(LABEL_LIBRARY_LIMIT - 1)) recordReviewInteraction("label_delete", { value: removed.text, labelId: removed.id, reason: "标签库容量上限" }, root);
     }
     setLabelLibraryOpen(true);
   }
   function applyLibraryLabel(text: string) {
-    if (!canEdit || !active) return;
+    if (!canEdit || !active || finishLock.current) return;
     recordReviewInteraction("label_apply", { value: text, segmentIndex: active.sourceIndex }, root);
     change(editsRef.current.map((item) => item.sourceIndex === active.sourceIndex
       ? { ...item, description: text, decision: "pending" }
@@ -288,9 +338,20 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     setLabelLibraryOpen(false);
   }
   function deleteLibraryLabel(id: string) {
+    if (!canEdit) return;
     const removed = labelLibrary.find((item) => item.id === id);
     const saved = saveLabelLibrary(labelLibrary.filter((item) => item.id !== id));
     if (saved && removed) recordReviewInteraction("label_delete", { value: removed.text, labelId: id }, root);
+  }
+  function reorderLibraryLabel(targetId: string) {
+    if (!canEdit || !draggedLabelId || draggedLabelId === targetId) return;
+    const from = labelLibrary.findIndex((item) => item.id === draggedLabelId);
+    const to = labelLibrary.findIndex((item) => item.id === targetId);
+    if (from < 0 || to < 0) return;
+    const next = [...labelLibrary];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    if (saveLabelLibrary(next)) recordReviewInteraction("control", { target: "label_library_order", labelId: moved.id, value: moved.text, before: String(from + 1), after: String(to + 1) }, root);
   }
   function boundary(kind: "startFrame" | "endFrame", value: number) {
     if (!active || !result || !canEdit) return;
@@ -428,12 +489,12 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
           <button className="icon-button" title="恢复删除的片段" aria-label="恢复删除的片段" disabled={!canEdit || !edits.some((item) => item.deleted)} onClick={() => change(restoreReviewSegments(editsRef.current))}><Undo2 size={15} /></button>
         </header>
         <div className="quality-description-shell">
-          <textarea aria-label="复核动作描述" placeholder="中文动作描述" value={active?.description ?? ""} disabled={!canEdit || !active}
+          <textarea ref={descriptionInput} aria-label="复核动作描述" placeholder="中文动作描述" value={active?.description ?? ""} disabled={!canEdit || !active}
             onChange={(event) => change(editsRef.current.map((item) => item.sourceIndex === active?.sourceIndex ? { ...item, description: event.currentTarget.value, decision: "pending" } : item))} />
           {descriptionIssues.length > 0 && <div className="description-issues" role="status"><strong>疑似文字问题</strong>{descriptionIssues.map((issue) => <span key={`${issue.original}:${issue.suggestion}`}><button disabled={!canEdit} title={`${issue.reason}：替换为 ${issue.suggestion}`} type="button" onClick={() => { if (!active) return; const next = active.description.replaceAll(issue.original, issue.suggestion); setTextUndo({index:active.sourceIndex,before:active.description,after:next}); change(editsRef.current.map((item) => item.sourceIndex === active.sourceIndex ? { ...item, description: next, decision: "pending" } : item)); }}><Check size={13}/><mark>{issue.original}</mark> → {issue.suggestion}</button><button type="button" title="忽略本次提示" aria-label={`忽略 ${issue.original}`} disabled={!canEdit} onClick={()=>{if(active){setIgnoredText(current=>new Set([...current,issueKey(active.sourceIndex,active.description,issue.original)]));recordReviewInteraction("control",{value:`忽略文字提示：${issue.original}`,segmentIndex:active.sourceIndex},root);}}}><X size={13}/></button></span>)}</div>}
           {textUndo && <button type="button" className="icon-button" title="撤销文字修正" aria-label="撤销文字修正" disabled={!canEdit || edits.find(row=>row.sourceIndex===textUndo.index)?.description!==textUndo.after} onClick={()=>{change(editsRef.current.map(row=>row.sourceIndex===textUndo.index?{...row,description:textUndo.before,decision:"pending"}:row));setTextUndo(null);}}><Undo2 size={15}/></button>}
           <div className="quality-description-tools">
-            <button type="button" className="label-library-trigger" aria-expanded={labelLibraryOpen} aria-haspopup="dialog"
+            <button type="button" className="label-library-trigger" aria-label="标签库" aria-expanded={labelLibraryOpen} aria-haspopup="dialog"
               disabled={!canEdit || !active} onClick={() => setLabelLibraryOpen((open) => !open)}>
               <Tag size={14} />标签库{labelLibrary.length > 0 && <span>{labelLibrary.length}</span>}
             </button>
@@ -443,14 +504,17 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
               <strong>标签库</strong>
               <button type="button" className="icon-button" aria-label="关闭标签库" title="关闭" onClick={() => setLabelLibraryOpen(false)}><X size={15} /></button>
             </header>
-            <button type="button" className="label-library-save" disabled={!(active?.description ?? "").trim()} onClick={addCurrentDescriptionToLibrary}>
+            <button type="button" className="label-library-save" disabled={!canEdit || !(active?.description ?? "").trim()} onClick={addCurrentDescriptionToLibrary}>
               <Plus size={14} />保存当前描述
             </button>
             {labelLibraryError && <p className="label-library-error" role="alert">{labelLibraryError}</p>}
-            {labelLibrary.length ? <div className="label-library-list" role="list">
-              {labelLibrary.map((item) => <div className="label-library-item" role="listitem" key={item.id}>
-                <button type="button" className="label-library-use" title={`使用：${item.text}`} onClick={() => applyLibraryLabel(item.text)}>{item.text}</button>
-                <button type="button" className="icon-button label-library-delete" aria-label={`删除标签：${item.text}`} title="删除" onClick={() => deleteLibraryLabel(item.id)}><Trash2 size={14} /></button>
+            {labelLibrary.length ? <div className="label-library-list" role="list" aria-label="标签库条目">
+              {labelLibrary.map((item, index) => <div className={`label-library-item${labelDropTarget === index ? " label-library-drop" : ""}`} role="listitem" key={index}
+                onDragOver={(event) => { if (canEdit && draggedLabelId) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setLabelDropTarget(index); } }}
+                onDrop={(event) => { event.preventDefault(); reorderLibraryLabel(item.id); setDraggedLabelId(null); setLabelDropTarget(null); }}>
+                <button type="button" className="label-library-index" disabled={!canEdit} title={`使用第 ${index + 1} 个标签（数字 ${index + 1}）`} aria-label={`使用第 ${index + 1} 个标签`} onClick={() => applyLibraryLabel(item.text)}>{index + 1}</button>
+                <button type="button" className="label-library-use" disabled={!canEdit} draggable={canEdit} title={`拖动排序或使用：${item.text}`} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setDraggedLabelId(item.id); }} onDragEnd={() => { setDraggedLabelId(null); setLabelDropTarget(null); }} onClick={() => { if (!draggedLabelId) applyLibraryLabel(item.text); }}>{item.text}</button>
+                <button type="button" className="icon-button label-library-delete" disabled={!canEdit} aria-label={`删除标签：${item.text}`} title="删除" onClick={() => deleteLibraryLabel(item.id)}><Trash2 size={14} /></button>
               </div>)}
             </div> : <p className="label-library-empty">暂无常用描述</p>}
           </div>}

@@ -509,6 +509,72 @@ test("review audit links drag, label changes and successful approval to the same
   } finally { await page.close(); }
 });
 
+test("label library keeps fixed shortcut numbers while text entries can be reordered", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  try {
+    await open(page, "machineAnnotation=present", "label-order-reviewer");
+    await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    const editor = page.getByLabel("复核动作描述");
+    await editor.fill("标签一");
+    await page.getByRole("button", { name: "标签库", exact: true }).click();
+    await page.getByRole("button", { name: "保存当前描述", exact: true }).click();
+    await page.getByRole("button", { name: "关闭标签库", exact: true }).click();
+    await editor.fill("标签二");
+    await page.getByRole("button", { name: "标签库", exact: true }).click();
+    await page.getByRole("button", { name: "保存当前描述", exact: true }).click();
+    assert.deepEqual(await page.locator(".label-library-index").allTextContents(), ["1", "2"]);
+    assert.deepEqual(await page.locator(".label-library-use").allTextContents(), ["标签一", "标签二"]);
+    await page.getByRole("button", { name: "使用第 2 个标签", exact: true }).click();
+    assert.equal(await editor.inputValue(), "标签二");
+    await page.getByRole("button", { name: "标签库", exact: true }).click();
+    await page.locator(".label-library-use").nth(1).dragTo(page.locator(".label-library-use").nth(0));
+    assert.deepEqual(await page.locator(".label-library-index").allTextContents(), ["1", "2"]);
+    assert.deepEqual(await page.locator(".label-library-use").allTextContents(), ["标签二", "标签一"]);
+    await page.keyboard.press("1");
+    assert.equal(await editor.inputValue(), "标签二");
+    await page.keyboard.press("2");
+    assert.equal(await editor.inputValue(), "标签一");
+    await editor.fill("普通数字：");
+    await editor.press("End");
+    await editor.press("1");
+    assert.equal(await editor.inputValue(), "普通数字：1");
+    await page.getByRole("button", { name: "标签库", exact: true }).click();
+    await editor.focus();
+    await editor.press("2");
+    assert.equal(await editor.inputValue(), "标签一");
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("dohc-viewer.machine-label-library.v1:label-order-reviewer")));
+    assert.deepEqual(stored.map(item => item.text), ["标签二", "标签一"]);
+    await page.getByRole("button", { name: "标签库", exact: true }).click();
+    await page.screenshot({ path: "artifacts/unified-proofreading/label-library-numbered.png" });
+  } finally { await page.close(); }
+});
+
+test("label shortcuts support multiple digits and do not alter numeric fields or modal dialogs", async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    await page.addInitScript(() => localStorage.setItem("dohc-viewer.machine-label-library.v1:label-numbers-reviewer", JSON.stringify(Array.from({ length: 12 }, (_, index) => ({ id: `label-${index}`, text: `常用动作描述 ${index + 1}`, createdAt: index + 1 })))));
+    await open(page, "machineAnnotation=present", "label-numbers-reviewer");
+    const editor = page.getByLabel("复核动作描述");
+    await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    await page.getByRole("button", { name: "标签库", exact: true }).click();
+    await page.keyboard.type("12");
+    assert.equal(await editor.inputValue(), "常用动作描述 12");
+    await page.keyboard.press("1");
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]').value === "常用动作描述 1");
+    await page.getByLabel("复核起始帧", { exact: true }).focus();
+    await page.keyboard.press("2");
+    assert.equal(await editor.inputValue(), "常用动作描述 1");
+    await page.getByRole("button", { name: "不通过", exact: true }).click();
+    await page.keyboard.press("3");
+    assert.equal(await editor.inputValue(), "常用动作描述 1");
+    await page.getByRole("button", { name: "关闭不通过原因", exact: true }).click();
+    await page.getByRole("button", { name: "标签库", exact: true }).click();
+    await page.keyboard.press("Control+2");
+    assert.equal(await editor.inputValue(), "常用动作描述 1");
+    await page.screenshot({ path: "artifacts/unified-proofreading/label-library-numbered-narrow.png" });
+  } finally { await page.close(); }
+});
+
 test("click selects the nudged handle without jumping and X splits except in text inputs", async () => {
   const page = await browser.newPage();
   try {

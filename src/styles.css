@@ -156,9 +156,13 @@
 .label-library > header .icon-button { width: 24px; height: 24px; padding: 0; }
 .label-library-save { width: 100%; justify-content: center; min-height: 28px; padding: 0 8px; }
 .label-library-list { display: grid; gap: 4px; margin-top: 7px; }
-.label-library-item { display: grid; grid-template-columns: minmax(0, 1fr) 26px; gap: 4px; align-items: center; min-width: 0; }
+.label-library-item { display: grid; grid-template-columns: 26px minmax(0, 1fr) 26px; gap: 4px; align-items: center; min-width: 0; }
+.label-library-index { width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--muted); cursor: pointer; font: inherit; font-size: 11px; font-variant-numeric: tabular-nums; }
+.label-library-index:hover { border-color: var(--line-strong); color: var(--ink); background: var(--surface-alt); }
 .label-library-use { min-width: 0; padding: 6px 7px; border: 1px solid transparent; border-radius: 4px; background: var(--surface-alt); color: inherit; cursor: pointer; font: inherit; font-size: 11px; line-height: 1.4; text-align: left; overflow-wrap: anywhere; }
 .label-library-use:hover { border-color: var(--line-strong); background: #e7efed; }
+.label-library-use:active { cursor: grabbing; }
+.label-library-drop .label-library-use { outline: 2px solid var(--line-strong); outline-offset: -2px; }
 .label-library-delete { width: 26px; height: 26px; padding: 0; }
 .label-library-empty, .label-library-error { margin: 8px 2px 2px; color: var(--muted); font-size: 11px; line-height: 1.4; }
 .label-library-error { color: var(--status-error); }
