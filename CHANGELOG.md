@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.57 - 2026-09-24
+
+- 标签库新增固定序号、文字拖动排序与数字快捷键填充；顺序按账号保存，新标签追加末尾。
+- 支持连续输入两位数编号，普通输入和其他弹窗不误触；标签库打开时可在描述框按数字替换。
+- 关闭 Windows 主窗口的原生文件拖放拦截，使标签拖动在桌面安装版中生效。1.0.56 安装包未发布，功能统一由本版交付。
+
 ## 1.0.56 - 2026-09-24
 
 - 标签库增加固定序号，拖动标签文字可调整顺序并按账号保存；新增标签追加到末尾，保留已有快捷键编号。

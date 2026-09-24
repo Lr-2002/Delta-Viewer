@@ -510,6 +510,8 @@ test("review audit links drag, label changes and successful approval to the same
 });
 
 test("label library keeps fixed shortcut numbers while text entries can be reordered", async () => {
+  const desktopConfig = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8"));
+  assert.equal(desktopConfig.app.windows.find(window => window.label === "main").dragDropEnabled, false, "Windows native file-drop interception must be disabled for HTML5 label dragging");
   const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
   try {
     await open(page, "machineAnnotation=present", "label-order-reviewer");
