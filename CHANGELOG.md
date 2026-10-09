@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.58 - 2026-10-09
+
+- 审核员登录后按账号恢复上次正在审核的批次和条目；审核完成后自动切换到下一条时同步更新恢复位置。
+- 恢复时读取本人审核状态，已通过或不通过的旧条目不再抢占恢复位置；没有进行中记录时自动选择当前批次第一条未审核数据。
+- 新增浏览器回归测试覆盖批次、条目和账号隔离的恢复行为。
+
 ## 1.0.57 - 2026-09-24
 
 - 标签库新增固定序号、文字拖动排序与数字快捷键填充；顺序按账号保存，新标签追加末尾。

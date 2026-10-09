@@ -140,6 +140,39 @@ interface PendingAnnotationConfirmation {
   maxFrame: number;
 }
 
+interface ReviewResumeState {
+  sourceRoot: string;
+  episodeRoot: string;
+  active: boolean;
+  updatedAtMs: number;
+}
+
+const REVIEW_RESUME_KEY_PREFIX = "dohc-viewer.review-resume.v1:";
+
+function reviewResumeKey(username: string) {
+  return `${REVIEW_RESUME_KEY_PREFIX}${encodeURIComponent(username)}`;
+}
+
+function readReviewResume(username: string): ReviewResumeState | null {
+  try {
+    const raw = localStorage.getItem(reviewResumeKey(username));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<ReviewResumeState>;
+    if (typeof value.sourceRoot !== "string" || typeof value.episodeRoot !== "string" || typeof value.active !== "boolean") return null;
+    return { sourceRoot: value.sourceRoot, episodeRoot: value.episodeRoot, active: value.active, updatedAtMs: Number(value.updatedAtMs) || 0 };
+  } catch {
+    return null;
+  }
+}
+
+function writeReviewResume(username: string, state: Omit<ReviewResumeState, "updatedAtMs">) {
+  try {
+    localStorage.setItem(reviewResumeKey(username), JSON.stringify({ ...state, updatedAtMs: Date.now() }));
+  } catch {
+    // A full local store must not block loading or saving review data.
+  }
+}
+
 
 
 const METRICS: { key: MetricKey; label: string }[] = [
@@ -766,10 +799,35 @@ function App() {
       setEpisodeSourceStates(Object.fromEntries(
         visibleResult.episodes.map((episode) => [episode.root, "available" as const]),
       ));
-      const lastAssignedRoot = authStatus?.currentUser?.role === "operator"
-        ? localStorage.getItem(`dohc-viewer.last-assigned-episode.v1:${authStatus.currentUser.username}`)
+      const username = authStatus?.currentUser?.role === "operator" ? authStatus.currentUser.username : "";
+      let restoredReviews: Record<string, "pending" | "approved" | "rejected"> = {};
+      if (username) {
+        try {
+          const records = await listMyMachineReviews(visibleResult.episodes.map((episode) => episode.root));
+          restoredReviews = Object.fromEntries(records.map((record) => [record.sourcePath, record.status]));
+          setReviewedEpisodes((current) => ({ ...current, ...restoredReviews }));
+        } catch {
+          // Loading the source remains available even if the review index is offline.
+        }
+      }
+      const resume = username ? readReviewResume(username) : null;
+      const lastAssignedRoot = username
+        ? localStorage.getItem(`dohc-viewer.last-assigned-episode.v1:${username}`)
         : null;
-      const first = visibleResult.episodes.find((episode) => episode.root === lastAssignedRoot)
+      const resumeInThisBatch = resume?.sourceRoot === visibleResult.sourceRoot
+        ? visibleResult.episodes.find((episode) => episode.root === resume.episodeRoot)
+        : null;
+      const assignedInThisBatch = visibleResult.episodes.find((episode) => episode.root === lastAssignedRoot)
+        ?? null;
+      const resumeIsPending = resumeInThisBatch && restoredReviews[resumeInThisBatch.root]
+        ? restoredReviews[resumeInThisBatch.root] === "pending"
+        : true;
+      const assignedIsPending = assignedInThisBatch && restoredReviews[assignedInThisBatch.root]
+        ? restoredReviews[assignedInThisBatch.root] === "pending"
+        : true;
+      const first = (resume?.active && resumeIsPending ? resumeInThisBatch : null)
+        ?? (assignedIsPending ? assignedInThisBatch : null)
+        ?? visibleResult.episodes.find((episode) => !restoredReviews[episode.root])
         ?? visibleResult.episodes[0]
         ?? null;
       setSelectedEpisode(first);
@@ -781,6 +839,11 @@ function App() {
         const loadResult = await loadAndValidate(first.root, first.root, owner);
         ensureOperationActive(owner);
         handleLoadResult(first, loadResult);
+        if (username) writeReviewResume(username, {
+          sourceRoot: visibleResult.sourceRoot,
+          episodeRoot: first.root,
+          active: !restoredReviews[first.root] || restoredReviews[first.root] === "pending",
+        });
       }
     } catch (reason) {
       const cancelled = toMessage(reason).includes("任务已取消");
@@ -825,6 +888,9 @@ function App() {
   ) {
     if (episodeLoadInFlight.current || operationScopeRef.current.current() || reviewUnsaved.current) return;
     selectEpisode(episode);
+    if (authStatus?.currentUser?.role === "operator") {
+      writeReviewResume(authStatus.currentUser.username, { sourceRoot: sourcePath, episodeRoot: episode.root, active: true });
+    }
     if (!force && data && report && loadedEpisodeSourceRoot === episode.root) {
       changeView("proofread");
       return;
@@ -856,6 +922,9 @@ function App() {
   function selectEpisode(episode: EpisodeSummary) {
     if (reviewUnsaved.current) { setNotice("正在保存当前修改，请稍候。"); return; }
     setSelectedEpisode(episode);
+    if (authStatus?.currentUser?.role === "operator" && sourcePath) {
+      writeReviewResume(authStatus.currentUser.username, { sourceRoot: sourcePath, episodeRoot: episode.root, active: true });
+    }
     if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
   }
 
@@ -2129,6 +2198,13 @@ function App() {
                         const nextRoot = nextAvailableEpisodeRoot(data.summary.root);
                         setNotice(`${data.summary.name} 质检${status === "approved" ? "通过" : "不通过"}，review 已保存。${nextRoot ? "正在载入下一条。" : "已是最后一条。"}`);
                         setReviewedEpisodes((current) => ({ ...current, [data.summary.root]: status }));
+                        if (authStatus.currentUser?.role === "operator") {
+                          writeReviewResume(authStatus.currentUser.username, {
+                            sourceRoot: sourcePath,
+                            episodeRoot: nextRoot ?? data.summary.root,
+                            active: Boolean(nextRoot),
+                          });
+                        }
                         if (nextRoot) setQueuedEpisodeRoot(nextRoot);
                       }} />
                   <section className="telemetry-section">

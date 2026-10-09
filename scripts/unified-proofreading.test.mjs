@@ -82,6 +82,28 @@ test("directory restore succeeds despite failed task services after restarting w
   } finally { await context.close(); }
 });
 
+test("login resumes the active batch entry instead of the previously reviewed entry", async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
+  try {
+    await page.addInitScript(() => localStorage.setItem(
+      "dohc-viewer.review-resume.v1:review-test",
+      JSON.stringify({
+        sourceRoot: "demo://session-activation",
+        episodeRoot: "demo://session-activation/session-b",
+        active: true,
+        updatedAtMs: Date.now(),
+      }),
+    ));
+    await open(page, "demoScenario=session-activation&machineAnnotation=present");
+    await page.waitForFunction(() => document.querySelector(".episode-item.selected")?.textContent?.includes("session-b"));
+    assert.match(await page.locator(".episode-item.selected").textContent(), /session-b/);
+    const resume = await page.evaluate(() => JSON.parse(localStorage.getItem("dohc-viewer.review-resume.v1:review-test")));
+    assert.equal(resume.episodeRoot, "demo://session-activation/session-b");
+    assert.equal(resume.active, true);
+  } finally { await context.close(); }
+});
+
 
 test("account review tags survive logout and restart, isolate other users and retain reviewed entries", async () => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
