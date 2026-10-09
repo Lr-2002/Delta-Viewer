@@ -9,7 +9,7 @@ interface Props {
   currentUser: UserIdentity;
   sourceRoot?: string | null;
   onSourceChange?: (root: string) => void;
-  onOpen?: (root: string) => Promise<void>;
+  onOpen?: (root: string, episodeRoot?: string) => Promise<void>;
   onClose?: () => void;
 }
 
@@ -195,7 +195,10 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     if (!onOpen || !alive.current || rootRef.current !== selectedRoot) return;
     setOpening(true); setOpenError("");
     try {
-      await onOpen(`${catalog?.sourceRoot ?? root}/${node.relativePath}`);
+      const base = catalog?.sourceRoot ?? root;
+      const nodePath = node.relativePath ? `${base}/${node.relativePath}` : base;
+      const batch = node.relativePath.split("/")[0];
+      await onOpen(node.session && batch ? `${base}/${batch}` : nodePath, node.session ? nodePath : undefined);
       if (alive.current && rootRef.current === selectedRoot) onClose?.();
     } catch (reason) {
       if (alive.current && rootRef.current === selectedRoot) setOpenError(`数据加载失败：${String(reason)}`);

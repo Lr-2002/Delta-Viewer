@@ -158,11 +158,21 @@ function readReviewResume(username: string): ReviewResumeState | null {
     const raw = localStorage.getItem(reviewResumeKey(username));
     if (!raw) return null;
     const value = JSON.parse(raw) as Partial<ReviewResumeState>;
-    if (typeof value.sourceRoot !== "string" || typeof value.episodeRoot !== "string" || typeof value.active !== "boolean") return null;
+    if (!value || typeof value.sourceRoot !== "string" || !value.sourceRoot.trim() || typeof value.episodeRoot !== "string" || !value.episodeRoot.trim() || typeof value.active !== "boolean") return null;
     return { sourceRoot: value.sourceRoot, episodeRoot: value.episodeRoot, active: value.active, updatedAtMs: Number(value.updatedAtMs) || 0 };
   } catch {
     return null;
   }
+}
+
+function sameReviewPath(left: string, right: string) {
+  const key = (path: string) => {
+    let value = path.replaceAll("\\", "/").replace(/\/+$/, "");
+    if (value.startsWith("//?/UNC/")) value = `//${value.slice(8)}`;
+    else if (value.startsWith("//?/")) value = value.slice(4);
+    return value.startsWith("//") || /^[a-z]:/i.test(value) ? value.toLowerCase() : value;
+  };
+  return key(left) === key(right);
 }
 
 function writeReviewResume(username: string, state: Omit<ReviewResumeState, "updatedAtMs">) {
@@ -384,6 +394,7 @@ function App() {
   const didAutoLoad = useRef(false);
   const operationScopeRef = useRef(new OperationScope());
   const sourcePickerOpenRef = useRef(false);
+  const sourceNavigationVersion = useRef(0);
   const episodeLoadInFlight = useRef(false);
   const episodeButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const episodeFocusRestoreToken = useRef(0);
@@ -562,7 +573,10 @@ function App() {
     setEpisodeFocusRestoreRequest(null);
     if (episodeFocusRestoreToken.current !== token) return;
     const button = episodeButtonRefs.current.get(episodeRoot);
-    if (button && !button.disabled) button.focus();
+    if (button && !button.disabled) {
+      button.scrollIntoView({ block: "nearest" });
+      button.focus({ preventScroll: true });
+    }
   }, [busy, episodeFocusRestoreRequest]);
 
   useEffect(() => {
@@ -588,10 +602,13 @@ function App() {
       const failed = (reason: unknown) => { if (active) setError(`无法加载已分配任务：${toMessage(reason)}`); };
       void listAssignedTaskDefinitions().then((value) => { if (active) setTasks(value); }).catch(failed);
       void getAssignedTasks().then((value) => { if (active) setAssignedTasks(value); }).catch(failed);
-      void getAssignedSourceRoot().then((root) => {
-        if (!active) return;
+      const navigationVersion = sourceNavigationVersion.current;
+      const resume = readReviewResume(authStatus.currentUser.username);
+      if (resume) setPendingSourceRestore(resume.sourceRoot);
+      else void getAssignedSourceRoot().then((root) => {
+        if (!active || sourceNavigationVersion.current !== navigationVersion) return;
         setPendingSourceRestore(root);
-      }).catch((reason) => { if (active) setError(`无法恢复数据目录：${toMessage(reason)}`); });
+      }).catch((reason) => { if (active && sourceNavigationVersion.current === navigationVersion) setError(`无法恢复数据目录：${toMessage(reason)}`); });
       return () => { active = false; };
     }
     setAssignedTasks([]);
@@ -763,7 +780,7 @@ function App() {
     return () => window.cancelAnimationFrame(animationFrame);
   }, [availableStreams, data, playbackFps, playing, primaryPlaybackEndFrame, primarySourceFps, primaryStreamName, speed]);
 
-  async function openSource(path: string, autoLoad = false, assignment = assignedTasks, propagateFailure = false) {
+  async function openSource(path: string, autoLoad = false, assignment = assignedTasks, propagateFailure = false, preferredEpisodeRoot?: string) {
     if (reviewUnsaved.current) {
       if (propagateFailure) throw new Error("正在保存当前修改，请稍候。");
       setNotice("正在保存当前修改，请稍候。"); return;
@@ -773,6 +790,8 @@ function App() {
       if (propagateFailure) throw new Error("当前操作尚未完成，请稍后打开任务");
       return;
     }
+    sourceNavigationVersion.current += 1;
+    setPendingSourceRestore(null);
     resetOperationFeedback(owner);
     let operation = "scan_source";
     let loadingEpisode: EpisodeSummary | null = null;
@@ -800,50 +819,65 @@ function App() {
         visibleResult.episodes.map((episode) => [episode.root, "available" as const]),
       ));
       const username = authStatus?.currentUser?.role === "operator" ? authStatus.currentUser.username : "";
-      let restoredReviews: Record<string, "pending" | "approved" | "rejected"> = {};
-      if (username) {
-        try {
-          const records = await listMyMachineReviews(visibleResult.episodes.map((episode) => episode.root));
-          restoredReviews = Object.fromEntries(records.map((record) => [record.sourcePath, record.status]));
-          setReviewedEpisodes((current) => ({ ...current, ...restoredReviews }));
-        } catch {
-          // Loading the source remains available even if the review index is offline.
-        }
-      }
       const resume = username ? readReviewResume(username) : null;
-      const lastAssignedRoot = username
+      const lastAssignedRoot = username && !resume
         ? localStorage.getItem(`dohc-viewer.last-assigned-episode.v1:${username}`)
         : null;
-      const resumeInThisBatch = resume?.sourceRoot === visibleResult.sourceRoot
-        ? visibleResult.episodes.find((episode) => episode.root === resume.episodeRoot)
+      const resumeInThisBatch = resume && sameReviewPath(resume.sourceRoot, visibleResult.sourceRoot)
+        ? visibleResult.episodes.find((episode) => sameReviewPath(episode.root, resume.episodeRoot))
         : null;
-      const assignedInThisBatch = visibleResult.episodes.find((episode) => episode.root === lastAssignedRoot)
-        ?? null;
-      const resumeIsPending = resumeInThisBatch && restoredReviews[resumeInThisBatch.root]
-        ? restoredReviews[resumeInThisBatch.root] === "pending"
-        : true;
-      const assignedIsPending = assignedInThisBatch && restoredReviews[assignedInThisBatch.root]
-        ? restoredReviews[assignedInThisBatch.root] === "pending"
-        : true;
-      const first = (resume?.active && resumeIsPending ? resumeInThisBatch : null)
-        ?? (assignedIsPending ? assignedInThisBatch : null)
-        ?? visibleResult.episodes.find((episode) => !restoredReviews[episode.root])
+      const assignedInThisBatch = lastAssignedRoot
+        ? visibleResult.episodes.find((episode) => sameReviewPath(episode.root, lastAssignedRoot))
+        : null;
+      const preferred = preferredEpisodeRoot
+        ? visibleResult.episodes.find((episode) => sameReviewPath(episode.root, preferredEpisodeRoot))
+        : null;
+      if (preferredEpisodeRoot && !preferred) throw new Error("所选记录已不在该批次目录中，请刷新任务中心后重试。");
+      let resumeCompleted = false;
+      if (username && resume?.active && resumeInThisBatch && !preferred) {
+        try {
+          const records = await listMyMachineReviews([resumeInThisBatch.root]);
+          ensureOperationActive(owner);
+          resumeCompleted = records.some(record => record.status !== "pending");
+        } catch (reason) {
+          ensureOperationActive(owner);
+          setNotice(`审核状态读取失败，恢复上次位置：${toMessage(reason)}`);
+        }
+      }
+      let first = preferred ?? (resume?.active && !resumeCompleted ? resumeInThisBatch : null) ?? assignedInThisBatch
         ?? visibleResult.episodes[0]
         ?? null;
+      // Do not wait for the whole NAS review index before restoring a known cursor.
+      // Legacy/completed cursors need only bounded candidate checks, not media reads.
+      if (username && first && !preferred && (!resume?.active || !resumeInThisBatch || resumeCompleted)) {
+        const index = visibleResult.episodes.indexOf(first);
+        const candidates = [...visibleResult.episodes.slice(index), ...visibleResult.episodes.slice(0, index)];
+        try {
+          for (let offset = 0; offset < candidates.length; offset += 32) {
+            const group = candidates.slice(offset, offset + 32);
+            const records = await listMyMachineReviews(group.map(episode => episode.root));
+            ensureOperationActive(owner);
+            const completed = new Set(records.filter(record => record.status !== "pending").map(record => record.sourcePath));
+            const pendingEpisode = group.find(episode => !completed.has(episode.root));
+            if (pendingEpisode) { first = pendingEpisode; break; }
+          }
+        } catch (reason) {
+          ensureOperationActive(owner);
+          setNotice(`审核状态读取失败，恢复上次位置：${toMessage(reason)}`);
+        }
+      }
+      ensureOperationActive(owner);
       setSelectedEpisode(first);
       resetLoadedData();
       if (autoLoad && first) {
+        if (username) writeReviewResume(username, { sourceRoot: visibleResult.sourceRoot, episodeRoot: first.root, active: true });
+        restoreEpisodeFocus(first.root, ++episodeFocusRestoreToken.current);
         operation = "load_and_validate";
         loadingEpisode = first;
         setEpisodeSourceStates((current) => ({ ...current, [first.root]: "loading" }));
         const loadResult = await loadAndValidate(first.root, first.root, owner);
         ensureOperationActive(owner);
         handleLoadResult(first, loadResult);
-        if (username) writeReviewResume(username, {
-          sourceRoot: visibleResult.sourceRoot,
-          episodeRoot: first.root,
-          active: !restoredReviews[first.root] || restoredReviews[first.root] === "pending",
-        });
       }
     } catch (reason) {
       const cancelled = toMessage(reason).includes("任务已取消");
@@ -888,9 +922,6 @@ function App() {
   ) {
     if (episodeLoadInFlight.current || operationScopeRef.current.current() || reviewUnsaved.current) return;
     selectEpisode(episode);
-    if (authStatus?.currentUser?.role === "operator") {
-      writeReviewResume(authStatus.currentUser.username, { sourceRoot: sourcePath, episodeRoot: episode.root, active: true });
-    }
     if (!force && data && report && loadedEpisodeSourceRoot === episode.root) {
       changeView("proofread");
       return;
@@ -1896,9 +1927,9 @@ function App() {
         <div className="personal-task-overlay" role="presentation" onClick={() => setPersonalTaskOpen(false)}>
         <TaskCenter
           currentUser={currentUser}
-          onOpen={async (root) => {
+          onOpen={async (root, episodeRoot) => {
             if (reviewUnsaved.current || busy) throw new Error("当前操作尚未完成，请稍后打开任务");
-            await openSource(root, true, [], true);
+            await openSource(root, true, [], true, episodeRoot);
           }}
           onClose={() => setPersonalTaskOpen(false)}
         />

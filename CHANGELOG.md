@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.0.59 - 2026-10-09
+
+- 修复旧版只记录已完成条目时的恢复边界：登录会按当前批次审核状态继续定位到下一条未审核数据。
+- 恢复路径兼容 Windows UNC、盘符大小写和尾部斜杠差异；任务中心进入批次时优先使用该批次而不被旧目录配置覆盖。
+- 恢复条目后自动滚动并聚焦目录位置，便于直接继续审核。
+
 ## 1.0.58 - 2026-10-09
 
 - 审核员登录后按账号恢复上次正在审核的批次和条目；审核完成后自动切换到下一条时同步更新恢复位置。

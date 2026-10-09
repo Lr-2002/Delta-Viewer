@@ -18,7 +18,7 @@ test("failed save keeps a recovery snapshot, releases navigation and survives re
   });
   try {
     await open(page, "machineAnnotation=present");
-    await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
     await page.evaluate(() => localStorage.setItem("test.fail-review", "1"));
     await page.getByLabel("复核动作描述").fill("人工草稿必须保留");
     await page.getByRole("button", { name: "重试保存复核" }).waitFor();
@@ -101,6 +101,60 @@ test("login resumes the active batch entry instead of the previously reviewed en
     const resume = await page.evaluate(() => JSON.parse(localStorage.getItem("dohc-viewer.review-resume.v1:review-test")));
     assert.equal(resume.episodeRoot, "demo://session-activation/session-b");
     assert.equal(resume.active, true);
+  } finally { await context.close(); }
+});
+
+test("a completed legacy cursor advances to the first unreviewed entry in its batch", async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
+  try {
+    await page.addInitScript(() => {
+      localStorage.setItem("dohc-viewer.last-assigned-episode.v1:review-test", "demo://session-activation/session-a");
+      localStorage.setItem("dohc.demo.account-reviews:review-test", JSON.stringify({
+        "demo://session-activation/session-a": {
+          sourcePath: "demo://session-activation/session-a", username: "review-test", reviewerName: "Review Test",
+          status: "approved", rejectionReason: "", revision: "old", updatedAtMs: Date.now(),
+        },
+      }));
+    });
+    await open(page, "demoScenario=session-activation&machineAnnotation=present");
+    await page.waitForFunction(() => document.querySelector(".episode-item.selected")?.textContent?.includes("session-b"));
+    assert.match(await page.locator(".episode-item.selected").textContent(), /session-b/);
+  } finally { await context.close(); }
+});
+
+test("restart restores the batch and current selection despite an older configured directory", async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.route("**/src/App.tsx", async route => {
+    const response = await route.fetch();
+    const body = (await response.text()).replace("didAutoLoad.current || isTauriRuntime()", "true || isTauriRuntime()");
+    await route.fulfill({ response, body });
+  });
+  await context.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    let body = (await response.text()).replace(/(export async function getAssignedSourceRoot\([^]*?\) \{)/, '$1\n return "/old-batch";');
+    body = body.replace(/(export async function scanSource\([^]*?\) \{)/, '$1\n window.__scannedRoot = path;');
+    await route.fulfill({ response, body });
+  });
+  try {
+    let page = await context.newPage();
+    await open(page, "demoScenario=session-activation&machineAnnotation=present", "resume-alice");
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    await page.locator(".episode-item").filter({ hasText: "session-b" }).dblclick();
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    await page.close();
+    page = await context.newPage();
+    await open(page, "demoScenario=session-activation&machineAnnotation=present", "resume-alice");
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    assert.equal(await page.evaluate(() => window.__scannedRoot), "demo://session-activation");
+    assert.match(await page.locator(".episode-item.selected").textContent(), /session-b/);
+    assert.equal(await page.locator(".episode-item").count(), 3);
+    await page.close();
+    page = await context.newPage();
+    await open(page, "demoScenario=session-activation&machineAnnotation=present", "resume-bob");
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    assert.equal(await page.evaluate(() => window.__scannedRoot), "/old-batch");
+    assert.match(await page.locator(".episode-item.selected").textContent(), /session-a/);
   } finally { await context.close(); }
 });
 
