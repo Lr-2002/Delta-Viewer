@@ -1927,9 +1927,9 @@ function App() {
         <div className="personal-task-overlay" role="presentation" onClick={() => setPersonalTaskOpen(false)}>
         <TaskCenter
           currentUser={currentUser}
-          onOpen={async (root, episodeRoot) => {
+          onOpen={async (root, episodeRoot, batchRoot) => {
             if (reviewUnsaved.current || busy) throw new Error("当前操作尚未完成，请稍后打开任务");
-            await openSource(root, true, [], true, episodeRoot);
+            await openSource(batchRoot ?? root, true, [], true, episodeRoot);
           }}
           onClose={() => setPersonalTaskOpen(false)}
         />

@@ -9,7 +9,7 @@ interface Props {
   currentUser: UserIdentity;
   sourceRoot?: string | null;
   onSourceChange?: (root: string) => void;
-  onOpen?: (root: string, episodeRoot?: string) => Promise<void>;
+  onOpen?: (root: string, episodeRoot?: string, batchRoot?: string) => Promise<void>;
   onClose?: () => void;
 }
 
@@ -198,7 +198,9 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       const base = catalog?.sourceRoot ?? root;
       const nodePath = node.relativePath ? `${base}/${node.relativePath}` : base;
       const batch = node.relativePath.split("/")[0];
-      await onOpen(node.session && batch ? `${base}/${batch}` : nodePath, node.session ? nodePath : undefined);
+      // Keep the first argument as the selected node path for existing integrations;
+      // the batch root is explicit so the reviewer can scan the batch and focus that node.
+      await onOpen(nodePath, node.session ? nodePath : undefined, node.session && batch ? `${base}/${batch}` : undefined);
       if (alive.current && rootRef.current === selectedRoot) onClose?.();
     } catch (reason) {
       if (alive.current && rootRef.current === selectedRoot) setOpenError(`数据加载失败：${String(reason)}`);

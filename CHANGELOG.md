@@ -3,7 +3,9 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
-## 1.0.59 - 2026-10-09
+## 1.0.60 - 2026-10-09
+
+- 修复任务中心领取后传递批次目录的兼容性：保留旧集成的节点路径参数，同时让审核工作台按批次扫描并定位所选 session。
 
 - 修复旧版只记录已完成条目时的恢复边界：登录会按当前批次审核状态继续定位到下一条未审核数据。
 - 恢复路径兼容 Windows UNC、盘符大小写和尾部斜杠差异；任务中心进入批次时优先使用该批次而不被旧目录配置覆盖。
