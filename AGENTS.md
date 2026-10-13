@@ -607,6 +607,8 @@ Codex 不得自行跳过 patch，也不得因功能大小、兼容性或发布�
 只有开发负责人明确要求 `0.Y.Z -> 0.(Y+1).0`、major 升级或指定确切版本时，才按该
 指令更新；minor 或 major 变化后 patch 从 `0` 开始。
 
+用户补充（2026-10-13）：每次交付改动（包括提供到桌面的预览版）都必须同步更新版本号和中文更新摘要；不能用旧版本号交付不同内容。预览版须明确标识发布候选，应用内版本历史、桌面交付说明和后续 Release 摘要保持一致。内部尚未交付的构建迭代不单独占用版本号。
+
 1. 保持 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 的 semver 一致。
 2. 每次 Release 必须在 `CHANGELOG.md` 新增唯一、带合法日期且至少包含一条具体变更的当前版本条目；当前版本必须是第一条带日期的版本记录，`Unreleased` 或 `TBD` 不能替代。GitHub Release 正文必须直接展示该条目，不能只放 commit compare 链接。同步更新 PRD 实现状态。
 3. 至少运行 `pnpm check:full`；标准私有样例不是硬性前置。平台包变更还要运行相应 bundle 检查，并确认私有数据、staged FFmpeg、报告和构建产物未暂存。

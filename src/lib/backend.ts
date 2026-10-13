@@ -255,6 +255,8 @@ export async function sendReviewAudit(username: string, serviceId: string, event
 
 export const persistReviewAudit = (username: string, serviceId: string, events: import("./review-audit-types").ReviewAuditEvent[]) =>
   invoke<import("./durable-review-audit-queue").ReviewOutboxStatus>("persist_review_audit", { username, serviceId, events });
+export const getReviewAuditQueueStatus = (username: string, serviceId: string) =>
+  invoke<import("./durable-review-audit-queue").ReviewOutboxStatus>("get_review_audit_queue_status", { username, serviceId });
 export const flushReviewAuditQueue = (username: string, serviceId: string, retryBlocked = false) =>
   invoke<import("./durable-review-audit-queue").ReviewOutboxStatus>("flush_review_audit_queue", { username, serviceId, retryBlocked });
 

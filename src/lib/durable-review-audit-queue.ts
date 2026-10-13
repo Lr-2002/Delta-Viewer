@@ -1,7 +1,11 @@
 import type { ReviewAuditEvent } from "./review-audit-types";
 
-export interface ReviewOutboxStatus { pending: number; blocked: number; error: string }
+export interface ReviewOutboxStatus {
+  pending: number; blocked: number; error: string;
+  oldestPendingAtMs?: number | null; lastSuccessAtMs?: number | null; blockedError?: string;
+}
 export interface ReviewOutboxBackend {
+  status?(): Promise<ReviewOutboxStatus>;
   persist(events: ReviewAuditEvent[]): Promise<ReviewOutboxStatus>;
   flush(retryBlocked: boolean): Promise<ReviewOutboxStatus>;
 }
@@ -9,7 +13,8 @@ export interface ReviewOutboxBackend {
 function checkedStatus(value: ReviewOutboxStatus): ReviewOutboxStatus {
   if (!value || !Number.isSafeInteger(value.pending) || value.pending < 0
     || !Number.isSafeInteger(value.blocked) || value.blocked < 0 || value.blocked > value.pending
-    || typeof value.error !== "string") throw Error("监管记录保存状态无效，记录已保留待重试");
+    || typeof value.error !== "string"
+    || [value.oldestPendingAtMs, value.lastSuccessAtMs].some(time => time != null && (!Number.isSafeInteger(time) || time <= 0))) throw Error("监管记录保存状态无效，记录已保留待重试");
   return value;
 }
 
@@ -19,17 +24,48 @@ export function durableReviewAuditQueue(storage: Storage, owner: string, backend
   let writing: Promise<void> | null = null;
   let flushing: Promise<number> | null = null;
   let status: ReviewOutboxStatus = { pending: 0, blocked: 0, error: "" };
-  let diskError = "", migrationError = "";
+  let known = false;
+  let diskError = "", statusReadError = "", migrationError = "";
   let migrated = false;
   let unmigrated = 0;
-  let lastReport = "";
+  function snapshot() {
+    const legacy = new Map<string, ReviewAuditEvent>();
+    let invalid = 0, legacyReadError = "";
+    try {
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i);
+        if (!key?.startsWith(prefix)) continue;
+        try {
+          const event = JSON.parse(storage.getItem(key)!);
+          if (!event || key !== prefix + event.eventId) throw Error("invalid");
+          legacy.set(event.eventId, event);
+        } catch { invalid++; }
+      }
+    } catch (error) { legacyReadError = String(error); }
+    // Until migration finishes, a legacy key may already exist in SQLite after a crash.
+    // Never double count those records or treat malformed cache entries as events.
+    const waiting = [...memory.values(), ...legacy.values()];
+    const times = waiting.map(event => event.occurredAtMs);
+    if (status.pending) times.push(status.oldestPendingAtMs ?? NaN);
+    const oldest = times.length && times.every(time => Number.isSafeInteger(time) && time > 0)
+      ? times.reduce((a, b) => Math.min(a, b)) : null;
+    return {
+      owner, pending: known && !legacyReadError && !legacy.size && !invalid ? status.pending + memory.size : null,
+      volatile: memory.size,
+      oldestVolatileAtMs: memory.size ? [...memory.values()].reduce((time, event) => Math.min(time, event.occurredAtMs), Infinity) : null,
+      blocked: status.blocked, legacyInvalid: invalid,
+      oldestPendingAtMs: invalid ? null : oldest, lastSuccessAtMs: status.lastSuccessAtMs ?? null,
+      localError: diskError || statusReadError || legacyReadError, uploadError: status.error,
+      blockedError: status.blockedError || (status.blocked ? status.error : "") || migrationError,
+    };
+  }
   function report() {
     const message = [
       memory.size && diskError ? `监管记录 ${memory.size} 条仅保存在内存，关闭前需恢复保存` : "",
       status.pending && (status.pending > 20 || status.error || diskError || migrationError) ? `监管记录 ${status.pending} 条已保存在本机，待上传${status.blocked ? `（${status.blocked} 条异常已单独保留）` : ""}` : "",
-      diskError, migrationError, status.error,
+      diskError, statusReadError, migrationError, status.error,
     ].filter(Boolean).join("；");
-    if (message !== lastReport) { lastReport = message; notify(message); }
+    notify(message);
   }
   async function migrate() {
     if (migrated) return;
@@ -52,6 +88,7 @@ export function durableReviewAuditQueue(storage: Storage, owner: string, backend
       }
       if (!batch.length) continue;
       const saved = checkedStatus(await backend.persist(batch.map((row) => row.event)));
+      known = true;
       status = { ...saved, error: status.error || saved.error };
       // Delete old storage ONLY after the native database transaction has committed.
       for (const row of batch) if (storage.getItem(row.key) === row.raw) storage.removeItem(row.key);
@@ -64,20 +101,36 @@ export function durableReviewAuditQueue(storage: Storage, owner: string, backend
     if (writing) return writing;
     writing = (async () => {
       try {
-        while (memory.size) {
-          const batch = [...memory.values()].slice(0, 20);
-          const saved = checkedStatus(await backend.persist(batch));
-          status = { ...saved, error: status.error || saved.error };
-          for (const event of batch) if (memory.get(event.eventId) === event) memory.delete(event.eventId);
-        }
+        do {
+          while (memory.size) {
+            const batch = [...memory.values()].slice(0, 20);
+            const saved = checkedStatus(await backend.persist(batch));
+            known = true;
+            status = { ...saved, error: status.error || saved.error };
+            for (const event of batch) if (memory.get(event.eventId) === event) memory.delete(event.eventId);
+          }
+          // New interactions may arrive while migrating a large legacy queue.
+          // The same persistence barrier must include those writes too.
+          await migrate();
+        } while (memory.size);
         diskError = "";
-        await migrate();
       } catch (error) { diskError = String(error); }
       finally { writing = null; report(); }
     })();
     return writing;
   }
   return {
+    snapshot,
+    async refresh() {
+      if (!backend.status) return;
+      try {
+        const saved = checkedStatus(await backend.status());
+        known = true;
+        statusReadError = "";
+        status = { ...saved, error: status.error || saved.error };
+      } catch (error) { statusReadError = String(error); known = false; }
+      report();
+    },
     push(event: ReviewAuditEvent) {
       memory.set(event.eventId, event);
       void persist();
@@ -85,10 +138,12 @@ export function durableReviewAuditQueue(storage: Storage, owner: string, backend
     volatileCount: () => memory.size,
     async persist() { await persist(); if (memory.size) throw Error(diskError || "监管记录尚未落盘"); },
     flush(retryBlocked = false): Promise<number> {
-      if (flushing) return flushing;
+      // An explicit retry must still include rejected events if an automatic
+      // (unblocked-only) upload is currently running.
+      if (flushing) return retryBlocked ? flushing.then(() => this.flush(true)) : flushing;
       flushing = (async () => {
         await persist();
-        try { status = checkedStatus(await backend.flush(retryBlocked)); }
+        try { status = checkedStatus(await backend.flush(retryBlocked)); known = true; statusReadError = ""; }
         catch (error) { status.error = String(error); }
         report();
         return status.pending + memory.size + unmigrated;

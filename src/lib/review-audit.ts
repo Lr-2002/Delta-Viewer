@@ -1,13 +1,17 @@
-import { flushReviewAuditQueue, isTauriRuntime, persistReviewAudit, sendReviewAudit } from "./backend";
+import { flushReviewAuditQueue, getReviewAuditQueueStatus, isTauriRuntime, persistReviewAudit, sendReviewAudit } from "./backend";
 import { reviewAuditQueue } from "./review-audit-queue";
 import { durableReviewAuditQueue } from "./durable-review-audit-queue";
-import type { ReviewAction, ReviewDetails } from "./review-audit-types";
+import type { ReviewAction, ReviewDetails, ReviewAuditEvent } from "./review-audit-types";
+
+import type { ReviewSyncStatus } from "./review-audit-status";
+
+let activeOwner = "";
 
 type Session = {
   id: string;
   root: string;
   name: string;
-  key: Promise<string>;
+  queue: Queue;
   resolvedKey?: string;
   clock: number;
 };
@@ -18,13 +22,55 @@ const nativeQueues = new Map<string, ReturnType<typeof durableReviewAuditQueue>>
 let lastFrame = 0;
 let storageError = "";
 let uploadError = "";
-let pendingWrites = Promise.resolve();
-const report = () =>
-  window.dispatchEvent(
-    new CustomEvent("review-audit-status", {
-      detail: [storageError, uploadError].filter(Boolean).join("；"),
-    }),
-  );
+let materializationError = "";
+// Keep events visible to the close/update barrier even before the asynchronous
+// directory key has been computed. Failed writes retain the original ID/time.
+const pendingWrites = new Map<string, { session: Session; event: Omit<ReviewAuditEvent, "episodeKey"> }>();
+let writing: Promise<void> | null = null;
+let paused = false;
+
+function materializePendingReviewAudit(): Promise<void> {
+  if (writing) return writing;
+  writing = Promise.resolve().then(async () => {
+    for (const [id, pending] of pendingWrites) {
+      const current = pending.session;
+      if (!current.resolvedKey) {
+        const buffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(current.root));
+        current.resolvedKey = Array.from(new Uint8Array(buffer), byte => byte.toString(16).padStart(2, "0")).join("");
+      }
+      current.queue.push({ ...pending.event, episodeKey: current.resolvedKey });
+      pendingWrites.delete(id);
+    }
+    materializationError = "";
+    report();
+  }).catch(error => {
+    materializationError = `审核记录尚未落盘，请保持应用打开并重试：${String(error)}`;
+    report();
+    throw error;
+  }).finally(() => { writing = null; });
+  return writing;
+}
+export function getReviewSyncStatus(): ReviewSyncStatus | null {
+  if (!queue || !("snapshot" in queue)) return null;
+  const value = queue.snapshot();
+  const waiting = [...pendingWrites.values()].filter(write => write.session.queue === queue);
+  const times = waiting.map(write => write.event.occurredAtMs);
+  if (value.pending) times.push(value.oldestPendingAtMs ?? NaN);
+  return {
+    ...value, owner: activeOwner,
+    pending: value.pending === null ? null : value.pending + waiting.length,
+    volatile: value.volatile + waiting.length,
+    oldestVolatileAtMs: waiting.reduce((time: number | null, write) => Math.min(time ?? Infinity, write.event.occurredAtMs), value.oldestVolatileAtMs),
+    oldestPendingAtMs: times.length && times.every(time => Number.isSafeInteger(time) && time > 0) ? times.reduce((a, b) => Math.min(a, b)) : null,
+    localError: waiting.length && materializationError ? materializationError : value.localError,
+  };
+}
+const report = () => {
+  window.dispatchEvent(new CustomEvent("review-audit-status", {
+    detail: [materializationError, storageError, uploadError].filter(Boolean).join("；"),
+  }));
+  window.dispatchEvent(new CustomEvent("review-audit-snapshot", { detail: getReviewSyncStatus() }));
+};
 
 export function configureReviewAudit(username: string, serviceId: string) {
   const owner = `${serviceId}:${username}`;
@@ -33,6 +79,7 @@ export function configureReviewAudit(username: string, serviceId: string) {
     let native = nativeQueues.get(owner);
     if (!native) {
       native = durableReviewAuditQueue(localStorage, owner, {
+        status: () => getReviewAuditQueueStatus(username, serviceId),
         persist: (events) => persistReviewAudit(username, serviceId, events),
         flush: (retryBlocked) => flushReviewAuditQueue(username, serviceId, retryBlocked),
       }, (message) => {
@@ -47,11 +94,13 @@ export function configureReviewAudit(username: string, serviceId: string) {
     (events) => sendReviewAudit(username, serviceId, events),
   );
   queue = next;
+  activeOwner = owner;
+  paused = false;
   storageError = "";
   uploadError = "";
   async function flush() {
     try {
-      await pendingWrites;
+      await materializePendingReviewAudit();
       await next.flush();
       if (queue === next) {
         uploadError = "";
@@ -65,7 +114,8 @@ export function configureReviewAudit(username: string, serviceId: string) {
       }
     }
   }
-  void flush();
+  report();
+  void (async () => { if ("refresh" in next) await next.refresh(); if (queue === next) await flush(); })();
   const timer = window.setInterval(() => {
     void flush();
   }, 2000);
@@ -73,41 +123,51 @@ export function configureReviewAudit(username: string, serviceId: string) {
   return () => {
     clearInterval(timer);
     window.removeEventListener("online", flush);
-    if (queue === next) queue = null;
+    if (queue === next) { queue = null; activeOwner = ""; report(); }
   };
 }
 
 export async function retryReviewAudit(): Promise<number> {
-  await pendingWrites;
+  await materializePendingReviewAudit();
   if (!queue) return 0;
   return "persist" in queue ? queue.flush(true) : queue.flush();
 }
 
 export async function persistPendingReviewAudit(): Promise<void> {
-  await pendingWrites;
-  if (queue && "persist" in queue) await queue.persist();
-  if (queue?.volatileCount()) throw Error("监管记录尚未保存，暂不能退出登录");
+  await materializePendingReviewAudit();
+  for (const native of nativeQueues.values()) await native.persist();
+  if (pendingWrites.size || queue?.volatileCount()) throw Error("监管记录尚未保存，暂不能关闭或切换数据");
+}
+
+export async function pauseAndPersistReviewAudit(): Promise<() => void> {
+  // Freeze recording until logout or installation finishes so no new volatile
+  // events appear after draining. A failed exit can resume the same session.
+  paused = true;
+  try { await persistPendingReviewAudit(); }
+  catch (error) { paused = false; throw error; }
+  return () => { paused = false; };
+}
+
+export function requireReviewAuditSession(root: string): void {
+  if (paused || !queue || !session || session.root !== root || session.queue !== queue)
+    throw Error("审核操作记录未就绪，请保持当前数据打开并重试");
 }
 
 export function beginReviewAudit(root: string, name: string) {
   endReviewAudit();
+  if (!queue) {
+    storageError = "审核记录队列尚未就绪，无法开始审核计时，请重新登录后重试";
+    report();
+    return () => {};
+  }
   const current: Session = {
     id: crypto.randomUUID(),
     root,
     name,
     clock: performance.now(),
-    key: crypto.subtle
-      .digest("SHA-256", new TextEncoder().encode(root))
-      .then((buffer) =>
-        Array.from(new Uint8Array(buffer), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join(""),
-      ),
+    queue,
   };
   session = current;
-  void current.key.then((key) => {
-    current.resolvedKey = key;
-  });
   lastFrame = 0;
   recordReviewInteraction("loaded");
   const heartbeat = window.setInterval(() => {
@@ -132,10 +192,9 @@ export function recordReviewInteraction(
 
 // Bind asynchronous saves to the originating session, even after navigation.
 export function reviewAuditRecorder(root?: string) {
-  const current = session,
-    targetQueue = queue;
+  const current = session;
   return (action: ReviewAction, details: ReviewDetails = {}) => {
-    if (!current || !targetQueue || (root && current.root !== root)) return;
+    if (paused || !current || (root && current.root !== root)) return;
     const occurredAtMs = Date.now(),
       elapsedMs = Math.max(0, Math.round(performance.now() - current.clock));
     const eventId = crypto.randomUUID();
@@ -145,26 +204,20 @@ export function reviewAuditRecorder(root?: string) {
         typeof value === "string" ? value.slice(0, 2000) : value,
       ]),
     );
-    const write = (episodeKey: string) => {
-      try {
-        targetQueue.push({
-          eventId,
-          sessionId: current.id,
-          episodeKey,
-          episodeName: current.name.slice(0, 256),
-          action,
-          occurredAtMs,
-          elapsedMs,
-          details: normalized,
-        });
-      } catch (error) {
-        storageError = `审核记录暂存于内存，关闭前需恢复同步：${String(error)}`;
-        report();
-      }
-    };
-    if (current.resolvedKey) write(current.resolvedKey);
-    else
-      pendingWrites = pendingWrites.then(async () => write(await current.key));
+    pendingWrites.set(eventId, {
+      session: current,
+      event: {
+        eventId,
+        sessionId: current.id,
+        episodeName: current.name.slice(0, 256),
+        action,
+        occurredAtMs,
+        elapsedMs,
+        details: normalized,
+      },
+    });
+    report();
+    void materializePendingReviewAudit().catch(() => { /* Retained and reported above. */ });
   };
 }
 export function updateReviewFrame(frame: number) {
@@ -192,7 +245,7 @@ export function recordReviewSeek(
 
 export function observeReviewInteractions() {
   const beforeUnload = (event: BeforeUnloadEvent) => {
-    if ([...nativeQueues.values()].some((item) => item.volatileCount()) || queue?.volatileCount()) event.preventDefault();
+    if (pendingWrites.size || [...nativeQueues.values()].some((item) => item.volatileCount()) || queue?.volatileCount()) event.preventDefault();
   };
   let drag: {
     target: string;
@@ -204,7 +257,7 @@ export function observeReviewInteractions() {
   function targetName(target: EventTarget | null) {
     if (
       !(target instanceof Element) ||
-      target.closest(".auth-shell, .profile-editor-dialog")
+      target.closest(".auth-shell, .profile-editor-dialog, .audit-sync-notice")
     )
       return "";
     const control = target.closest(

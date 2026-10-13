@@ -343,15 +343,24 @@ pub(crate) async fn flush_review_outbox(
     let mut failure = String::new();
     if guard.is_some() {
         // Bound each flush; leave new/concurrent events durable for the next pass.
-        for pass in 0..20 {
+        let mut attempted = Vec::new();
+        for _pass in 0..20 {
             let (root, service, user) = (
                 data_root.to_path_buf(),
                 service_id.to_string(),
                 username.to_string(),
             );
-            let events =
-                outbox_io(move || store::batch(&root, &service, &user, retry_blocked && pass == 0))
-                    .await?;
+            let excluded = attempted.clone();
+            let events = outbox_io(move || {
+                store::batch_excluding(&root, &service, &user, retry_blocked, &excluded)
+            })
+            .await?;
+            attempted.extend(events.iter().filter_map(|event| {
+                event
+                    .get("eventId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            }));
             if events.is_empty() {
                 break;
             }

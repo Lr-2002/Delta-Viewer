@@ -46,7 +46,7 @@ import { ProgressStrip } from "./components/ProgressStrip";
 import { TaskCenter } from "./components/TaskCenter";
 import { SkeletonViewer } from "./components/SkeletonViewer";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
-import { beginReviewAudit, configureReviewAudit, endReviewAudit, observeReviewInteractions, persistPendingReviewAudit, recordReviewInteraction, recordReviewSeek, retryReviewAudit, updateReviewFrame } from "./lib/review-audit";
+import { beginReviewAudit, getReviewSyncStatus, configureReviewAudit, endReviewAudit, observeReviewInteractions, pauseAndPersistReviewAudit, recordReviewInteraction, recordReviewSeek, retryReviewAudit, updateReviewFrame } from "./lib/review-audit";
 import { TelemetryChart } from "./components/TelemetryChart";
 import {
   APP_VERSION,
@@ -541,10 +541,13 @@ function App() {
 
   async function installAvailableUpdate() {
     if (IS_DEVELOPMENT_EDITION) return;
+    if (reviewUnsaved.current) return;
     const owner = beginOperation();
     if (!owner) return;
     setUpdatePhase("downloading");
+    let resumeAudit: (() => void) | undefined;
     try {
+      resumeAudit = await pauseAndPersistReviewAudit();
       const installed = await installAppUpdate(owner.id);
       ensureOperationActive(owner);
       if (!installed) {
@@ -563,6 +566,7 @@ function App() {
         : `自动更新失败：${presentUpdateError(message)}`);
       setUpdateErrorVisible(true);
     } finally {
+      resumeAudit?.();
       finishOperation(owner);
     }
   }
@@ -1216,14 +1220,18 @@ function App() {
   async function logout() {
     if (reviewUnsaved.current) return;
     if (operationScopeRef.current.current()) return;
+    let resumeAudit: (() => void) | undefined;
     try {
-      endReviewAudit();
-      await persistPendingReviewAudit();
+      recordReviewInteraction("closed");
+      resumeAudit = await pauseAndPersistReviewAudit();
       await logoutLocalAccount();
+      endReviewAudit();
       resetWorkspaceData();
       setAuthStatus((current) => current ? { ...current, currentUser: null } : current);
     } catch (reason) {
       await reportFailure("logout", reason);
+    } finally {
+      resumeAudit?.();
     }
   }
 
@@ -1762,6 +1770,13 @@ function App() {
   useEffect(() => { recordReviewInteraction(playing ? "play" : "pause", { frameTo: currentFrame }); }, [playing]);
   useEffect(() => { recordReviewInteraction("view", { value: view }); }, [view]);
   const [reviewAuditError, setReviewAuditError] = useState("");
+  const [reviewSyncStatus, setReviewSyncStatus] = useState(getReviewSyncStatus);
+  useEffect(() => {
+    const update = () => setReviewSyncStatus(getReviewSyncStatus());
+    window.addEventListener("review-audit-snapshot", update);
+    update();
+    return () => window.removeEventListener("review-audit-snapshot", update);
+  }, []);
   useEffect(() => {
     const listener = (event: Event) => setReviewAuditError((event as CustomEvent<string>).detail);
     window.addEventListener("review-audit-status", listener);
@@ -2066,7 +2081,7 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {reviewAuditError && currentUser && <AuditSyncNotice username={currentUser.username} error={reviewAuditError} onError={setReviewAuditError} onPendingChange={() => {}} flush={retryReviewAudit} autoRetry={false} message="监管记录同步状态" />}
+          {currentUser && (reviewSyncStatus || reviewAuditError) && <AuditSyncNotice key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} status={reviewSyncStatus?.owner === `${authStatus.userCenter.serviceId ?? "demo"}:${currentUser.username}` ? reviewSyncStatus : undefined} username={currentUser.username} error={reviewAuditError} onError={setReviewAuditError} onPendingChange={() => {}} flush={retryReviewAudit} autoRetry={false} message="监管记录同步状态" />}
           {data || view === "batch" ? (
             <>
               <nav className="view-tabs" aria-label="工作区视图">

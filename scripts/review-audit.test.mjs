@@ -161,3 +161,106 @@ test("invalid native acknowledgements retain both memory and legacy events", asy
   assert.ok(storage.getItem(key));
   assert.match(message,/状态无效/);
 });
+
+test("native persistence waits for operations added during legacy migration", async () => {
+  const storage = new Storage(), legacy = event(), submitted = event({ action: "approved" });
+  storage.setItem("dohc.review-audit.v1:service%3Aalice:" + legacy.eventId, JSON.stringify(legacy));
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const disk = new Map();
+  const queue = durableReviewAuditQueue(storage, "service:alice", {
+    async persist(events) {
+      if (events.some(row => row.eventId === legacy.eventId)) {
+        entered(); await new Promise(resolve => { release = resolve; });
+      }
+      for (const row of events) disk.set(row.eventId, row);
+      return { pending: disk.size, blocked: 0, error: "" };
+    },
+    async flush() { return { pending: disk.size, blocked: 0, error: "offline" }; },
+  }, () => {});
+  const saving = queue.persist();
+  await started;
+  queue.push(submitted);
+  release();
+  await saving;
+  assert.equal(queue.volatileCount(), 0);
+  assert.deepEqual(new Set(disk.keys()), new Set([legacy.eventId, submitted.eventId]));
+});
+
+test("queue health distinguishes storage, transport, and rejected events across restart", async () => {
+  const storage = new Storage(), disk = new Map();
+  const oldest = event({ occurredAtMs: 1700000000000 });
+  disk.set(oldest.eventId, oldest);
+  let lastSuccessAtMs = null, blocked = new Set(), network = 'AUTH_REQUIRED', diskFailure = false;
+  const status = () => ({ pending: disk.size, blocked: blocked.size,
+    error: blocked.size ? 'REVIEW_EVENT_INVALID' : '', blockedError: blocked.size ? 'REVIEW_EVENT_INVALID' : '',
+    oldestPendingAtMs: disk.size ? Math.min(...[...disk.values()].map(e => e.occurredAtMs)) : null, lastSuccessAtMs });
+  const backend = {
+    status: async () => status(),
+    persist: async events => { if (diskFailure) throw Error('ENOSPC'); for (const e of events) disk.set(e.eventId,e); return status(); },
+    flush: async () => {
+      if (network) return {...status(),error:network};
+      let acknowledged = false;
+      for (const id of disk.keys()) if (!blocked.has(id)) { disk.delete(id); acknowledged = true; }
+      if (acknowledged) lastSuccessAtMs = 1700000100000;
+      return status();
+    },
+  };
+  const queue = durableReviewAuditQueue(storage, 'service:alice', backend, () => {});
+  await queue.refresh();
+  assert.equal(queue.snapshot().pending, 1);
+  assert.equal(queue.snapshot().oldestPendingAtMs, oldest.occurredAtMs);
+  assert.equal(queue.snapshot().lastSuccessAtMs, null);
+  await queue.flush();
+  queue.push(event()); await queue.persist();
+  assert.match(queue.snapshot().uploadError, /AUTH_REQUIRED/, 'a successful local write cannot clear authentication failure');
+  for (network of ['offline', 'request timed out', 'HTTP 503', 'unclassified failure']) {
+    await queue.flush();
+    assert.equal(queue.snapshot().uploadError, network);
+    assert.equal(queue.snapshot().pending, 2);
+    assert.equal(queue.snapshot().lastSuccessAtMs, null);
+  }
+  blocked.add(oldest.eventId); network = '';
+  await queue.flush();
+  assert.equal(queue.snapshot().pending, 1);
+  assert.equal(queue.snapshot().blocked, 1);
+  assert.equal(queue.snapshot().lastSuccessAtMs, 1700000100000);
+  assert.equal(queue.snapshot().oldestPendingAtMs, oldest.occurredAtMs);
+  network = 'offline'; await queue.flush(true);
+  assert.equal(queue.snapshot().blocked, 1, 'failed retry must not erase rejected record state');
+  assert.match(queue.snapshot().blockedError, /REVIEW_EVENT_INVALID/);
+  diskFailure = true; queue.push(event());
+  await assert.rejects(queue.persist(), /ENOSPC/);
+  assert.equal(queue.snapshot().volatile, 1);
+  assert.equal(queue.snapshot().pending, 2);
+  network = ''; await queue.flush();
+  assert.match(queue.snapshot().localError, /ENOSPC/, 'unrelated upload cannot clear a disk failure');
+  diskFailure = false; await queue.persist(); await queue.flush();
+  const reopened = durableReviewAuditQueue(storage, 'service:alice', backend, () => {});
+  await reopened.refresh();
+  assert.equal(reopened.snapshot().blocked, 1);
+  assert.equal(reopened.snapshot().oldestPendingAtMs, oldest.occurredAtMs);
+  assert.equal(reopened.snapshot().lastSuccessAtMs, 1700000100000);
+  blocked.clear(); await reopened.flush(true);
+  assert.equal(reopened.snapshot().pending, 0);
+  assert.equal(reopened.snapshot().blocked, 0);
+  assert.equal(reopened.snapshot().oldestPendingAtMs, null);
+});
+
+test("explicit retry waits for automatic upload then retries rejected events", async () => {
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const calls = [];
+  const queue = durableReviewAuditQueue(new Storage(), 'service:alice', {
+    persist: async () => ({pending:1,blocked:1,error:'REVIEW_EVENT_INVALID'}),
+    flush: async retry => {
+      calls.push(retry);
+      if (!retry) { entered(); await new Promise(resolve => { release=resolve; }); }
+      return {pending:retry?0:1,blocked:retry?0:1,error:retry?'':'REVIEW_EVENT_INVALID'};
+    },
+  }, () => {});
+  const automatic = queue.flush(); await started;
+  const manual = queue.flush(true); release();
+  await automatic; assert.equal(await manual, 0);
+  assert.deepEqual(calls, [false,true]);
+});

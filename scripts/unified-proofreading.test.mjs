@@ -5,6 +5,85 @@ import { after, before, test } from "node:test";
 import { createServer } from "vite";
 import { chromium } from "playwright-core";
 
+test("audit disk failure blocks completion; retry preserves the saved conclusion and advances once", async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await context.addInitScript(() => { window.auditDisk = new Map(); window.failDecisionAudit = true; window.reviewSaveCount = 0; });
+  await context.route("**/src/lib/review-audit.ts", async route => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const body = original.replace(/from "[^"\n]*\/backend\.ts[^"\n]*"/, 'from "/__native-audit"');
+    assert.notEqual(body, original);
+    await route.fulfill({ response, body });
+  });
+  await context.route("**/__native-audit", route => route.fulfill({ contentType: "application/javascript", body: `
+    export const isTauriRuntime = () => true;
+    export async function persistReviewAudit(username, serviceId, events) {
+      if (window.failAllAudit || (window.failDecisionAudit && events.some(e => ["approved", "rejected"].includes(e.action)))) throw Error("模拟磁盘不可用");
+      for (const event of events) window.auditDisk.set(event.eventId, event);
+      return { pending: window.auditDisk.size, blocked: 0, error: "" };
+    }
+    export async function getReviewAuditQueueStatus() { return { pending: window.auditDisk.size, blocked: 0, error: "" }; }
+    export async function flushReviewAuditQueue() { return { pending: window.auditDisk.size, blocked: 0, error: "offline" }; }
+    export async function sendReviewAudit() { throw Error("unexpected network"); }
+  ` }));
+  await context.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const body = original.replace(/(export async function saveMachineReview\([^]*?\) \{)/, '$1\n window.reviewSaveCount++;');
+    assert.notEqual(body, original);
+    await route.fulfill({ response, body });
+  });
+  try {
+    await open(page, "demoScenario=session-activation&machineAnnotation=present");
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    const saved = () => page.evaluate(async () => (await import("/src/lib/backend.ts")).loadMachineReview("demo://session-activation/session-a"));
+    const before = await saved();
+    // The preflight must not write a conclusion when even operations cannot persist.
+    await page.evaluate(() => { window.failAllAudit = true; });
+    await page.getByRole("button", { name: "退出登录", exact: true }).click();
+    await page.getByText(/模拟磁盘不可用/).first().waitFor();
+    assert.equal(await page.getByRole("navigation", { name: "工作区视图" }).isVisible(), true);
+    await page.getByRole("button", { name: "通过", exact: true }).click();
+    await page.getByText(/尚未提交审核结论/).waitFor();
+    assert.equal(await page.evaluate(() => window.reviewSaveCount), 0);
+    await page.evaluate(() => { window.failAllAudit = false; });
+    await page.getByRole("button", { name: "不通过", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "不通过原因" });
+    await dialog.getByRole("button", { name: "镜头污渍", exact: true }).click();
+    await dialog.getByRole("button", { name: "确认不通过" }).click();
+    const retry = page.getByRole("button", { name: "重试保存操作记录", exact: true });
+    await retry.waitFor();
+    assert.equal(await dialog.count(), 0, "retry must be accessible outside the rejection modal");
+    assert.match(await page.locator(".episode-item.selected").textContent(), /session-a/);
+    assert.equal(await page.getByLabel("复核动作描述").isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "重新读取机标", exact: true }).isDisabled(), true);
+    const committed = await saved();
+    assert.equal(committed.status, "rejected");
+    assert.equal(committed.revision, before.revision + 1);
+    assert.equal(await page.evaluate(() => window.reviewSaveCount), 1);
+    for (const width of [1440, 960, 390]) {
+      await page.setViewportSize({ width, height: 920 });
+      await retry.scrollIntoViewIfNeeded();
+      const box = await retry.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width, "retry fits viewport");
+      assert.ok(await retry.evaluate(button => parseFloat(getComputedStyle(button).fontSize) >= 12 && button.clientWidth >= 120), "retry text remains readable on mobile");
+      await page.screenshot({ path: `artifacts/unified-proofreading/audit-retry-${width}.png` });
+    }
+    await page.evaluate(() => { window.failDecisionAudit = false; });
+    await retry.click();
+    await page.waitForFunction(() => document.querySelector(".episode-item.selected")?.textContent.includes("session-b"));
+    assert.equal(await page.evaluate(() => window.reviewSaveCount), 1, "retry cannot resubmit the source conclusion");
+    assert.deepEqual(await saved(), committed);
+    const decisions = await page.evaluate(() => [...window.auditDisk.values()].filter(e => e.action === "rejected"));
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].details.revision, committed.revisionLabel);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
 
 test("failed save keeps a recovery snapshot, releases navigation and survives reload", async () => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
