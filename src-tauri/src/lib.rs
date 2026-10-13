@@ -368,6 +368,24 @@ async fn persist_review_audit(
 }
 
 #[tauri::command]
+async fn get_review_audit_queue_status(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    username: String,
+    service_id: String,
+) -> Result<review_outbox::OutboxStatus, String> {
+    let root = app_data_root(&app)?;
+    user_center::check_review_owner(&root, auth.inner(), &username, &service_id)
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        review_outbox::status(&root, &service_id, &username)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn flush_review_audit_queue(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -1934,6 +1952,7 @@ pub fn run() {
             record_review_audit,
             persist_review_audit,
             flush_review_audit_queue,
+            get_review_audit_queue_status,
             get_review_dashboard,
             get_supervision_dashboard,
             batch_create_supervision_accounts,

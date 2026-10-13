@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
 import { listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
-import { recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
+import { persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { addReviewSegment, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
@@ -101,9 +101,12 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const legacyRecoveryKey = () => `dohc.machine-review.pending:${root}${!loadedSource.current || loadedSource.current === "bailian_annotation.json" ? "" : loadedSource.current === "bailian_annotation.qwen3.8-flash.json" ? ":qwen3.8-flash" : `:source:${encodeURIComponent(loadedSource.current)}`}`;
   const recoveryKey = () => `${legacyRecoveryKey()}:account:${encodeURIComponent(username)}`;
   const [recoveryError, setRecoveryError] = useState("");
+  const [auditCompletionError, setAuditCompletionError] = useState("");
+  const [auditPreparationError, setAuditPreparationError] = useState("");
+  const completionAwaitingAudit = useRef<"approved" | "rejected" | null>(null);
   const labelLibraryStorageKey = labelLibraryKey(username);
-  const unsaved = saving || Boolean(saveError) || finishing;
-  const blocksNavigation = saving || finishing || Boolean(recoveryError);
+  const unsaved = saving || Boolean(saveError) || finishing || Boolean(auditCompletionError);
+  const blocksNavigation = saving || finishing || Boolean(recoveryError) || Boolean(auditCompletionError);
   useEffect(() => {
     setLabelLibraryOpen(false);
     setLabelLibraryError("");
@@ -232,7 +235,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const descriptionIssues = active ? inspectDescription(active.description, textPolicy).filter(issue => !ignoredText.has(issueKey(active.sourceIndex, active.description, issue.original))) : [];
   const allTextIssues = rows.flatMap(row => inspectDescription(row.description, textPolicy).filter(issue => !ignoredText.has(issueKey(row.sourceIndex,row.description,issue.original))).map(issue=>({...issue,row})));
   const valid = result && primary && mapping && !mapping.error && !error;
-  const canEdit = Boolean(valid && review && !busy && !loading && !finishing);
+  const canEdit = Boolean(valid && review && !busy && !loading && !finishing && !auditCompletionError);
   applyLabelRef.current = applyLibraryLabel;
   useEffect(() => {
     if (!canEdit || !active || !labelLibrary.length) return;
@@ -437,10 +440,42 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       playback?.onPause(); setPlaying(false); setTextCheckOpen(true); return;
     }
     finishLock.current = true; setFinishing(true); setPlaying(false);
+    setAuditPreparationError("");
     playback?.onPause();
-    const saved = await persist({ segments: editsRef.current, status, rejectionReason });
-    finishLock.current = false; setFinishing(false);
-    if (saved) { setRejectOpen(false); onUnsavedChange?.(false); onComplete?.(status); }
+    try {
+      requireReviewAuditSession(root);
+      // Persist loaded/operations before committing a conclusion. Network
+      // availability is not required; the native outbox is sufficient.
+      await persistPendingReviewAudit();
+      const saved = await persist({ segments: editsRef.current, status, rejectionReason });
+      if (saved) {
+        completionAwaitingAudit.current = status;
+        setRejectOpen(false);
+        await finishAuditCompletion();
+      }
+    } catch (reason) {
+      setRejectOpen(false);
+      setAuditPreparationError(`尚未提交审核结论：${String(reason)}。恢复后请重新点击通过或不通过。`);
+    } finally {
+      finishLock.current = false; setFinishing(false);
+    }
+  }
+
+  async function finishAuditCompletion() {
+    const status = completionAwaitingAudit.current;
+    if (!status) return;
+    setFinishing(true);
+    try {
+      await persistPendingReviewAudit();
+      completionAwaitingAudit.current = null;
+      setAuditCompletionError(""); setRejectOpen(false);
+      onUnsavedChange?.(false); onComplete?.(status);
+    } catch (reason) {
+      // The source conclusion is already committed. Retry ONLY persistence,
+      // never repeat the save or invent another revision/submission time.
+      setAuditCompletionError(`审核结论已保存，操作记录尚未落盘，请保持当前数据打开：${String(reason)}`);
+      onUnsavedChange?.(true);
+    } finally { setFinishing(false); }
   }
 
   function openRejection() {
@@ -525,6 +560,8 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
           {review?.versionId && <span className="review-revision" title={review.revisionLabel ?? review.versionId}>{review.revisionLabel ?? `${review.versionId} · 历史审核记录`}</span>}
         </div>
         {recoveryError && <p role="alert" className="machine-message">{recoveryError}</p>}
+        {auditPreparationError && <p role="alert" className="machine-message">{auditPreparationError}</p>}
+        {auditCompletionError && <div role="alert" className="machine-message audit-completion-error"><span>{auditCompletionError}</span><button type="button" className="button button-secondary" disabled={finishing} onClick={() => void finishAuditCompletion()}>重试保存操作记录</button></div>}
         {saveError && <div role="alert" className="machine-message">{saveError}<button className="icon-button" aria-label="重试保存复核" title="重试保存复核" onClick={() => void persist(pending.current ?? { segments: editsRef.current, status: "pending" })}><RefreshCw size={15} /></button></div>}
         <div className="quality-output" title={`${root}/${outputName}`}>{outputName}<span>{review?.status === "approved" ? "已通过" : review?.status === "rejected" ? "未通过" : "待审核"}</span></div>
         {review?.status === "rejected" && review.rejectionReason && <p className="review-rejection-reason" title={review.rejectionReason}>不通过：{review.rejectionReason}</p>}
