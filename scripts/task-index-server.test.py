@@ -164,6 +164,45 @@ class IndexTests(unittest.TestCase):
             now = dt.datetime(2026, 9, 20, hour, 0, tzinfo=module.ZONE).timestamp()
             self.assertEqual(module.scheduled_cutoff(now), int(dt.datetime.fromisoformat(expected).timestamp() * 1000))
 
+    def test_new_directory_event_survives_qc_flush_until_topology_rebuild(self):
+        self.session("existing/one", "通过")
+        clock = [0]
+        iterations = [0]
+        parent = self.root
+
+        class FixtureWatcher:
+            fd = 0
+
+            def add(self, path):
+                pass
+
+            def retain(self, paths):
+                pass
+
+            def drain(self):
+                return ({parent}, False) if iterations[0] == 1 else (set(), False)
+
+        def tick(*args):
+            iterations[0] += 1
+            if iterations[0] > 4:
+                raise StopIteration
+            clock[0] = iterations[0] * 3
+            if iterations[0] == 1:
+                self.session("new-batch/two", "待审核")
+            elif iterations[0] <= 4:
+                self.assertNotIn("new-batch/two", self.index.nodes)
+
+        self.index.watcher = FixtureWatcher()
+        with patch.object(module.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(module.select, "select", side_effect=tick), \
+                patch.object(self.index, "update", wraps=self.index.update) as update:
+            with self.assertRaises(StopIteration):
+                self.index.run()
+        self.assertIn("new-batch/two", self.index.nodes)
+        self.assertEqual(self.index.nodes[""]["total"], 2)
+        self.assertEqual(self.index.nodes[""]["reviewed"], 1)
+        update.assert_not_called()
+
     def test_output_cannot_modify_dataset(self):
         with self.assertRaises(ValueError):
             module.TaskIndex(self.root, self.root / "index")

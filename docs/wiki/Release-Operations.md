@@ -117,7 +117,7 @@ updater 上限、安装包上限、SHA-256 和 Ed25519/Minisign 签名，完整�
 
 ## 版本发布门槛
 
-1. 默认将 patch 位增加 `+0.0.1`；minor/major 或跳号必须由开发负责人明确指定。更新四处应用版本，并在 `CHANGELOG.md` 顶部新增唯一、带日期且非空的版本条目；同步更新 PRD 和用户文档。
+1. 按用户 2026-10-15 规则从 `1.1.0` 起递增，patch 只取 0–9；`1.1.9` 下一版为 `1.2.0`，不使用 `1.1.10`。major 或额外跳号仍需明确指定。更新四处应用版本，并在 `CHANGELOG.md` 顶部新增唯一、带日期且非空的版本条目；同步更新 PRD 和用户文档。
 2. 运行 `pnpm check:full`；标准私有样例已从发布硬性前置中移除，平台变更运行对应 bundle/目标测试。
 3. 确认 staged FFmpeg、私有数据、报告和构建产物没有进入 Git。
 4. 将完整版本内容作为一个 release-ready commit 直接推送或合并到 `main`，不创建独立功能 commit 或 release commit；tag pending 期间冻结 `main`。

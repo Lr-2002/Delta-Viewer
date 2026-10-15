@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 import { chromium } from 'playwright-core';
+
+const appVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 test('updates check in background, require download/install consent and retain work on failure', async t => {
   const server = await createServer({logLevel:'error', server:{host:'127.0.0.1',port:0}, plugins:[{
@@ -152,7 +154,7 @@ test('administrator workspace exposes the same update entry and version history'
   await page.goto(server.resolvedUrls.local[0]+'?demoScenario=operations-cockpit');
   await page.getByRole('heading',{name:'审核监管',exact:true}).waitFor();
   await page.getByRole('button',{name:'版本与更新',exact:true}).click();
-  const dialog=page.getByRole('dialog',{name:'版本与更新详情'});await dialog.getByText('当前版本 v1.0.63',{exact:true}).waitFor();
+  const dialog=page.getByRole('dialog',{name:'版本与更新详情'});await dialog.getByText(`当前版本 v${appVersion}`,{exact:true}).waitFor();
   await dialog.getByRole('button',{name:'稍后',exact:true}).click();
   assert.equal(await page.getByRole('heading',{name:'审核监管',exact:true}).isVisible(),true);
 });

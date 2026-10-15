@@ -44,6 +44,15 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const catalogRef = useRef(catalog); catalogRef.current = catalog;
   const admin = currentUser.role === "admin";
   useEffect(() => {
+    if (!pendingOnlyBatch || !catalog) return;
+    const batch = catalog.tree.children.find((node) => node.relativePath === pendingOnlyBatch);
+    if (batch && !batch.incomplete && !batch.scanning && batch.total > 0 && batch.reviewed === batch.total) {
+      // A live index refresh can complete a batch while its pending filter is open.
+      // Restore the full tree before removing the filter's only exit button.
+      setPendingOnlyBatch("");
+    }
+  }, [catalog, pendingOnlyBatch]);
+  useEffect(() => {
     if (!pendingOnlyBatch) return;
     let active = true;
     let timer: number;
@@ -246,10 +255,10 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const isBatch = depth === 1 || (isRoot && node.session);
     const open = expanded.has(node.relativePath);
     const claim = claims[node.batchKey];
-    const filteringThisBatch = Boolean(pendingOnlyBatch) && pendingOnlyBatch === node.relativePath;
+    const percent = node.total && !node.incomplete && !node.scanning ? Math.floor(node.reviewed * 100 / node.total) : null;
+    const filteringThisBatch = percent !== 100 && Boolean(pendingOnlyBatch) && pendingOnlyBatch === node.relativePath;
     const filterLoading = filteringThisBatch && (pendingResults.path !== pendingOnlyBatch || pendingResults.loading);
     const children = filteringThisBatch ? filterLoading ? [] : pendingResults.nodes : node.children;
-    const percent = node.total && !node.incomplete && !node.scanning ? Math.floor(node.reviewed * 100 / node.total) : null;
     return <div key={node.relativePath} className="task-tree-node">
       <div className={`task-tree-row${isRoot ? " task-tree-root" : ""}${node.session ? " task-tree-session" : ""}`} style={{ "--tree-depth": depth } as React.CSSProperties}>
         <button className="task-node-name" type="button" title={isRoot ? root : node.name} aria-expanded={node.session ? undefined : open}
@@ -265,7 +274,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
               <b>{percent === null ? "--" : `${percent}%`}</b><small>{node.scanning ? loading ? "统计中" : "未完成" : `${node.reviewed}/${node.total}`}{node.errors ? ` · ${node.errors} 异常` : ""}</small>
             </span></>}
         {isBatch && <div className="task-claim-actions">
-          {!node.session && <button type="button" className="button button-secondary task-pending-filter" aria-pressed={filteringThisBatch} disabled={Boolean(pending)} onClick={() => void togglePendingOnly(node)}>
+          {!node.session && percent !== 100 && <button type="button" className="button button-secondary task-pending-filter" aria-pressed={filteringThisBatch} disabled={Boolean(pending)} onClick={() => void togglePendingOnly(node)}>
             <ListFilter size={14} />{filteringThisBatch ? "显示全部" : "仅未审核"}
           </button>}
           {claim && (admin || claim.username === currentUser.username) && <button type="button" className="button button-secondary" title="释放批次" disabled={Boolean(pending) || !claimsReady} onClick={() => void changeClaim("release", node)}><UserMinus size={14} />释放</button>}
