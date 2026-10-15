@@ -4,6 +4,7 @@ import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import packageInfo from "../../package.json";
 import { createAuditFlusher } from "./audit-flush";
+import { REJECTION_REASONS } from "./rejection-reasons";
 import type { TaskIndexResult } from "./task-center";
 
 export const readTaskIndex = (sourceRoot: string, relativePath = "") =>
@@ -627,7 +628,7 @@ export async function saveMachineReview(sourcePath: string, sourceHash: string, 
   // The latest explicit human snapshot wins, with a new revision of the stored result.
   const retained = segments.filter((segment) => !segment.deleted);
   const reason = status === "rejected" ? rejectionReason?.trim() ?? "" : "";
-  if (status === "rejected" && !["骨架抖动", "镜头污渍", "镜头遮挡", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "状态异常"].includes(reason)
+  if (status === "rejected" && !REJECTION_REASONS.filter(item => item !== "其他原因").includes(reason)
     && !(reason.startsWith("其他原因：") && reason.slice(5).trim() && [...reason.slice(5).trim()].length <= 1000)) throw new Error("请选择不通过原因；其他原因需填写 1 至 1000 字");
   if (status === "approved" && !retained.length) throw new Error("没有保留片段，不能通过质检");
   const versionId = crypto.randomUUID().replaceAll("-", "");

@@ -86,3 +86,16 @@ test("mismatched media and missing camera cannot silently align", () => {
   assert.ok(machineTimelineMapping(annotation, undefined).error);
   assert.ok(machineTimelineMapping(annotation, { ...stream, lastFrame: 764 }).error);
 });
+
+import { REJECTION_REASONS, normalizeReasonOrder, reorderReason } from "../src/lib/rejection-reasons.ts";
+test("reason order migrates valid labels, appends new reasons and pins other last", () => {
+  const order = normalizeReasonOrder(["动作过快", "其他原因", "动作过快", "removed", null]);
+  assert.equal(order[0], "动作过快");
+  assert.equal(order.at(-1), "其他原因");
+  assert.equal(order.length, REJECTION_REASONS.length);
+  assert.ok(order.includes("动作失范"));
+  assert.deepEqual(reorderReason(order, "其他原因", "骨架抖动"), order);
+  assert.deepEqual(reorderReason(order, "骨架抖动", "其他原因"), order);
+  assert.equal(reorderReason(order, "动作失范", "动作过快")[0], "动作失范");
+  assert.deepEqual(normalizeReasonOrder({ invalid: true }), REJECTION_REASONS);
+});

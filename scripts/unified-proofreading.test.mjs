@@ -570,7 +570,7 @@ test("rejection uses buttons, requires other text, persists the reason and clear
     assert.equal(await dialog.getByRole("button", { name: "确认不通过" }).isEnabled(), false);
     await dialog.getByRole("button", { name: "取消", exact: true }).click();
     assert.equal((await saved()).revision, before.revision);
-    for (const reason of ["骨架抖动", "镜头污渍", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "状态异常", "其他原因"]) {
+    for (const reason of ["骨架抖动", "镜头污渍", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "状态异常", "动作失范", "其他原因"]) {
       await page.getByRole("button", { name: "不通过", exact: true }).click();
       await dialog.getByRole("button", { name: reason, exact: true }).click();
       let expected = reason;
@@ -804,4 +804,78 @@ test("missing machine JSON creates a full-video human segment, splits and reload
   await page.screenshot({ path: "artifacts/unified-proofreading/manual-only-mobile.png", fullPage: true });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.close();
+});
+
+
+test("rejection reasons drag without selecting, persist per account and keep other bottom right", async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+  const page = await context.newPage();
+  try {
+    await open(page, "machineAnnotation=present", "reason-owner");
+    const show = async () => { await page.getByRole("button", { name: "不通过", exact: true }).click(); };
+    await show();
+    const dialog = page.getByRole("dialog", { name: "不通过原因" });
+    const labels = () => dialog.locator(".rejection-options button").allTextContents();
+    assert.equal((await labels()).length, 12);
+    await dialog.getByRole("button", { name: "调整顺序", exact: true }).click();
+    await dialog.getByRole("button", { name: "动作失范", exact: true }).dragTo(dialog.getByRole("button", { name: "骨架抖动", exact: true }));
+    assert.equal((await labels())[0], "动作失范");
+    assert.equal(await dialog.locator('.rejection-options [aria-pressed="true"]').count(), 0);
+    assert.equal(await dialog.getByRole("button", { name: "确认不通过" }).isDisabled(), true);
+    assert.equal(await dialog.getByRole("button", { name: "其他原因", exact: true }).getAttribute("draggable"), "false");
+    await dialog.getByRole("button", { name: "完成排序", exact: true }).click();
+    await dialog.getByRole("button", { name: "取消", exact: true }).click();
+    await show();
+    assert.equal((await labels())[0], "动作失范");
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      const other = await dialog.getByRole("button", { name: "其他原因", exact: true }).boundingBox();
+      const lastLeft = await dialog.locator(".rejection-options button").nth(10).boundingBox();
+      assert.ok(other.x > lastLeft.x && Math.abs(other.y - lastLeft.y) < 2);
+      const confirm = dialog.getByRole("button", { name: "确认不通过" });
+      await confirm.scrollIntoViewIfNeeded();
+      const box = await confirm.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width && box.y + box.height <= 844);
+      await page.screenshot({ path: `artifacts/unified-proofreading/reason-order-${width}.png` });
+    }
+    await page.setViewportSize({ width: 1440, height: 920 });
+    await dialog.getByRole("button", { name: "取消", exact: true }).click();
+    await open(page, "machineAnnotation=present", "reason-other");
+    await show();
+    assert.equal((await labels())[0], "骨架抖动");
+    await dialog.getByRole("button", { name: "取消", exact: true }).click();
+    await open(page, "machineAnnotation=present", "reason-owner");
+    await show();
+    assert.equal((await labels())[0], "动作失范");
+  } finally { await context.close(); }
+});
+
+test("inferred machine boundary stays visible and requires explicit review before approval", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  await page.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const body = original.replace('model: "Demo model",', 'model: "Demo model", inferredEndFrames: [1],').replace('label: "phase_walk",', 'label: "phase_walk", sourceIndex: 1,');
+    assert.notEqual(body, original);
+    await route.fulfill({ response, body });
+  });
+  try {
+    await open(page, "machineAnnotation=present");
+    const notice = page.getByRole("region", { name: "机标边界待核对" });
+    await notice.waitFor();
+    const approve = page.getByRole("button", { name: "通过", exact: true });
+    assert.equal(await approve.isDisabled(), true);
+    await notice.getByRole("button", { name: "定位原片段 2" }).click();
+    assert.equal(await page.getByLabel("复核动作描述").inputValue(), "向前行走");
+    await notice.getByRole("checkbox").check();
+    assert.equal(await approve.isEnabled(), true);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await notice.scrollIntoViewIfNeeded();
+    const box = await notice.boundingBox();
+    assert.ok(box.x >= 0 && box.x + box.width <= 390);
+    await page.screenshot({ path: "artifacts/unified-proofreading/inferred-boundary.png" });
+    await page.getByRole("button", { name: "重新读取机标", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    assert.equal(await approve.isDisabled(), true);
+  } finally { await page.close(); }
 });
