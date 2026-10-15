@@ -1,4 +1,4 @@
-# GitHub 正式 Release 更新（1.0.63）
+# GitHub 正式 Release 更新（1.1.1）
 
 更新来源固定为 https://github.com/Lr-2002/Delta-Viewer 。登录后从 GitHub latest Release API 查找正式版本；匿名 API 限流或不可用时改读同仓库官方 /releases/latest 的 HTTPS 精确 tag 跳转，再执行相同清单与包验证，忽略草稿、预发布和低于当前版本的结果。检查不占用数据任务，也不阻断目录恢复、数据载入和审核。
 
@@ -14,3 +14,17 @@
 更新模块不使用用户中心凭据，不上传业务数据。元数据读取上限 1 MiB，正式包 1–64 MiB，固定三平台目标与文件名；只允许官方仓库精确 tag HTTPS 资产 URL 和 GitHub 官方下载 CDN 重定向。安装使用 Tauri 原生平台实现（Windows NSIS、macOS arm64 app tar、Linux deb），安装前重新检查大小、哈希和内嵌公钥签名。
 
 `update-service.config.json` 和旧镜像脚本保留给历史客户端，本版不依赖、不部署或重启旧镜像服务。旧客户端需要手动安装 1.0.63 一次才能迁移来源。三平台完整 Release 门禁、公开资产不可覆盖和 UNSIGNED 披露继续保留。
+
+## 1.1.1 稳定性与故障排查
+
+更新请求启用 Windows/macOS 系统代理支持，仍校验 HTTPS 证书。局域网用户中心使用固定证书直连，不经过更新代理，不向 GitHub 转发登录凭据。
+
+版本查询、清单读取与包下载对短暂超时、连接/响应中断、HTTP 408/429/500/502/503/504 最多尝试三次；404、403 不盲目重试，API 不可用仍查询官方最新 Release 跳转。元数据每次请求总时限 30 秒、连接时限 10 秒；包下载单次总时限 20 分钟、读取空闲时限 30 秒。两次重试之间分别等待 300/600 毫秒；下载取消会中断等待。每次重试重新读取，不拼接上次不完整字节。
+
+检查只读取一份有界清单，验证后直接交给原生安装器，不再为同一清单增加第二次 HTTP 请求。无效大小、清单、重定向和签名不会被降级接受。错误提示会给出失败环节、可识别原因及尝试次数；不会把未知问题都称为断网，不显示代理凭据或 CDN 签名查询参数。
+
+若 1.0.63 或 1.1.0 因网络路径始终无法检查更新，需要从本仓库 Release 手动安装一次 1.1.1 或更高正式版；修改服务器清单不能改变旧二进制的网络实现。安装前正常保存并退出 Viewer；已有本机配置、审核草稿及待传队列沿用同一应用身份。
+
+维护人员可显式运行 `cargo test --manifest-path src-tauri/Cargo.toml updater::tests::live_official_release_discovery -- --ignored --exact --nocapture` 核查当前正式清单，或将测试名改为 `live_official_release_download` 下载当前平台包并核验 SHA-256/Minisign。后者不会安装、提交审核或操作源数据。Windows Release workflow 额外保存七天的原生测试程序供目标机诊断，独立于正式安装包，不进入公开 Release 资产集合。所有离线故障测试和原生 Windows 更新回归必须通过才发布。
+
+本次排查与复查记录见 [更新稳定性报告](github-update-stability-20261015.md)。GitHub、其资产 CDN 和可用网络仍是联网检查与下载的必要条件；网络不可达时显示可重试错误，保留当前版本及工作状态。

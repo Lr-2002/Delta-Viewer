@@ -1,9 +1,10 @@
+mod network;
+
 use crate::error::{AppError, AppResult};
 use crate::model::{AppUpdateInfo, ProgressPayload};
 use crate::{source, storage};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use futures_util::StreamExt;
 use minisign_verify::{PublicKey, Signature};
 use reqwest::{Client, Url};
 use serde::Deserialize;
@@ -21,7 +22,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 pub const RELEASE_API: &str = "https://api.github.com/repos/Lr-2002/Delta-Viewer/releases/latest";
 const REPOSITORY: &str = "https://github.com/Lr-2002/Delta-Viewer";
-const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const MAX_METADATA_BYTES: u64 = 1024 * 1024;
 const MIN_UPDATE_BYTES: u64 = 1024 * 1024;
@@ -132,34 +133,33 @@ fn client(timeout: Duration) -> AppResult<Client> {
     #[cfg(not(target_os = "windows"))]
     let _ = rustls::crypto::ring::default_provider().install_default();
     Client::builder()
+        .https_only(true)
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(30))
         .redirect(redirects())
         .user_agent(concat!("Delta-Viewer/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(update_check_error)
 }
 async fn bounded_get(client: &Client, url: Url, limit: u64) -> AppResult<Vec<u8>> {
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(update_check_error)?
-        .error_for_status()
-        .map_err(update_check_error)?;
-    if response.content_length().is_some_and(|size| size > limit) {
-        return Err(update_manifest_error("更新元数据超过大小限制"));
-    }
-    let mut bytes = Vec::new();
-    let mut chunks = response.bytes_stream();
-    while let Some(chunk) = chunks.next().await {
-        let chunk = chunk.map_err(update_check_error)?;
-        if bytes.len() as u64 + chunk.len() as u64 > limit {
-            return Err(update_manifest_error("更新元数据超过大小限制"));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
+    let stage = if url.host_str() == Some("api.github.com") {
+        "查询 GitHub 正式版本"
+    } else {
+        "读取更新清单"
+    };
+    network::bytes(
+        client,
+        network::Request {
+            url: &url,
+            limit,
+            expected: None,
+            stage,
+            cancelled: None,
+        },
+        |_, _| {},
+    )
+    .await
 }
 fn validate_manifest(
     json: &serde_json::Value,
@@ -260,16 +260,16 @@ async fn discover_release(client: &Client) -> AppResult<(String, Url, Option<Rel
             // No token or HTML scrape is needed when anonymous API quotas run out.
             let fallback = async {
                 let client = Client::builder()
+                    .https_only(true)
+                    .connect_timeout(Duration::from_secs(10))
                     .timeout(CHECK_TIMEOUT)
                     .redirect(reqwest::redirect::Policy::none())
                     .user_agent(concat!("Delta-Viewer/", env!("CARGO_PKG_VERSION")))
                     .build()
                     .map_err(update_check_error)?;
-                let response = client
-                    .head(format!("{REPOSITORY}/releases/latest"))
-                    .send()
-                    .await
+                let url = Url::parse(&format!("{REPOSITORY}/releases/latest"))
                     .map_err(update_check_error)?;
+                let response = network::head(&client, &url).await?;
                 if !response.status().is_redirection() {
                     return Err(update_check_error(format!(
                         "官方最新 Release 查询返回 {}",
@@ -316,25 +316,21 @@ pub async fn check(app: &AppHandle, state: &UpdateState) -> AppResult<AppUpdateI
     )
     .map_err(update_check_error)?;
     validate_manifest(&manifest, &version, release.as_ref())?;
-    // The plugin owns platform installation; its vendored metadata read also
-    // has a 1 MiB bound. Pin this second read to the exact validated tag and
-    // require identical metadata before exposing an update to the UI.
+    // Reuse this bounded, validated response. A second HTTP read adds another
+    // failure point and may observe a different manifest for the same check.
     let updater = app
         .updater_builder()
         .endpoints(vec![manifest_url])
         .map_err(update_check_error)?
         .target(platform_target()?)
-        .timeout(CHECK_TIMEOUT)
-        .configure_client(|builder| builder.redirect(redirects()))
         .build()
         .map_err(update_check_error)?;
     let update = updater
-        .check()
-        .await
+        .update_from_json(manifest)
         .map_err(update_check_error)?
         .ok_or_else(|| update_manifest_error("所选 Release 已不可用"))?;
-    if update.raw_json != manifest || update.version != version {
-        return Err(update_manifest_error("检查期间更新清单发生变化"));
+    if update.version != version {
+        return Err(update_manifest_error("更新版本与正式 Release 不一致"));
     }
     let cached_update = update.clone();
     let cached_app = app.clone();
@@ -475,43 +471,37 @@ pub async fn download(
     check_cancelled(cancelled)?;
     let expected = expected_download_bytes(&update)?;
     let started = Instant::now();
-    let response = client(DOWNLOAD_TIMEOUT)?
-        .get(update.download_url.clone())
-        .send()
-        .await
-        .map_err(update_download_error)?
-        .error_for_status()
-        .map_err(update_download_error)?;
-    if response
-        .content_length()
-        .is_some_and(|size| size != expected)
-    {
-        return Err(update_manifest_error("下载响应大小不匹配"));
-    }
-    let mut bytes = Vec::with_capacity(expected as usize);
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        check_cancelled(cancelled)?;
-        let chunk = chunk.map_err(update_download_error)?;
-        if bytes.len() as u64 + chunk.len() as u64 > expected {
-            return Err(update_manifest_error("更新下载超过清单大小"));
-        }
-        bytes.extend_from_slice(&chunk);
-        source::emit_progress_for_operation(
-            Some(app),
-            operation_id,
-            ProgressPayload {
-                task: "update".into(),
-                phase: format!("正在下载 v{}，完成后由您决定安装时间", update.version),
-                current: bytes.len() as u64,
-                total: expected,
-                bytes_done: bytes.len() as u64,
-                total_bytes: expected,
-                current_path: update.download_url.to_string(),
-                elapsed_ms: started.elapsed().as_millis(),
-            },
-        );
-    }
+    let bytes = network::bytes(
+        &client(DOWNLOAD_TIMEOUT)?,
+        network::Request {
+            url: &update.download_url,
+            limit: expected,
+            expected: Some(expected),
+            stage: "下载更新包",
+            cancelled: Some(cancelled),
+        },
+        |received, attempt| {
+            source::emit_progress_for_operation(
+                Some(app),
+                operation_id,
+                ProgressPayload {
+                    task: "update".into(),
+                    phase: if attempt == 1 {
+                        format!("正在下载 v{}，完成后由您决定安装时间", update.version)
+                    } else {
+                        format!("正在重试下载 v{}（第 {attempt}/3 次）", update.version)
+                    },
+                    current: received,
+                    total: expected,
+                    bytes_done: received,
+                    total_bytes: expected,
+                    current_path: update.download_url.to_string(),
+                    elapsed_ms: started.elapsed().as_millis(),
+                },
+            );
+        },
+    )
+    .await?;
     check_cancelled(cancelled)?;
     verify_bytes(app, &update, &bytes)?;
     let app = app.clone();
@@ -754,7 +744,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n9\r\n123456789\r\n0\r\n\r\n"] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap(); let port=listener.local_addr().unwrap().port();
             let worker=std::thread::spawn(move || { let (mut stream,_)=listener.accept().unwrap(); let mut buf=[0;4096]; let _=stream.read(&mut buf); stream.write_all(response.as_bytes()).unwrap(); });
-            let result=tauri::async_runtime::block_on(async { bounded_get(&Client::new(),Url::parse(&format!("http://127.0.0.1:{port}")).unwrap(),8).await });
+            let result=tauri::async_runtime::block_on(async { bounded_get(&Client::builder().no_proxy().build().unwrap(),Url::parse(&format!("http://127.0.0.1:{port}")).unwrap(),8).await });
             assert!(result.is_err()); worker.join().unwrap();
         }
     }
@@ -788,6 +778,50 @@ mod tests {
             validate_manifest(&json, &version, release.as_ref()).unwrap();
             println!(
                 "Official published stable release v{version}; metadata/platform checks passed"
+            );
+        });
+    }
+    #[test]
+    #[ignore = "explicit live GitHub package download and signature check; no installation"]
+    fn live_official_release_download() {
+        tauri::async_runtime::block_on(async {
+            let client = client(DOWNLOAD_TIMEOUT).unwrap();
+            let (version, url, release) = discover_release(&client).await.unwrap();
+            let metadata = bounded_get(&client, url, MAX_METADATA_BYTES).await.unwrap();
+            let manifest: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+            validate_manifest(&manifest, &version, release.as_ref()).unwrap();
+            let entry = &manifest["platforms"][platform_target().unwrap()];
+            let expected = entry["size"].as_u64().unwrap();
+            let url = Url::parse(entry["url"].as_str().unwrap()).unwrap();
+            let bytes = network::bytes(
+                &client,
+                network::Request {
+                    url: &url,
+                    limit: expected,
+                    expected: Some(expected),
+                    stage: "验证正式更新包",
+                    cancelled: None,
+                },
+                |_, _| {},
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&bytes)),
+                entry["sha256"].as_str().unwrap()
+            );
+            let config: serde_json::Value =
+                serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+            verify_minisign(
+                config["plugins"]["updater"]["pubkey"].as_str().unwrap(),
+                entry["signature"].as_str().unwrap(),
+                &bytes,
+            )
+            .unwrap();
+            println!(
+                "Official v{version} {}: {} bytes, SHA-256 and Minisign verified; no installation",
+                platform_target().unwrap(),
+                bytes.len()
             );
         });
     }

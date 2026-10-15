@@ -487,10 +487,13 @@ impl Updater {
                             return Ok(None);
                         };
 
-                        // Delta Viewer: metadata must be bounded even on this second
-                        // exact-tag read. Never fall back to reqwest's unbounded json().
+                        // Delta Viewer: bound this compatibility network path too.
+                        // Never fall back to reqwest's unbounded json().
                         const MAX_METADATA_BYTES: usize = 1024 * 1024;
-                        if res.content_length().is_some_and(|size| size > MAX_METADATA_BYTES as u64) {
+                        if res
+                            .content_length()
+                            .is_some_and(|size| size > MAX_METADATA_BYTES as u64)
+                        {
                             return Err(Error::Network("update metadata exceeds 1 MiB".into()));
                         }
                         let mut metadata = Vec::new();
@@ -539,8 +542,30 @@ impl Updater {
             return Err(error);
         }
 
-        // Extracted remote metadata
-        let release = remote_release.ok_or(Error::ReleaseNotFound)?;
+        self.update_from_release(
+            remote_release.ok_or(Error::ReleaseNotFound)?,
+            raw_json.unwrap(),
+        )
+    }
+
+    /// Delta Viewer: create the native installer from metadata already fetched
+    /// and validated by the application. Performs no additional HTTP request.
+    /// Callers must enforce their own trusted source and metadata size limits.
+    pub fn update_from_json(&self, metadata: serde_json::Value) -> Result<Option<Update>> {
+        let release = serde_json::from_value::<RemoteRelease>(metadata.clone())?;
+        self.update_from_release(release, metadata)
+    }
+
+    fn update_from_release(
+        &self,
+        release: RemoteRelease,
+        raw_json: serde_json::Value,
+    ) -> Result<Option<Update>> {
+        let target = if let Some(target) = &self.target {
+            target
+        } else {
+            updater_os().ok_or(Error::UnsupportedOs)?
+        };
 
         let should_update = match self.version_comparator.as_ref() {
             Some(comparator) => comparator(self.current_version.clone(), release.clone()),
@@ -564,7 +589,7 @@ impl Updater {
                 download_url: download_url.clone(),
                 signature: signature.to_owned(),
                 body: release.notes,
-                raw_json: raw_json.unwrap(),
+                raw_json,
                 timeout: None,
                 proxy: self.proxy.clone(),
                 no_proxy: self.no_proxy,
@@ -1676,5 +1701,61 @@ mod tests {
         for (orig, escaped) in cases.iter().zip(cases_escaped) {
             assert_eq!(escape_nsis_current_exe_arg(&OsStr::new(orig)), escaped);
         }
+    }
+}
+
+#[cfg(test)]
+mod delta_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn validated_metadata_creates_native_update_without_network() {
+        let updater = Updater {
+            run_on_main_thread: Arc::new(Box::new(|_| Ok(()))),
+            config: Config::default(),
+            app_name: "Delta Viewer".into(),
+            current_version: Version::parse("1.0.63").unwrap(),
+            version_comparator: None,
+            timeout: None,
+            proxy: None,
+            no_proxy: false,
+            endpoints: vec![Url::parse("https://not-requested.invalid/latest.json").unwrap()],
+            arch: "x86_64",
+            target: Some("windows-x86_64-nsis".into()),
+            headers: HeaderMap::new(),
+            extract_path: PathBuf::from("unused-test-path"),
+            on_before_exit: None,
+            configure_client: None,
+            installer_args: vec![],
+            current_exe_args: vec![],
+        };
+        let json = serde_json::json!({
+            "version":"1.1.0", "notes":"test metadata", "platforms": {
+                "windows-x86_64-nsis": {
+                    "url":"https://github.com/Lr-2002/Delta-Viewer/releases/download/v1.1.0/test.exe",
+                    "signature":"test-signature"
+                }
+            }
+        });
+        let update = updater.update_from_json(json.clone()).unwrap().unwrap();
+        assert_eq!(update.version, "1.1.0");
+        assert_eq!(update.current_version, "1.0.63");
+        assert_eq!(update.raw_json, json);
+        assert_eq!(update.signature, "test-signature");
+        assert_eq!(
+            update.download_url,
+            Url::parse(
+                json["platforms"]["windows-x86_64-nsis"]["url"]
+                    .as_str()
+                    .unwrap()
+            )
+            .unwrap()
+        );
+        let mut older = json.clone();
+        older["version"] = serde_json::json!("1.0.62");
+        assert!(updater.update_from_json(older).unwrap().is_none());
+        let mut missing = json;
+        missing["platforms"] = serde_json::json!({});
+        assert!(updater.update_from_json(missing).is_err());
     }
 }
