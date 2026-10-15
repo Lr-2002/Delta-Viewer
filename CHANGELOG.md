@@ -3,6 +3,13 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.1.0 - 2026-10-15
+
+- 修复服务器目录变更事件可能被普通 QC 刷新提前清除、导致新增批次等待夜间统计才出现的问题；目录校准期间继续保留事件。
+- 任务中心审核进度为 100% 的批次隐藏“仅未审核”筛选；未完成或尚未确认完整统计的批次保留入口。
+- 筛选期间收到批次全部完成的服务器进度后，自动恢复完整目录，保持展开状态；之后新增待审核数据时重新显示筛选按钮。
+- 应用版本升为 1.1.0；后续末位只使用 0–9，1.1.9 后发布 1.2.0，并同步中文版本摘要和版本管理规范。
+
 ## 1.0.63 - 2026-10-15
 
 - 更新入口改为 GitHub 官方仓库 Lr-2002/Delta-Viewer 最新正式 Release，API 限流时自动改查官方最新版本跳转；排除草稿、预发布与降级，停止客户端使用旧 HTTP 镜像和双镜像测速。

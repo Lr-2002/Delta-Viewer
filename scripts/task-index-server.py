@@ -367,7 +367,9 @@ class TaskIndex:
                 pending.clear()
                 retry_needed = not self.rebuild()
                 last_flush = time.monotonic()
-            elif pending and time.monotonic() - last_flush >= 2:
+            elif pending and not topology and time.monotonic() - last_flush >= 2:
+                # Keep directory changes queued for the 10-second rebuild above.
+                # update() only handles known sessions and would otherwise discard them.
                 try:
                     self.update(pending)
                 except Exception as error:

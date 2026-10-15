@@ -198,6 +198,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.1.0": "修复任务中心新增目录漏更新，已完成批次隐藏“仅未审核”；本版 1.1.0，后续末位满 9 进位。",
   "1.0.63": "更新改从 GitHub 正式 Release 获取；启动后台检查，主动下载，保存后重启安装，并显示一次新版摘要。",
   "1.0.15": "新增不通过原因选择和自定义原因，审核记录清理冗余字段，统一唯一修订编号与中文修改摘要，修复时间轴相邻片段同色。",
   "1.0.13": "补丁：收紧四区工作台布局，缩小状态图，优化右侧片段滚动和审核操作区，让更多内容在当前窗口可见。",

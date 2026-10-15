@@ -84,10 +84,11 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     assert.equal(await page.getByRole("button", { name: "已被领取", exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "领取", exact: true }).count(), 2);
     assert.equal(await page.getByRole("button", { name: "释放", exact: true }).count(), 0, 'reviewers cannot release another owner');
+    assert.equal(await page.getByRole("button", { name: "仅未审核", exact: true }).count(), 1, 'completed batches do not offer a pending filter');
     await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).click();
     await page.getByRole("button", { name: "Fridge2_001", exact: true }).waitFor();
     assert.equal(await page.getByText("已审核 · 不通过", { exact: true }).count(), 1);
-    const pendingFilter = page.getByRole("button", { name: "仅未审核", exact: true }).nth(2);
+    const pendingFilter = page.getByRole("button", { name: "仅未审核", exact: true });
     await pendingFilter.click();
     await page.getByRole("button", { name: "显示全部", exact: true }).waitFor();
     await page.getByText('未审核 2 条', {exact:true}).waitFor();
@@ -121,9 +122,25 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.getByRole('button', {name:'刷新任务进度',exact:true}).click();
     await page.getByText('未审核 2 条', {exact:true}).waitFor();
     await page.getByRole('button', {name:'显示全部',exact:true}).click();
-    await page.getByRole('button', {name:'仅未审核',exact:true}).first().click();
-    await page.getByText('当前批次没有未审核数据', {exact:true}).waitFor();
-    await page.getByRole('button', {name:'显示全部',exact:true}).click();
+    await pendingFilter.click();
+    await page.getByText('未审核 2 条', {exact:true}).waitFor();
+    await page.evaluate(() => {
+      const batch = window.taskFixture.tree.children[2];
+      batch.reviewed = batch.approved = batch.total;
+      for (const child of batch.children) if (child.status === 'pending') { child.status = 'approved'; child.reviewed = child.approved = 1; }
+    });
+    await page.getByRole('button', {name:'刷新任务进度',exact:true}).click();
+    await page.getByRole('button', {name:'Fridge2_001',exact:true}).waitFor();
+    assert.equal(await pendingFilter.count(), 0, 'live completion removes the pending button');
+    assert.equal(await page.getByRole('button', {name:'显示全部',exact:true}).count(), 0, 'live completion exits the pending-only view');
+    assert.equal(await page.getByRole('button', {name:'Fridge2_004',exact:true}).isVisible(), true, 'completed batch remains expanded with its full tree');
+    await page.evaluate(() => {
+      const batch = window.taskFixture.tree.children[2];
+      batch.reviewed = batch.approved = 2;
+      for (const child of batch.children.slice(2)) { child.status = 'pending'; child.reviewed = child.approved = 0; }
+    });
+    await page.getByRole('button', {name:'刷新任务进度',exact:true}).click();
+    await pendingFilter.waitFor();
     await page.evaluate(() => { window.taskFixture.delayOpen = true; });
     await page.getByRole("button", { name: "领取", exact: true }).first().evaluate((button) => { button.click(); button.click(); });
     await page.getByRole("button", { name: "正在加载", exact: true }).waitFor();
