@@ -1248,6 +1248,9 @@ fn client_for(config: &UserCenterClientConfig) -> AppResult<Client> {
     #[cfg(target_os = "windows")]
     let builder = builder.add_root_certificate(certificate);
     builder
+        // Public update requests may use the OS proxy. Pinned LAN identity and
+        // audit traffic must stay direct, independently of that proxy setting.
+        .no_proxy()
         .https_only(true)
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(12))

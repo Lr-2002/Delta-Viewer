@@ -3,6 +3,14 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.1.1 - 2026-10-15
+
+- 修复 GitHub 更新请求未读取 Windows/macOS 系统代理设置的问题；固定证书的局域网用户中心保持直连。
+- 清单、版本查询与更新包遇到超时、连接中断或临时服务错误时最多重试 3 次；每次丢弃未完成响应，取消下载可中断等待。
+- 原生安装器直接复用已完整读取并验证的清单，取消重复联网读取；仍严格验证正式版本、平台、官方 HTTPS 地址、大小、SHA-256 与 Minisign 签名。
+- 更新失败明确显示所在环节、超时/HTTP/证书等原因及尝试次数；错误不阻断审核，不自动安装或丢弃已验证缓存。
+- 增加离线网络故障回归和 Windows 原生更新测试，保留实际正式包下载验签诊断工具。
+
 ## 1.1.0 - 2026-10-15
 
 - 修复服务器目录变更事件可能被普通 QC 刷新提前清除、导致新增批次等待夜间统计才出现的问题；目录校准期间继续保留事件。

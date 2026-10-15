@@ -97,7 +97,7 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
     </aside>, document.getElementById("app-update-notices") ?? document.body)}
     {panel && <dialog className="app-update-dialog" aria-label="版本与更新详情" ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setPanel(false)}>
       <header><div><h2>{label}</h2><p>当前版本 v{version}</p></div><button className="icon-button" type="button" aria-label="关闭版本与更新" onClick={() => setPanel(false)}><X size={18} /></button></header>
-      {phase === "checking" && <p role="status">正在后台检查 GitHub 最新正式版本，数据载入可继续进行。</p>}
+      {phase === "checking" && <p role="status">正在后台检查 GitHub 最新正式版本，数据载入可继续进行。网络短暂波动时自动重试，最多 3 次。</p>}
       {phase === "current" && <p role="status">已是最新正式版本。</p>}
       <div className="app-update-notes">{available ? <><h3>本次更新内容</h3><pre>{info?.notes || "此版本未提供更新说明。"}</pre></> : <><h3>当前版本更新摘要</h3><p>{currentSummary}</p><ul>{currentNotes.map((note, i) => <li key={i}>{note}</li>)}</ul></>}</div>
       <p className="muted">更新来源：github.com/Lr-2002/Delta-Viewer · 正式 Release</p>

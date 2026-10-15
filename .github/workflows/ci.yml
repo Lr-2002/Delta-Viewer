@@ -102,6 +102,9 @@ jobs:
           PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
         run: pnpm test:app-updates
 
+      - name: Verify native installer reuses validated metadata without HTTP
+        run: cargo test --manifest-path src-tauri/Cargo.toml -p tauri-plugin-updater delta_metadata_tests
+
       - name: Run shared release gate (including issue-location regression)
         run: pnpm check
 
