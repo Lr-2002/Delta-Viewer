@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.0.62",
+  "version": "1.0.63",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -34,7 +34,8 @@
     "tauri:build": "tauri build",
     "update-mirror": "node scripts/update-mirror-server.mjs --config update-service.config.json",
     "update-mirror:install": "bash scripts/install-update-mirror-macos.sh",
-    "user-center:install": "bash scripts/install-user-center-macos.sh"
+    "user-center:install": "bash scripts/install-user-center-macos.sh",
+    "test:app-updates": "node --test scripts/app-updates.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

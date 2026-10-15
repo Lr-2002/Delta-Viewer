@@ -5,7 +5,6 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
-  Download,
   EyeOff,
   FileSearch,
   FolderOpen,
@@ -23,7 +22,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
-  RefreshCw,
   RotateCcw,
   ShieldCheck,
   SkipBack,
@@ -33,7 +31,8 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { MachineAnnotationPanel } from "./components/MachineAnnotationPanel";
+import { AppUpdates } from "./components/AppUpdates";
+import { MachineAnnotationPanel, flushMachineReviewSaves } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
 import { AuditSyncNotice } from "./components/AuditSyncNotice";
 import { BatchExportPanel } from "./components/BatchExportPanel";
@@ -53,7 +52,7 @@ import {
   IS_DEVELOPMENT_EDITION,
   DEMO_ROOT,
   cancelTask,
-  checkForAppUpdate,
+  downloadAppUpdate,
   chooseDirectory,
   clearWorkspaceMode,
   confirmAction,
@@ -107,7 +106,6 @@ import type {
   AnnotatedEpisodeSummary,
   AssignedTask,
   AnnotationAuditAction,
-  AppUpdateInfo,
   AuthStatus,
   BatchExportResult,
   EpisodeAnnotation,
@@ -129,7 +127,6 @@ import type {
 
 type View = "review" | "checks" | "export" | "batch" | "proofread";
 type EpisodeSourceState = "available" | "loading" | "error";
-type UpdatePhase = "idle" | "checking" | "available" | "current" | "downloading" | "failed";
 type EpisodeLoadResult = "loaded" | "skipped";
 
 interface PendingAnnotationConfirmation {
@@ -201,6 +198,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.0.63": "更新改从 GitHub 正式 Release 获取；启动后台检查，主动下载，保存后重启安装，并显示一次新版摘要。",
   "1.0.15": "新增不通过原因选择和自定义原因，审核记录清理冗余字段，统一唯一修订编号与中文修改摘要，修复时间轴相邻片段同色。",
   "1.0.13": "补丁：收紧四区工作台布局，缩小状态图，优化右侧片段滚动和审核操作区，让更多内容在当前窗口可见。",
   "1.0.12": "补丁：将人工审核结论写入数据根目录 session.json，修复删除片段输出和网络目录复核保存。",
@@ -361,10 +359,6 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [releaseHistoryOpen, setReleaseHistoryOpen] = useState(false);
   const [releaseHistory, setReleaseHistory] = useState<ReleaseHistoryEntry[]>([]);
-  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
-  const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("idle");
-  const [updateError, setUpdateError] = useState("");
-  const [updateErrorVisible, setUpdateErrorVisible] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("dohc.sidebar.collapsed") === "1");
   const [sidebarScale, setSidebarScale] = useState(() => Number(localStorage.getItem("dohc.sidebar.scale") ?? "1"));
   useEffect(() => { localStorage.setItem("dohc.sidebar.collapsed", sidebarCollapsed ? "1" : "0"); }, [sidebarCollapsed]);
@@ -403,7 +397,6 @@ function App() {
     token: number;
   } | null>(null);
   const batchSelectionInitialized = useRef(false);
-  const didAutoUpdate = useRef(false);
   const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
   const cameraSlots = useMemo(() => ["cam0", "cam1", "cam2", "t265_left", "t265_right", "extension_left", "extension_right"], []);
   const availableStreams = useMemo(
@@ -515,60 +508,28 @@ function App() {
     setProgress(null);
   }
 
-  async function runAutomaticUpdate() {
-    if (IS_DEVELOPMENT_EDITION) return;
-    if (operationScopeRef.current.current()) return;
-    setUpdatePhase("checking");
-    setUpdateError("");
-    setUpdateErrorVisible(false);
-    let nextUpdate: AppUpdateInfo;
-    try {
-      nextUpdate = await checkForAppUpdate();
-      setUpdateInfo(nextUpdate);
-    } catch (reason) {
-      setUpdatePhase("failed");
-      setUpdateError(`无法自动检查更新：${presentUpdateError(toMessage(reason))}`);
-      setUpdateErrorVisible(true);
-      return;
-    }
-    if (!nextUpdate.available) {
-      setUpdatePhase("current");
-      return;
-    }
-    setUpdatePhase("available");
-    await installAvailableUpdate();
+  async function downloadAvailableUpdate() {
+    if (busy || operationScopeRef.current.current()) throw new Error("正在处理数据或导出，请等待完成后再下载更新");
+    const owner = beginOperation();
+    if (!owner) throw new Error("当前任务尚未完成");
+    try { await downloadAppUpdate(owner.id); ensureOperationActive(owner); }
+    finally { finishOperation(owner); }
   }
 
   async function installAvailableUpdate() {
-    if (IS_DEVELOPMENT_EDITION) return;
-    if (reviewUnsaved.current) return;
+    if (busy || operationScopeRef.current.current()) throw new Error("正在处理数据或导出，请等待完成后再安装更新");
+    // Capture blur/autosave work before reserving the operation slot.
+    await flushMachineReviewSaves(data?.summary.root);
+    if (reviewUnsaved.current) throw new Error("当前修改尚未保存，请重试保存成功后再安装更新");
     const owner = beginOperation();
-    if (!owner) return;
-    setUpdatePhase("downloading");
+    if (!owner) throw new Error("当前任务尚未完成");
     let resumeAudit: (() => void) | undefined;
+    setPlaying(false);
     try {
       resumeAudit = await pauseAndPersistReviewAudit();
-      const installed = await installAppUpdate(owner.id);
+      await installAppUpdate(owner.id);
       ensureOperationActive(owner);
-      if (!installed) {
-        setUpdateInfo((current) => current ? {
-          ...current,
-          latestVersion: current.currentVersion,
-          available: false,
-        } : current);
-        setUpdatePhase("current");
-      }
-    } catch (reason) {
-      const message = toMessage(reason);
-      setUpdatePhase("failed");
-      setUpdateError(message.includes("任务已取消")
-        ? "自动更新已取消，当前版本可继续使用"
-        : `自动更新失败：${presentUpdateError(message)}`);
-      setUpdateErrorVisible(true);
-    } finally {
-      resumeAudit?.();
-      finishOperation(owner);
-    }
+    } finally { resumeAudit?.(); finishOperation(owner); }
   }
 
   useEffect(() => {
@@ -636,29 +597,6 @@ function App() {
     }
     void refreshAnnotationTags();
   }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
-
-  useEffect(() => {
-    if (
-      !isManagedWorkspace
-      || !authStatus?.currentUser
-      || didAutoUpdate.current
-      || busy
-      || operationScopeRef.current.current()
-    ) return;
-    didAutoUpdate.current = true;
-    void runAutomaticUpdate();
-  }, [authStatus?.currentUser?.username, busy, isManagedWorkspace]);
-
-  useEffect(() => {
-    if (
-      !isManagedWorkspace
-      || !authStatus?.currentUser
-      || busy
-      || updatePhase !== "available"
-      || !updateInfo?.available
-    ) return;
-    void installAvailableUpdate();
-  }, [authStatus?.currentUser?.username, busy, isManagedWorkspace, updatePhase, updateInfo?.available]);
 
   useEffect(() => {
     if (!workspaceActive || (isManagedWorkspace && !authStatus?.currentUser)) {
@@ -1201,10 +1139,6 @@ function App() {
     setView("proofread");
     setError("");
     setNotice("");
-    setUpdateInfo(null);
-    setUpdatePhase("idle");
-    setUpdateError("");
-    setUpdateErrorVisible(false);
     didAutoLoad.current = false;
   }
 
@@ -1821,18 +1755,14 @@ function App() {
   }
 
   const currentUser = authStatus.currentUser;
+  const updateControls = (taskBusy: boolean) => !IS_DEVELOPMENT_EDITION ? <AppUpdates version={APP_VERSION}
+    currentSummary={RELEASE_SUMMARIES_ZH[APP_VERSION] ?? "查看本次版本的改进与修复。"}
+    currentNotes={releaseHistory.find(item => item.version === APP_VERSION)?.notes ?? []} busy={taskBusy}
+    onDownload={downloadAvailableUpdate} onInstall={installAvailableUpdate} onViewHistory={() => setReleaseHistoryOpen(true)} /> : null;
   if (isManagedWorkspace && currentUser?.role === "admin") {
-    return <SupervisionDashboard currentUser={currentUser} onLogout={logout} />;
+    return <><SupervisionDashboard currentUser={currentUser} onLogout={logout} updateBusy={busy} updateControls={updateControls} />
+      {releaseHistoryOpen && <ReleaseHistoryDialog currentVersion={APP_VERSION} releases={releaseHistory} onClose={() => setReleaseHistoryOpen(false)} />}</>;
   }
-  const updateButtonTitle = updatePhase === "checking"
-    ? "正在检查最新版本"
-    : updatePhase === "downloading"
-      ? `正在自动更新到 v${updateInfo?.latestVersion ?? ""}`
-      : updatePhase === "failed"
-        ? `${updateError}；点击重试`
-        : updateInfo?.available
-          ? `发现 v${updateInfo.latestVersion}；点击立即更新`
-        : `当前版本 v${updateInfo?.currentVersion ?? APP_VERSION}；点击检查更新`;
 
   return (
     <div className="app-shell">
@@ -1841,7 +1771,7 @@ function App() {
           <span className="brand-mark">D</span>
           <div>
             <strong>Delta Viewer{IS_DEVELOPMENT_EDITION ? " Dev" : ""}</strong>
-            <span>v{updateInfo?.currentVersion ?? APP_VERSION}</span>
+            <span>v{APP_VERSION}</span>
           </div>
           <button
             className="version-history-trigger"
@@ -1861,26 +1791,7 @@ function App() {
         </div>
         <div className="topbar-actions">
           <StatusBadge status={status} />
-          {isManagedWorkspace && currentUser && !IS_DEVELOPMENT_EDITION ? (
-            <button
-              className={`icon-button update-trigger${updatePhase === "failed" ? " update-failed" : ""}`}
-              type="button"
-              onClick={() => void (updateInfo?.available ? installAvailableUpdate() : runAutomaticUpdate())}
-              disabled={busy || updatePhase === "checking" || updatePhase === "downloading"}
-              title={updateButtonTitle}
-              aria-label={updateButtonTitle}
-            >
-              {updatePhase === "checking" || updatePhase === "downloading" ? (
-                <LoaderCircle className="spin" size={16} />
-              ) : updatePhase === "failed" ? (
-                <CircleAlert size={16} />
-              ) : updateInfo?.available ? (
-                <Download size={16} />
-              ) : (
-                <RefreshCw size={16} />
-              )}
-            </button>
-          ) : null}
+          {isManagedWorkspace && currentUser ? updateControls(busy) : null}
           <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy}>
             <FolderOpen size={16} />
             {isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}
@@ -1937,6 +1848,7 @@ function App() {
           </button>
         </div>
       </header>
+      <div id="app-update-notices" />
 
       {isManagedWorkspace && currentUser?.role === "operator" && personalTaskOpen ? (
         <div className="personal-task-overlay" role="presentation" onClick={() => setPersonalTaskOpen(false)}>
@@ -1966,7 +1878,7 @@ function App() {
 
       {releaseHistoryOpen ? (
         <ReleaseHistoryDialog
-          currentVersion={updateInfo?.currentVersion ?? APP_VERSION}
+          currentVersion={APP_VERSION}
           releases={releaseHistory}
           onClose={() => setReleaseHistoryOpen(false)}
         />
@@ -1979,16 +1891,6 @@ function App() {
         />
       ) : null}
 
-      {isManagedWorkspace && updatePhase === "failed" && updateErrorVisible ? (
-        <div className="alert-banner alert-notice update-alert" role="status">
-          <CircleAlert size={17} />
-          <span>{updateError}。当前本地功能仍可使用。</span>
-          <span className="alert-actions">
-            <button type="button" className="text-button" onClick={() => void runAutomaticUpdate()} disabled={busy}>重试</button>
-            <button type="button" className="text-button" onClick={() => setUpdateErrorVisible(false)}>关闭</button>
-          </span>
-        </div>
-      ) : null}
       {auditUploadPending && authStatus?.currentUser ? (
         <AuditSyncNotice key={authStatus.currentUser.username} username={authStatus.currentUser.username}
           error={auditUploadError} onError={setAuditUploadError} onPendingChange={setAuditUploadPending} />
@@ -2556,9 +2458,7 @@ function presentOperationError(message: string): string {
   return message;
 }
 
-function presentUpdateError(message: string): string {
-  return message.replace(/^UPDATE_[A-Z_]+:\s*/, "");
-}
+
 
 function formatHistoryTime(value: number): string {
   return new Intl.DateTimeFormat("zh-CN", {

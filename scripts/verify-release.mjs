@@ -175,18 +175,15 @@ async function verify(options) {
   }
   const updaterConfig = tauriConfig.plugins?.updater;
   const expectedFallbackBaseUrls = ["http://10.1.11.200:17879"];
-  const expectedUpdaterEndpoints = [
-    `${updateServiceConfig.publicBaseUrl}/latest.json`,
-    ...expectedFallbackBaseUrls.map((baseUrl) => `${baseUrl}/latest.json`),
-  ];
+  const expectedUpdaterEndpoints = ["https://github.com/Lr-2002/Delta-Viewer/releases/latest/download/latest.json"];
   if (
     !updaterConfig
     || !Array.isArray(updaterConfig.endpoints)
     || JSON.stringify(updaterConfig.endpoints) !== JSON.stringify(expectedUpdaterEndpoints)
-    || updaterConfig.dangerousInsecureTransportProtocol !== true
+    || updaterConfig.dangerousInsecureTransportProtocol === true
     || updaterConfig.windows?.installMode !== "passive"
   ) {
-    throw new Error("Tauri updater must explicitly limit insecure transport to the configured local mirror and passive NSIS mode");
+    throw new Error("Tauri updater must use the official GitHub HTTPS Release and passive NSIS mode");
   }
   if (
     updateServiceConfig.schemaVersion !== 1

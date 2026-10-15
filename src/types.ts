@@ -573,6 +573,7 @@ export interface TaskProgress {
 }
 
 export interface AppUpdateInfo {
+  ready: boolean;
   currentVersion: string;
   latestVersion: string;
   available: boolean;

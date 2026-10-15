@@ -29,9 +29,8 @@ Project documentation:
 
 ## Installation
 
-User-facing installers are mirrored at
-[http://39.155.172.162:17879/](http://39.155.172.162:17879/); users do not need GitHub
-access. GitHub Releases remains the build and signed upstream source:
+Download user-facing installers from
+[the official GitHub Releases page](https://github.com/Lr-2002/Delta-Viewer/releases/latest). All three platform installers remain explicitly `UNSIGNED`; updater packages are separately verified with the embedded Minisign public key.
 
 - `Delta-Viewer_<version>_UNSIGNED_windows-x64-setup.exe`
 - `Delta-Viewer_<version>_UNSIGNED_macos-arm64.dmg`
@@ -49,17 +48,8 @@ in the Wiki. Installing the deb through `apt` also installs
 `gstreamer1.0-libav` and `gstreamer1.0-vaapi`, providing WebKitGTK with H.264
 software decoding and hardware acceleration when the machine exposes VA-API.
 
-Starting with `0.17.12`, unified management mode checks the fixed public update mirror at
-`http://39.155.172.162:17879` after local login, then falls back only to
-`http://10.1.11.200:17879` for clients on the mirror LAN. The mirror host reads GitHub once,
-verifies and atomically caches the complete release, and serves clients over the
-reachable fixed IP. When a newer version exists the app waits for the current
-data task, downloads the matching updater, verifies its dedicated
-Ed25519/Minisign signature, installs it, and restarts. Mirror failures are
-visible and retryable but never block the offline data workflow. Installations
-on `0.17.8` or earlier need one manual `0.17.12` install from the mirror page;
-later releases update automatically. Linux may show a system authorization
-prompt while installing the replacement deb.
+Starting with `1.0.63`, unified management mode checks
+the official `Lr-2002/Delta-Viewer` GitHub latest stable Release after login. Checks run in the background without blocking data loading. Users view the notes and choose to download, then choose “Save and restart to update” or “Later”. Installation waits for current work and audit persistence. Packages must pass platform, exact-size, SHA-256 and Minisign checks. See [the update workflow](docs/github-updates.md).
 
 ## Workflow
 
@@ -133,13 +123,12 @@ certificate-backed service ID is unchanged. The server can retain old private
 IP addresses as certificate-covered compatibility aliases so already configured
 clients continue to sign in while disconnected from the Internet.
 
-The runtime has no SSH or network recording-data path. Unified management mode
-connects only to the configured LAN user center for login and to the automatic
-update mirror at fixed `39.155.172.162:17879`, with `10.1.11.200:17879` as its
-only LAN fallback; offline mode makes neither request. Clients never contact
-GitHub or send account, source path, annotation, report, hash, or telemetry
-data. The updater accepts only those configured origins and exact version paths,
-then verifies the signed bytes independently. SSH was used only once to retrieve
+Recording data is read through operating-system-mounted paths. The client connects
+to the configured LAN user center for identity/audit and the fixed official GitHub
+Release API/assets for updates. Update requests send no user-center credentials,
+source paths, annotations or media. Exact platform, size, SHA-256 and Minisign
+validation remain mandatory. The mirror scripts only serve legacy clients.
+SSH was used only once to retrieve
 the development sample from the current ext4 card. Ubuntu can mount
 ext4 with the Linux kernel. The native deb can select any mounted path allowed
 by the current user. The complete

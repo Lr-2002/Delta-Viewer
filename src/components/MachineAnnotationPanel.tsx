@@ -31,6 +31,14 @@ type Snapshot = { segments: ReviewSegment[]; status: Status; rejectionReason?: s
 type LabelLibraryItem = { id: string; text: string; createdAt: number };
 const LABEL_LIBRARY_LIMIT = 80;
 const saves = new Map<string, Promise<boolean>>();
+export async function flushMachineReviewSaves(root?: string) {
+  if (!root) return;
+  while (saves.has(root)) {
+    const job = saves.get(root);
+    if (!await job) throw new Error("当前修改保存失败，请重试保存后再更新");
+    if (saves.get(root) === job) return;
+  }
+}
 
 function labelLibraryKey(username: string) {
   return `dohc-viewer.machine-label-library.v1:${encodeURIComponent(username || "offline")}`;

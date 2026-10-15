@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   CheckCircle2,
@@ -82,9 +82,13 @@ function eventDetails(event: ReviewEvent) {
 export function SupervisionDashboard({
   currentUser,
   onLogout,
+  updateControls,
+  updateBusy = false,
 }: {
   currentUser: UserIdentity;
   onLogout: () => Promise<void>;
+  updateControls?: (busy: boolean) => ReactNode;
+  updateBusy?: boolean;
 }) {
   const [view, setView] = useState<View>("overview");
   const [data, setData] = useState<ReviewDashboardData | null>(null);
@@ -99,7 +103,8 @@ export function SupervisionDashboard({
   const [refreshId, setRefreshId] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState("");
+  const [actionBusy, setBusy] = useState("");
+  const busy = actionBusy || (updateBusy ? "update" : "");
   const [notice, setNotice] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<{ username: string; displayName: string } | null>(null);
   const [deleteError, setDeleteError] = useState("");
@@ -387,6 +392,7 @@ export function SupervisionDashboard({
           <span>
             {currentUser.displayName} · @{currentUser.username}
           </span>
+          {updateControls?.(Boolean(busy))}
           <button
             className="icon-button"
             title="退出登录"
@@ -405,6 +411,7 @@ export function SupervisionDashboard({
           </button>
         </div>
       </header>
+      <div id="app-update-notices" />
       <nav aria-label="审核监管视图">
         {tabs.map(([id, label]) => (
           <button

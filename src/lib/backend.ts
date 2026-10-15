@@ -134,9 +134,14 @@ export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
     currentVersion: APP_VERSION,
     latestVersion: APP_VERSION,
     available: false,
+    ready: false,
     notes: null,
     publishedAt: null,
   };
+}
+
+export async function downloadAppUpdate(operationId: number): Promise<void> {
+  if (isTauriRuntime()) return invoke<void>("download_app_update", { operationId });
 }
 
 export async function installAppUpdate(operationId: number): Promise<boolean> {

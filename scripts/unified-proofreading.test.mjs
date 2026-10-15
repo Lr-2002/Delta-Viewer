@@ -323,6 +323,10 @@ async function open(page, query, username = "review-test") {
   await page.locator('input[type="password"]').nth(1).fill("demo-password-123");
   await page.getByRole("button", { name: "创建并登录" }).click();
   await page.getByRole("navigation", { name: "工作区视图" }).waitFor();
+  // The new one-time release summary has its own update-flow coverage. Keep
+  // playback layout assertions focused on the regular, acknowledged workspace.
+  const acknowledgement = page.getByRole("button", { name: "知道了", exact: true });
+  if (await acknowledgement.count()) await acknowledgement.click();
   await page.waitForFunction(() => document.querySelectorAll(".camera-grid .frame-panel").length === 7);
 }
 
