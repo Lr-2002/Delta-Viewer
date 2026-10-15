@@ -462,6 +462,7 @@ export interface MachineSegment {
 }
 
 export interface MachineAnnotation {
+  inferredEndFrames?: number[];
   sourceName?: string;
   sourceHash?: string;
   episodeId: string;

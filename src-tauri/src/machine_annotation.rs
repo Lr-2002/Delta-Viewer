@@ -129,7 +129,7 @@ struct Annotation {
     segment_id: Option<String>,
     label_code: String,
     start_frame: u64,
-    end_frame: u64,
+    end_frame: Option<u64>,
     #[serde(default)]
     attributes: Value,
     #[serde(default)]
@@ -332,6 +332,23 @@ pub(crate) fn parse_human(bytes: &[u8], episode_name: &str) -> AppResult<Machine
 }
 
 fn parse_document(bytes: &[u8], episode_name: &str, human: bool) -> AppResult<MachineAnnotation> {
+    parse_with_boundary_policy(bytes, episode_name, human, !human)
+}
+
+// A source reference for comparing descriptions, not a saved human result.
+pub(crate) fn parse_review_reference(
+    bytes: &[u8],
+    episode_name: &str,
+) -> AppResult<MachineAnnotation> {
+    parse_with_boundary_policy(bytes, episode_name, true, true)
+}
+
+fn parse_with_boundary_policy(
+    bytes: &[u8],
+    episode_name: &str,
+    human: bool,
+    allow_inference: bool,
+) -> AppResult<MachineAnnotation> {
     let document: Document =
         serde_json::from_slice(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes))
             .map_err(|error| invalid(&format!("机标 JSON 格式无效：{error}")))?;
@@ -372,11 +389,31 @@ fn parse_document(bytes: &[u8], episode_name: &str, human: bool) -> AppResult<Ma
         warnings.push("旧机标未声明帧号起点，暂按 0 起始解读。".into());
     }
     let mut segments = Vec::new();
+    let mut inferred_end_frames = Vec::new();
+    let starts: Vec<_> = episode
+        .annotations
+        .iter()
+        .map(|item| item.start_frame)
+        .collect();
+    let starts_ordered = starts.windows(2).all(|pair| pair[0] < pair[1]);
     for (source_index, annotation) in episode.annotations.into_iter().enumerate() {
+        let end_frame = match annotation.end_frame {
+            Some(end) => end,
+            None => {
+                // A provisional boundary, never a replacement in the source JSON.
+                // Human results stay strict; only a following ordered segment supplies evidence.
+                let next = starts.get(source_index + 1).copied().filter(|next| {
+                    allow_inference && starts_ordered && *next > annotation.start_frame
+                });
+                let end = next.and_then(|next| next.checked_sub(u64::from(!exclusive)))
+                    .ok_or_else(|| invalid(&format!("第 {} 个片段 end_frame 缺失或为 null，且没有可用于推定的后续片段；请修正机标边界或选择其他来源", source_index + 1)))?;
+                inferred_end_frames.push(source_index);
+                warnings.push(format!("第 {} 个片段 end_frame 缺失或为 null，暂按下一片段起始帧推定为 {end}；请人工核对，原机标未修改。", source_index + 1));
+                end
+            }
+        };
         let start = annotation.start_frame.checked_sub(base);
-        let end = annotation
-            .end_frame
-            .checked_sub(base + u64::from(exclusive));
+        let end = end_frame.checked_sub(base + u64::from(exclusive));
         let (Some(start), Some(end)) = (start, end) else {
             return Err(invalid("机标片段帧范围无效"));
         };
@@ -432,6 +469,7 @@ fn parse_document(bytes: &[u8], episode_name: &str, human: bool) -> AppResult<Ma
         validation_status: quality_string("validation_status"),
         frame_count: episode.media.frame_count,
         warnings,
+        inferred_end_frames,
         segments,
     })
 }
@@ -439,6 +477,71 @@ fn parse_document(bytes: &[u8], episode_name: &str, human: bool) -> AppResult<Ma
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_end_uses_next_ordered_start_with_warning_and_preserves_source() {
+        for (base, exclusive) in [(0, true), (1, true), (0, false), (1, false)] {
+            let mut document = fixture();
+            let episode = &mut document["episode_results"][0];
+            episode["media"]["frame_index_base"] = base.into();
+            episode["media"]["interval_convention"] = if exclusive {
+                "[start,end)"
+            } else {
+                "[start,end]"
+            }
+            .into();
+            episode["annotations"][0]["start_frame"] = base.into();
+            episode["annotations"][0]["end_frame"] = Value::Null;
+            episode["annotations"][1]["start_frame"] = (23 + base).into();
+            episode["annotations"][1]["end_frame"] = (29 + base + u64::from(exclusive)).into();
+            let bytes = serde_json::to_vec(&document).unwrap();
+            let result = parse(&bytes, "sample").unwrap();
+            assert_eq!(result.segments.len(), 2);
+            assert_eq!(result.segments[0].end_frame, 22);
+            assert_eq!(result.inferred_end_frames, vec![0]);
+            assert!(result
+                .warnings
+                .iter()
+                .any(|item| item.contains("暂按下一片段")));
+            assert_eq!(result.source_json.as_bytes(), bytes);
+            assert_eq!(
+                result.source_hash,
+                blake3::hash(&bytes).to_hex().to_string()
+            );
+            assert!(parse_human(&bytes, "sample").is_err());
+        }
+    }
+
+    #[test]
+    fn missing_end_does_not_guess_terminal_unordered_or_invalid_boundaries() {
+        for case in [
+            "terminal",
+            "unordered",
+            "duplicate",
+            "negative",
+            "text",
+            "overflow",
+            "start-null",
+        ] {
+            let mut document = fixture();
+            let rows = &mut document["episode_results"][0]["annotations"];
+            rows[0]["end_frame"] = Value::Null;
+            match case {
+                "terminal" => rows[1]["end_frame"] = Value::Null,
+                "unordered" => rows[0]["start_frame"] = 24.into(),
+                "duplicate" => rows[1]["start_frame"] = 0.into(),
+                "negative" => rows[0]["end_frame"] = (-1).into(),
+                "text" => rows[0]["end_frame"] = "23".into(),
+                "overflow" => rows[1]["start_frame"] = 99.into(),
+                "start-null" => rows[0]["start_frame"] = Value::Null,
+                _ => unreachable!(),
+            }
+            assert!(
+                parse(&serde_json::to_vec(&document).unwrap(), "sample").is_err(),
+                "{case}"
+            );
+        }
+    }
+
     #[test]
     fn discovers_distinct_sources_and_validates_human_and_machine_ranges() {
         let root = std::env::temp_dir()

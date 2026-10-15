@@ -351,7 +351,7 @@ fn load_inner(
                         .chars()
                         .any(|c| ('\u{3400}'..='\u{9fff}').contains(&c))
                 {
-                    let reference = machine_annotation::parse_human(
+                    let reference = machine_annotation::parse_review_reference(
                         annotation.source_json.as_bytes(),
                         &annotation.episode_id,
                     )?;
@@ -508,7 +508,7 @@ fn reviewed_document(annotation: &MachineAnnotation, state: &ReviewState) -> App
         if edit.start_frame != original.start_frame {
             value["start_frame"] = json!(edit.start_frame + base);
         }
-        if edit.end_frame != original.end_frame {
+        if edit.end_frame != original.end_frame || value["end_frame"].is_null() {
             value["end_frame"] = json!(edit.end_frame + base + u64::from(exclusive));
         }
         if edit.description != original.description {
@@ -590,7 +590,9 @@ fn reviewed_document(annotation: &MachineAnnotation, state: &ReviewState) -> App
                 if original.is_some_and(|item| item.start_frame != edit.start_frame) {
                     value["start_frame"] = json!(edit.start_frame + base);
                 }
-                if original.is_some_and(|item| item.end_frame != edit.end_frame) {
+                if original.is_some_and(|item| item.end_frame != edit.end_frame)
+                    || value["end_frame"].is_null()
+                {
                     value["end_frame"] = json!(edit.end_frame + base + u64::from(exclusive));
                 }
                 if original.is_some_and(|item| item.description != edit.description)
@@ -1173,6 +1175,7 @@ fn validated_rejection_reason(status: &str, reason: Option<&str>) -> AppResult<S
         "任务不符",
         "动作过快",
         "状态异常",
+        "动作失范",
     ];
     if fixed.contains(&reason) {
         return Ok(reason.into());
@@ -1331,6 +1334,36 @@ pub fn is_review_path(root: &Path, path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn inferred_end_is_written_to_human_annotations_and_mirrors_only() {
+        for base in [0, 1] {
+            for exclusive in [true, false] {
+                let f = Fixture::new(base, exclusive);
+                let path = f.root.join(machine_annotation::DEFAULT_SOURCE);
+                let mut document: Value = serde_json::from_slice(&f.original).unwrap();
+                document["episode_results"][0]["annotations"][1]["end_frame"] = Value::Null;
+                document["episode_results"][0]["segments"][1]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("end_frame");
+                let raw = serde_json::to_vec(&document).unwrap();
+                fs::write(&path, &raw).unwrap();
+                let state = load(&f.local, &f.root).unwrap();
+                assert_eq!(state.segments.len(), 3);
+                assert_eq!(state.segments[1].end_frame, 19);
+                let saved = f.save(&state).unwrap();
+                let output = f.output();
+                let expected = 19 + base + u64::from(exclusive);
+                for key in ["annotations", "segments"] {
+                    assert_eq!(output["episode_results"][0][key][1]["end_frame"], expected);
+                }
+                let reloaded = load(&f.temp.join("fresh-host"), &f.root).unwrap();
+                assert_eq!(reloaded.segments, saved.segments);
+                assert_eq!(fs::read(&path).unwrap(), raw);
+            }
+        }
+    }
 
     #[test]
     fn batch_rejection_without_media_completes_qc_without_inventing_annotations() {
@@ -1873,6 +1906,7 @@ mod tests {
             "任务不符",
             "动作过快",
             "状态异常",
+            "动作失范",
             "骨架抖动",
             "镜头污渍",
             "动作错误",

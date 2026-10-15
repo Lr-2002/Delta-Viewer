@@ -5,6 +5,7 @@ import { persistPendingReviewAudit, requireReviewAuditSession, recordReviewInter
 import { addReviewSegment, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
+import { RejectionReasons } from "./RejectionReasons";
 import type { EpisodeData, ExportRange, MachineAnnotation, MachineReview, ReviewSegment } from "../types";
 import { defaultTextPolicy, inspectDescription } from "../lib/text-quality";
 import "./text-quality.css";
@@ -28,7 +29,6 @@ interface Props {
 type Status = "pending" | "approved" | "rejected";
 type Snapshot = { segments: ReviewSegment[]; status: Status; rejectionReason?: string };
 type LabelLibraryItem = { id: string; text: string; createdAt: number };
-const REJECTION_REASONS = ["骨架抖动", "镜头污渍", "镜头遮挡", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "状态异常", "其他原因"];
 const LABEL_LIBRARY_LIMIT = 80;
 const saves = new Map<string, Promise<boolean>>();
 
@@ -76,6 +76,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const [rejectOpen, setRejectOpen] = useState(false);
   const [reasonChoice, setReasonChoice] = useState("");
   const [otherReason, setOtherReason] = useState("");
+  const [boundariesConfirmed, setBoundariesConfirmed] = useState(false);
   const [labelLibraryOpen, setLabelLibraryOpen] = useState(false);
   const [labelLibrary, setLabelLibrary] = useState<LabelLibraryItem[]>([]);
   const [labelLibraryError, setLabelLibraryError] = useState("");
@@ -193,7 +194,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   useEffect(() => {
     mounted.current = true;
     let active = true;
-    setLoading(true); setError(""); setPlaying(false);
+    setLoading(true); setError(""); setPlaying(false); setBoundariesConfirmed(false);
     void (async () => {
       await saves.get(root);
       const loaded = await loadMachineAnnotation(root, sourceName);
@@ -435,6 +436,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   }
   async function finish(status: "approved" | "rejected", rejectionReason?: string, textConfirmed = false) {
     if (!canEdit || finishLock.current) return;
+    if (status === "approved" && result?.inferredEndFrames?.length && !boundariesConfirmed) return;
     if (status === "rejected" && !rejectionReason?.trim()) return;
     if (status === "approved" && allTextIssues.length > 0 && !textConfirmed) {
       playback?.onPause(); setPlaying(false); setTextCheckOpen(true); return;
@@ -517,6 +519,15 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       {error && <p role="alert" className="machine-message">{error}</p>}
       {mapping?.error && <p role="alert" className="machine-message">{mapping.error}</p>}
       {!loading && !error && !result && <p className="machine-message">未发现 {sourceName ?? "机标 JSON"}</p>}
+      {!!result?.inferredEndFrames?.length && <div className="machine-boundary-warning" role="region" aria-label="机标边界待核对">
+        <strong>机标缺少结束帧，以下边界为临时推定</strong>
+        {result.inferredEndFrames.map(index => { const row = rows.find(item => item.sourceIndex === index); const original = result.segments.find(item => item.sourceIndex === index); return <p key={index}>
+          <button type="button" className="review-user-link" disabled={!row || !canEdit} onClick={() => { if (row) choose(row.sourceIndex); }}>定位原片段 {index + 1}</button>
+          {original && `：暂按 [${original.startFrame}, ${original.endFrame + 1}) 展示。`}
+        </p>; })}
+        <p>请回放核对并按需调整。原机标保持不变，保存时将当前边界写入人工结果。</p>
+        <label><input type="checkbox" checked={boundariesConfirmed} disabled={!canEdit} onChange={event => setBoundariesConfirmed(event.currentTarget.checked)} />我已人工核对上述片段边界</label>
+      </div>}
       <SegmentList rows={rows} selected={active?.sourceIndex} disabled={!canEdit} onChoose={choose}
         onDelete={deleteSegment} />
       <div className="quality-editor" aria-label="人工复核">
@@ -567,7 +578,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         {review?.status === "rejected" && review.rejectionReason && <p className="review-rejection-reason" title={review.rejectionReason}>不通过：{review.rejectionReason}</p>}
         <div className="quality-decisions">
           <button ref={rejectButton} className="button button-secondary" disabled={!canEdit} onClick={openRejection}><X size={16} />不通过</button>
-          <button className="button button-primary" disabled={!canEdit || !rows.length} onClick={() => void finish("approved")}><Check size={16} />通过</button>
+          <button className="button button-primary" disabled={!canEdit || !rows.length || (!!result?.inferredEndFrames?.length && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>
         </div>
       </footer>
     </section>
@@ -576,9 +587,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       onCancel={(event) => { event.preventDefault(); closeRejection(); }}>
       <form onSubmit={(event) => { event.preventDefault(); if (reasonChoice && (reasonChoice !== "其他原因" || otherReason.trim())) void finish("rejected", reasonChoice === "其他原因" ? `其他原因：${otherReason.trim()}` : reasonChoice); }}>
         <header><h2 id="rejection-title">不通过原因</h2><button type="button" className="icon-button" aria-label="关闭不通过原因" title="关闭" disabled={finishing} onClick={closeRejection}><X size={18} /></button></header>
-        <div className="rejection-options" role="group" aria-label="原因选项">
-          {REJECTION_REASONS.map((reason, index) => <button key={reason} autoFocus={index === 0} type="button" className="button button-secondary" aria-pressed={reasonChoice === reason} disabled={finishing} onClick={() => setReasonChoice(reason)}>{reason}</button>)}
-        </div>
+        <RejectionReasons key={username} username={username} value={reasonChoice} onChange={setReasonChoice} disabled={finishing} />
         {reasonChoice === "其他原因" && <label className="rejection-detail">其他原因<textarea autoFocus aria-label="其他原因内容" required maxLength={1000} value={otherReason} disabled={finishing} onChange={(event) => setOtherReason(event.currentTarget.value)} /></label>}
         {saveError && <p role="alert" className="machine-message">{saveError}</p>}
         <footer><button type="button" className="button button-secondary" disabled={finishing} onClick={closeRejection}>取消</button>

@@ -186,6 +186,15 @@
 .rejection-options button { min-height: 42px; white-space: normal; }
 .rejection-dialog .button-secondary { width: auto; padding: 0 12px; font-size: 13px; }
 .rejection-options button[aria-pressed="true"] { border-color: #087e79; background: #e3f2ed; color: #123e3c; }
+.rejection-sort-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
+.rejection-sort-tools > span { flex: 1 1 180px; font-size: 12px; color: var(--muted); }
+.rejection-sort-tools .button { min-height: 32px; }
+.rejection-options .rejection-other { grid-column: 2; }
+.rejection-options button[draggable="true"] { cursor: grab; }
+.rejection-options .rejection-drop-target { outline: 2px solid #087e79; outline-offset: 2px; }
+.machine-boundary-warning { padding: 12px; margin: 8px 0; border: 1px solid #c28a24; border-radius: 6px; background: #fff7df; color: #624500; font-size: 13px; overflow-wrap: anywhere; }
+.machine-boundary-warning p { margin: 8px 0; }
+.machine-boundary-warning label { display: flex; align-items: flex-start; gap: 8px; }
 .rejection-detail { display: grid; gap: 8px; margin-bottom: 16px; font-size: 13px; }
 .rejection-detail textarea { box-sizing: border-box; width: 100%; min-height: 96px; resize: vertical; }
 .rejection-dialog footer { justify-content: flex-end; }
