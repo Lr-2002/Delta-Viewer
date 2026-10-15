@@ -150,11 +150,9 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
     },
     plugins: {
       updater: {
-        dangerousInsecureTransportProtocol: true,
         pubkey: updaterTestSigner.wrappedPublicKey,
         endpoints: [
-          "http://39.155.172.162:17879/latest.json",
-          "http://10.1.11.200:17879/latest.json",
+          "https://github.com/Lr-2002/Delta-Viewer/releases/latest/download/latest.json",
         ],
         windows: { installMode: "passive" },
       },

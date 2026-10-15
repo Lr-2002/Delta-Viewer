@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "dohc-viewer"
-version = "1.0.62"
+version = "1.0.63"
 dependencies = [
  "arrow-array",
  "base64 0.22.1",
@@ -1087,6 +1087,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "rustls",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -4656,8 +4657,6 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-updater"
 version = "2.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "806d9dac662c2e4594ff03c647a552f2c9bd544e7d0f683ec58f872f952ce4af"
 dependencies = [
  "base64 0.22.1",
  "dirs",

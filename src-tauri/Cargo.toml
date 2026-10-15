@@ -1,6 +1,6 @@
 [package]
 name = "dohc-viewer"
-version = "1.0.62"
+version = "1.0.63"
 description = "Inspect and export DOHC recordings from removable media"
 authors = ["DOHC"]
 edition = "2021"
@@ -40,6 +40,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
+semver = "1"
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2.5.4"
@@ -59,3 +60,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem", "Win
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[patch.crates-io]
+tauri-plugin-updater = { path = "../vendor/tauri-plugin-updater" }

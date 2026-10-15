@@ -823,6 +823,7 @@ pub struct TaskProgressEvent {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppUpdateInfo {
+    pub ready: bool,
     pub current_version: String,
     pub latest_version: String,
     pub available: bool,

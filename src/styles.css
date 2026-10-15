@@ -1584,3 +1584,29 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .audit-sync-facts { display: grid; gap: 2px; }
   .audit-sync-login { flex: 1 1 100%; }
 }
+
+/* Update checks never cover or reserve space in the data workspace. */
+.app-update-entry { gap: 6px; min-height: 32px; font-size: 12px; }
+.update-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink); flex-shrink: 0; }
+.update-notice { position: relative; z-index: 1; margin: 10px 20px; padding: 12px 16px; border: 1px solid var(--line); border-left: 4px solid var(--ink); border-radius: 6px; background: var(--surface); color: var(--ink); flex-shrink: 0; }
+.update-notice strong { font-size: 16px; }
+.update-notice p { margin: 9px 0 12px; line-height: 1.6; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.update-actions { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+.app-update-dialog { width: min(600px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); padding: 24px; border: 1px solid var(--line, #ccc); border-radius: 8px; color: var(--ink); background: var(--surface, #fff); }
+.app-update-dialog::backdrop { background: #0005; }
+.app-update-dialog header { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+.app-update-dialog h2 { margin: 0; font-size: 21px; }
+.app-update-dialog header p { margin: 8px 0 0; }
+.app-update-dialog h3 { font-size: 15px; }
+.app-update-notes { max-height: 38dvh; overflow: auto; margin: 20px 0; padding-right: 8px; }
+.app-update-notes pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }
+.app-update-notes li { margin-bottom: 8px; line-height: 1.6; }
+.app-update-dialog footer { justify-content: flex-end; border-top: 1px solid var(--line, #ddd); margin-top: 18px; padding-top: 18px; }
+.app-update-dialog .muted { font-size: 12px; overflow-wrap: anywhere; }
+.update-error { color: #a32828; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .app-update-dialog { padding: 18px; } .update-notice { margin: 8px 12px; } .app-update-dialog footer .button { flex: 1 1 auto; } }
+.app-update-entry { width: auto; padding: 0 10px; white-space: nowrap; flex-shrink: 0; }
+.app-update-dialog .button-secondary { width: auto; padding: 0 12px; font-size: 12px; }
+.update-notice .text-button { margin-left: 0; font-size: 13px; }
+
+#app-update-notices { flex-shrink: 0; }

@@ -181,25 +181,26 @@ async fn ensure_source_directory_responsive(path: &str) -> Result<(), String> {
 #[tauri::command]
 async fn check_for_app_update(
     app: AppHandle,
+    updates: State<'_, updater::UpdateState>,
     auth: State<'_, AuthState>,
 ) -> Result<AppUpdateInfo, String> {
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
     require_stable_update_channel()?;
-    updater::check(&app)
+    updater::check(&app, &updates)
         .await
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn install_app_update(
+async fn download_app_update(
     app: AppHandle,
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
+    updates: State<'_, updater::UpdateState>,
     operation_id: u64,
-) -> Result<bool, String> {
-    auth.require_managed_user()
-        .map_err(|error| error.to_string())?;
+) -> Result<(), String> {
+    auth.require_managed_user().map_err(|e| e.to_string())?;
     require_stable_update_channel()?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
@@ -207,18 +208,38 @@ async fn install_app_update(
         &app,
         operation_id,
         "update",
-        "检查应用更新",
-        "http://39.155.172.162:17879/latest.json",
+        "下载应用更新",
+        updater::RELEASE_API,
     );
-    let _progress = source::enter_operation_progress(operation_id);
-    let installed = updater::download_and_install(&app, operation_id, &cancelled)
+    updater::download(&app, &updates, operation_id, &cancelled)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn install_app_update(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    updates: State<'_, updater::UpdateState>,
+    operation_id: u64,
+) -> Result<bool, String> {
+    auth.require_managed_user().map_err(|e| e.to_string())?;
+    require_stable_update_channel()?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    emit_task_start(
+        &app,
+        operation_id,
+        "update",
+        "验证缓存并安装更新",
+        updater::RELEASE_API,
+    );
+    updater::install(&app, &updates, &cancelled)
+        .await
+        .map_err(|e| e.to_string())?;
     drop(task);
-    if installed {
-        app.restart();
-    }
-    Ok(false)
+    app.restart();
 }
 
 fn require_stable_update_channel() -> Result<(), String> {
@@ -1930,6 +1951,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AuthState::default())
         .manage(TaskControl::default())
+        .manage(updater::UpdateState::default())
         .manage(review_outbox::OutboxState::default())
         .manage(Arc::new(task_center::QcCache::default()))
         .manage(ValidationCache::default())
@@ -1942,6 +1964,7 @@ pub fn run() {
             select_workspace_mode,
             clear_workspace_mode,
             check_for_app_update,
+            download_app_update,
             install_app_update,
             configure_user_center,
             login_account,

@@ -97,6 +97,11 @@ jobs:
           PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
         run: pnpm test:proofreading
 
+      - name: Run consent-based GitHub update flow regressions
+        env:
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
+        run: pnpm test:app-updates
+
       - name: Run shared release gate (including issue-location regression)
         run: pnpm check
 

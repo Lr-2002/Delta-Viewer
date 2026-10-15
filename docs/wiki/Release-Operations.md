@@ -35,12 +35,8 @@ GitHub App ID、private key 或 release Environment。
 日志、artifact、verification report 或 release manifest。公钥嵌入
 `src-tauri/tauri.conf.json`，可以公开并由 final job 回读验证。
 
-客户端不访问 GitHub。GitHub Release 只是固定镜像机的签名上游；应用使用
-`http://39.155.172.162:17879/latest.json` 与
-`http://10.1.11.200:17879/latest.json`。发现更新后，客户端会对两个同版本资产并行发出受限
-32 KiB Range 请求，选择实测最快的成功路径；全部测速失败时保留清单路径。`update-service.config.json`、
-Tauri endpoint 和发布校验必须保持这两个固定地址一致。服务对受信任的局域网 Host 返回局域网 asset URL，
-避免 NAT loopback；任意其他 Host 始终返回公网 URL。
+从 1.0.63 开始客户端直接访问 GitHub。应用使用
+`https://api.github.com/repos/Lr-2002/Delta-Viewer/releases/latest`，随后锁定返回的正式 semver tag 并读取该 tag 下的 `latest.json`。客户端校验三平台字段与当前平台包的大小、哈希和签名，用户主动下载及确认安装，不再使用镜像测速。旧版客户端需先手动安装 1.0.63；下方镜像部署流程仅用于历史版本兼容，不属于新版发布前置，也不应因本次改动重启服务。
 
 完整代码门禁和 release workflow 回归只在 CI 对同一 commit 执行一次。CI 成功后，
 controller 仍会重新核对 main HEAD、clean checkout、版本、Changelog 和 annotated tag，

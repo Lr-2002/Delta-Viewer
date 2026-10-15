@@ -5,7 +5,7 @@
 ## 1. 不可破坏的产品约束
 
 1. 源 JPEG、`states.jsonl`、骨架和其他采集文件是只读数据。唯一源端写入例外是用户明确保存标注时，在当前 episode 根目录原子创建或更新应用管理的 `description.json`；不得创建、修改、重命名或删除其他源文件。
-2. 数据运行时只通过操作系统已挂载或映射为目录的文件系统路径访问源数据：支持本地目录及 Windows 映射盘、SMB/NFS 挂载等网络文件系统目录。应用不增加 SSH、云存储或 NAS 连接协议。除根级 `description.json` 外不写回源目录，也不自动复制。用户中心是唯一的业务身份和标注绩效审计例外：客户端只通过管理员导入的固定证书访问当前主机局域网 HTTPS 服务；审计 payload 只允许事件 ID、操作类型、task ID、trajectory code、revision、开始/结束/操作时间，账号由登录 token 推导；不得发送源路径、episode ID、描述、片段文本、图像、状态、检查结果、报告或 hash。自动更新仍只按顺序读取固定公网镜像 `http://39.155.172.162:17879` 与固定局域网 fallback `http://10.1.11.200:17879`。
+2. 数据运行时只通过操作系统已挂载或映射为目录的文件系统路径访问源数据：支持本地目录及 Windows 映射盘、SMB/NFS 挂载等网络文件系统目录。应用不增加 SSH、云存储或 NAS 连接协议。除根级 `description.json` 外不写回源目录，也不自动复制。用户中心是唯一的业务身份和标注绩效审计例外：客户端只通过管理员导入的固定证书访问当前主机局域网 HTTPS 服务；审计 payload 只允许事件 ID、操作类型、task ID、trajectory code、revision、开始/结束/操作时间，账号由登录 token 推导；不得发送源路径、episode ID、描述、片段文本、图像、状态、检查结果、报告或 hash。自动更新按 2026-10-15 用户新要求只读取 GitHub 官方正式 Release，见下述补充。
 3. 正常工作流是“选择 SD 卡 -> 自动扫描全部 session -> 直接加载首条 session -> 健康检查 -> 回放/标注/导出”。正常 UI 不得自动复制源数据；保存标注需要当前 episode 可写，其他流程保持只读；使用期间源卷必须保持挂载。
 4. 导入器仅用于压力验收和未来显式离线导入；一旦执行完整导入，仍必须验证目标端的文件大小和 BLAKE3，不能只信任复制时的源端 hash。
 5. `capture_time_ns` 在 Rust/磁盘中为 int64，在 TypeScript 中必须保持十进制字符串；涉及差值时使用 `BigInt`。
@@ -19,7 +19,11 @@
 13. GitHub Release 必须同时包含 Windows x64、macOS arm64 和 Ubuntu 22.04+ x86_64 原生 deb 三个可安装产物；不再构建或发布 macOS x64。当前阶段允许发布明确标记为 `UNSIGNED` 的完整集合；该标记表示没有可信发布者身份。Windows 产物不得暗示 Authenticode；macOS app/main/FFmpeg 必须有结构有效的 ad-hoc seal，但不得暗示 Developer ID 或 notarization；Ubuntu deb 必须在 22.04 runner 用 `apt` 安装和启动验证。任一平台、依赖或安装/启动检查失败时不得公开部分 Release。
 14. 自 `v0.17.6` 之后，仓库实际默认分支 `main`（口头所称 `master`）不得保留没有对应版本 tag 的独立提交。每个进入 `main` 的 commit 都必须是完整的发布提交：同一 commit 包含全部代码/文档变更、四处一致且唯一的新 semver，以及带日期的 Changelog；CI 成功后必须由发布 workflow 创建精确指向该 commit 的 annotated `vX.Y.Z` tag。禁止先推功能、修复、文档、CI 或配置 commit，再另推 version/release commit；除自动 tag 尚在运行的短暂 pending 状态外，`main` 必须保持一 commit 对应一 tag。
 15. Codex 和其他自动化 agent 在没有收到开发负责人明确版本指令时，只能把当前 semver 的 patch 位连续增加 1（即 `+0.0.1`），不得跳号，也不得根据改动规模自行提升 minor 或 major。minor（例如 `0.17.x -> 0.18.0`）及 major 版本只能按开发负责人明确指定的版本更新；提升 minor 或 major 时 patch 归零。
-16. 自动更新只接受固定镜像同 origin、精确版本目录下当前平台的 1-64 MiB asset，必须在 Rust 中有界读取并用应用内嵌 Ed25519/Minisign 公钥验签后安装。Tauri 的 `dangerousInsecureTransportProtocol` 只可为固定内网 HTTP 镜像显式开启，且只能连接，不得替代 origin、大小或签名 hard gate。镜像以只读 GET/HEAD 提供资产，从 GitHub 同步时必须先验证完整三平台集合、大小、SHA-256 和签名，再原子激活；失败继续提供上一完整版本。更新使用与其他长任务相同的 `TaskControl`，不能打断扫描/检查/导出。更新私钥只允许存在于受控离线备份和 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets；它不是 GitHub App private key，不得提交、打印或进入 artifact。
+16. 自动更新以 2026-10-15 补充为准：固定官方 GitHub 仓库和 HTTPS 资产域名，精确版本/平台/1–64 MiB/SHA-256/Minisign 硬校验；下载与安装使用 TaskControl，检查不占用数据任务。更新私钥只在受控备份和 Actions secrets。
+
+### 2026-10-15 GitHub 更新与交互补充（1.0.63）
+
+1.0.63 更新体验与来源（2026-10-15）：按用户明确新要求覆盖旧镜像更新规则。客户端只从 https://github.com/Lr-2002/Delta-Viewer 最新正式 Release 更新；先读固定 GitHub latest Release API，不可用时读取同仓库官方 /releases/latest 的精确标签跳转，拒绝 draft、prerelease、非标准 tag 和降级，再锁定精确 tag 的有界 latest.json 与当前平台资产。已登录后后台检查不占用 TaskControl、不阻断数据载入；发现新版仅标记入口和一次轻提示。用户查看说明并主动下载，完成后先验大小、SHA-256 和 Minisign 签名并缓存，提供“保存并重启更新”和“稍后”。安装仍使用 TaskControl，不打断扫描/检查/导出/批量任务，先等待当前复核保存和审核事件落盘，失败恢复会话并留在当前版本。重启后联网检查匹配版本时重新验证缓存并恢复准备好状态；缓存不可用时要求重下，不使用已篡改字节。每版本首次打开显示内置更新摘要，关闭后本机不重复。GitHub 不可达、超时或限流仅影响更新，在入口中提供可重试原因，不自动弹错误或阻断审核。旧镜像服务仅供历史客户端，不再是新版发布验收依赖。说明见 docs/github-updates.md。
 
 ### 2026-09-08 校对与正式发布补充
 
@@ -130,7 +134,7 @@ React component
 - `lib.rs` 只负责 command 参数、任务状态和 blocking worker 调度，不放格式逻辑。
 - 同一时间只允许一个长任务；所有新增长任务必须通过 `TaskControl` 获取 guard。
 - `src-tauri/src/updater.rs` 是客户端唯一允许运行时更新 HTTP 的模块；`src-tauri/src/user_center.rs` 只允许连接导入配置中固定证书、固定私有 IP 的 HTTPS 用户中心。两者都只允许统一管理模式的已登录用户调用；前端不得提供任意 endpoint、URL、版本或签名。
-- `scripts/update-mirror-server.mjs` 是镜像机唯一的 GitHub 出站路径。它只能从固定仓库 HTTPS Release 同步，必须拒绝部分 target、错误文件名、超限、hash 或签名不符，使用服务自有 partial/版本目录原子激活，并在新同步失败时保留上一版。对客户端只开放 GET/HEAD，不增加上传 API、客户端身份或访问遥测。
+- `scripts/update-mirror-server.mjs` 为历史客户端提供兼容镜像，1.0.63 客户端直接使用固定官方 GitHub 仓库。它只能从固定仓库 HTTPS Release 同步，必须拒绝部分 target、错误文件名、超限、hash 或签名不符，使用服务自有 partial/版本目录原子激活，并在新同步失败时保留上一版。对客户端只开放 GET/HEAD，不增加上传 API、客户端身份或访问遥测。
 - 导出 IPC 只能使用 `ValidationCache` 中与当前源目录指纹匹配的 Rust 报告；不得接受前端回传的报告或 status 作为授权。
 - 文件遍历、哈希、解码和导出必须在 Rust 中执行。
 - 源目录遍历统一使用可取消的 no-follow 路径；不要重新引入会隐式跟随 symlink 的文件判断。
@@ -555,14 +559,7 @@ Windows updater 使用不内嵌离线 WebView2 的 NSIS executable，macOS updat
 进入普通 env、日志、artifact 或报告。这个更新签名不提供可信发布者身份；installer
 仍必须显示 `UNSIGNED`。自动 tag 继续只用 `GITHUB_TOKEN`，不引入 GitHub App 凭据。
 
-客户端不得直接使用上述 GitHub URL。`update-service.config.json` 固定公网镜像为
-`http://39.155.172.162:17879`，固定局域网 fallback 为 `http://10.1.11.200:17879`；本机 `launchd`
-服务每 5 分钟同步 GitHub 完整 Release，先验证
-三个 target、固定文件名、大小、SHA-256 和 Ed25519/Minisign 签名，再用服务自有 partial
-和版本目录原子激活。失败必须继续提供上一完整版本；缓存只保留当前版和上一版，清理只能
-删除包含匹配 `mirror-release.json` marker 的服务自有目录。镜像对客户端只开放 GET/HEAD，
-不得增加上传、任意代理、访问日志或业务数据。每次 Release 公开后必须确认镜像
-`healthz.version`、安装页和客户端 `latest.json` 已切换到同一版本。
+客户端更新来源与发布检查按 2026-10-15 补充执行。旧镜像服务保持可选历史兼容，不要求部署、重启或等待镜像同步才发布新版。
 
 所有安装器文件名、Release 标题/说明和 manifest 必须显示 `UNSIGNED`。加入可信签名时必须
 作为单独版本恢复 Authenticode、Developer ID、timestamp、Gatekeeper 和 notarization
@@ -584,7 +581,7 @@ GitHub Wiki，不直接在网页维护分叉版本。
 - Dialog capability 只开放目录选择和消息框；新增 capability 必须对应明确的用户操作。
 - 用户中心服务使用 Node 内置 `scrypt`（N=16384、r=8、p=1）和操作系统 CSPRNG 盐保存密码哈希；客户端不保存密码。服务端不引入账号网络同步以外的数据路径，Windows/macOS/Linux 客户端均只保存固定证书配置和进程内会话。
 - `tauri-plugin-opener 2.5.4` 为 MIT/Apache-2.0 双许可的官方跨平台实现。`v0.3.0` 全部变更使 macOS ARM debug 二进制增加 1,239,152 bytes（约 2.2%）；Windows release 体积必须在目标构建机另行记录。
-- `tauri-plugin-updater 2.10.1`（MIT/Apache-2.0）负责跨平台安装；`reqwest 0.13.4`（MIT/Apache-2.0）用于 64 MiB 上限的 HTTP(S) 流式读取，`minisign-verify 0.2.5`（MIT）使用应用内嵌公钥验证更新包。不得退回 updater 插件无大小中止能力的默认 `Vec` 下载路径，也不得关闭签名校验。固定镜像当前使用内网 HTTP，签名是安装完整性的硬门禁。
+- `tauri-plugin-updater 2.10.1`（MIT/Apache-2.0）负责跨平台安装；本版 vendored 最小补丁为其清单读取添加 1 MiB 上限，来源和 archive checksum 见 `vendor/tauri-plugin-updater/DELTA_PATCH.md`，没有新增原生依赖；`reqwest 0.13.4`（MIT/Apache-2.0）用于 64 MiB 上限的 HTTP(S) 流式读取，`minisign-verify 0.2.5`（MIT）使用应用内嵌公钥验证更新包。不得退回 updater 插件无大小中止能力的默认 `Vec` 下载路径，也不得关闭签名校验。客户端只使用官方 GitHub HTTPS，签名仍是安装完整性的硬门禁。`semver 1`（MIT/Apache-2.0，原已在 Cargo.lock 中作为传递依赖）显式用于解析和比较正式版本，不引入新的原生库，三平台均支持。
 - `foxglove 0.26.0`（MIT）、`prost 0.14.4`（Apache-2.0）和 `bytes 1.12.1`（MIT）用于生成官方 Foxglove protobuf schema/消息；Foxglove 默认 features 保持关闭。`v0.9.0` macOS ARM debug 主程序相对 `v0.8.0` 增加 383,472 bytes（约 0.5%），Windows x64 MSVC all-target 条件编译已通过，目标机 release 体积仍需另行记录。
 
 ## 12. Git 与工作区纪律
