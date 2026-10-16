@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
 import { listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
 import { persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
-import { addReviewSegment, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
+import { addReviewSegment, recoverReviewSegments, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
 import { RejectionReasons } from "./RejectionReasons";
@@ -110,6 +110,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const legacyRecoveryKey = () => `dohc.machine-review.pending:${root}${!loadedSource.current || loadedSource.current === "bailian_annotation.json" ? "" : loadedSource.current === "bailian_annotation.qwen3.8-flash.json" ? ":qwen3.8-flash" : `:source:${encodeURIComponent(loadedSource.current)}`}`;
   const recoveryKey = () => `${legacyRecoveryKey()}:account:${encodeURIComponent(username)}`;
   const [recoveryError, setRecoveryError] = useState("");
+  const [recoveryMessages, setRecoveryMessages] = useState<string[]>([]);
   const [auditCompletionError, setAuditCompletionError] = useState("");
   const [auditPreparationError, setAuditPreparationError] = useState("");
   const completionAwaitingAudit = useRef<"approved" | "rejected" | null>(null);
@@ -202,7 +203,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   useEffect(() => {
     mounted.current = true;
     let active = true;
-    setLoading(true); setError(""); setPlaying(false); setBoundariesConfirmed(false);
+    setLoading(true); setError(""); setRecoveryMessages([]); setPlaying(false); setBoundariesConfirmed(false);
     void (async () => {
       await saves.get(root);
       const loaded = await loadMachineAnnotation(root, sourceName);
@@ -220,10 +221,25 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       const ownRaw = localStorage.getItem(recoveryKey());
       const raw = ownRaw ?? localStorage.getItem(legacyRecoveryKey());
       if (raw) {
-        const recovery = JSON.parse(raw) as Snapshot & { sourceHash: string };
-        // Human recovery snapshots remain valid when the reference model is updated.
-        setEdits(recovery.segments); editsRef.current = recovery.segments;
-        const snapshot = { segments: recovery.segments, status: recovery.status ?? "pending", rejectionReason: recovery.rejectionReason };
+        let recovery: Snapshot & { sourceHash: string };
+        try { recovery = JSON.parse(raw); } catch { recovery = {} as typeof recovery; }
+        const restored = recoverReviewSegments(recovery?.segments, loaded.frameCount);
+        const invalidStatus = !["pending", "approved", "rejected"].includes(recovery?.status ?? "pending");
+        if (!restored.segments || restored.repaired || invalidStatus) {
+          try {
+            const backupKey = `${recoveryKey()}:preserved:${crypto.randomUUID()}`;
+            localStorage.setItem(backupKey, raw);
+          } catch {
+            setRecoveryError("旧应急草稿需要兼容恢复，但本机备份失败；已保留原草稿，请保持此页打开后重试保存。");
+            return;
+          }
+          setRecoveryMessages([restored.segments
+            ? "旧应急草稿的重复索引或旧状态已兼容修复，动作文字与边界保留，原记录已在本机备份。"
+            : "旧应急草稿的片段范围或格式不适用于当前视频，原记录已在本机备份，当前显示已加载的机标或人工结果。"]);
+        }
+        if (!restored.segments) return;
+        setEdits(restored.segments); editsRef.current = restored.segments;
+        const snapshot = { segments: restored.segments, status: restored.repaired || invalidStatus ? "pending" as const : recovery.status ?? "pending", rejectionReason: recovery.rejectionReason };
         if (ownRaw) void persist(snapshot);
         else {
           legacyRecovery.current = true;
@@ -528,8 +544,13 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       {mapping?.error && <p role="alert" className="machine-message">{mapping.error}</p>}
       {!loading && !error && !result && <p className="machine-message">未发现 {sourceName ?? "机标 JSON"}</p>}
       {result?.identityWarning && <div className="machine-boundary-warning" role="region" aria-label="机标编号核对提示">
-        <strong>目录与机标编号不同，来源核验已通过</strong>
+        <strong>{result.identityVerified ? "目录与机标编号不同，来源核验已通过" : "目录与机标编号不同，已兼容读取，请核对内容"}</strong>
         <p>{result.identityWarning}</p>
+      </div>}
+      {result?.timelineWarning && <div className="machine-boundary-warning" role="region" aria-label="机标帧数适配提示"><strong>已按当前视频帧数适配</strong><p>{result.timelineWarning}</p></div>}
+      {Boolean(review?.recoveryWarnings?.length || recoveryMessages.length) && <div className="machine-boundary-warning" role="region" aria-label="人工记录兼容恢复提示">
+        <strong>原人工记录已保留，请核对恢复内容</strong>
+        {[...(review?.recoveryWarnings ?? []), ...recoveryMessages].map((message, index) => <p key={index}>{message}</p>)}
       </div>}
       {!!result?.inferredEndFrames?.length && <div className="machine-boundary-warning" role="region" aria-label="机标边界待核对">
         <strong>机标缺少结束帧，以下边界为临时推定</strong>

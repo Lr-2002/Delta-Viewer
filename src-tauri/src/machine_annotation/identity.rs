@@ -1,5 +1,5 @@
-//! Recover renamed folders only with the producer's matching MP4 metadata fingerprint.
-//! A folder number, equal frame count, or single result alone never establishes identity.
+//! Keep co-located annotations readable after directory relocation.
+//! Metadata verification and compatibility loading are distinct states.
 use super::{invalid, Document};
 use crate::error::AppResult;
 use sha2::{Digest, Sha256};
@@ -11,7 +11,7 @@ pub(super) fn select(
     document: &Document,
     name: &str,
     root: Option<&Path>,
-) -> AppResult<(usize, Option<String>)> {
+) -> AppResult<(usize, Option<String>, bool)> {
     let exact: Vec<_> = document
         .episode_results
         .iter()
@@ -23,44 +23,47 @@ pub(super) fn select(
         return Err(invalid("同一数据存在多份机标结果，无法确定当前结果"));
     }
     if let Some(&index) = exact.first() {
-        return Ok((index, None));
+        return Ok((index, None, false));
     }
-    let verified = (|| {
-        let root = root?;
-        // The producer designates the primary episode with asset_id. Other
-        // episodes can share the same video fingerprint; never select the first.
-        let asset = document
+    // Only a bounded file already read from this episode may use relocation
+    // compatibility. Raw human/reference parsing still requires the original id.
+    if let Some(root) = root {
+        let primary: Vec<_> = document
             .asset_id
             .as_str()
-            .filter(|asset| !asset.is_empty())?;
-        let mut candidates = document
-            .episode_results
-            .iter()
-            .enumerate()
-            .filter(|(_, episode)| episode.episode_id == asset);
-        let (index, episode) = candidates.next()?;
-        if candidates.next().is_some() {
-            return None;
+            .map(|asset| {
+                document
+                    .episode_results
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, episode)| !asset.is_empty() && episode.episode_id == asset)
+                    .map(|(index, _)| index)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let index = match primary.as_slice() {
+            [index] => Some(*index),
+            [] if document.episode_results.len() == 1 => Some(0),
+            _ => None,
+        };
+        if let Some(index) = index {
+            let episode = &document.episode_results[index];
+            let verification = verify_metadata(root, episode);
+            let verified = verification.is_ok();
+            let detail = match verification {
+                Ok(()) => "已核对主相机文件列表、大小、修改时间指纹及帧数。".to_owned(),
+                Err(reason) => format!("已按当前目录中的机标文件兼容读取；{reason}，来源尚未核实，请回放核对视频与动作是否对应。"),
+            };
+            return Ok((
+                index,
+                Some(format!(
+                    "当前目录 {} 与机标编号 {} 不同；{detail}原机标及原编号未修改。",
+                    preview(name),
+                    preview(&episode.episode_id),
+                )),
+                verified,
+            ));
         }
-        let expected = episode.quality.get("source_fingerprint")?.as_str()?;
-        if expected.len() != 64 || !expected.bytes().all(|c| c.is_ascii_hexdigit()) {
-            return None;
-        }
-        let actual = video_fingerprint(root).ok()?;
-        if actual != expected {
-            return None;
-        }
-        let camera = crate::source::review_camera_summary(root).ok()?;
-        if camera.frame_count == 0 || camera.frame_count != episode.media.frame_count {
-            return None;
-        }
-        Some((index, format!(
-            "当前目录 {} 与机标编号 {} 不同；已核对主相机文件列表、大小、修改时间指纹及帧数。原机标未修改，请回放核对动作内容。",
-            preview(name), preview(asset),
-        )))
-    })();
-    if let Some((index, warning)) = verified {
-        return Ok((index, Some(warning)));
     }
     let ids = document
         .episode_results
@@ -70,9 +73,32 @@ pub(super) fn select(
         .collect::<Vec<_>>()
         .join("、");
     Err(invalid(&format!(
-        "机标 episode_id 与当前数据目录不匹配（目录：{}；机标：{}）；无法唯一核实来源指纹及帧数，未自动套用。请选择其他机标来源，或选择人工标注后点击＋重新标注",
+        "机标 episode_id 与当前数据目录不匹配（目录：{}；机标：{}）；文件包含多个结果且无法唯一选择主结果，或没有可读取的结果。请选择其他机标来源，或选择人工标注后点击＋重新标注",
         preview(name), if ids.is_empty() { "无" } else { &ids },
     )))
+}
+
+fn verify_metadata(root: &Path, episode: &super::Episode) -> Result<(), String> {
+    let camera = crate::source::review_camera_summary(root)
+        .map_err(|_| "无法读取当前主相机帧数".to_owned())?;
+    if camera.frame_count == 0 || camera.frame_count != episode.media.frame_count {
+        return Err(format!(
+            "机标声明 {} 帧，当前主相机 {} 帧，未改写或缩放片段边界",
+            episode.media.frame_count, camera.frame_count
+        ));
+    }
+    let expected = episode
+        .quality
+        .get("source_fingerprint")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit()))
+        .ok_or_else(|| "机标缺少受支持的来源指纹".to_owned())?;
+    let actual =
+        video_fingerprint(root).map_err(|_| "当前素材不支持旧版元数据指纹核验".to_owned())?;
+    if actual != expected {
+        return Err("来源文件元数据指纹不同（目录移动、复制或文件变化均可能影响），不能据此确认视频内容一致".into());
+    }
+    Ok(())
 }
 
 fn preview(value: &str) -> String {
@@ -89,7 +115,7 @@ fn modified_ns(metadata: &fs::Metadata) -> AppResult<u128> {
 
 // Matches bailian auto_item_fingerprint v3 for flat cam0 MP4 recordings.
 // No media bytes are read. Nested/JPEG/BIN/links are deliberately unsupported
-// here; they keep the strict mismatch instead of guessing another hash scheme.
+// here; compatibility loading must explicitly report that verification is unavailable.
 fn video_fingerprint(root: &Path) -> AppResult<String> {
     let cam0 = root.join("cam0");
     let metadata = fs::symlink_metadata(&cam0)?;
@@ -170,7 +196,9 @@ mod tests {
     use crate::{machine_annotation, machine_review};
     use serde_json::{json, Value};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::SystemTime;
+    static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     struct Fixture {
         temp: PathBuf,
@@ -180,8 +208,9 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let temp = std::env::temp_dir().join(format!(
-                "viewer-renamed-{}-{}",
+                "viewer-renamed-{}-{}-{}",
                 std::process::id(),
+                FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
@@ -229,11 +258,12 @@ mod tests {
     }
 
     #[test]
-    fn renamed_folder_requires_matching_producer_fingerprint_and_camera_frames() {
+    fn renamed_folder_distinguishes_verified_and_compatible_sources() {
         let mut f = Fixture::new();
         let bytes = f.write();
         let annotation = f.load().unwrap();
         assert_eq!(annotation.episode_id, "original_009");
+        assert!(annotation.identity_verified);
         assert!(annotation
             .identity_warning
             .as_ref()
@@ -251,13 +281,20 @@ mod tests {
         );
         f.document["episode_results"][0]["media"]["frame_count"] = 31.into();
         f.write();
-        assert!(f.load().is_err());
+        let different_frames = f.load().unwrap();
+        assert!(!different_frames.identity_verified);
+        assert_eq!(different_frames.frame_count, 30);
+        assert!(different_frames.timeline_warning.is_some());
+        assert!(different_frames.identity_warning.unwrap().contains("31 帧"));
         f.document["episode_results"][0]["media"]["frame_count"] = 30.into();
         f.document["episode_results"][0]["quality"]["source_fingerprint"] = "a".repeat(64).into();
         f.write();
-        let error = f.load().unwrap_err().to_string();
-        assert!(error.contains("目录：\"renamed_001\"；机标：\"original_009\""));
-        assert!(error.contains("未自动套用"));
+        let unverified = f.load().unwrap();
+        assert!(!unverified.identity_verified);
+        assert_eq!(unverified.segments.len(), 1);
+        let warning = unverified.identity_warning.unwrap();
+        assert!(warning.contains("来源尚未核实"));
+        assert!(warning.contains("元数据指纹不同"));
         let manual =
             machine_annotation::load_for_review(&f.root, Some(machine_annotation::MANUAL_SOURCE))
                 .unwrap()
@@ -268,14 +305,8 @@ mod tests {
     }
 
     #[test]
-    fn renamed_folder_does_not_guess_ambiguous_or_missing_identity() {
-        for case in [
-            "no-asset",
-            "wrong-asset",
-            "duplicate-asset",
-            "no-fingerprint",
-            "changed-file",
-        ] {
+    fn co_located_unique_results_remain_readable_without_verifiable_metadata() {
+        for case in ["no-asset", "wrong-asset", "no-fingerprint", "changed-file"] {
             let mut f = Fixture::new();
             match case {
                 "no-asset" => {
@@ -283,13 +314,6 @@ mod tests {
                 }
                 "wrong-asset" => {
                     f.document["asset_id"] = "another_002".into();
-                }
-                "duplicate-asset" => {
-                    let episode = f.document["episode_results"][0].clone();
-                    f.document["episode_results"]
-                        .as_array_mut()
-                        .unwrap()
-                        .push(episode);
                 }
                 "no-fingerprint" => {
                     f.document["episode_results"][0]["quality"]
@@ -305,8 +329,74 @@ mod tests {
                 _ => unreachable!(),
             }
             f.write();
-            assert!(f.load().is_err(), "{case}");
+            let loaded = f.load().unwrap();
+            assert_eq!(loaded.episode_id, "original_009", "{case}");
+            assert_eq!(loaded.segments.len(), 1, "{case}");
+            assert_eq!(
+                loaded.identity_verified,
+                matches!(case, "no-asset" | "wrong-asset"),
+                "{case}"
+            );
+            assert!(loaded.identity_warning.is_some(), "{case}");
+            assert_eq!(
+                loaded.source_json.as_bytes(),
+                fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap()
+            );
         }
+    }
+
+    #[test]
+    fn ambiguous_primary_results_are_not_silently_selected() {
+        for case in ["duplicate-asset", "no-primary", "empty"] {
+            let mut f = Fixture::new();
+            let mut other = f.document["episode_results"][0].clone();
+            if case == "no-primary" {
+                other["episode_id"] = "another_002".into();
+                f.document.as_object_mut().unwrap().remove("asset_id");
+            }
+            f.document["episode_results"]
+                .as_array_mut()
+                .unwrap()
+                .push(other);
+            if case == "empty" {
+                f.document["episode_results"] = serde_json::json!([]);
+            }
+            f.write();
+            assert!(
+                f.load()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("无法唯一选择主结果"),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn renamed_copy_with_changed_times_and_missing_legacy_metadata_stays_readable() {
+        let mut f = Fixture::new();
+        f.document.as_object_mut().unwrap().remove("asset_id");
+        f.document["episode_results"][0]["quality"]
+            .as_object_mut()
+            .unwrap()
+            .remove("source_fingerprint");
+        let original = f.write();
+        let moved_parent = f.temp.join("new-parent");
+        fs::create_dir(&moved_parent).unwrap();
+        let moved = moved_parent.join("renumbered_777");
+        fs::rename(&f.root, &moved).unwrap();
+        f.root = moved;
+        let loaded = f.load().unwrap();
+        assert!(!loaded.identity_verified);
+        assert_eq!(loaded.segments.len(), 1);
+        assert_eq!(loaded.episode_id, "original_009");
+        assert_eq!(loaded.source_json.as_bytes(), original);
+        assert!(loaded
+            .identity_warning
+            .unwrap()
+            .contains("缺少受支持的来源指纹"));
+        assert!(machine_annotation::parse_human(&original, "renumbered_777").is_err());
+        assert!(machine_annotation::parse_human(&original, "original_009").is_ok());
     }
 
     #[test]
@@ -333,8 +423,18 @@ mod tests {
 
     #[test]
     fn renamed_review_saves_and_reopens_on_fresh_host_without_rewriting_source_ids() {
-        let f = Fixture::new();
+        let mut f = Fixture::new();
+        // A stale declared count must not discard legal boundaries in this video.
+        f.document["episode_results"][0]["media"]["frame_count"] = 29.into();
+        f.document["episode_results"][0]["quality"]
+            .as_object_mut()
+            .unwrap()
+            .remove("source_fingerprint");
         let original = f.write();
+        let loaded = f.load().unwrap();
+        assert!(!loaded.identity_verified);
+        assert_eq!(loaded.frame_count, 30);
+        assert!(loaded.timeline_warning.is_some());
         let local = f.temp.join("local");
         let initial = machine_review::load_selected(
             &local,
@@ -363,6 +463,7 @@ mod tests {
         let output = fs::read(f.root.join("description.json")).unwrap();
         let document: Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(document["episode_results"][0]["episode_id"], "original_009");
+        assert_eq!(document["episode_results"][0]["media"]["frame_count"], 30);
         assert_eq!(
             document["episode_results"][0]["annotations"][0]["attributes_zh"]["动作描述"],
             "人工核对整理物品"
@@ -399,6 +500,11 @@ mod tests {
         let outside = f.temp.join("outside.mp4");
         fs::rename(&path, &outside).unwrap();
         std::os::unix::fs::symlink(outside, path).unwrap();
-        assert!(f.load().is_err());
+        let loaded = f.load().unwrap();
+        assert!(!loaded.identity_verified);
+        assert!(loaded
+            .identity_warning
+            .unwrap()
+            .contains("不支持旧版元数据指纹核验"));
     }
 }
