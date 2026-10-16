@@ -326,7 +326,7 @@ async function open(page, query, username = "review-test") {
   // The new one-time release summary has its own update-flow coverage. Keep
   // playback layout assertions focused on the regular, acknowledged workspace.
   const acknowledgement = page.getByRole("button", { name: "知道了", exact: true });
-  if (await acknowledgement.count()) await acknowledgement.click();
+  if (await acknowledgement.count()) { await acknowledgement.click(); await acknowledgement.waitFor({state:"detached"}); }
   await page.waitForFunction(() => document.querySelectorAll(".camera-grid .frame-panel").length === 7);
 }
 
@@ -901,6 +901,60 @@ test("compatible unverified identity stays editable without claiming verificatio
     assert.equal(await page.getByLabel("复核动作描述").inputValue(), "人工兼容后修改动作");
     await page.setViewportSize({width:390,height:844});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),true);
+  } finally { await page.close(); }
+});
+
+test("identity warning ignores only this account and source content, and can be restored", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const body = original.replace('model: "Demo model",', 'model: "Demo model", identityWarning: "当前目录与原机标编号不同，来源尚未核实。", identityVerified: false, timelineWarning: "当前视频帧数已适配。",');
+    assert.notEqual(body, original);
+    await route.fulfill({response, body});
+  });
+  try {
+    await open(page, "machineAnnotation=present", "ignore-owner");
+    const notice = page.getByRole("region", {name:"机标编号核对提示"});
+    const restore = page.getByRole("button", {name:"查看已忽略的编号提示", exact:true});
+    await notice.waitFor();
+    for (const [width,height] of [[1440,920],[960,680],[390,844]]) {
+      await page.setViewportSize({width,height});
+      const ignore = notice.getByRole("button", {name:"忽略本条提示", exact:true});
+      await ignore.scrollIntoViewIfNeeded();
+      const box = await ignore.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await page.screenshot({path:`artifacts/unified-proofreading/identity-ignore-${width}.png`,fullPage:true});
+    }
+    await notice.getByRole("button", {name:"忽略本条提示", exact:true}).click();
+    await restore.waitFor();
+    assert.equal(await notice.count(),0);
+    assert.equal(await page.getByRole("region", {name:"机标帧数适配提示"}).isVisible(),true,"unrelated warnings remain visible");
+    assert.equal(await page.getByLabel("复核动作描述").isEnabled(),true);
+    await open(page,"machineAnnotation=present","ignore-owner");
+    await restore.waitFor();
+    assert.equal(await notice.count(),0,"same account and source remain ignored after reload");
+    await open(page,"machineAnnotation=present","ignore-other");
+    await notice.waitFor();
+    await open(page,"machineAnnotation=present","ignore-owner");
+    await restore.waitFor();
+    await restore.click();
+    await notice.waitFor();
+    await notice.getByRole("button",{name:"忽略本条提示",exact:true}).click();
+    await page.evaluate(() => {
+      for (const key of Object.keys(localStorage)) if (key.startsWith("delta.machine-identity.ignored.v1:")) {
+        const signature = JSON.parse(localStorage.getItem(key));
+        signature[0] = "previous-source-content";
+        localStorage.setItem(key,JSON.stringify(signature));
+      }
+    });
+    await open(page,"machineAnnotation=present","ignore-owner");
+    await notice.waitFor();
+    assert.equal(await restore.count(),0,"changed machine content must warn again");
+    assert.deepEqual(errors,[]);
   } finally { await page.close(); }
 });
 
