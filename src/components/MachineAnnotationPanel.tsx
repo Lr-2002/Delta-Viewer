@@ -527,6 +527,10 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       {error && <p role="alert" className="machine-message">{error}</p>}
       {mapping?.error && <p role="alert" className="machine-message">{mapping.error}</p>}
       {!loading && !error && !result && <p className="machine-message">未发现 {sourceName ?? "机标 JSON"}</p>}
+      {result?.identityWarning && <div className="machine-boundary-warning" role="region" aria-label="机标编号核对提示">
+        <strong>目录与机标编号不同，来源核验已通过</strong>
+        <p>{result.identityWarning}</p>
+      </div>}
       {!!result?.inferredEndFrames?.length && <div className="machine-boundary-warning" role="region" aria-label="机标边界待核对">
         <strong>机标缺少结束帧，以下边界为临时推定</strong>
         {result.inferredEndFrames.map(index => { const row = rows.find(item => item.sourceIndex === index); const original = result.segments.find(item => item.sourceIndex === index); return <p key={index}>

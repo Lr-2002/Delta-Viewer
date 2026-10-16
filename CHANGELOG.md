@@ -3,6 +3,13 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.1.2 - 2026-10-16
+
+- 修复采集目录编号变更后，百炼机标仍保存旧 episode_id 导致整份机标无法加载的问题。精确匹配优先；失配时仅在 asset_id 唯一指向主结果、生产端 MP4 元数据指纹一致且主相机帧数一致时兼容读取。
+- 在动作片段区持续显示目录编号与原机标编号差异及核验依据；原机标字节、原编号和未知字段保持不变，人工保存、重开及换机读取延续原有流程。
+- 无法核实的错误文件、缺失指纹、重复主结果或帧数不符继续拒绝自动套用；错误显示两侧编号，并提供换来源或人工标注指引。
+- 增加编号偏移、错误来源、歧义结果、人工保存后新主机重载、固定指纹向量及窄屏提示回归，并纳入 Windows 原生发布检查。
+
 ## 1.1.1 - 2026-10-15
 
 - 修复 GitHub 更新请求未读取 Windows/macOS 系统代理设置的问题；固定证书的局域网用户中心保持直连。

@@ -390,6 +390,12 @@ jobs:
           cargo test --release --manifest-path src-tauri/Cargo.toml -p tauri-plugin-updater delta_metadata_tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify native Windows machine annotation identity regressions
+        shell: pwsh
+        run: |
+          cargo test --release --manifest-path src-tauri/Cargo.toml machine_annotation::
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Archive native updater diagnostic harness
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

@@ -7,6 +7,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::Path;
 
+mod identity;
+
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SEGMENTS: usize = 2000;
 pub const DEFAULT_SOURCE: &str = "bailian_annotation.json";
@@ -104,6 +106,8 @@ pub fn list_sources(root: &Path) -> AppResult<Vec<String>> {
 #[derive(Deserialize)]
 struct Document {
     schema_version: u64,
+    #[serde(default)]
+    asset_id: Value,
     episode_results: Vec<Episode>,
 }
 
@@ -233,7 +237,7 @@ pub fn load_selected(
     let Some(bytes) = bytes else {
         return Ok(None);
     };
-    parse_document(
+    parse_with_boundary_policy(
         &bytes,
         root.file_name()
             .and_then(|name| name.to_str())
@@ -242,6 +246,11 @@ pub fn load_selected(
             name.rsplit('/').next(),
             Some("description.json" | "desorption.json")
         ),
+        !matches!(
+            name.rsplit('/').next(),
+            Some("description.json" | "desorption.json")
+        ),
+        Some(&root),
     )
     .map(|mut annotation| {
         annotation.source_name = name.into();
@@ -332,7 +341,7 @@ pub(crate) fn parse_human(bytes: &[u8], episode_name: &str) -> AppResult<Machine
 }
 
 fn parse_document(bytes: &[u8], episode_name: &str, human: bool) -> AppResult<MachineAnnotation> {
-    parse_with_boundary_policy(bytes, episode_name, human, !human)
+    parse_with_boundary_policy(bytes, episode_name, human, !human, None)
 }
 
 // A source reference for comparing descriptions, not a saved human result.
@@ -340,7 +349,7 @@ pub(crate) fn parse_review_reference(
     bytes: &[u8],
     episode_name: &str,
 ) -> AppResult<MachineAnnotation> {
-    parse_with_boundary_policy(bytes, episode_name, true, true)
+    parse_with_boundary_policy(bytes, episode_name, true, true, None)
 }
 
 fn parse_with_boundary_policy(
@@ -348,6 +357,7 @@ fn parse_with_boundary_policy(
     episode_name: &str,
     human: bool,
     allow_inference: bool,
+    root: Option<&Path>,
 ) -> AppResult<MachineAnnotation> {
     let document: Document =
         serde_json::from_slice(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes))
@@ -355,16 +365,8 @@ fn parse_with_boundary_policy(
     if ![3, 4].contains(&document.schema_version) {
         return Err(invalid("不支持的机标版本，当前支持 schema_version 3、4"));
     }
-    let mut matches = document
-        .episode_results
-        .into_iter()
-        .filter(|episode| episode.episode_id == episode_name);
-    let episode = matches
-        .next()
-        .ok_or_else(|| invalid("机标 episode_id 与当前数据目录不匹配"))?;
-    if matches.next().is_some() {
-        return Err(invalid("同一数据存在多份机标结果，无法确定当前结果"));
-    }
+    let (index, identity_warning) = identity::select(&document, episode_name, root)?;
+    let episode = document.episode_results.into_iter().nth(index).unwrap();
     if episode.media.frame_count == 0
         || episode.media.frame_count > 9_007_199_254_740_991
         || episode.annotations.len() > MAX_SEGMENTS
@@ -469,6 +471,7 @@ fn parse_with_boundary_policy(
         validation_status: quality_string("validation_status"),
         frame_count: episode.media.frame_count,
         warnings,
+        identity_warning,
         inferred_end_frames,
         segments,
     })
@@ -765,10 +768,15 @@ mod tests {
             .unwrap();
         assert!(!result.segments.is_empty());
         println!(
-            "Read {} segments, {} source frames, {} warnings",
+            "Read {} segments, {} source frames, {} warnings; identity verification: {}",
             result.segments.len(),
             result.frame_count,
-            result.warnings.len()
+            result.warnings.len(),
+            if result.identity_warning.is_some() {
+                "renamed folder verified"
+            } else {
+                "exact episode id"
+            },
         );
     }
 }

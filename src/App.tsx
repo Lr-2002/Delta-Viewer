@@ -198,6 +198,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.1.2": "修复目录编号变更后机标无法加载：来源指纹及帧数核验一致时兼容读取，显示编号差异；无法核实仍阻止误配，保留原机标及人工结果。",
   "1.1.1": "修复 GitHub 更新检查的系统代理兼容性；短暂网络异常自动重试，取消重复清单请求，并明确显示失败环节与原因。",
   "1.1.0": "修复任务中心新增目录漏更新，已完成批次隐藏“仅未审核”；本版 1.1.0，后续末位满 9 进位。",
   "1.0.63": "更新改从 GitHub 正式 Release 获取；启动后台检查，主动下载，保存后重启安装，并显示一次新版摘要。",

@@ -462,6 +462,7 @@ export interface MachineSegment {
 }
 
 export interface MachineAnnotation {
+  identityWarning?: string | null;
   inferredEndFrames?: number[];
   sourceName?: string;
   sourceHash?: string;
