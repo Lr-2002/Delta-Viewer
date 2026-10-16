@@ -854,6 +854,33 @@ test("rejection reasons drag without selecting, persist per account and keep oth
   } finally { await context.close(); }
 });
 
+test("verified renamed machine identity stays visible with the original number on desktop and narrow screens", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  await page.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const warning = '当前目录 "renamed_001" 与机标编号 "original_009" 不同；已核对主相机文件列表、大小、修改时间指纹及帧数。原机标未修改，请回放核对动作内容。';
+    const body = original.replace('model: "Demo model",', `model: "Demo model", identityWarning: ${JSON.stringify(warning)},`);
+    assert.notEqual(body, original);
+    await route.fulfill({ response, body });
+  });
+  try {
+    await open(page, "machineAnnotation=present");
+    const notice = page.getByRole("region", { name: "机标编号核对提示" });
+    await notice.waitFor();
+    assert.match(await notice.innerText(), /renamed_001.*original_009/);
+    assert.equal(await page.getByLabel("复核动作描述").isEnabled(), true);
+    for (const width of [1440, 960, 390]) {
+      await page.setViewportSize({ width, height: 920 });
+      await notice.scrollIntoViewIfNeeded();
+      const box = await notice.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    }
+    await page.screenshot({ path: "artifacts/unified-proofreading/verified-identity.png" });
+  } finally { await page.close(); }
+});
+
 test("inferred machine boundary stays visible and requires explicit review before approval", async () => {
   const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
   await page.route("**/src/lib/backend.ts", async route => {

@@ -706,6 +706,7 @@ pub struct MachineAnnotation {
     pub validation_status: Option<String>,
     pub frame_count: u64,
     pub warnings: Vec<String>,
+    pub identity_warning: Option<String>,
     pub inferred_end_frames: Vec<usize>,
     pub segments: Vec<MachineSegment>,
 }
