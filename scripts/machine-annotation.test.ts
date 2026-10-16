@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addReviewSegment, splitReviewSegment, deleteReviewSegment, restoreReviewSegments, adjustReviewBoundary, machineSegmentRange, machineTimelineMapping } from "../src/lib/machine-annotation.ts";
+import { recoverReviewSegments, addReviewSegment, splitReviewSegment, deleteReviewSegment, restoreReviewSegments, adjustReviewBoundary, machineSegmentRange, machineTimelineMapping } from "../src/lib/machine-annotation.ts";
 import type { ReviewSegment } from "../src/types.ts";
 
 test("the first human segment covers the full video even when playback is in the middle", () => {
@@ -98,4 +98,22 @@ test("reason order migrates valid labels, appends new reasons and pins other las
   assert.deepEqual(reorderReason(order, "骨架抖动", "其他原因"), order);
   assert.equal(reorderReason(order, "动作失范", "动作过快")[0], "动作失范");
   assert.deepEqual(normalizeReasonOrder({ invalid: true }), REJECTION_REASONS);
+});
+
+
+test("old emergency rows repair technical ids and statuses while preserving text and boundaries", () => {
+  const rows = [{sourceIndex:0,startFrame:0,endFrame:9,description:"原文字",decision:"pending"}, {sourceIndex:0,startFrame:10,endFrame:19,description:"人工文字",decision:"legacy"}];
+  const restored = recoverReviewSegments(rows, 30);
+  assert.equal(restored.repaired, true);
+  assert.equal(new Set(restored.segments!.map(s => s.sourceIndex)).size, 2);
+  assert.deepEqual(restored.segments!.map(s => [s.startFrame,s.endFrame,s.description]), [[0,9,"原文字"],[10,19,"人工文字"]]);
+  assert.equal(restored.segments![1].decision,"pending");
+  assert.equal(rows[1].sourceIndex,0);
+  assert.equal(rows[1].decision,"legacy");
+});
+
+test("old emergency invalid ranges and formats never overwrite the loaded source", () => {
+  for (const value of [null, {}, [null], [{sourceIndex:0,startFrame:0,endFrame:30,description:"旧草稿"}], [{sourceIndex:0,startFrame:10,endFrame:5,description:"旧草稿"}], [{sourceIndex:0,startFrame:-1,endFrame:2,description:"旧草稿"}]]) {
+    assert.equal(recoverReviewSegments(value,30).segments,null);
+  }
 });

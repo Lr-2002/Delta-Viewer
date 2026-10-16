@@ -14,6 +14,31 @@ export function machineTimelineMapping(annotation: MachineAnnotation, stream: St
   return { error: null, offset: stream.firstFrame, step };
 }
 
+// Restore emergency edits without submitting stale/invalid indices or ranges.
+// Range errors preserve the raw snapshot and let the caller keep the loaded source.
+export function recoverReviewSegments(value: unknown, frameCount: number): { segments: ReviewSegment[] | null; repaired: boolean } {
+  if (!Array.isArray(value) || value.length > 2000) return { segments: null, repaired: false };
+  const used = new Set<number>();
+  let next = value.length + 2000;
+  let repaired = false;
+  const segments: ReviewSegment[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return { segments: null, repaired: false };
+    const item = entry as Partial<ReviewSegment>;
+    if (!Number.isSafeInteger(item.startFrame) || !Number.isSafeInteger(item.endFrame) || item.startFrame! < 0 || item.startFrame! > item.endFrame! || item.endFrame! >= frameCount || typeof item.description !== "string" || new TextEncoder().encode(item.description).length > 16384) return { segments: null, repaired: false };
+    let index = item.sourceIndex;
+    if (!Number.isSafeInteger(index) || index! < 0 || used.has(index!)) {
+      while (used.has(next) || value.some(other => other?.sourceIndex === next)) next++;
+      index = next++; repaired = true;
+    }
+    used.add(index!);
+    const decision = ["pending", "approved", "rejected"].includes(item.decision ?? "") ? item.decision! : "pending";
+    repaired ||= decision !== item.decision;
+    segments.push({ sourceIndex: index!, startFrame: item.startFrame!, endFrame: item.endFrame!, description: item.description, deleted: item.deleted === true, decision });
+  }
+  return { segments, repaired };
+}
+
 export function machineSegmentRange(segment: MachineSegment, offset: number, step: number): ExportRange {
   return { startFrame: offset + segment.startFrame * step, endFrame: offset + (segment.endFrame + 1) * step - 1 };
 }

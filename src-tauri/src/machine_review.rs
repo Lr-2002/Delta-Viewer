@@ -33,6 +33,8 @@ pub struct ReviewSegment {
 pub struct ReviewState {
     #[serde(default)]
     pub reviewer_username: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recovery_warnings: Vec<String>,
     #[serde(default)]
     pub rejection_reason: String,
     #[serde(default)]
@@ -188,6 +190,7 @@ fn draft_path(data_root: &Path, root: &Path) -> PathBuf {
 
 fn initial(annotation: &MachineAnnotation) -> ReviewState {
     ReviewState {
+        recovery_warnings: Vec::new(),
         rejection_reason: String::new(),
         change_summary: String::new(),
         revision_label: String::new(),
@@ -223,6 +226,51 @@ fn load_inner(
     root: &Path,
     annotation: &MachineAnnotation,
 ) -> AppResult<ReviewState> {
+    match load_inner_checked(data_root, root, annotation) {
+        Ok(state) => Ok(state),
+        Err(error)
+            if matches!(&error, AppError::Json(_))
+                || matches!(&error, AppError::Message(message) if message.starts_with("MACHINE_ANNOTATION_INVALID:")) =>
+        {
+            // An unreadable old human/draft file must not hide a readable model.
+            // Preserve exact bytes first; permission/IO errors still propagate.
+            let draft = selected_draft_path(data_root, root, annotation);
+            let mut backups = Vec::new();
+            for path in [
+                draft.clone(),
+                draft.with_extension("pending.json"),
+                root.join(output_name(annotation)),
+                root.join(
+                    if annotation.source_name == machine_annotation::FLASH_SOURCE {
+                        LEGACY_FLASH_OUTPUT
+                    } else {
+                        LEGACY_OUTPUT
+                    },
+                ),
+            ] {
+                if let Some(bytes) = machine_annotation::read_bytes(&path)? {
+                    backups.push(preserve_recovery_bytes(data_root, &bytes)?);
+                }
+            }
+            let mut state = initial(annotation);
+            state.output_hash =
+                machine_annotation::read_bytes(&root.join(output_name(annotation)))?
+                    .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
+            state.recovery_warnings = vec![format!(
+                "旧人工记录或本机草稿无法解析，已保留原字节并载入机标片段；原因：{error}。本机备份：{}。请核对后保存，加载未改写人工结果或 QC。",
+                backups.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("；")
+            )];
+            Ok(state)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn load_inner_checked(
+    data_root: &Path,
+    root: &Path,
+    annotation: &MachineAnnotation,
+) -> AppResult<ReviewState> {
     let draft_path = selected_draft_path(data_root, root, annotation);
     let draft = machine_annotation::read_bytes(&draft_path)?
         .map(|bytes| serde_json::from_slice::<ReviewState>(&bytes))
@@ -251,22 +299,19 @@ fn load_inner(
                 .as_ref()
                 .is_none_or(|old| old.revision < pending.revision)
         {
-            validate(annotation, &pending.segments)?;
-            return Ok(pending);
+            return recover_loaded_state(data_root, root, annotation, pending);
         }
     }
     if let Some(draft) = draft {
         if draft.output_hash == output_hash {
-            validate(annotation, &draft.segments)?;
-            return Ok(draft);
+            return recover_loaded_state(data_root, root, annotation, draft);
         }
         // The shared human description is authoritative after another host saves.
         // Keep the local draft on disk until the next successful save.
         if output.is_none() {
             let mut retained = draft;
             retained.output_hash = None;
-            validate(annotation, &retained.segments)?;
-            return Ok(retained);
+            return recover_loaded_state(data_root, root, annotation, retained);
         }
     }
     if let Some(bytes) = output {
@@ -278,9 +323,10 @@ fn load_inner(
                 ));
             }
             let mut state = if document.get("episode_results").is_some() {
-                initial(&machine_annotation::parse_human(
+                initial(&machine_annotation::parse_human_in_directory(
                     &bytes,
                     &annotation.episode_id,
+                    root,
                 )?)
             } else {
                 initial(annotation)
@@ -306,7 +352,8 @@ fn load_inner(
         // Re-read the actual human annotations as well as the review metadata.
         // This includes edits made directly to description.json outside Viewer.
         if document.get("episode_results").is_some() {
-            let human = machine_annotation::parse_human(&bytes, &annotation.episode_id)?;
+            let human =
+                machine_annotation::parse_human_in_directory(&bytes, &annotation.episode_id, root)?;
             let mut retained: Vec<_> = state
                 .segments
                 .iter()
@@ -401,8 +448,7 @@ fn load_inner(
                 );
             state.segments.sort_by_key(|item| item.source_index);
         }
-        validate(annotation, &state.segments)?;
-        return Ok(state);
+        return recover_loaded_state(data_root, root, annotation, state);
     }
     Ok(initial(annotation))
 }
@@ -426,19 +472,149 @@ pub fn load_selected(
     load_inner(data_root, &root, &annotation)
 }
 
+// Legacy/local state can outlive a directory rename or a replacement model.
+// Preserve the full input before repairing technical indices/status. Never clamp
+// a human time range to make it look valid, and never write source files on load.
+fn recover_loaded_state(
+    data_root: &Path,
+    root: &Path,
+    annotation: &MachineAnnotation,
+    mut state: ReviewState,
+) -> AppResult<ReviewState> {
+    let validation = if ["pending", "approved", "rejected"].contains(&state.status.as_str()) {
+        validate(annotation, &state.segments)
+    } else {
+        Err(failure("旧记录的整体审核状态无效"))
+    };
+    let Err(error) = validation else {
+        return Ok(state);
+    };
+    let backup = preserve_recovery_bytes(data_root, &serde_json::to_vec(&state)?)?;
+    let draft = selected_draft_path(data_root, root, annotation);
+    for path in [
+        draft.clone(),
+        draft.with_extension("pending.json"),
+        root.join(output_name(annotation)),
+    ] {
+        if let Some(bytes) = machine_annotation::read_bytes(&path)? {
+            preserve_recovery_bytes(data_root, &bytes)?;
+        }
+    }
+    let mut reserved: BTreeSet<_> = state
+        .segments
+        .iter()
+        .map(|item| item.source_index)
+        .collect();
+    let mut used = BTreeSet::new();
+    let mut next_index = annotation.segments.len();
+    for item in &mut state.segments {
+        if !used.insert(item.source_index) {
+            while reserved.contains(&next_index) {
+                next_index += 1;
+            }
+            item.source_index = next_index;
+            used.insert(next_index);
+            reserved.insert(next_index);
+            next_index += 1;
+        }
+        if !["pending", "approved", "rejected"].contains(&item.decision.as_str()) {
+            item.decision = pending_status();
+        }
+    }
+    let repair = if validate(annotation, &state.segments).is_ok() {
+        "已修复旧记录重复索引或不兼容状态，保留动作描述与帧边界"
+    } else {
+        // Invalid human ranges are kept in the recovery snapshot, not silently
+        // rescaled, truncated, or submitted as a completed human result.
+        state.segments = initial(annotation).segments;
+        "旧人工片段范围与当前机标不兼容，已重新载入机标片段；原人工内容保存在本机恢复备份中"
+    };
+    state.status = pending_status();
+    for item in &mut state.segments {
+        item.decision = pending_status();
+    }
+    state.rejection_reason.clear();
+    state.recovery_warnings = vec![format!("{repair}。原因：{error}。恢复备份：{}；请核对后再保存。加载过程未改写共享目录中的人工结果。", backup.display())];
+    Ok(state)
+}
+
+fn preserve_recovery_bytes(data_root: &Path, bytes: &[u8]) -> AppResult<PathBuf> {
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(failure("恢复记录超过 8 MiB"));
+    }
+    let directory = data_root.join("machine-review-recovery");
+    fs::create_dir_all(&directory)?;
+    let hash = blake3::hash(bytes).to_hex().to_string();
+    let destination = directory.join(format!("{hash}.json"));
+    if let Some(existing) = machine_annotation::read_bytes(&destination)? {
+        if existing != bytes {
+            return Err(failure("恢复备份校验失败，原记录未修改"));
+        }
+        return Ok(destination);
+    }
+    let partial = directory.join(format!(
+        ".{hash}.partial-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let result = (|| -> AppResult<()> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&partial)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        if machine_annotation::read_bytes(&partial)?.as_deref() != Some(bytes) {
+            return Err(failure("恢复备份回读失败，原记录未修改"));
+        }
+        storage::publish_noreplace(&partial, &destination)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    result?;
+    Ok(destination)
+}
+
 fn validate(annotation: &MachineAnnotation, edits: &[ReviewSegment]) -> AppResult<()> {
     if edits.len() > 2000 {
         return Err(failure("片段数量超过 2000"));
     }
     let mut seen = BTreeSet::new();
-    for edit in edits {
-        if !seen.insert(edit.source_index)
-            || edit.start_frame > edit.end_frame
-            || edit.end_frame >= annotation.frame_count
-            || edit.description.len() > 16_384
-            || !["pending", "approved", "rejected"].contains(&edit.decision.as_str())
-        {
-            return Err(failure("片段范围、状态或索引无效"));
+    for (position, edit) in edits.iter().enumerate() {
+        let problem = if !seen.insert(edit.source_index) {
+            Some(format!("原始索引 {} 重复", edit.source_index))
+        } else if edit.start_frame > edit.end_frame || edit.end_frame >= annotation.frame_count {
+            Some(format!(
+                "帧范围 [{}, {}] 无效，允许范围为 [0, {}]",
+                edit.start_frame,
+                edit.end_frame,
+                annotation.frame_count.saturating_sub(1)
+            ))
+        } else if edit.description.len() > 16_384 {
+            Some("动作描述超过 16384 字节".into())
+        } else if !["pending", "approved", "rejected"].contains(&edit.decision.as_str()) {
+            Some(format!(
+                "审核状态 {} 无效",
+                serde_json::to_string(&edit.decision.chars().take(60).collect::<String>())?
+            ))
+        } else {
+            None
+        };
+        if let Some(problem) = problem {
+            return Err(failure(&format!(
+                "第 {} 个片段（索引 {}）：{problem}；原记录未覆盖",
+                position + 1,
+                edit.source_index
+            )));
         }
     }
     Ok(())
@@ -456,6 +632,9 @@ fn reviewed_document(annotation: &MachineAnnotation, state: &ReviewState) -> App
         .iter_mut()
         .find(|entry| entry["episode_id"].as_str() == Some(&annotation.episode_id))
         .ok_or_else(|| failure("机标记录不存在"))?;
+    if annotation.timeline_warning.is_some() {
+        episode["media"]["frame_count"] = json!(annotation.frame_count);
+    }
     let base = episode["media"]["frame_index_base"].as_u64().unwrap_or(0);
     let exclusive = episode["media"]["interval_convention"].as_str() != Some("[start,end]");
     let edits: BTreeMap<_, _> = state
@@ -652,14 +831,31 @@ fn human_document(
     if document.get("episode_results").is_none() {
         document = serde_json::from_str(&annotation.source_json)?;
     }
+    let selected_id = if document["episode_results"].as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item["episode_id"].as_str() == Some(&annotation.episode_id))
+    }) {
+        annotation.episode_id.clone()
+    } else {
+        machine_annotation::parse_human_in_directory(
+            &serde_json::to_vec(&document)?,
+            &annotation.episode_id,
+            root,
+        )?
+        .episode_id
+    };
     let episode = document["episode_results"]
         .as_array_mut()
         .and_then(|items| {
             items
                 .iter_mut()
-                .find(|item| item["episode_id"].as_str() == Some(&annotation.episode_id))
+                .find(|item| item["episode_id"].as_str() == Some(&selected_id))
         })
         .ok_or_else(|| failure("人工 description 中未找到当前记录"))?;
+    if annotation.timeline_warning.is_some() {
+        episode["media"]["frame_count"] = json!(annotation.frame_count);
+    }
     let base = episode["media"]["frame_index_base"].as_u64().unwrap_or(0);
     let exclusive = episode["media"]["interval_convention"].as_str() != Some("[start,end]");
     let mut rows = Vec::new();
@@ -896,6 +1092,7 @@ fn reject_pending_without_media(
         .insert(username.into(), shared);
     atomic_json(&session_path, &session)?;
     Ok(Some(ReviewState {
+        recovery_warnings: Vec::new(),
         reviewer_username: username.into(),
         rejection_reason: reason.into(),
         change_summary: "媒体不可用；不通过".into(),
@@ -963,7 +1160,12 @@ fn save_for_user_mode(
     }
     let previous_draft = machine_annotation::read_bytes(&draft)?
         .map(|bytes| serde_json::from_slice::<ReviewState>(&bytes))
-        .transpose()?;
+        .transpose();
+    let previous_draft = match previous_draft {
+        Ok(draft) => draft,
+        Err(_) if !current.recovery_warnings.is_empty() => None,
+        Err(error) => return Err(error.into()),
+    };
     let rebased = request.source_hash != annotation.source_hash
         || request.expected_revision != current.revision
         || previous_draft
@@ -1009,6 +1211,7 @@ fn save_for_user_mode(
         review_change_summary(&current, &request.segments, &status, &rejection_reason);
     let revision_label = format!("{version_id} · {change_summary}");
     let mut state = ReviewState {
+        recovery_warnings: Vec::new(),
         workflow_version: 4,
         rejection_reason,
         change_summary,
@@ -1691,7 +1894,16 @@ mod tests {
             b"invalid json",
         )
         .unwrap();
-        assert!(machine_annotation::load_for_review(&fixture.root, None).is_err());
+        let compatible = machine_annotation::load_for_review(&fixture.root, None)
+            .unwrap()
+            .unwrap();
+        assert!(compatible.source_name.ends_with("description.json"));
+        assert_eq!(compatible.segments.len(), 2);
+        assert!(machine_annotation::load_for_review(
+            &fixture.root,
+            Some(machine_annotation::DEFAULT_SOURCE)
+        )
+        .is_err());
     }
 
     struct Fixture {
@@ -2597,6 +2809,167 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn old_duplicate_indices_and_status_restore_without_losing_human_edits() {
+        let f = Fixture::new(0, true);
+        let mut old = load(&f.local, &f.root).unwrap();
+        old.segments[1].source_index = 0;
+        old.segments[2].source_index = 3;
+        old.segments[1].decision = "legacy-status".into();
+        old.segments[1].description = "保留人工修改的文字".into();
+        let path = draft_path(&f.local, &f.root.canonicalize().unwrap());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = serde_json::to_vec(&old).unwrap();
+        fs::write(&path, &original).unwrap();
+        let restored = load(&f.local, &f.root).unwrap();
+        assert_eq!(restored.segments[1].description, "保留人工修改的文字");
+        assert_eq!(restored.segments[1].start_frame, 10);
+        assert_eq!(restored.segments[1].end_frame, 19);
+        assert_eq!(restored.segments[2].source_index, 3);
+        assert_ne!(restored.segments[1].source_index, 3);
+        assert_eq!(
+            restored
+                .segments
+                .iter()
+                .map(|s| s.source_index)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            3
+        );
+        assert!(!restored.recovery_warnings.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!f.root.join(OUTPUT).exists());
+        let backup = f
+            .local
+            .join("machine-review-recovery")
+            .join(format!("{}.json", blake3::hash(&original).to_hex()));
+        assert_eq!(fs::read(backup).unwrap(), original);
+        let saved = f.save(&restored).unwrap();
+        assert!(saved.recovery_warnings.is_empty());
+        assert_eq!(
+            load(&f.temp.join("fresh"), &f.root)
+                .unwrap()
+                .segments
+                .iter()
+                .filter(|s| !s.deleted)
+                .count(),
+            3
+        );
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            f.original
+        );
+    }
+
+    #[test]
+    fn unreadable_human_or_local_draft_keeps_the_machine_readable_and_original_backed_up() {
+        for broken_draft in [false, true] {
+            let f = Fixture::new(0, true);
+            let path = if broken_draft {
+                draft_path(&f.local, &f.root.canonicalize().unwrap())
+            } else {
+                f.root.join(OUTPUT)
+            };
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let original = b"{\"old\": incomplete";
+            fs::write(&path, original).unwrap();
+            let restored = load(&f.local, &f.root).unwrap();
+            assert_eq!(restored.segments.len(), 3);
+            assert_eq!(restored.status, "pending");
+            assert!(!restored.recovery_warnings.is_empty());
+            assert_eq!(fs::read(&path).unwrap(), original);
+            assert!(!f.root.join("session.json").exists());
+            let backup = f
+                .local
+                .join("machine-review-recovery")
+                .join(format!("{}.json", blake3::hash(original).to_hex()));
+            assert_eq!(fs::read(backup).unwrap(), original);
+            let saved = f.save(&restored).unwrap();
+            assert_eq!(saved.segments.len(), 3);
+            assert!(saved.recovery_warnings.is_empty());
+            assert_eq!(
+                fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+                f.original
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_old_ranges_preserve_exact_backup_and_load_the_machine_without_writing_qc() {
+        let f = Fixture::new(0, true);
+        let mut old = load(&f.local, &f.root).unwrap();
+        old.segments[0].end_frame = 900;
+        old.segments[0].description = "旧草稿越界内容保留".into();
+        let path = draft_path(&f.local, &f.root.canonicalize().unwrap());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = serde_json::to_vec(&old).unwrap();
+        fs::write(&path, &original).unwrap();
+        let restored = load(&f.local, &f.root).unwrap();
+        assert_eq!(restored.segments[0].end_frame, 9);
+        assert!(restored.recovery_warnings[0].contains("[0, 900]"));
+        assert_eq!(restored.status, "pending");
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!f.root.join(OUTPUT).exists());
+        assert!(!f.root.join("session.json").exists());
+        assert!(f
+            .save(&old)
+            .unwrap_err()
+            .to_string()
+            .contains("第 1 个片段"));
+        assert!(f.save(&restored).is_ok());
+        let backup = f
+            .local
+            .join("machine-review-recovery")
+            .join(format!("{}.json", blake3::hash(&original).to_hex()));
+        assert_eq!(fs::read(backup).unwrap(), original);
+    }
+
+    #[test]
+    fn legacy_shared_status_is_recovered_read_only_and_does_not_claim_approval() {
+        let f = Fixture::new(0, true);
+        let state = load(&f.local, &f.root).unwrap();
+        f.save(&state).unwrap();
+        let mut doc = f.output();
+        doc["_human_review"]["status"] = json!("legacy-approved");
+        let original = serde_json::to_vec(&doc).unwrap();
+        fs::write(f.root.join(OUTPUT), &original).unwrap();
+        let fresh = f.temp.join("fresh");
+        let restored = load(&fresh, &f.root).unwrap();
+        assert_eq!(restored.status, "pending");
+        assert!(!restored.recovery_warnings.is_empty());
+        assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), original);
+        let backup = fresh
+            .join("machine-review-recovery")
+            .join(format!("{}.json", blake3::hash(&original).to_hex()));
+        assert_eq!(fs::read(backup).unwrap(), original);
+    }
+
+    #[test]
+    fn human_result_with_old_directory_id_is_loaded_and_resaved_after_relocation() {
+        let f = Fixture::new(0, true);
+        let state = load(&f.local, &f.root).unwrap();
+        f.save(&state).unwrap();
+        let mut doc = f.output();
+        doc["episode_results"][0]["episode_id"] = json!("original_folder_009");
+        doc["asset_id"] = json!("original_folder_009");
+        doc["_human_review"]["sourceHash"] = json!("older-model-hash");
+        let original = serde_json::to_vec(&doc).unwrap();
+        fs::write(f.root.join(OUTPUT), &original).unwrap();
+        let restored = load(&f.temp.join("fresh"), &f.root).unwrap();
+        assert_eq!(restored.segments.len(), 3);
+        assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), original);
+        let saved = f.save(&restored).unwrap();
+        assert_eq!(saved.status, "pending");
+        assert_eq!(
+            f.output()["episode_results"][0]["episode_id"],
+            "original_folder_009"
+        );
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            f.original
+        );
     }
 
     #[test]

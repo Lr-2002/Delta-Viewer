@@ -224,17 +224,44 @@ pub fn load_selected(
     source_name: Option<&str>,
 ) -> AppResult<Option<MachineAnnotation>> {
     let root = fs::canonicalize(root)?;
-    let (name, bytes) = match source_name {
-        Some(name) => {
-            validate_source_name(name)?;
-            (name, read_source_bytes(&root, name)?)
+    if let Some(name) = source_name {
+        validate_source_name(name)?;
+        return load_named(&root, name);
+    }
+    let mut first_error = None;
+    for name in [FLASH_SOURCE, DEFAULT_SOURCE] {
+        match load_named(&root, name) {
+            Ok(Some(annotation)) => return Ok(Some(annotation)),
+            Ok(None) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
         }
-        None => match read_source_bytes(&root, FLASH_SOURCE)? {
-            Some(bytes) => (FLASH_SOURCE, Some(bytes)),
-            None => (DEFAULT_SOURCE, read_source_bytes(&root, DEFAULT_SOURCE)?),
-        },
-    };
-    let Some(bytes) = bytes else {
+    }
+    // Discover other Bailian exports and human results only when the preferred
+    // conventional files could not be loaded; don't add directory IO to the hot path.
+    for name in list_sources(&root)?.into_iter().take(64) {
+        match load_named(&root, &name) {
+            Ok(Some(mut annotation)) => {
+                if first_error.is_some() {
+                    annotation.warnings.push("优先机标来源无法解析，已兼容读取当前目录中的其他 JSON 来源，可在机标来源菜单切换。".into());
+                }
+                return Ok(Some(annotation));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(None),
+    }
+}
+
+fn load_named(root: &Path, name: &str) -> AppResult<Option<MachineAnnotation>> {
+    let Some(bytes) = read_source_bytes(root, name)? else {
         return Ok(None);
     };
     parse_with_boundary_policy(
@@ -250,7 +277,7 @@ pub fn load_selected(
             name.rsplit('/').next(),
             Some("description.json" | "desorption.json")
         ),
-        Some(&root),
+        Some(root),
     )
     .map(|mut annotation| {
         annotation.source_name = name.into();
@@ -344,6 +371,14 @@ fn parse_document(bytes: &[u8], episode_name: &str, human: bool) -> AppResult<Ma
     parse_with_boundary_policy(bytes, episode_name, human, !human, None)
 }
 
+pub(crate) fn parse_human_in_directory(
+    bytes: &[u8],
+    episode_name: &str,
+    root: &Path,
+) -> AppResult<MachineAnnotation> {
+    parse_with_boundary_policy(bytes, episode_name, true, false, Some(root))
+}
+
 // A source reference for comparing descriptions, not a saved human result.
 pub(crate) fn parse_review_reference(
     bytes: &[u8],
@@ -365,7 +400,8 @@ fn parse_with_boundary_policy(
     if ![3, 4].contains(&document.schema_version) {
         return Err(invalid("不支持的机标版本，当前支持 schema_version 3、4"));
     }
-    let (index, identity_warning) = identity::select(&document, episode_name, root)?;
+    let (index, identity_warning, identity_verified) =
+        identity::select(&document, episode_name, root)?;
     let episode = document.episode_results.into_iter().nth(index).unwrap();
     if episode.media.frame_count == 0
         || episode.media.frame_count > 9_007_199_254_740_991
@@ -373,6 +409,10 @@ fn parse_with_boundary_policy(
     {
         return Err(invalid("帧数无效或机标片段超过 2000 条"));
     }
+    let camera_frames = root
+        .and_then(|root| crate::source::review_camera_summary(root).ok())
+        .map(|camera| camera.frame_count)
+        .filter(|count| *count > 0 && *count <= 9_007_199_254_740_991);
     let mut warnings = Vec::new();
     let exclusive = match episode.media.interval_convention.as_deref() {
         Some("[start,end)") => true,
@@ -419,8 +459,13 @@ fn parse_with_boundary_policy(
         let (Some(start), Some(end)) = (start, end) else {
             return Err(invalid("机标片段帧范围无效"));
         };
-        if start > end || end >= episode.media.frame_count {
-            return Err(invalid("机标片段为空、倒序或超出视频帧数"));
+        if start > end || end >= camera_frames.unwrap_or(0).max(episode.media.frame_count) {
+            return Err(invalid(&format!(
+                "第 {} 个机标片段为空、倒序或超出已知视频帧数，原范围 [{}, {}]",
+                source_index + 1,
+                annotation.start_frame,
+                end_frame
+            )));
         }
         let attributes = attributes_map(&annotation.attributes)?;
         let attributes_zh = attributes_map(&annotation.attributes_zh)?;
@@ -460,6 +505,17 @@ fn parse_with_boundary_policy(
     if let Some(issues) = episode.quality.get("issues").and_then(Value::as_array) {
         warnings.extend(issues.iter().filter_map(Value::as_str).map(String::from));
     }
+    let frame_count = camera_frames
+        .filter(|count| {
+            *count > 0
+                && *count <= 9_007_199_254_740_991
+                && segments.iter().all(|segment| segment.end_frame < *count)
+        })
+        .unwrap_or(episode.media.frame_count);
+    let timeline_warning = (frame_count != episode.media.frame_count).then(|| format!(
+        "机标声明 {} 帧，当前视频 {} 帧；所有片段均在当前视频范围内，已按实际视频帧数加载。原始片段边界未缩放、未截断，原机标未修改。",
+        episode.media.frame_count, frame_count,
+    ));
     Ok(MachineAnnotation {
         source_name: DEFAULT_SOURCE.into(),
         source_hash: blake3::hash(bytes).to_hex().to_string(),
@@ -469,9 +525,11 @@ fn parse_with_boundary_policy(
         model: quality_string("model"),
         completed_at: episode.completed_at,
         validation_status: quality_string("validation_status"),
-        frame_count: episode.media.frame_count,
+        frame_count,
+        timeline_warning,
         warnings,
         identity_warning,
+        identity_verified,
         inferred_end_frames,
         segments,
     })
@@ -735,7 +793,11 @@ mod tests {
         assert_eq!(selected.source_json.as_bytes(), flash_bytes);
         assert_eq!(load(&root).unwrap().unwrap().source_json.as_bytes(), bytes);
         fs::write(metadata.join(FLASH_SOURCE), b"invalid json").unwrap();
-        assert!(load_selected(&root, None).is_err());
+        assert_eq!(
+            load_selected(&root, None).unwrap().unwrap().source_name,
+            DEFAULT_SOURCE
+        );
+        assert!(load_selected(&root, Some(FLASH_SOURCE)).is_err());
         fs::remove_file(metadata.join(FLASH_SOURCE)).unwrap();
         assert_eq!(
             load_selected(&root, None).unwrap().unwrap().source_name,
@@ -759,6 +821,25 @@ mod tests {
     }
 
     #[test]
+    fn automatic_loading_discovers_other_bailian_json_without_conventional_names() {
+        let temp = std::env::temp_dir().join(format!(
+            "viewer-other-machine-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp.join("sample");
+        fs::create_dir_all(root.join(".session_meta")).unwrap();
+        let bytes = serde_json::to_vec(&fixture()).unwrap();
+        fs::write(root.join("bailian_other_model.json"), &bytes).unwrap();
+        let loaded = load_selected(&root, None).unwrap().unwrap();
+        assert_eq!(loaded.source_name, "./bailian_other_model.json");
+        assert_eq!(loaded.source_json.as_bytes(), bytes);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     #[ignore = "Requires an explicitly selected private NAS episode"]
     fn reads_selected_nas_machine_annotation() {
         let path = std::env::var("DOHC_MACHINE_SAMPLE_ROOT").unwrap();
@@ -772,8 +853,10 @@ mod tests {
             result.segments.len(),
             result.frame_count,
             result.warnings.len(),
-            if result.identity_warning.is_some() {
+            if result.identity_warning.is_some() && result.identity_verified {
                 "renamed folder verified"
+            } else if result.identity_warning.is_some() {
+                "directory compatibility; source unverified"
             } else {
                 "exact episode id"
             },

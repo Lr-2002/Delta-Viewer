@@ -860,7 +860,7 @@ test("verified renamed machine identity stays visible with the original number o
     const response = await route.fetch();
     const original = await response.text();
     const warning = '当前目录 "renamed_001" 与机标编号 "original_009" 不同；已核对主相机文件列表、大小、修改时间指纹及帧数。原机标未修改，请回放核对动作内容。';
-    const body = original.replace('model: "Demo model",', `model: "Demo model", identityWarning: ${JSON.stringify(warning)},`);
+    const body = original.replace('model: "Demo model",', `model: "Demo model", identityWarning: ${JSON.stringify(warning)}, identityVerified: true,`);
     assert.notEqual(body, original);
     await route.fulfill({ response, body });
   });
@@ -878,6 +878,44 @@ test("verified renamed machine identity stays visible with the original number o
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     }
     await page.screenshot({ path: "artifacts/unified-proofreading/verified-identity.png" });
+  } finally { await page.close(); }
+});
+
+test("compatible unverified identity stays editable without claiming verification", async () => {
+  const page = await browser.newPage({ viewport: { width: 960, height: 680 } });
+  await page.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const body = original.replace('model: "Demo model",', 'model: "Demo model", identityWarning: "编号不同；已按同目录文件兼容读取，来源尚未核实。", identityVerified: false,');
+    assert.notEqual(body, original);
+    await route.fulfill({ response, body });
+  });
+  try {
+    await open(page, "machineAnnotation=present");
+    const notice = page.getByRole("region", {name:"机标编号核对提示"});
+    await notice.waitFor();
+    assert.match(await notice.innerText(), /已兼容读取/);
+    assert.doesNotMatch(await notice.innerText(), /核验已通过/);
+    await page.getByLabel("复核动作描述").fill("人工兼容后修改动作");
+    await page.waitForTimeout(500);
+    assert.equal(await page.getByLabel("复核动作描述").inputValue(), "人工兼容后修改动作");
+    await page.setViewportSize({width:390,height:844});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),true);
+  } finally { await page.close(); }
+});
+
+test("incompatible emergency snapshot is preserved while machine rows load normally", async () => {
+  const page = await browser.newPage({ viewport: { width: 960, height: 680 } });
+  await page.addInitScript(() => {
+    localStorage.setItem("dohc.machine-review.pending:demo://session-activation/session-a:account:review-test", JSON.stringify({segments:[{sourceIndex:0,startFrame:0,endFrame:999999,description:"需要保留的旧人工文字",decision:"pending"}],status:"pending",sourceHash:"old"}));
+  });
+  try {
+    await open(page,"demoScenario=session-activation&machineAnnotation=present");
+    const notice = page.getByRole("region",{name:"人工记录兼容恢复提示"});
+    await notice.waitFor();
+    assert.match(await notice.innerText(),/本机备份/);
+    assert.equal(await page.getByLabel("复核动作描述").isEnabled(),true);
+    assert.equal(await page.evaluate(() => Object.entries(localStorage).some(([key,value])=>key.includes(":preserved:")&&value.includes("需要保留的旧人工文字"))),true);
   } finally { await page.close(); }
 });
 

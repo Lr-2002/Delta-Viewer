@@ -463,6 +463,8 @@ export interface MachineSegment {
 
 export interface MachineAnnotation {
   identityWarning?: string | null;
+  identityVerified?: boolean;
+  timelineWarning?: string | null;
   inferredEndFrames?: number[];
   sourceName?: string;
   sourceHash?: string;
@@ -497,6 +499,7 @@ export interface AccountReview {
 }
 
 export interface MachineReview {
+  recoveryWarnings?: string[];
   reviewerUsername?: string;
   rejectionReason?: string;
   revisionLabel?: string;
