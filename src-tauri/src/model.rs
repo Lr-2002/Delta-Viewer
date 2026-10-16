@@ -709,6 +709,7 @@ pub struct MachineAnnotation {
     pub identity_warning: Option<String>,
     pub identity_verified: bool,
     pub timeline_warning: Option<String>,
+    pub attribute_warnings: Vec<String>,
     pub inferred_end_frames: Vec<usize>,
     pub segments: Vec<MachineSegment>,
 }

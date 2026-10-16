@@ -2461,6 +2461,54 @@ mod tests {
     }
 
     #[test]
+    fn malformed_optional_attributes_survive_edits_approval_and_fresh_reload() {
+        let f = Fixture::new(0, true);
+        let mut document: Value = serde_json::from_slice(&f.original).unwrap();
+        let row = &mut document["episode_results"][0]["annotations"][1];
+        row["attributes"] = json!([
+            {"T":"interaction_method","unexpected_key":"legacy","untouched":true},
+            {"T":"semantic_description","value":"Original English"}
+        ]);
+        row["attributes_zh"] = json!([{"T":"动作描述","value":"原中文","extra":42}]);
+        let raw = serde_json::to_vec(&document).unwrap();
+        fs::write(f.root.join(machine_annotation::DEFAULT_SOURCE), &raw).unwrap();
+        let mut state = load(&f.local, &f.root).unwrap();
+        assert_eq!(state.segments.len(), 3);
+        assert_eq!(state.segments[1].description, "原中文");
+        state.segments[1].description = "人工修改中文".into();
+        let saved = save_for_user(
+            &f.local,
+            SaveReviewRequest {
+                source_path: f.root.to_string_lossy().into(),
+                source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+                source_hash: state.source_hash,
+                expected_revision: state.revision,
+                segments: state.segments,
+                status: Some("approved".into()),
+                rejection_reason: None,
+            },
+            "Reviewer",
+            "reviewer",
+        )
+        .unwrap();
+        let output = f.output();
+        let result = &output["episode_results"][0]["annotations"][1];
+        assert_eq!(
+            result["attributes"],
+            document["episode_results"][0]["annotations"][1]["attributes"]
+        );
+        assert_eq!(result["attributes_zh"][0]["value"], "人工修改中文");
+        assert_eq!(result["attributes_zh"][0]["extra"], 42);
+        let fresh = load(&f.temp.join("fresh"), &f.root).unwrap();
+        assert_eq!(fresh.segments, saved.segments);
+        assert_eq!(fresh.status, "approved");
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            raw
+        );
+    }
+
+    #[test]
     fn flash_source_is_selected_and_reviewed_independently_with_bilingual_fields_preserved() {
         let fixture = Fixture::new(0, true);
         let mut document: Value = serde_json::from_slice(&fixture.original).unwrap();

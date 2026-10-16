@@ -548,6 +548,10 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         <p>{result.identityWarning}</p>
       </div>}
       {result?.timelineWarning && <div className="machine-boundary-warning" role="region" aria-label="机标帧数适配提示"><strong>已按当前视频帧数适配</strong><p>{result.timelineWarning}</p></div>}
+      {!!result?.attributeWarnings?.length && <details className="machine-boundary-warning" aria-label="机标属性兼容提示">
+        <summary>部分机标属性格式异常，已兼容加载，请核对动作描述</summary>
+        {result.attributeWarnings.map((message, index) => <p key={index}>{message}</p>)}
+      </details>}
       {Boolean(review?.recoveryWarnings?.length || recoveryMessages.length) && <div className="machine-boundary-warning" role="region" aria-label="人工记录兼容恢复提示">
         <strong>原人工记录已保留，请核对恢复内容</strong>
         {[...(review?.recoveryWarnings ?? []), ...recoveryMessages].map((message, index) => <p key={index}>{message}</p>)}
