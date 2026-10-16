@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { CircleAlert, Download, LoaderCircle, RefreshCw, X } from "lucide-react";
 import { checkForAppUpdate } from "../lib/backend";
 import type { AppUpdateInfo } from "../types";
+import { UpdateToast } from "./UpdateToast";
 
 const seenKey = "delta.updates.release-notes.seen";
 const notifiedKey = "delta.updates.available.notified";
@@ -90,11 +91,13 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
       {working ? <LoaderCircle size={15} className="spin" /> : error ? <CircleAlert size={15} /> : available ? <Download size={15} /> : <RefreshCw size={15} />}
       <span>版本与更新</span>{available && <span className="update-dot" aria-label={ready ? "更新已准备好" : "有新版本"} />}
     </button>
-    {notice && createPortal(<aside className="update-notice" aria-label="版本更新提示" role="status">
-      <strong>{notice === "installed" ? `已更新至 v${version}` : notice === "ready" ? "更新已准备好" : `新版本 v${info?.latestVersion} 可用`}</strong>
-      <p>{notice === "installed" ? currentSummary : notice === "ready" ? `v${info?.latestVersion} 已下载并验证，您可以选择合适的时间安装。` : summary(info?.notes ?? null)}</p>
-      <div className="update-actions">{notice === "installed" ? <><button type="button" className="text-button" onClick={() => { dismissNotice(); onViewHistory(); }}>查看完整更新记录</button><button type="button" className="text-button" onClick={dismissNotice}>知道了</button></> : <><button type="button" className="text-button" onClick={() => { setNotice(null); setPanel(true); }}>{notice === "ready" ? "查看并安装" : "查看更新"}</button><button type="button" className="text-button" onClick={dismissNotice}>{notice === "ready" ? "稍后" : "稍后提醒"}</button></>}</div>
-    </aside>, document.getElementById("app-update-notices") ?? document.body)}
+    {notice && createPortal(<UpdateToast key={`${notice}:${notice === "installed" ? version : info?.latestVersion}`}
+      title={notice === "installed" ? `已更新至 v${version}` : notice === "ready" ? "更新已准备好" : `新版本 v${info?.latestVersion} 可用`}
+      message={notice === "installed" ? currentSummary : notice === "ready" ? `v${info?.latestVersion} 已下载并验证，您可以选择合适的时间安装。` : summary(info?.notes ?? null)}
+      primaryLabel={notice === "installed" ? "查看完整更新记录" : notice === "ready" ? "查看并安装" : "查看更新"}
+      secondaryLabel={notice === "installed" ? "知道了" : notice === "ready" ? "稍后" : "稍后提醒"}
+      onPrimary={notice === "installed" ? onViewHistory : () => { setNotice(null); setPanel(true); }} onDismiss={dismissNotice}
+    />, document.getElementById("app-update-notices") ?? document.body)}
     {panel && <dialog className="app-update-dialog" aria-label="版本与更新详情" ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setPanel(false)}>
       <header><div><h2>{label}</h2><p>当前版本 v{version}</p></div><button className="icon-button" type="button" aria-label="关闭版本与更新" onClick={() => setPanel(false)}><X size={18} /></button></header>
       {phase === "checking" && <p role="status">正在后台检查 GitHub 最新正式版本，数据载入可继续进行。网络短暂波动时自动重试，最多 3 次。</p>}

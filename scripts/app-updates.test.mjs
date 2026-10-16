@@ -6,6 +6,62 @@ import { chromium } from 'playwright-core';
 
 const appVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
 
+test('update toast floats, pauses while engaged, exits smoothly and remembers this version', async t => {
+  const server=await createServer({logLevel:'error',server:{host:'127.0.0.1',port:0},plugins:[{
+    name:'isolated-toast',configureServer(server){server.middlewares.use(async(req,res,next)=>{
+      if(!req.url?.startsWith('/__toast'))return next();
+      res.setHeader('content-type','text/html');
+      res.end(await server.transformIndexHtml(req.url,`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"></head><body><div id="root"></div><script type="module">
+        import React from 'react';import {createRoot} from 'react-dom/client';import {AppUpdates} from '/src/components/AppUpdates.tsx';import '/src/styles.css';
+        window.histories=0;window.hiddenForTest=false;Object.defineProperty(document,'hidden',{get:()=>window.hiddenForTest,configurable:true});
+        createRoot(document.getElementById('root')).render(React.createElement('main',{},
+          React.createElement('input',{id:'review',placeholder:'动作描述'}),React.createElement('p',{id:'workspace'},'审核区位置保持固定'),
+          React.createElement(AppUpdates,{version:${JSON.stringify(appVersion)},currentSummary:'编号差异提示支持忽略，更新摘要改为平滑消息通知，保留完整更新记录。',currentNotes:['改善审核提示'],busy:false,
+            check:async()=>({currentVersion:${JSON.stringify(appVersion)},latestVersion:${JSON.stringify(appVersion)},available:false,ready:false,notes:null}),
+            onDownload:async()=>{},onInstall:async()=>{},onViewHistory:()=>window.histories++})));
+      </script></body></html>`));
+    });}
+  }]});await server.listen();t.after(()=>server.close());
+  const browser=await chromium.launch({executablePath:process.env.PLAYWRIGHT_CHROMIUM??chromium.executablePath(),headless:true});t.after(()=>browser.close());
+  const page=await browser.newPage({viewport:{width:1440,height:920}});
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',msg=>{if(msg.type()==='error')errors.push(msg.text())});page.on('requestfailed',req=>errors.push(req.url()));
+  await page.clock.install();
+  const url=server.resolvedUrls.local[0]+'__toast';await page.goto(url);
+  const toast=page.getByLabel('版本更新提示');await toast.waitFor();await page.clock.runFor(300);
+  assert.equal(await page.locator('#review').evaluate(e=>e===document.activeElement),false,'toast does not steal focus');
+  assert.equal(await toast.evaluate(e=>getComputedStyle(e).position),'fixed');
+  await mkdir('artifacts/app-updates',{recursive:true});
+  for(const [width,height] of [[1440,920],[960,680],[390,844]]) {
+    await page.setViewportSize({width,height});
+    for(const button of await toast.getByRole('button').all()){
+      const box=await button.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=width&&box.y>=0&&box.y+box.height<=height);
+      assert.ok(await button.evaluate(e=>parseFloat(getComputedStyle(e).fontSize)>=12));
+    }
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await page.screenshot({path:`artifacts/app-updates/toast-${width}.png`});
+  }
+  await page.setViewportSize({width:1440,height:920});
+  const before=await page.locator('#workspace').boundingBox();
+  await toast.hover();await page.clock.runFor(12_000);assert.equal(await toast.isVisible(),true,'hover pauses timeout');
+  await toast.getByRole('button',{name:'查看完整更新记录',exact:true}).focus();
+  await page.mouse.move(0,0);await page.clock.runFor(12_000);assert.equal(await toast.isVisible(),true,'keyboard focus pauses timeout');
+  await page.locator('#review').focus();
+  await page.evaluate(()=>{window.hiddenForTest=true;document.dispatchEvent(new Event('visibilitychange'))});
+  await page.clock.runFor(12_000);assert.equal(await toast.isVisible(),true,'hidden page pauses timeout');
+  await page.evaluate(()=>{window.hiddenForTest=false;document.dispatchEvent(new Event('visibilitychange'))});
+  await page.clock.runFor(10_000);await page.waitForFunction(()=>document.querySelector('.update-notice-closing'));
+  await page.clock.runFor(200);await toast.waitFor({state:'detached'});
+  assert.deepEqual(await page.locator('#workspace').boundingBox(),before,'notification never moves review content');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('delta.updates.release-notes.seen')),appVersion);
+  await page.reload();await page.getByRole('button',{name:'版本与更新',exact:true}).waitFor();assert.equal(await toast.count(),0,'acknowledged version stays quiet');
+  await page.evaluate(()=>localStorage.removeItem('delta.updates.release-notes.seen'));await page.reload();await toast.waitFor();
+  await toast.getByRole('button',{name:'查看完整更新记录',exact:true}).click();await page.clock.runFor(200);await page.waitForFunction(()=>window.histories===1);
+  await page.evaluate(()=>localStorage.removeItem('delta.updates.release-notes.seen'));await page.emulateMedia({reducedMotion:'reduce'});await page.reload();await toast.waitFor();
+  assert.equal(await toast.evaluate(e=>getComputedStyle(e).animationName),'none');
+  await toast.getByRole('button',{name:'关闭更新提示',exact:true}).click();await page.clock.runFor(200);await toast.waitFor({state:'detached'});
+  assert.deepEqual(errors,[]);
+});
+
 test('updates check in background, require download/install consent and retain work on failure', async t => {
   const server = await createServer({logLevel:'error', server:{host:'127.0.0.1',port:0}, plugins:[{
     name:'isolated-updates', configureServer(server) {

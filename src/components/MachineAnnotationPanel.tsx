@@ -6,6 +6,7 @@ import { addReviewSegment, recoverReviewSegments, adjustReviewBoundary, deleteRe
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
 import { RejectionReasons } from "./RejectionReasons";
+import { MachineIdentityNotice } from "./MachineIdentityNotice";
 import type { EpisodeData, ExportRange, MachineAnnotation, MachineReview, ReviewSegment } from "../types";
 import { defaultTextPolicy, inspectDescription } from "../lib/text-quality";
 import "./text-quality.css";
@@ -543,10 +544,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       {error && <p role="alert" className="machine-message">{error}</p>}
       {mapping?.error && <p role="alert" className="machine-message">{mapping.error}</p>}
       {!loading && !error && !result && <p className="machine-message">未发现 {sourceName ?? "机标 JSON"}</p>}
-      {result?.identityWarning && <div className="machine-boundary-warning" role="region" aria-label="机标编号核对提示">
-        <strong>{result.identityVerified ? "目录与机标编号不同，来源核验已通过" : "目录与机标编号不同，已兼容读取，请核对内容"}</strong>
-        <p>{result.identityWarning}</p>
-      </div>}
+      {result?.identityWarning && <MachineIdentityNotice key={JSON.stringify([username, root, result.sourceName, result.sourceHash, result.identityWarning, result.identityVerified])} username={username} root={root} result={result} />}
       {result?.timelineWarning && <div className="machine-boundary-warning" role="region" aria-label="机标帧数适配提示"><strong>已按当前视频帧数适配</strong><p>{result.timelineWarning}</p></div>}
       {!!result?.attributeWarnings?.length && <details className="machine-boundary-warning" aria-label="机标属性兼容提示">
         <summary>部分机标属性格式异常，已兼容加载，请核对动作描述</summary>
