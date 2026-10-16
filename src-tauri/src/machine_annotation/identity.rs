@@ -76,7 +76,7 @@ pub(super) fn select(
 }
 
 fn preview(value: &str) -> String {
-    serde_json::to_string(&value.chars().take(120).collect::<String>()).unwrap()
+    format!("{:?}", value.chars().take(120).collect::<String>())
 }
 
 fn modified_ns(metadata: &fs::Metadata) -> AppResult<u128> {
