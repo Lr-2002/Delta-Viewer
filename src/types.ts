@@ -465,6 +465,7 @@ export interface MachineAnnotation {
   identityWarning?: string | null;
   identityVerified?: boolean;
   timelineWarning?: string | null;
+  attributeWarnings?: string[];
   inferredEndFrames?: number[];
   sourceName?: string;
   sourceHash?: string;

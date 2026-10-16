@@ -2,7 +2,7 @@ use crate::error::{AppError, AppResult};
 use crate::model::{MachineAnnotation, MachineSegment};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::Path;
@@ -140,40 +140,73 @@ struct Annotation {
     attributes_zh: Value,
 }
 
-fn attributes_map(value: &Value) -> AppResult<BTreeMap<String, Value>> {
+#[derive(Default)]
+struct ParsedAttributes {
+    values: BTreeMap<String, Value>,
+    issues: BTreeSet<&'static str>,
+}
+
+// Optional model attributes must not hide valid action boundaries or descriptions.
+// Normalize only the reading view; keep every original entry in source_json.
+fn attributes_map(value: &Value) -> ParsedAttributes {
+    let mut parsed = ParsedAttributes::default();
     match value {
-        Value::Null => Ok(BTreeMap::new()),
-        Value::Object(values) => Ok(values.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+        Value::Null => {}
+        Value::Object(values) => {
+            parsed.values = values.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        }
         Value::Array(values) => {
-            let mut result = BTreeMap::new();
+            let mut ambiguous = BTreeSet::new();
             for entry in values {
-                let key = entry
+                let Some(key) = entry
                     .get("T")
                     .and_then(Value::as_str)
                     .filter(|key| !key.is_empty())
-                    .ok_or_else(|| invalid("机标属性缺少 T 名称"))?;
-                let value = entry
-                    .get("value")
-                    .ok_or_else(|| invalid("机标属性缺少 value"))?;
-                if result.insert(key.into(), value.clone()).is_some() {
-                    return Err(invalid("机标属性名称重复，无法确定对应字段"));
+                else {
+                    parsed.issues.insert("属性缺少 T 名称或格式异常");
+                    continue;
+                };
+                let value = entry.get("value").unwrap_or_else(|| {
+                    parsed.issues.insert("属性缺少 value，未猜测缺失值");
+                    &Value::Null
+                });
+                if ambiguous.contains(key) {
+                    continue;
                 }
+                if let Some(previous) = parsed.values.get(key) {
+                    parsed.issues.insert("存在重复属性");
+                    let blank = |v: &Value| v.is_null() || v.as_str() == Some("");
+                    if previous == value || blank(value) {
+                        continue;
+                    }
+                    if !blank(previous) {
+                        parsed.values.remove(key);
+                        ambiguous.insert(key.to_owned());
+                        parsed.issues.insert("重复属性值冲突，未自动选择");
+                        continue;
+                    }
+                }
+                parsed.values.insert(key.into(), value.clone());
             }
-            Ok(result)
         }
-        _ => Err(invalid("机标属性必须为对象或 T/value 数组")),
+        _ => {
+            parsed.issues.insert("属性不是对象或 T/value 数组");
+        }
     }
+    parsed
 }
 
 pub(crate) fn description_field(annotation: &Value) -> AppResult<(&'static str, &'static str)> {
-    let zh = attributes_map(&annotation["attributes_zh"])?;
+    let zh = attributes_map(&annotation["attributes_zh"]);
     if zh
+        .values
         .get("动作描述")
         .and_then(Value::as_str)
         .is_some_and(|text| !text.is_empty())
     {
         Ok(("attributes_zh", "动作描述"))
-    } else if attributes_map(&annotation["attributes"])?
+    } else if attributes_map(&annotation["attributes"])
+        .values
         .get("semantic_description")
         .and_then(Value::as_str)
         .is_some_and(has_chinese)
@@ -193,19 +226,26 @@ pub(crate) fn patch_description(annotation: &mut Value, description: &str) -> Ap
     let (field, key) = description_field(annotation)?;
     let attributes = &mut annotation[field];
     if let Some(entries) = attributes.as_array_mut() {
-        if let Some(entry) = entries
+        let mut patched = false;
+        for entry in entries
             .iter_mut()
-            .find(|entry| entry["T"].as_str() == Some(key))
+            .filter(|entry| entry["T"].as_str() == Some(key))
         {
             entry["value"] = description.into();
-        } else {
+            patched = true;
+        }
+        if !patched {
             entries.push(serde_json::json!({"T":key,"value":description}));
         }
-    } else {
+    } else if attributes.is_object() || attributes.is_null() {
         if attributes.is_null() {
             *attributes = serde_json::json!({});
         }
         attributes[key] = description.into();
+    } else {
+        // Preserve a malformed legacy payload instead of overwriting it when a
+        // reviewer explicitly supplies the missing description in human output.
+        *attributes = serde_json::json!([attributes.clone(), {"T":key,"value":description}]);
     }
     Ok(())
 }
@@ -431,6 +471,8 @@ fn parse_with_boundary_policy(
         warnings.push("旧机标未声明帧号起点，暂按 0 起始解读。".into());
     }
     let mut segments = Vec::new();
+    let mut attribute_warnings = Vec::new();
+    let mut affected_attribute_groups = 0;
     let mut inferred_end_frames = Vec::new();
     let starts: Vec<_> = episode
         .annotations
@@ -467,8 +509,28 @@ fn parse_with_boundary_policy(
                 end_frame
             )));
         }
-        let attributes = attributes_map(&annotation.attributes)?;
-        let attributes_zh = attributes_map(&annotation.attributes_zh)?;
+        let mut attributes = attributes_map(&annotation.attributes);
+        let mut attributes_zh = attributes_map(&annotation.attributes_zh);
+        for (field, key, parsed) in [
+            ("英文属性", "semantic_description", &mut attributes),
+            ("中文属性", "动作描述", &mut attributes_zh),
+        ] {
+            if parsed
+                .values
+                .get(key)
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                parsed.issues.insert("动作描述不是文本，未自动转换");
+            }
+            if !parsed.issues.is_empty() {
+                affected_attribute_groups += 1;
+                if attribute_warnings.len() < 50 {
+                    attribute_warnings.push(format!("第 {} 个片段的{field}：{}。可读字段及片段已保留，请核对动作描述；原机标未修改。", source_index + 1, parsed.issues.iter().copied().collect::<Vec<_>>().join("；")));
+                }
+            }
+        }
+        let attributes = attributes.values;
+        let attributes_zh = attributes_zh.values;
         let description = attributes_zh
             .get("动作描述")
             .and_then(Value::as_str)
@@ -492,6 +554,9 @@ fn parse_with_boundary_policy(
         });
     }
     segments.sort_by_key(|segment| (segment.start_frame, segment.end_frame));
+    if affected_attribute_groups > attribute_warnings.len() {
+        attribute_warnings.push(format!("共 {affected_attribute_groups} 组片段属性需核对，此处仅列出前 50 组；完整内容保留在原 JSON 中。"));
+    }
     let quality_string = |key: &str| {
         episode
             .quality
@@ -527,6 +592,7 @@ fn parse_with_boundary_policy(
         validation_status: quality_string("validation_status"),
         frame_count,
         timeline_warning,
+        attribute_warnings,
         warnings,
         identity_warning,
         identity_verified,
@@ -683,9 +749,67 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(serde_json::json!({"T":"body_part","value":"other"}));
-        assert!(parse(&serde_json::to_vec(&document).unwrap(), "sample").is_err());
+        let duplicate = parse(&serde_json::to_vec(&document).unwrap(), "sample").unwrap();
+        assert_eq!(duplicate.segments[0].description, "静止状态");
+        assert!(!duplicate.segments[0].attributes.contains_key("body_part"));
+        assert!(duplicate.attribute_warnings[0].contains("重复属性值冲突"));
         assert!(validate_source_name("../bailian_annotation.json").is_err());
     }
+    #[test]
+    fn malformed_optional_attributes_preserve_valid_segments_and_descriptions() {
+        let mut document = fixture();
+        document["schema_version"] = 4.into();
+        document["episode_results"][0]["annotations"][0]["attributes"] = serde_json::json!([
+            {"T":"interaction_method","unexpected_key":"legacy value","extra":17},
+            {"T":"body_part","value":"双手"},
+            null, {"value":"unnamed"},
+            {"T":"body_part","value":"双手"}
+        ]);
+        document["episode_results"][0]["annotations"][0]["attributes_zh"] =
+            serde_json::json!([{"T":"动作描述","value":"双手整理物品"}]);
+        let bytes = serde_json::to_vec(&document).unwrap();
+        for human in [false, true] {
+            let parsed = parse_document(&bytes, "sample", human).unwrap();
+            assert_eq!(parsed.segments.len(), 2);
+            assert_eq!(parsed.segments[0].description, "双手整理物品");
+            assert_eq!(
+                parsed.segments[0].attributes["interaction_method"],
+                Value::Null
+            );
+            assert_eq!(parsed.segments[0].attributes["body_part"], "双手");
+            assert!(parsed.attribute_warnings[0].contains("缺少 value"));
+            assert_eq!(parsed.source_json.as_bytes(), bytes);
+        }
+    }
+
+    #[test]
+    fn missing_or_conflicting_descriptions_stay_editable_without_guessing_text() {
+        for attrs in [
+            serde_json::json!([{"T":"动作描述"}]),
+            serde_json::json!([{"T":"动作描述","value":"描述甲"},{"T":"动作描述","value":"描述乙"}]),
+            serde_json::json!([{"T":"动作描述","value":42}]),
+            serde_json::json!("legacy opaque payload"),
+        ] {
+            let mut document = fixture();
+            let row = &mut document["episode_results"][0]["annotations"][0];
+            row["attributes_zh"] = attrs.clone();
+            let parsed = parse(&serde_json::to_vec(&document).unwrap(), "sample").unwrap();
+            assert_eq!(parsed.segments[0].description, "");
+            assert!(!parsed.attribute_warnings.is_empty());
+            let row = &mut document["episode_results"][0]["annotations"][0];
+            patch_description(row, "人工核对文字").unwrap();
+            let parsed = parse_human(&serde_json::to_vec(&document).unwrap(), "sample").unwrap();
+            assert_eq!(parsed.segments[0].description, "人工核对文字");
+            assert_eq!(parsed.segments[0].end_frame, 22);
+            if attrs.is_string() {
+                assert_eq!(
+                    document["episode_results"][0]["annotations"][0]["attributes_zh"][0],
+                    attrs
+                );
+            }
+        }
+    }
+
     #[test]
     fn normalizes_exclusive_intervals_without_shared_boundary() {
         let mut source = fixture();
@@ -849,10 +973,11 @@ mod tests {
             .unwrap();
         assert!(!result.segments.is_empty());
         println!(
-            "Read {} segments, {} source frames, {} warnings; identity verification: {}",
+            "Read {} segments, {} source frames, {} warnings, {} attribute warnings; identity verification: {}",
             result.segments.len(),
             result.frame_count,
             result.warnings.len(),
+            result.attribute_warnings.len(),
             if result.identity_warning.is_some() && result.identity_verified {
                 "renamed folder verified"
             } else if result.identity_warning.is_some() {

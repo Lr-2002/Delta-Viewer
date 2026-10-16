@@ -904,6 +904,38 @@ test("compatible unverified identity stays editable without claiming verificatio
   } finally { await page.close(); }
 });
 
+test("optional attribute issues stay visible without blocking editing on desktop and narrow screens", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const body = original.replace('model: "Demo model",', 'model: "Demo model", attributeWarnings: ["第 2 个片段的英文属性：属性缺少 value，未猜测缺失值。可读字段及片段已保留，原机标未修改。"],');
+    assert.notEqual(body, original);
+    await route.fulfill({ response, body });
+  });
+  try {
+    await open(page, "machineAnnotation=present");
+    const notice = page.getByLabel("机标属性兼容提示");
+    await notice.locator("summary").waitFor();
+    assert.match(await notice.locator("summary").innerText(), /已兼容加载/);
+    await notice.locator("summary").click();
+    await notice.getByText(/未猜测缺失值/).waitFor();
+    const input = page.getByLabel("复核动作描述");
+    await input.fill("兼容后人工核对动作");
+    for (const [width, height] of [[1440,920],[960,680],[390,844]]) {
+      await page.setViewportSize({width,height});
+      assert.equal(await notice.locator("summary").isVisible(),true);
+      assert.equal(await input.isEnabled(),true);
+      assert.equal(await input.inputValue(),"兼容后人工核对动作");
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),true);
+      await page.screenshot({path:`artifacts/unified-proofreading/attribute-compatibility-${width}.png`,fullPage:true});
+    }
+    assert.deepEqual(errors,[]);
+  } finally { await page.close(); }
+});
+
 test("incompatible emergency snapshot is preserved while machine rows load normally", async () => {
   const page = await browser.newPage({ viewport: { width: 960, height: 680 } });
   await page.addInitScript(() => {
