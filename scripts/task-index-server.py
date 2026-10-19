@@ -164,13 +164,17 @@ class TaskIndex:
         self.requests.mkdir(exist_ok=True)
         if self.requests.is_symlink():
             raise ValueError("Refresh requests must be an ordinary directory")
+        self.results = self.output / "refresh-results"
+        self.results.mkdir(exist_ok=True)
+        if self.results.is_symlink():
+            raise ValueError("Refresh results must be an ordinary directory")
         self.watcher = watcher
         self.nodes = {}
         self.manifest = {"schemaVersion": 1, "dataset": self.source.name, "completedAtMs": 0,
                          "updatedAtMs": 0, "generation": "", "nodes": {}}
         self.status = {"running": False, "startedAtMs": 0, "heartbeatAtMs": 0,
                        "sessions": 0, "error": "", "schedule": "23:00 Asia/Shanghai",
-                       "refreshQcV1": True, "refreshResults": []}
+                       "refreshQcV1": True, "refreshReceiptV1": True, "refreshResults": []}
         self.last_progress = 0
         self.sessions = 0
         self.visited = 0
@@ -297,11 +301,20 @@ class TaskIndex:
             # Only expired, hash-named objects created by this service are eligible.
             keep = set(mapping.values())
             try:
+                # A receipt and its exact shards remain readable for at least 24 hours.
+                # Never collect a shard still referenced by a retained receipt.
+                for entry in self.results.iterdir():
+                    if entry.suffix != ".json" or len(entry.stem) != 64 or any(c not in "0123456789abcdef" for c in entry.stem) or entry.is_symlink():
+                        continue
+                    if time.time() - entry.stat().st_mtime > 86400:
+                        entry.unlink()
+                    else:
+                        keep.update(read_json(entry)["manifest"]["nodes"].values())
                 for entry in self.objects.iterdir():
                     if entry.suffix == ".json" and len(entry.stem) == 64 and all(c in "0123456789abcdef" for c in entry.stem):
                         if entry.stem not in keep and not entry.is_symlink() and time.time() - entry.stat().st_mtime > 3600:
                             entry.unlink()
-            except OSError:
+            except (OSError, ValueError, KeyError, TypeError):
                 # Housekeeping failure must not roll back an already published generation.
                 pass
             self.last_gc = time.monotonic()
@@ -372,6 +385,11 @@ class TaskIndex:
             request_id = request.stem
             if len(request_id) != 64 or any(c not in "0123456789abcdef" for c in request_id):
                 continue
+            receipt_path = self.results / (request_id + ".json")
+            if receipt_path.exists():
+                # A crash after receipt publication must not re-run or overwrite it.
+                request.unlink()
+                continue
             result = {"id": request_id, "completedAtMs": 0, "error": ""}
             try:
                 value = read_json(request)
@@ -402,6 +420,12 @@ class TaskIndex:
             result["generation"] = self.manifest["generation"]
             self.status["refreshResults"] = (self.status["refreshResults"] + [result])[-64:]
             self.publish_status()
+            # A unique filename avoids SMB clients repeatedly seeing the old inode
+            # of status.json/index.json after atomic replacement. Include the exact
+            # manifest so acknowledgement cannot be paired with stale counts.
+            atomic_json(receipt_path, {"schemaVersion": 1, "dataset": self.source.name,
+                                      "result": result, "manifest": self.manifest,
+                                      "status": self.status})
             request.unlink()
 
     def run(self):

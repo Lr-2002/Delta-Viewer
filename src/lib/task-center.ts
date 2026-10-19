@@ -10,6 +10,7 @@ export interface TaskIndexStatus {
   completedAtMs?: number; updatedAtMs?: number; generation?: string;
   running: boolean; startedAtMs: number; heartbeatAtMs: number; sessions: number; error: string; schedule: string;
   refreshQcV1?: boolean;
+  refreshReceiptId?: string;
   refreshResults?: { id: string; completedAtMs: number; error: string; generation: string }[];
 }
 export interface TaskIndexResult { catalog: TaskCatalog | null; server: TaskIndexStatus }

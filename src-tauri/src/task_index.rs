@@ -99,18 +99,82 @@ fn validate_node(node: &Value, expected: &str, dataset_relative: &str) -> AppRes
     Ok(())
 }
 
-pub fn load(source: &Path, relative: &str) -> AppResult<Value> {
+#[cfg(test)]
+fn load(source: &Path, relative: &str) -> AppResult<Value> {
+    load_with_receipt(source, relative, None)
+}
+
+pub fn load_with_receipt(
+    source: &Path,
+    relative: &str,
+    refresh_id: Option<&str>,
+) -> AppResult<Value> {
     if !safe_relative(relative) {
         return Err(invalid("目录路径无效"));
     }
     let (output, prefix) = locations(source)?;
     verify_directory(output.parent().ok_or_else(|| invalid("索引目录无效"))?)?;
     verify_directory(&output)?;
-    let status = read(&output.join("status.json"))?;
-    let manifest = match crate::machine_annotation::read_bytes(&output.join("index.json"))? {
+    let mut status = read(&output.join("status.json"))?;
+    let mut manifest = match crate::machine_annotation::read_bytes(&output.join("index.json"))? {
         Some(bytes) => serde_json::from_slice::<Value>(&bytes)?,
         None => return Ok(json!({"catalog": null, "server": status})),
     };
+    let mut confirmed = None;
+    if let Some(id) = refresh_id {
+        if id.len() != 64
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(invalid("核对请求编号无效"));
+        }
+        let results = output.join("refresh-results");
+        verify_directory(&results)?;
+        if let Some(bytes) =
+            crate::machine_annotation::read_bytes(&results.join(format!("{id}.json")))?
+        {
+            let receipt: Value = serde_json::from_slice(&bytes)?;
+            let result = &receipt["result"];
+            let snapshot = &receipt["manifest"];
+            if receipt["schemaVersion"] != 1
+                || receipt["dataset"] != "Delta-D1"
+                || result["id"].as_str() != Some(id)
+                || result["completedAtMs"]
+                    .as_u64()
+                    .is_none_or(|stamp| stamp == 0)
+                || result["error"].as_str().is_none()
+                || result["generation"].as_str().is_none()
+                || result["generation"] != snapshot["generation"]
+                || snapshot["schemaVersion"] != 1
+                || snapshot["dataset"] != "Delta-D1"
+                || snapshot["updatedAtMs"].as_u64().is_none()
+                || snapshot["completedAtMs"].as_u64().is_none()
+                || !snapshot["nodes"].is_object()
+                || !receipt["status"].is_object()
+            {
+                return Err(invalid("服务器核对回执无效，请重新刷新"));
+            }
+            if manifest["updatedAtMs"].as_u64().unwrap_or(0)
+                <= snapshot["updatedAtMs"].as_u64().unwrap_or(0)
+            {
+                manifest = snapshot.clone();
+            }
+            if status["heartbeatAtMs"].as_u64().unwrap_or(0)
+                < receipt["status"]["heartbeatAtMs"].as_u64().unwrap_or(0)
+            {
+                status = receipt["status"].clone();
+            }
+            let mut values = status["refreshResults"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            values.retain(|value| value["id"].as_str() != Some(id));
+            values.push(result.clone());
+            status["refreshResults"] = json!(values);
+            confirmed = Some(id);
+        }
+    }
     if manifest["schemaVersion"] != 1
         || manifest["dataset"] != "Delta-D1"
         || manifest["completedAtMs"].as_u64().is_none()
@@ -184,7 +248,8 @@ pub fn load(source: &Path, relative: &str) -> AppResult<Value> {
             "generation": manifest["generation"], "running": status["running"],
             "heartbeatAtMs": status["heartbeatAtMs"], "startedAtMs": status["startedAtMs"],
             "sessions": status["sessions"], "error": status["error"], "schedule": status["schedule"],
-            "refreshQcV1": status["refreshQcV1"], "refreshResults": status["refreshResults"]
+            "refreshQcV1": status["refreshQcV1"], "refreshResults": status["refreshResults"],
+            "refreshReceiptId": confirmed
         }}),
     )
 }
@@ -217,6 +282,8 @@ pub fn request_refresh(source: &Path, paths: &[String]) -> AppResult<String> {
     }
     let requests = output.join("refresh-requests");
     verify_directory(&requests)?;
+    verify_directory(&output.join("refresh-results"))
+        .map_err(|_| invalid("服务器尚未支持可靠核对回执，请联系管理员升级统计服务"))?;
     if fs::read_dir(&requests)?.take(65).count() >= 64 {
         return Err(invalid("服务器核对请求较多，请稍后重试"));
     }
@@ -337,6 +404,7 @@ mod tests {
         assert!(request_refresh(&source, &["batch".into()]).is_err());
         fs::write(output.join("status.json"), r#"{"refreshQcV1":true}"#).unwrap();
         fs::create_dir(output.join("refresh-requests")).unwrap();
+        fs::create_dir(output.join("refresh-results")).unwrap();
         assert!(request_refresh(&source, &["".into()]).is_err());
         assert!(request_refresh(&source, &["../batch".into()]).is_err());
         let id = request_refresh(&source, &["batch".into()]).unwrap();
@@ -356,6 +424,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(nested_request["paths"], json!(["batch"]));
+        // status.json and index.json can both be stale on SMB. A unique receipt
+        // must select its exact counts, not merely mark the old view confirmed.
+        let mut updated_batch = batch.clone();
+        for field in ["reviewed", "rejected"] {
+            updated_batch[field] = json!(0);
+            updated_batch["children"][0][field] = json!(0);
+        }
+        updated_batch["children"][0]["status"] = json!("pending");
+        let updated_bytes = serde_json::to_vec(&updated_batch).unwrap();
+        let updated_digest = format!("{:x}", Sha256::digest(&updated_bytes));
+        fs::write(
+            output.join("nodes").join(format!("{updated_digest}.json")),
+            updated_bytes,
+        )
+        .unwrap();
+        let mut snapshot = manifest.clone();
+        snapshot["generation"] = json!("receipt-generation");
+        snapshot["updatedAtMs"] = json!(457);
+        snapshot["nodes"]["batch"] = json!(updated_digest);
+        let receipt = json!({"schemaVersion":1,"dataset":"Delta-D1", "manifest":snapshot,
+            "result":{"id":id,"completedAtMs":460,"error":"","generation":"receipt-generation"},
+            "status":{"heartbeatAtMs":460,"running":false}});
+        let receipt_path = output.join("refresh-results").join(format!("{id}.json"));
+        fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        let confirmed = load_with_receipt(&source, "batch", Some(&id)).unwrap();
+        assert_eq!(confirmed["catalog"]["tree"]["reviewed"], 0);
+        assert_eq!(confirmed["server"]["refreshReceiptId"], id);
+        assert_eq!(confirmed["server"]["heartbeatAtMs"], 460);
+        assert_eq!(
+            load(&source, "batch").unwrap()["catalog"]["tree"]["reviewed"],
+            1
+        );
+        let missing = "d".repeat(64);
+        assert!(
+            load_with_receipt(&source, "batch", Some(&missing)).unwrap()["server"]
+                ["refreshReceiptId"]
+                .is_null()
+        );
+        assert!(load_with_receipt(&source, "batch", Some("../status")).is_err());
+        let mut newer = manifest.clone();
+        newer["updatedAtMs"] = json!(500);
+        fs::write(
+            output.join("index.json"),
+            serde_json::to_vec(&newer).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            load_with_receipt(&source, "batch", Some(&id)).unwrap()["catalog"]["tree"]["reviewed"],
+            1,
+            "later live generations must still advance"
+        );
+        let mut bad = receipt.clone();
+        bad["result"]["generation"] = json!("wrong");
+        fs::write(&receipt_path, serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(load_with_receipt(&source, "batch", Some(&id)).is_err());
         fs::write(output.join("nodes").join(format!("{digest}.json")), b"{}").unwrap();
         assert!(load(&source, "batch")
             .unwrap_err()
