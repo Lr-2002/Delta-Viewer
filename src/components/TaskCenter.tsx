@@ -175,7 +175,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
         if (manual && !finished && !qcRequest.current && !refreshErrorRef.current) {
           setRefreshNotice(!next.catalog ? "已刷新，等待服务器首次统计完成。"
             : next.server.error ? "已读取上次统计，服务器统计失败，请联系管理员。"
-            : Date.now() - next.server.heartbeatAtMs > 90000 ? "已读取上次统计，统计服务未响应，请联系管理员。"
+            : Date.now() - next.server.heartbeatAtMs > 90000 ? "已读取上次统计，服务器状态未更新，可能为共享缓存或服务无响应；请重试。"
             : next.server.running ? "已刷新当前可用结果，服务器仍在统计，完成后自动更新。"
             : previousGeneration && previousGeneration === next.server.generation ? "刷新完成，服务器统计暂无变化。"
             : "刷新完成，已读取服务器最新统计。");
@@ -384,7 +384,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       <span>每日 23:00 自动统计</span>
       {server?.updatedAtMs && server.updatedAtMs !== server.completedAtMs ? <span>进度更新：{new Date(server.updatedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</span> : null}
       {checkedAtMs > 0 && <span>最近读取：{new Date(checkedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（北京时间）</span>}
-      {server && Date.now() - server.heartbeatAtMs > 90000 ? <span className="task-center-error">统计服务未响应，显示上次结果</span> : server?.running ? <span>服务器正在统计 · 已统计 {server.sessions} 条 · 显示上次结果</span> : null}
+      {server && Date.now() - server.heartbeatAtMs > 90000 ? <span className="task-center-error">服务器状态未更新（共享缓存或服务无响应），显示上次结果</span> : server?.running ? <span>服务器正在统计 · 已统计 {server.sessions} 条 · 显示上次结果</span> : null}
       {server?.error && <span role="alert" className="task-center-error">{server.error}；保留上次成功结果</span>}
       {requestNotice && <span>{requestNotice}</span>}
       {refreshNotice && <span className="task-refresh-notice">{refreshNotice}</span>}
