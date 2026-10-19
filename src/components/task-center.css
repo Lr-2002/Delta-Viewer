@@ -1,4 +1,5 @@
-.task-center { width: min(900px, calc(100vw - 40px)); max-height: calc(100vh - 100px); display: flex; flex-direction: column; color: var(--ink); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }
+.task-center { width: min(1040px, calc(100vw - 40px)); max-height: calc(100vh - 100px); min-height: 0; display: flex; flex-direction: column; color: var(--ink); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 6px; overflow: auto; }
+.task-center > * { flex-shrink: 0; }
 .personal-task-overlay { display: flex; align-items: flex-start; justify-content: center; padding-top: 76px; }
 .task-center > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
 .task-center h2 { margin: 0; font-size: 18px; }
@@ -10,7 +11,13 @@
 .task-root-setting button { flex: 0 0 auto; }
 .task-center .button { width: auto; font-size: 12px; padding: 5px 10px; }
 .task-center .button svg { flex: 0 0 auto; }
-.task-tree { min-height: 220px; overflow: auto; overscroll-behavior: contain; padding-bottom: 12px; }
+.task-center > .task-tree { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding-bottom: 12px; }
+.task-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.task-filters label { display: grid; gap: 5px; min-width: 0; flex: 1 1 140px; font-size: 12px; }
+.task-filters input { width: 100%; min-width: 0; min-height: 32px; padding: 5px 8px; }
+.task-filters .task-date-filter { flex: 0 1 150px; }
+.task-filter-summary { flex: 1 0 100%; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.task-scan-status .task-center-error { margin: 0; }
 .task-tree-row { min-height: 52px; display: flex; align-items: center; gap: 10px; padding: 6px 16px 6px calc(12px + min(var(--tree-depth), 6) * 14px); border-bottom: 1px solid var(--line); }
 .task-tree-root { min-height: 58px; background: #f3f6f6; }
 .task-node-name { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; padding: 4px 0; text-align: left; background: none; border: none; color: inherit; cursor: pointer; font-size: 13px; }

@@ -35,3 +35,15 @@ test("late failures remain retryable and different roots have independent reques
   assert.equal(result.server.generation, "different");
   assert.equal(calls, 3);
 });
+
+test("a fresh receipt read is not coalesced into a stale ordinary SMB read", async () => {
+  const calls: (string | undefined)[] = [];
+  const reader = createTaskIndexReader(async (_root, _path, receipt) => {
+    calls.push(receipt);
+    return { catalog: null, server: { generation: receipt ?? "old" } } as never;
+  });
+  const [old, latest] = await Promise.all([reader("root"), reader("root", "", "new-request")]);
+  assert.equal(old.server.generation, "old");
+  assert.equal(latest.server.generation, "new-request");
+  assert.deepEqual(calls, [undefined, "new-request"]);
+});

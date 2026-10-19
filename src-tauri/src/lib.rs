@@ -858,11 +858,16 @@ async fn read_task_index(
     auth: State<'_, AuthState>,
     source_root: String,
     relative_path: String,
+    refresh_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        task_index::load(Path::new(&source_root), &relative_path)
+        task_index::load_with_receipt(
+            Path::new(&source_root),
+            &relative_path,
+            refresh_id.as_deref(),
+        )
     })
     .await
     .map_err(|error| error.to_string())?

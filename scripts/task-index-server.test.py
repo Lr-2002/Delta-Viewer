@@ -196,6 +196,46 @@ class IndexTests(unittest.TestCase):
         self.assertGreater(result["completedAtMs"], 0)
         self.assertEqual(result["generation"], self.index.manifest["generation"])
         self.assertEqual(other.name, "two")
+        receipt = module.read_json(self.index.results / (("a" * 64) + ".json"))
+        self.assertEqual(receipt["result"], result)
+        self.assertEqual(receipt["manifest"], self.index.manifest)
+        snapshot = module.read_json(self.index.objects / (receipt["manifest"]["nodes"]["batch"] + ".json"))
+        self.assertEqual(snapshot["reviewed"], 1)
+        before_receipt = (self.index.results / (("a" * 64) + ".json")).read_bytes()
+        module.atomic_json(request, {"paths": ["other"]})
+        self.index.refresh_requests()
+        self.assertEqual((self.index.results / (("a" * 64) + ".json")).read_bytes(), before_receipt)
+        self.assertEqual(self.index.nodes["other/two"]["status"], "pending", "duplicate request IDs cannot overwrite the confirmed snapshot")
+
+    def test_receipt_failure_preserves_request_and_retained_receipt_keeps_shards(self):
+        self.session("batch/one", "待审核")
+        self.assertTrue(self.index.rebuild())
+        request = self.index.requests / (("d" * 64) + ".json")
+        module.atomic_json(request, {"paths": ["batch"]})
+        original = module.atomic_json
+        def fail_receipt(path, value):
+            if path.parent == self.index.results: raise OSError("receipt disk full")
+            return original(path, value)
+        with patch.object(module, "atomic_json", side_effect=fail_receipt):
+            with self.assertRaisesRegex(OSError, "receipt disk full"):
+                self.index.refresh_requests()
+        self.assertTrue(request.exists())
+        self.index.refresh_requests()
+        self.assertFalse(request.exists())
+        receipt_path = self.index.results / (("d" * 64) + ".json")
+        receipt = module.read_json(receipt_path)
+        retained = set(receipt["manifest"]["nodes"].values())
+        for digest in retained:
+            os.utime(str(self.index.objects / (digest + ".json")), (time.time() - 7200,) * 2)
+        self.session("batch/one", "通过")
+        self.index.last_gc = -3601
+        self.index.update({self.root / "batch/one"})
+        self.assertTrue(all((self.index.objects / (digest + ".json")).is_file() for digest in retained))
+        os.utime(str(receipt_path), (time.time() - 90000,) * 2)
+        self.index.last_gc = -3601
+        self.index.publish()
+        self.assertFalse(receipt_path.exists())
+        self.assertFalse((self.index.objects / (receipt["manifest"]["nodes"]["batch"] + ".json")).exists())
 
     def test_refresh_rejects_traversal_and_root_and_preserves_snapshot(self):
         self.session("batch/one", "待审核")

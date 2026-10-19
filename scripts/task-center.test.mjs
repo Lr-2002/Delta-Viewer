@@ -51,7 +51,7 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
           const listing = structuredClone(args.relativePath ? findNode(tree) : tree);
           listing.childrenLoaded = true;
           listing.children = listing.children.map((child) => ({ ...child, childrenLoaded: child.session, children: [] }));
-          return { catalog: { sourceRoot: root, tree: listing }, server: { generation:window.taskFixture.generation, refreshQcV1:true, refreshResults:structuredClone(window.taskFixture.refreshResults), completedAtMs: Date.UTC(2026,8,19,15,18), updatedAtMs: Date.UTC(2026,8,19,15,18), heartbeatAtMs: window.taskFixture.stale ? Date.now()-120000 : Date.now(), running: window.taskFixture.running, sessions: 5418, error: window.taskFixture.serverError, schedule: '23:00 Asia/Shanghai' } };
+          return { catalog: { sourceRoot: root, tree: listing }, server: { generation:window.taskFixture.generation, refreshQcV1:true, refreshReceiptId: args.refreshId && !window.taskFixture.suppressReceipt && window.taskFixture.refreshResults.some(r=>r.id===args.refreshId) ? args.refreshId : null, refreshResults:structuredClone(window.taskFixture.refreshResults), completedAtMs: Date.UTC(2026,8,19,15,18), updatedAtMs: Date.UTC(2026,8,19,15,18), heartbeatAtMs: window.taskFixture.stale ? Date.now()-120000 : Date.now(), running: window.taskFixture.running, sessions: 5418, error: window.taskFixture.serverError, schedule: '23:00 Asia/Shanghai' } };
         }
         if (command === 'refresh_task_index') {
           if(window.taskFixture.refreshError) throw Error(window.taskFixture.refreshError);
@@ -88,6 +88,21 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
     assert.match(await page.locator('.task-scan-status').innerText(), /服务器最近统计完成.*2026\/9\/19 23:18/);
     assert.deepEqual(await page.evaluate(() => window.taskFixture.nodeCalls), [''], 'opening reads one summary and no session directories');
+    await page.getByLabel('领取人', {exact:true}).fill('bob');
+    await page.getByText('显示 1 / 3 个批次', {exact:false}).waitFor();
+    assert.equal(await page.getByRole('button', {name:'2026-09-02-Oven',exact:true}).count(), 0);
+    await page.getByLabel('批次名称', {exact:true}).fill('Oven');
+    await page.getByText('没有符合查询条件的批次，请调整条件或清空查询。', {exact:true}).waitFor();
+    await page.getByRole('button', {name:'清空查询',exact:true}).click();
+    await page.getByLabel('领取人', {exact:true}).fill('未领取');
+    await page.getByText('显示 2 / 3 个批次', {exact:false}).waitFor();
+    await page.getByRole('button', {name:'清空查询',exact:true}).click();
+    await page.getByLabel('采集日期起', {exact:true}).fill('2026-09-03');
+    await page.getByLabel('采集日期止', {exact:true}).fill('2026-09-03');
+    await page.getByLabel('批次名称', {exact:true}).fill('fridge2');
+    await page.getByText('显示 1 / 3 个批次', {exact:false}).waitFor();
+    assert.equal(await page.getByRole('button', {name:'2026-09-03-Fridge2',exact:true}).isVisible(), true);
+    await page.getByRole('button', {name:'清空查询',exact:true}).click();
     await page.evaluate(() => { window.taskFixture.delayListing = true; });
     await page.getByRole('button', {name:'刷新任务进度',exact:true}).click();
     await page.getByText('正在刷新服务器统计…', {exact:true}).waitFor();
@@ -112,7 +127,10 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     assert.deepEqual(await page.evaluate(()=>window.taskFixture.refreshRequests.map(r=>r.paths)), [['2026-09-03-Fridge2']]);
     assert.equal(await page.getByText('批次 QC 核对完成', {exact:false}).count(), 0, 'a queued request is not a completed refresh');
     await page.waitForFunction(()=>document.querySelector('.task-tree').getAttribute('aria-busy')==='false');
-    await page.evaluate(()=>{window.taskFixture.delayRefresh=false;window.taskFixture.finishRefresh();});
+    await page.evaluate(()=>{window.taskFixture.suppressReceipt=true;window.taskFixture.delayRefresh=false;window.taskFixture.finishRefresh();});
+    await page.waitForTimeout(3300);
+    assert.equal(await page.getByText(/批次 QC 核对完成/).count(), 0, 'a matching result from cached status is not enough without its exact receipt');
+    await page.evaluate(()=>{window.taskFixture.suppressReceipt=false;});
     await page.getByText(/批次 QC 核对完成/).waitFor();
     await page.waitForFunction(()=>document.querySelector('.task-tree').getAttribute('aria-busy')==='false');
     await page.evaluate(()=>{window.taskFixture.refreshError='服务器核对请求写入失败：权限不足';});
@@ -273,6 +291,32 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     assert.equal(await page.getByRole("button", { name: "领取", exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "Fridge2_001", exact: true }).isVisible(), true);
     assert.equal(await page.evaluate(() => window.taskFixture.calls.includes('scan_task_center')), false, 'open/refresh/expand must never invoke a full source scan');
+    await page.setViewportSize({width:1440,height:920});
+    await page.evaluate(() => {
+      window.taskFixture.offline=false;
+      window.taskFixture.serverError='统计服务核对异常，已保留上次成功结果，请联系管理员检查共享目录权限。';
+      window.taskFixture.stale=true;
+      const template=window.taskFixture.tree.children[0];
+      for(let i=0;i<30;i++)window.taskFixture.tree.children.push({...template, name:'2026-10-19-滚动回归'+i,relativePath:'2026-10-19-滚动回归'+i,batchKey:String(i).padStart(64,'0')});
+    });
+    await page.getByRole('button', {name:'刷新任务进度',exact:true}).click();
+    await page.getByText('显示 33 / 33 个批次',{exact:false}).waitFor();
+    for(const [width,height] of [[1440,920],[960,680],[390,844]]) {
+      await page.setViewportSize({width,height});
+      for(const scrollEnd of [false,true]) {
+        const bounds=await page.evaluate((scrollEnd)=>{
+          const tree=document.querySelector('.task-tree'); tree.scrollTop=scrollEnd?tree.scrollHeight:0;
+          const top=tree.getBoundingClientRect().top;
+          const status=document.querySelector('.task-scan-status');
+          return {top, bottom:status.getBoundingClientRect().bottom, textBottom:Math.max(...[...status.children].map(e=>e.getBoundingClientRect().bottom)), filterBottom:document.querySelector('.task-filters').getBoundingClientRect().bottom, height:tree.clientHeight, scrollTop:tree.scrollTop, overflow:document.documentElement.scrollWidth>innerWidth};
+        },scrollEnd);
+        assert.equal(bounds.overflow,false);
+        assert.ok(bounds.height>40,`directory remains usable at ${width}: ${JSON.stringify(bounds)}`);
+        assert.ok(bounds.top>=bounds.bottom-1 && bounds.top>=bounds.textBottom-1 && bounds.top>=bounds.filterBottom-1, `no status text overlaps scrolled rows at ${width}: ${JSON.stringify(bounds)}`);
+        if(scrollEnd)assert.ok(bounds.scrollTop>0);
+      }
+      await page.screenshot({path:`artifacts/task-center/scroll-filter-${width}.png`,fullPage:true});
+    }
     assert.deepEqual(errors, []);
   } finally { await browser.close(); await server.close(); }
 });

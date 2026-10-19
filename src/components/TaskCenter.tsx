@@ -3,6 +3,7 @@ import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Databa
 import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex, refreshTaskIndex } from "../lib/backend";
 import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus } from "../lib/task-center";
 import type { UserIdentity } from "../types";
+import { emptyTaskFilters, matchesTaskBatch } from "../lib/task-center-filter";
 import "./task-center.css";
 
 interface Props {
@@ -17,6 +18,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const [root, setRoot] = useState(sourceRoot ?? "");
   const [catalog, setCatalog] = useState<TaskCatalog | null>(null);
   const [claims, setClaims] = useState<Record<string, BatchClaim>>({});
+  const [filters, setFilters] = useState(emptyTaskFilters);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
   const [pendingOnlyBatch, setPendingOnlyBatch] = useState("");
   const [pendingResults, setPendingResults] = useState<{ path: string; nodes: TaskNode[]; loading: boolean; error: string }>({ path: "", nodes: [], loading: false, error: "" });
@@ -27,6 +29,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const [refreshError, setRefreshError] = useState("");
   const refreshErrorRef = useRef(refreshError); refreshErrorRef.current = refreshError;
   const qcRequest = useRef<{ id: string; root: string; atMs: number } | null>(null);
+  const confirmedRequest = useRef<string | undefined>(undefined);
   const [error, setError] = useState("");
   const [claimError, setClaimError] = useState("");
   const [claimActionError, setClaimActionError] = useState("");
@@ -73,7 +76,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       try {
         // Read only directory index shards in this batch, with bounded NAS concurrency.
         while (queue.length && active) {
-          const results = await Promise.all(queue.splice(0, 4).map((path) => readTaskIndex(root, path)));
+          const results = await Promise.all(queue.splice(0, 4).map((path) => readTaskIndex(root, path, confirmedRequest.current)));
           if (!active) return;
           for (const result of results) {
             const node = result.catalog?.tree;
@@ -100,7 +103,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     panelRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
     const keydown = (event: KeyboardEvent) => {
       if (event.key !== "Tab") return;
-      const controls = Array.from(panelRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled)") ?? []);
+      const controls = Array.from(panelRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled)") ?? []);
       const first = controls[0], last = controls.at(-1);
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -118,7 +121,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const cached = getCachedTaskCatalog(currentUser.username, root);
     setCatalog(cached?.catalog ?? null); setServer(null); setLoadingNodes(new Set()); setRequestNotice("");
     setRefreshNotice(""); setCheckedAtMs(0); setManualRefreshing(false); manualRequested.current = false;
-    setRefreshError(""); qcRequest.current = null; refreshActive.current = false;
+    setRefreshError(""); qcRequest.current = null; confirmedRequest.current = undefined; refreshActive.current = false; setFilters(emptyTaskFilters());
     setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setPendingOnlyBatch(""); setError(""); setClaimError(""); setClaimActionError(""); setOpenError("");
   }, [root, currentUser.username]);
   useEffect(() => {
@@ -133,12 +136,14 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       const previousGeneration = serverRef.current?.generation;
       setLoading(true);
       try {
-        const next = await readTaskIndex(root);
+        const readReceipt = qcRequest.current?.id ?? confirmedRequest.current;
+        const next = await readTaskIndex(root, "", readReceipt);
         if (!active) return;
         setServer(next.server);
         const requested = qcRequest.current;
-        const finished = requested?.root === root ? next.server.refreshResults?.find((item) => item.id === requested.id) : undefined;
+        const finished = requested?.root === root && next.server.refreshReceiptId === requested.id ? next.server.refreshResults?.find((item) => item.id === requested.id) : undefined;
         if (finished) {
+          confirmedRequest.current = requested!.id;
           qcRequest.current = null;
           setManualRefreshing(false);
           setRefreshError(finished.error);
@@ -157,7 +162,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
           for (const path of [...expandedRef.current].filter(Boolean).sort((a, b) => a.length - b.length)) {
             const contains = (node: TaskNode): boolean => node.relativePath === path || node.children.some(contains);
             if (!contains(current.tree)) continue;
-            const detail = await readTaskIndex(root, path);
+            const detail = await readTaskIndex(root, path, readReceipt);
             if (!active) return;
             if (detail.catalog) {
               current = { ...current, tree: mergeIndexedNode(current.tree, detail.catalog.tree) };
@@ -170,7 +175,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
         if (manual && !finished && !qcRequest.current && !refreshErrorRef.current) {
           setRefreshNotice(!next.catalog ? "已刷新，等待服务器首次统计完成。"
             : next.server.error ? "已读取上次统计，服务器统计失败，请联系管理员。"
-            : Date.now() - next.server.heartbeatAtMs > 90000 ? "已读取上次统计，统计服务未响应，请联系管理员。"
+            : Date.now() - next.server.heartbeatAtMs > 90000 ? "已读取上次统计，服务器状态未更新，可能为共享缓存或服务无响应；请重试。"
             : next.server.running ? "已刷新当前可用结果，服务器仍在统计，完成后自动更新。"
             : previousGeneration && previousGeneration === next.server.generation ? "刷新完成，服务器统计暂无变化。"
             : "刷新完成，已读取服务器最新统计。");
@@ -302,7 +307,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const selectedRoot = root;
     setLoadingNodes((previous) => new Set(previous).add(path));
     try {
-      const next = await readTaskIndex(root, path);
+      const next = await readTaskIndex(root, path, confirmedRequest.current);
       if (alive.current && rootRef.current === selectedRoot && next.catalog) {
         setCatalog((previous) => previous ? { ...previous, tree: mergeIndexedNode(previous.tree, next.catalog!.tree) } : previous);
       }
@@ -332,7 +337,8 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const percent = node.total && !node.incomplete && !node.scanning ? Math.floor(node.reviewed * 100 / node.total) : null;
     const filteringThisBatch = percent !== 100 && Boolean(pendingOnlyBatch) && pendingOnlyBatch === node.relativePath;
     const filterLoading = filteringThisBatch && (pendingResults.path !== pendingOnlyBatch || pendingResults.loading);
-    const children = filteringThisBatch ? filterLoading ? [] : pendingResults.nodes : node.children;
+    const sourceChildren = filteringThisBatch ? filterLoading ? [] : pendingResults.nodes : node.children;
+    const children = isRoot ? sourceChildren.filter((child) => matchesTaskBatch(child, claims[child.batchKey], filters)) : sourceChildren;
     return <div key={node.relativePath} className="task-tree-node">
       <div className={`task-tree-row${isRoot ? " task-tree-root" : ""}${node.session ? " task-tree-session" : ""}`} style={{ "--tree-depth": depth } as React.CSSProperties}>
         <button className="task-node-name" type="button" title={isRoot ? root : node.name} aria-expanded={node.session ? undefined : open}
@@ -366,6 +372,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       {open && !node.session && children.map((child) => row(filteringThisBatch ? { ...child, name: child.relativePath.slice(node.relativePath.length + 1) } : child, depth + 1))}
       {open && filteringThisBatch && (filterLoading ? <p className="task-empty" role="status">正在查询未审核数据…</p> : pendingResults.error ? <p className="task-center-error" role="alert">{pendingResults.error}</p> : <p className="task-empty" role="status">{children.length ? `未审核 ${children.length} 条` : "当前批次没有未审核数据"}</p>)}
       {open && loadingNodes.has(node.relativePath) && <p className="task-empty">正在读取目录明细…</p>}
+      {isRoot && open && !children.length && node.children.length > 0 && <p className="task-empty">{filters.owner.trim() && !claimsReady ? "正在读取领取状态，请稍候…" : "没有符合查询条件的批次，请调整条件或清空查询。"}</p>}
     </div>;
   }
   return <section ref={panelRef} className="task-center" role={onClose ? "dialog" : undefined} aria-modal={onClose ? true : undefined} aria-label="任务中心" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !pending) onClose?.(); }}>
@@ -377,12 +384,20 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       <span>每日 23:00 自动统计</span>
       {server?.updatedAtMs && server.updatedAtMs !== server.completedAtMs ? <span>进度更新：{new Date(server.updatedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</span> : null}
       {checkedAtMs > 0 && <span>最近读取：{new Date(checkedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（北京时间）</span>}
-      {server && Date.now() - server.heartbeatAtMs > 90000 ? <span className="task-center-error">统计服务未响应，显示上次结果</span> : server?.running ? <span>服务器正在统计 · 已统计 {server.sessions} 条 · 显示上次结果</span> : null}
+      {server && Date.now() - server.heartbeatAtMs > 90000 ? <span className="task-center-error">服务器状态未更新（共享缓存或服务无响应），显示上次结果</span> : server?.running ? <span>服务器正在统计 · 已统计 {server.sessions} 条 · 显示上次结果</span> : null}
       {server?.error && <span role="alert" className="task-center-error">{server.error}；保留上次成功结果</span>}
       {requestNotice && <span>{requestNotice}</span>}
       {refreshNotice && <span className="task-refresh-notice">{refreshNotice}</span>}
       {refreshNotice && !manualRefreshing && <span>展开批次后刷新可重新核对该批次 QC；完整目录校准仍由服务器后台执行。</span>}
     </div>
+    <form className="task-filters" aria-label="查询批次" onSubmit={(event) => event.preventDefault()}>
+      <label>领取人<input type="search" placeholder="姓名 / 账号 / 未领取" value={filters.owner} onChange={(event) => setFilters((previous) => ({ ...previous, owner: event.target.value }))} /></label>
+      <label>批次名称<input type="search" placeholder="输入名称关键词" value={filters.name} onChange={(event) => setFilters((previous) => ({ ...previous, name: event.target.value }))} /></label>
+      <label className="task-date-filter">采集日期起<input type="date" value={filters.dateFrom} max={filters.dateTo || undefined} onChange={(event) => setFilters((previous) => ({ ...previous, dateFrom: event.target.value }))} /></label>
+      <label className="task-date-filter">采集日期止<input type="date" value={filters.dateTo} min={filters.dateFrom || undefined} onChange={(event) => setFilters((previous) => ({ ...previous, dateTo: event.target.value }))} /></label>
+      <button type="button" className="button button-secondary" disabled={!Object.values(filters).some(Boolean)} onClick={() => setFilters(emptyTaskFilters())}>清空查询</button>
+      <span className="task-filter-summary" role="status">{filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo ? "起始日期不能晚于结束日期。" : catalog ? `显示 ${catalog.tree.children.filter((node) => matchesTaskBatch(node, claims[node.batchKey], filters)).length} / ${catalog.tree.children.length} 个批次` : "等待读取批次"} · 日期按批次文件夹名称；组合条件即时生效{filters.owner.trim() && !claimsReady ? "；领取状态尚未读取成功，查询结果待确认" : ""}</span>
+    </form>
     <div className="task-tree" aria-busy={loading}>{catalog ? row(catalog.tree, 0) : <p className="task-empty">{loading ? "正在读取服务器统计…" : error ? "统计读取失败" : "等待服务器首次统计完成"}</p>}</div>
   </section>;
 }
