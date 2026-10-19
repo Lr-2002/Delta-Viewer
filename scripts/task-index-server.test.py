@@ -159,6 +159,105 @@ class IndexTests(unittest.TestCase):
         finally:
             watcher.close()
 
+    def test_replaced_directory_at_same_path_gets_a_new_watch(self):
+        one = self.session("batch/one", "待审核")
+        watcher = module.Watcher()
+        try:
+            watcher.add(one)
+            one.rename(self.root / "old-one")
+            self.session("batch/one", "待审核")
+            watcher.add(one)
+            watcher.drain()
+            self.session("batch/one", "通过")
+            self.assertIn(one, watcher.drain()[0])
+            self.assertEqual(watcher.identities[one], (one.stat().st_dev, one.stat().st_ino))
+        finally:
+            watcher.close()
+
+    def test_batch_refresh_repairs_missed_events_and_preserves_other_batches(self):
+        one = self.session("batch/one", "待审核")
+        other = self.session("other/two", "待审核")
+        self.assertTrue(self.index.rebuild())
+        completed = self.index.manifest["completedAtMs"]
+        self.session("batch/one", "通过")
+        self.session("other/two", "不通过")
+        before = (one / "session.json").read_bytes()
+        request = self.index.requests / (("a" * 64) + ".json")
+        module.atomic_json(request, {"paths": ["batch"]})
+        self.index.refresh_requests()
+        self.assertEqual(self.index.nodes["batch"]["reviewed"], 1)
+        self.assertEqual(self.index.nodes["other/two"]["status"], "pending")
+        self.assertEqual(self.index.manifest["completedAtMs"], completed)
+        self.assertEqual((one / "session.json").read_bytes(), before)
+        self.assertFalse(request.exists())
+        result = self.index.status["refreshResults"][-1]
+        self.assertEqual(result["id"], "a" * 64)
+        self.assertEqual(result["error"], "")
+        self.assertGreater(result["completedAtMs"], 0)
+        self.assertEqual(result["generation"], self.index.manifest["generation"])
+        self.assertEqual(other.name, "two")
+
+    def test_refresh_rejects_traversal_and_root_and_preserves_snapshot(self):
+        self.session("batch/one", "待审核")
+        self.assertTrue(self.index.rebuild())
+        before = (self.out / "index.json").read_bytes()
+        for paths in [["../elsewhere"], [""], ["missing"], ["/tmp"], ["batch/../batch"]]:
+            module.atomic_json(self.index.requests / (("b" * 64) + ".json"), {"paths": paths})
+            self.index.refresh_requests()
+            self.assertTrue(self.index.status["refreshResults"][-1]["error"])
+            self.assertEqual((self.out / "index.json").read_bytes(), before)
+
+    def test_failed_incremental_publish_can_be_retried_without_losing_change(self):
+        one = self.session("batch/one", "待审核")
+        self.assertTrue(self.index.rebuild())
+        before = (self.out / "index.json").read_bytes()
+        self.session("batch/one", "通过")
+        with patch.object(self.index, "publish", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.index.update({one})
+        self.assertEqual(self.index.nodes["batch/one"]["status"], "pending")
+        self.assertEqual((self.out / "index.json").read_bytes(), before)
+        self.index.update({one})
+        self.assertEqual(self.index.nodes["batch"]["reviewed"], 1)
+
+    def test_refresh_rejects_replaced_intermediate_symlink(self):
+        one = self.session("batch/nested/one", "待审核")
+        self.assertTrue(self.index.rebuild())
+        before = (self.out / "index.json").read_bytes()
+        moved = Path(self.temp.name) / "outside"
+        one.parent.rename(moved)
+        one.parent.symlink_to(moved, target_is_directory=True)
+        module.atomic_json(self.index.requests / (("c" * 64) + ".json"), {"paths": ["batch"]})
+        with patch.object(module, "qc_status", side_effect=AssertionError("must not read linked QC")):
+            self.index.refresh_requests()
+        self.assertIn("已移动", self.index.status["refreshResults"][-1]["error"])
+        self.assertEqual((self.out / "index.json").read_bytes(), before)
+
+    def test_loop_retries_failed_publish_without_another_file_event(self):
+        one = self.session("batch/one", "待审核")
+        clock, iterations = [0], [0]
+        class FixtureWatcher:
+            fd = 0
+            def add(self, path): pass
+            def retain(self, paths): pass
+            def drain(self): return ({one}, False) if iterations[0] == 1 else (set(), False)
+        def tick(*args):
+            iterations[0] += 1
+            if iterations[0] > 2: raise StopIteration
+            clock[0] = iterations[0] * 3
+            if iterations[0] == 1: self.session("batch/one", "通过")
+        publish = self.index.publish
+        def fail_once(*args, **kwargs):
+            if iterations[0] == 1: raise OSError("disk full")
+            return publish(*args, **kwargs)
+        self.index.watcher = FixtureWatcher()
+        with patch.object(module.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(module.select, "select", side_effect=tick), \
+                patch.object(self.index, "publish", side_effect=fail_once):
+            with self.assertRaises(StopIteration): self.index.run()
+        self.assertEqual(self.index.nodes["batch"]["reviewed"], 1)
+        self.assertEqual(self.index.status["error"], "")
+
     def test_schedule_uses_china_time_and_does_not_run_before_2300(self):
         for hour, expected in [(22, "2026-09-19T23:00:00+08:00"), (23, "2026-09-20T23:00:00+08:00")]:
             now = dt.datetime(2026, 9, 20, hour, 0, tzinfo=module.ZONE).timestamp()

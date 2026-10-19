@@ -94,15 +94,26 @@ class Watcher:
             raise OSError(ctypes.get_errno(), "inotify_init1")
         self.paths = {}
         self.watched = set()
+        self.identities = {}
 
     def add(self, path):
-        if path in self.watched:
+        info = path.stat()
+        identity = (info.st_dev, info.st_ino)
+        if path in self.watched and self.identities.get(path) == identity:
             return
+        # A directory can be moved away and replaced at the same pathname.
+        # Watching the old inode does not watch its replacement.
+        for old_wd, old_path in list(self.paths.items()) if path in self.watched else []:
+            if old_path == path:
+                self.libc.inotify_rm_watch(self.fd, old_wd)
+                self.paths.pop(old_wd, None)
+        self.watched.discard(path)
         wd = self.libc.inotify_add_watch(self.fd, os.fsencode(str(path)), self.MASK)
         if wd < 0:
             raise OSError(ctypes.get_errno(), "Cannot watch QC directories; check inotify limit")
         self.paths[wd] = path
         self.watched.add(path)
+        self.identities[path] = identity
 
     def drain(self):
         dirty, overflow = set(), False
@@ -124,6 +135,7 @@ class Watcher:
                         dirty.add(parent)
                     if mask & 0x8000:
                         self.watched.discard(parent)
+                        self.identities.pop(parent, None)
                         self.paths.pop(wd, None)
         return dirty, overflow
 
@@ -136,6 +148,7 @@ class Watcher:
                 self.libc.inotify_rm_watch(self.fd, wd)
                 self.paths.pop(wd, None)
                 self.watched.discard(path)
+                self.identities.pop(path, None)
 
 
 class TaskIndex:
@@ -147,12 +160,17 @@ class TaskIndex:
         self.output.mkdir(parents=True, exist_ok=True)
         self.objects = self.output / "nodes"
         self.objects.mkdir(exist_ok=True)
+        self.requests = self.output / "refresh-requests"
+        self.requests.mkdir(exist_ok=True)
+        if self.requests.is_symlink():
+            raise ValueError("Refresh requests must be an ordinary directory")
         self.watcher = watcher
         self.nodes = {}
         self.manifest = {"schemaVersion": 1, "dataset": self.source.name, "completedAtMs": 0,
                          "updatedAtMs": 0, "generation": "", "nodes": {}}
         self.status = {"running": False, "startedAtMs": 0, "heartbeatAtMs": 0,
-                       "sessions": 0, "error": "", "schedule": "23:00 Asia/Shanghai"}
+                       "sessions": 0, "error": "", "schedule": "23:00 Asia/Shanghai",
+                       "refreshQcV1": True, "refreshResults": []}
         self.last_progress = 0
         self.sessions = 0
         self.visited = 0
@@ -309,28 +327,82 @@ class TaskIndex:
 
     def update(self, paths):
         # Re-read changed QC from disk, never trust a client-supplied conclusion.
+        previous = self.nodes
+        staged = dict(previous)
         changed = False
         for path in paths:
             relative = path.relative_to(self.source).as_posix()
             if relative == ".":
                 relative = ""
-            node = self.nodes.get(relative)
+            node = staged.get(relative)
             if not node or not node["session"] or not path.is_dir() or path.is_symlink():
                 continue  # New/removed directories are reconciled by a rebuild below.
             status, error = qc_status(path)
             if (node["status"], node["error"]) != (status, error):
+                node = dict(node)
                 node.update(status=status, error=error, approved=int(status == "approved"),
                             rejected=int(status == "rejected"), reviewed=int(status in ("approved", "rejected")),
                             errors=int(status == "error"))
+                staged[relative] = node
                 changed = True
         if changed:
             # Loaded shards are shallow; re-link their immediate children before aggregation.
-            for relative in sorted(self.nodes, key=lambda name: name.count("/") + bool(name), reverse=True):
-                node = self.nodes[relative]
+            for relative in sorted(staged, key=lambda name: name.count("/") + bool(name), reverse=True):
+                node = staged[relative]
                 if not node["session"]:
-                    node["children"] = [self.nodes[child["relativePath"]] for child in node["children"]]
+                    node = dict(node, children=[staged[child["relativePath"]] for child in node["children"]])
                     self.aggregate(node)
-            self.publish()
+                    staged[relative] = node
+            self.nodes = staged
+            try:
+                self.publish()
+            except Exception:
+                self.nodes = previous
+                raise
+
+    def ordinary_source_directory(self, path):
+        return path.is_dir() and all(not candidate.is_symlink()
+                                     for candidate in [path, *path.parents]
+                                     if candidate == self.source or self.source in candidate.parents)
+
+    def refresh_requests(self):
+        # Requests contain only index-relative directories, never QC conclusions.
+        # Bound each pass; other requests and inotify events run on the next tick.
+        for request in sorted(self.requests.glob("*.json"))[:4]:
+            request_id = request.stem
+            if len(request_id) != 64 or any(c not in "0123456789abcdef" for c in request_id):
+                continue
+            result = {"id": request_id, "completedAtMs": 0, "error": ""}
+            try:
+                value = read_json(request)
+                paths = value.get("paths")
+                if not isinstance(paths, list) or not 1 <= len(paths) <= 32:
+                    raise ValueError("刷新范围无效")
+                selected = set()
+                for relative in paths:
+                    if not isinstance(relative, str) or relative not in self.nodes or not relative or any(
+                            part in ("", ".", "..") for part in relative.split("/")) or "\\" in relative:
+                        raise ValueError("刷新目录不在服务器索引中")
+                    parent = self.source / relative
+                    if not self.ordinary_source_directory(parent):
+                        raise ValueError("刷新目录已移动，请等待服务器校准")
+                    selected.update(self.source / name for name, node in self.nodes.items()
+                                    if node["session"] and (name == relative or name.startswith(relative + "/")))
+                if any(not self.ordinary_source_directory(path) for path in selected):
+                    raise ValueError("批次子目录已移动，请等待服务器校准")
+                self.update(selected)
+                # Repair watches as well as QC. New/removed folders still use topology reconciliation.
+                if self.watcher:
+                    for path in selected:
+                        if path.is_dir() and not path.is_symlink():
+                            self.watcher.add(path)
+            except Exception as error:
+                result["error"] = "批次核对失败: " + str(error)
+            result["completedAtMs"] = now_ms()
+            result["generation"] = self.manifest["generation"]
+            self.status["refreshResults"] = (self.status["refreshResults"] + [result])[-64:]
+            self.publish_status()
+            request.unlink()
 
     def run(self):
         try:
@@ -349,6 +421,7 @@ class TaskIndex:
             self.request_stamp = request.stat().st_mtime_ns
         except FileNotFoundError:
             pass
+        self.refresh_requests()
         retry_needed = not self.rebuild()
         pending, last_flush, last_heartbeat = set(), time.monotonic(), time.monotonic()
         while True:
@@ -374,11 +447,15 @@ class TaskIndex:
                     self.update(pending)
                 except Exception as error:
                     self.publish_status(error="增量统计失败: " + str(error))
-                pending.clear()
+                else:
+                    pending.clear()
+                    if self.status["error"].startswith("增量统计失败: "):
+                        self.publish_status(error="")
                 last_flush = time.monotonic()
             if time.monotonic() - last_heartbeat > 10:
                 self.publish_status()
                 last_heartbeat = time.monotonic()
+            self.refresh_requests()
 
 
 def main():

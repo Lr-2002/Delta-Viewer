@@ -6,10 +6,13 @@ import packageInfo from "../../package.json";
 import { createAuditFlusher } from "./audit-flush";
 import { REJECTION_REASONS } from "./rejection-reasons";
 import type { TaskIndexResult } from "./task-center";
+import { createTaskIndexReader, taskIndexDeadline } from "./task-index-read";
 
-export const readTaskIndex = (sourceRoot: string, relativePath = "") =>
-  invoke<TaskIndexResult>("read_task_index", { sourceRoot, relativePath });
+export const readTaskIndex = createTaskIndexReader((sourceRoot, relativePath) =>
+  invoke<TaskIndexResult>("read_task_index", { sourceRoot, relativePath }));
 export const rebuildTaskIndex = (sourceRoot: string) => invoke<void>("rebuild_task_index", { sourceRoot });
+export const refreshTaskIndex = (sourceRoot: string, relativePaths: string[]) =>
+  taskIndexDeadline(invoke<string>("refresh_task_index", { sourceRoot, relativePaths }));
 import {
   createDemoSkeleton,
   createDemoStates,
