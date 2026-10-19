@@ -183,9 +183,69 @@ pub fn load(source: &Path, relative: &str) -> AppResult<Value> {
             "completedAtMs": manifest["completedAtMs"], "updatedAtMs": manifest["updatedAtMs"],
             "generation": manifest["generation"], "running": status["running"],
             "heartbeatAtMs": status["heartbeatAtMs"], "startedAtMs": status["startedAtMs"],
-            "sessions": status["sessions"], "error": status["error"], "schedule": status["schedule"]
+            "sessions": status["sessions"], "error": status["error"], "schedule": status["schedule"],
+            "refreshQcV1": status["refreshQcV1"], "refreshResults": status["refreshResults"]
         }}),
     )
+}
+
+pub fn request_refresh(source: &Path, paths: &[String]) -> AppResult<String> {
+    if paths.is_empty() || paths.len() > 32 || paths.iter().any(|path| !safe_relative(path)) {
+        return Err(invalid("请选择最多 32 个批次刷新"));
+    }
+    let (output, prefix) = locations(source)?;
+    verify_directory(output.parent().ok_or_else(|| invalid("索引目录无效"))?)?;
+    verify_directory(&output)?;
+    let status = read(&output.join("status.json"))?;
+    if status["refreshQcV1"] != true {
+        return Err(invalid("服务器尚未支持批次核对，请联系管理员升级统计服务"));
+    }
+    let selected: Vec<String> = paths
+        .iter()
+        .map(|path| {
+            [prefix.as_str(), path.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .collect();
+    if selected.iter().any(|path| path.is_empty()) {
+        return Err(invalid(
+            "请展开要核对的批次；全部目录请由管理员执行立即统计",
+        ));
+    }
+    let requests = output.join("refresh-requests");
+    verify_directory(&requests)?;
+    if fs::read_dir(&requests)?.take(65).count() >= 64 {
+        return Err(invalid("服务器核对请求较多，请稍后重试"));
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| invalid("系统时间无效"))?
+        .as_nanos();
+    let id = format!(
+        "{:x}",
+        Sha256::digest(format!("{}:{nonce}:{selected:?}", std::process::id()).as_bytes())
+    );
+    let target = requests.join(format!("{id}.json"));
+    let temporary = requests.join(format!(".{id}.partial"));
+    let result = (|| -> AppResult<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&serde_json::to_vec(&json!({"paths": selected}))?)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, &target)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+    Ok(id)
 }
 
 pub fn request_rebuild(source: &Path) -> AppResult<()> {
@@ -274,6 +334,28 @@ mod tests {
         assert!(load(&source, "batch\\session").is_err());
         request_rebuild(&source).unwrap();
         assert!(output.join("rebuild.request.json").is_file());
+        assert!(request_refresh(&source, &["batch".into()]).is_err());
+        fs::write(output.join("status.json"), r#"{"refreshQcV1":true}"#).unwrap();
+        fs::create_dir(output.join("refresh-requests")).unwrap();
+        assert!(request_refresh(&source, &["".into()]).is_err());
+        assert!(request_refresh(&source, &["../batch".into()]).is_err());
+        let id = request_refresh(&source, &["batch".into()]).unwrap();
+        let request: Value = serde_json::from_slice(
+            &fs::read(output.join("refresh-requests").join(format!("{id}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(request["paths"], json!(["batch"]));
+        let nested_id = request_refresh(&source.join("batch"), &["".into()]).unwrap();
+        let nested_request: Value = serde_json::from_slice(
+            &fs::read(
+                output
+                    .join("refresh-requests")
+                    .join(format!("{nested_id}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(nested_request["paths"], json!(["batch"]));
         fs::write(output.join("nodes").join(format!("{digest}.json")), b"{}").unwrap();
         assert!(load(&source, "batch")
             .unwrap_err()

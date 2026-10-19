@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, UserMinus, ListFilter, X } from "lucide-react";
-import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex } from "../lib/backend";
+import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex, refreshTaskIndex } from "../lib/backend";
 import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus } from "../lib/task-center";
 import type { UserIdentity } from "../types";
 import "./task-center.css";
@@ -21,6 +21,12 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const [pendingOnlyBatch, setPendingOnlyBatch] = useState("");
   const [pendingResults, setPendingResults] = useState<{ path: string; nodes: TaskNode[]; loading: boolean; error: string }>({ path: "", nodes: [], loading: false, error: "" });
   const [loading, setLoading] = useState(false);
+  const [refreshNotice, setRefreshNotice] = useState("");
+  const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [checkedAtMs, setCheckedAtMs] = useState(0);
+  const [refreshError, setRefreshError] = useState("");
+  const refreshErrorRef = useRef(refreshError); refreshErrorRef.current = refreshError;
+  const qcRequest = useRef<{ id: string; root: string; atMs: number } | null>(null);
   const [error, setError] = useState("");
   const [claimError, setClaimError] = useState("");
   const [claimActionError, setClaimActionError] = useState("");
@@ -42,6 +48,10 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const rootRef = useRef(root); rootRef.current = root;
   const expandedRef = useRef(expanded); expandedRef.current = expanded;
   const catalogRef = useRef(catalog); catalogRef.current = catalog;
+  const serverRef = useRef(server); serverRef.current = server;
+  const manualRequested = useRef(false);
+  const refreshActive = useRef(false);
+  const ownerRef = useRef(currentUser.username); ownerRef.current = currentUser.username;
   const admin = currentUser.role === "admin";
   useEffect(() => {
     if (!pendingOnlyBatch || !catalog) return;
@@ -107,6 +117,8 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   useEffect(() => {
     const cached = getCachedTaskCatalog(currentUser.username, root);
     setCatalog(cached?.catalog ?? null); setServer(null); setLoadingNodes(new Set()); setRequestNotice("");
+    setRefreshNotice(""); setCheckedAtMs(0); setManualRefreshing(false); manualRequested.current = false;
+    setRefreshError(""); qcRequest.current = null; refreshActive.current = false;
     setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setPendingOnlyBatch(""); setError(""); setClaimError(""); setClaimActionError(""); setOpenError("");
   }, [root, currentUser.username]);
   useEffect(() => {
@@ -116,17 +128,32 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     async function refresh() {
       if (!active) return;
       if (document.hidden) { timer = window.setTimeout(refresh, 60000); return; }
+      const manual = manualRequested.current;
+      manualRequested.current = false;
+      const previousGeneration = serverRef.current?.generation;
       setLoading(true);
       try {
         const next = await readTaskIndex(root);
         if (!active) return;
-        setServer(next.server); setError("");
+        setServer(next.server);
+        const requested = qcRequest.current;
+        const finished = requested?.root === root ? next.server.refreshResults?.find((item) => item.id === requested.id) : undefined;
+        if (finished) {
+          qcRequest.current = null;
+          setManualRefreshing(false);
+          setRefreshError(finished.error);
+          setRefreshNotice(finished.error ? "批次核对失败，保留可用结果，请重试。" : "批次 QC 核对完成，已读取服务器统计。尚未计入的并发审核会继续增量更新。");
+          // Re-query a pending-only view only after the server confirms completion.
+          setRevision((value) => value + 1);
+        } else if (requested && Date.now() - requested.atMs > 30000) {
+          setRefreshNotice("服务器批次核对尚未确认完成，可稍后刷新重试；若持续等待，请联系管理员。");
+        }
         if (next.server.running) setRequestNotice("");
         if (next.catalog) {
           cacheTaskCatalog(currentUser.username, root, next.catalog);
           let current = catalogRef.current ? { ...next.catalog, tree: mergeIndexedNode(catalogRef.current.tree, next.catalog.tree) } : next.catalog;
           setCatalog(current);
-          // Only expanded directories are fetched; a refresh never scans source QC.
+          // Fetch only expanded index shards here; QC rechecks run on the server.
           for (const path of [...expandedRef.current].filter(Boolean).sort((a, b) => a.length - b.length)) {
             const contains = (node: TaskNode): boolean => node.relativePath === path || node.children.some(contains);
             if (!contains(current.tree)) continue;
@@ -138,8 +165,23 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
             }
           }
         }
-      } catch (reason) { if (active) setError(String(reason)); }
-      finally { if (active) { setLoading(false); timer = window.setTimeout(refresh, 15000); } }
+        if (!active) return;
+        setError(""); setCheckedAtMs(Date.now());
+        if (manual && !finished && !qcRequest.current && !refreshErrorRef.current) {
+          setRefreshNotice(!next.catalog ? "已刷新，等待服务器首次统计完成。"
+            : next.server.error ? "已读取上次统计，服务器统计失败，请联系管理员。"
+            : Date.now() - next.server.heartbeatAtMs > 90000 ? "已读取上次统计，统计服务未响应，请联系管理员。"
+            : next.server.running ? "已刷新当前可用结果，服务器仍在统计，完成后自动更新。"
+            : previousGeneration && previousGeneration === next.server.generation ? "刷新完成，服务器统计暂无变化。"
+            : "刷新完成，已读取服务器最新统计。");
+        }
+      } catch (reason) {
+        if (active) {
+          setError(String(reason));
+          if (manual) setRefreshNotice("刷新未完成，已保留可用结果；请重试或根据上方原因联系管理员。");
+        }
+      }
+      finally { if (active) { setLoading(false); if (manual) setManualRefreshing(false); timer = window.setTimeout(refresh, qcRequest.current ? 3000 : 15000); } }
     }
     void refresh();
     return () => {
@@ -165,6 +207,38 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const timer = window.setInterval(() => { if (!document.hidden) void refreshClaims(); }, 15000);
     return () => { active = false; window.clearInterval(timer); };
   }, [claimKeys, claimRevision, root, currentUser.username]);
+  async function refreshProgress() {
+    if (!root || refreshActive.current || manualRefreshing || loading || pending) return;
+    refreshActive.current = true;
+    const selectedRoot = root;
+    const selectedOwner = currentUser.username;
+    const current = () => alive.current && rootRef.current === selectedRoot && ownerRef.current === selectedOwner;
+    qcRequest.current = null;
+    setManualRefreshing(true); setRefreshNotice("正在刷新服务器统计…"); setRefreshError("");
+    try {
+      const opened = [...expandedRef.current].filter(Boolean);
+      const owned = catalogRef.current?.tree.children.filter((node) => claims[node.batchKey]?.username === currentUser.username).map((node) => node.relativePath) ?? [];
+      const candidates = opened.length ? opened : owned;
+      const paths = candidates.filter((path) => !candidates.some((parent) => parent !== path && path.startsWith(`${parent}/`)));
+      if (!paths.length && root.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1)?.toLowerCase() !== "delta-d1") paths.push("");
+      if (paths.length) {
+        const id = await refreshTaskIndex(root, paths);
+        if (!current()) return;
+        qcRequest.current = { id, root, atMs: Date.now() };
+        setRefreshNotice("已请求服务器核对当前批次 QC，完成后自动更新；可继续审核。");
+      }
+    } catch (reason) {
+      if (!current()) return;
+      setRefreshError(String(reason));
+      setRefreshNotice("请求批次核对失败，仍尝试读取可用索引；请根据原因重试。");
+    } finally {
+      if (current()) {
+        refreshActive.current = false;
+        manualRequested.current = true;
+        setRevision((value) => value + 1); setClaimRevision((value) => value + 1);
+      }
+    }
+  }
   async function rebuild() {
     if (!admin || requesting) return;
     setRequesting(true);
@@ -295,16 +369,19 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     </div>;
   }
   return <section ref={panelRef} className="task-center" role={onClose ? "dialog" : undefined} aria-modal={onClose ? true : undefined} aria-label="任务中心" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !pending) onClose?.(); }}>
-    <header><h2>任务中心</h2><div>{admin && <button className="button button-secondary" disabled={requesting || server?.running} onClick={() => void rebuild()}><Database size={16} />立即统计</button>}<button className="icon-button" aria-label="刷新任务进度" title="刷新任务进度" disabled={loading || Boolean(pending)} onClick={() => { setRevision((value) => value + 1); setClaimRevision((value) => value + 1); }}><RefreshCw size={17} className={loading ? "spin" : ""} /></button>{onClose && <button className="icon-button" aria-label="关闭任务中心" title="关闭任务中心" onClick={onClose}><X size={18} /></button>}</div></header>
+    <header><h2>任务中心</h2><div>{admin && <button className="button button-secondary" disabled={requesting || server?.running} onClick={() => void rebuild()}><Database size={16} />立即统计</button>}<button type="button" className="button button-secondary task-refresh-button" aria-label="刷新任务进度" title="刷新服务器统计及领取状态；展开或本人领取的批次会在服务器重新核对 QC，不扫描媒体" disabled={!root || loading || manualRefreshing || Boolean(pending)} onClick={() => void refreshProgress()}><RefreshCw size={17} className={loading || manualRefreshing ? "spin" : ""} /><span>{loading || manualRefreshing ? "刷新中" : "刷新进度"}</span></button>{onClose && <button className="icon-button" aria-label="关闭任务中心" title="关闭任务中心" onClick={onClose}><X size={18} /></button>}</div></header>
     <div className="task-root-setting"><span title={root}>默认根目录：{root || "未找到已挂载的数据目录"}</span><button type="button" className="button button-secondary" disabled={Boolean(pending)} onClick={() => void chooseRoot()}><FolderOpen size={16} />更改目录</button></div>
-    {(error || claimError || claimActionError || openError) && <p role="alert" className="task-center-error">{error || claimError || claimActionError || openError}</p>}
+    {(error || refreshError || claimError || claimActionError || openError) && <p role="alert" className="task-center-error">{error || refreshError || claimError || claimActionError || openError}</p>}
     <div className="task-scan-status" role="status">
       <span>服务器最近统计完成：{server?.completedAtMs ? new Date(server.completedAtMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "尚无完整统计"}（北京时间）</span>
       <span>每日 23:00 自动统计</span>
       {server?.updatedAtMs && server.updatedAtMs !== server.completedAtMs ? <span>进度更新：{new Date(server.updatedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</span> : null}
+      {checkedAtMs > 0 && <span>最近读取：{new Date(checkedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（北京时间）</span>}
       {server && Date.now() - server.heartbeatAtMs > 90000 ? <span className="task-center-error">统计服务未响应，显示上次结果</span> : server?.running ? <span>服务器正在统计 · 已统计 {server.sessions} 条 · 显示上次结果</span> : null}
       {server?.error && <span role="alert" className="task-center-error">{server.error}；保留上次成功结果</span>}
       {requestNotice && <span>{requestNotice}</span>}
+      {refreshNotice && <span className="task-refresh-notice">{refreshNotice}</span>}
+      {refreshNotice && !manualRefreshing && <span>展开批次后刷新可重新核对该批次 QC；完整目录校准仍由服务器后台执行。</span>}
     </div>
     <div className="task-tree" aria-busy={loading}>{catalog ? row(catalog.tree, 0) : <p className="task-empty">{loading ? "正在读取服务器统计…" : error ? "统计读取失败" : "等待服务器首次统计完成"}</p>}</div>
   </section>;

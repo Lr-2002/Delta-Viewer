@@ -3,6 +3,8 @@
 .task-center > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
 .task-center h2 { margin: 0; font-size: 18px; }
 .task-center > header > div { display: flex; gap: 8px; }
+.task-refresh-button { flex-shrink: 0; white-space: nowrap; }
+.task-refresh-notice { flex-basis: 100%; color: var(--ink); font-weight: 600; }
 .task-root-setting { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line-strong); }
 .task-root-setting > span { min-width: 0; flex: 1; overflow-wrap: anywhere; font-size: 13px; }
 .task-root-setting button { flex: 0 0 auto; }
@@ -47,6 +49,8 @@
 .task-transfer { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; padding: 12px 20px; background: #f1f5f5; }
 .task-transfer label { display: grid; gap: 4px; font-size: 12px; }
 @media (max-width: 600px) {
+  .task-center > header { flex-wrap: wrap; padding: 12px; }
+  .task-center > header > div { flex-wrap: wrap; margin-left: auto; }
   .task-center { width: calc(100vw - 16px); max-height: calc(100dvh - 70px); }
   .personal-task-overlay { padding-top: 56px; }
   .task-tree-row { flex-wrap: wrap; gap: 6px; padding-right: 10px; }

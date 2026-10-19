@@ -870,6 +870,22 @@ async fn read_task_index(
 }
 
 #[tauri::command]
+async fn refresh_task_index(
+    auth: State<'_, AuthState>,
+    source_root: String,
+    relative_paths: Vec<String>,
+) -> Result<String, String> {
+    auth.require_managed_user()
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        task_index::request_refresh(Path::new(&source_root), &relative_paths)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn rebuild_task_index(auth: State<'_, AuthState>, source_root: String) -> Result<(), String> {
     let user = auth
         .require_managed_user()
@@ -1999,6 +2015,7 @@ pub fn run() {
             get_assigned_source_root,
             scan_task_center,
             read_task_index,
+            refresh_task_index,
             rebuild_task_index,
             get_task_center_root,
             set_task_center_root,

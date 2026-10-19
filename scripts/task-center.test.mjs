@@ -28,7 +28,7 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
   await server.listen();
   const executablePath = process.env.PLAYWRIGHT_CHROMIUM ?? ["/usr/bin/google-chrome", "/usr/bin/chromium"].find(existsSync) ?? chromium.executablePath();
   const browser = await chromium.launch({ executablePath, headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
   try {
@@ -39,7 +39,7 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
       tree.relativePath = "";
       const root = "\\\\10.1.40.2\\Datasets\\Delta-D1";
       const claims = { ["a".repeat(64)]: { batchKey: "a".repeat(64), username: "bob", displayName: "审核乙", claimedAtMs: Date.now() } };
-      window.taskFixture = { tree, claims, offline: false, calls: [], nodeCalls: [], openCalls: [], claimCalls: 0, closed: 0, serverError: '', running: false };
+      window.taskFixture = { tree, claims, offline: false, calls: [], nodeCalls: [], openCalls: [], claimCalls: 0, closed: 0, serverError: '', running: false, generation:'initial', refreshResults:[], refreshRequests:[] };
       window.__TAURI_INTERNALS__ = { transformCallback: () => 1, unregisterCallback: () => {}, invoke: async (command, args) => {
         window.taskFixture.calls.push(command);
         if (command === "get_task_center_root") return root;
@@ -51,7 +51,15 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
           const listing = structuredClone(args.relativePath ? findNode(tree) : tree);
           listing.childrenLoaded = true;
           listing.children = listing.children.map((child) => ({ ...child, childrenLoaded: child.session, children: [] }));
-          return { catalog: { sourceRoot: root, tree: listing }, server: { completedAtMs: Date.UTC(2026,8,19,15,18), updatedAtMs: Date.UTC(2026,8,19,15,18), heartbeatAtMs: Date.now(), running: window.taskFixture.running, sessions: 5418, error: window.taskFixture.serverError, schedule: '23:00 Asia/Shanghai' } };
+          return { catalog: { sourceRoot: root, tree: listing }, server: { generation:window.taskFixture.generation, refreshQcV1:true, refreshResults:structuredClone(window.taskFixture.refreshResults), completedAtMs: Date.UTC(2026,8,19,15,18), updatedAtMs: Date.UTC(2026,8,19,15,18), heartbeatAtMs: window.taskFixture.stale ? Date.now()-120000 : Date.now(), running: window.taskFixture.running, sessions: 5418, error: window.taskFixture.serverError, schedule: '23:00 Asia/Shanghai' } };
+        }
+        if (command === 'refresh_task_index') {
+          if(window.taskFixture.refreshError) throw Error(window.taskFixture.refreshError);
+          const id=String(window.taskFixture.refreshRequests.length+1).padStart(64,'0');
+          window.taskFixture.refreshRequests.push({id,paths:args.relativePaths});
+          const finish=()=>window.taskFixture.refreshResults.push({id,completedAtMs:Date.now(),generation:window.taskFixture.generation,error:window.taskFixture.refreshResultError||''});
+          if(window.taskFixture.delayRefresh)window.taskFixture.finishRefresh=finish;else finish();
+          return id;
         }
         if (command === "plugin:dialog|message") return window.taskFixture.cancelConfirm ? '取消' : '确认';
         if (command === "rebuild_task_index") return;
@@ -80,6 +88,16 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.waitForFunction(() => document.querySelector('.task-tree').getAttribute('aria-busy') === 'false');
     assert.match(await page.locator('.task-scan-status').innerText(), /服务器最近统计完成.*2026\/9\/19 23:18/);
     assert.deepEqual(await page.evaluate(() => window.taskFixture.nodeCalls), [''], 'opening reads one summary and no session directories');
+    await page.evaluate(() => { window.taskFixture.delayListing = true; });
+    await page.getByRole('button', {name:'刷新任务进度',exact:true}).click();
+    await page.getByText('正在刷新服务器统计…', {exact:true}).waitFor();
+    assert.equal(await page.getByRole('button', {name:'刷新任务进度',exact:true}).isDisabled(), true);
+    assert.equal(await page.getByRole('button', {name:'刷新任务进度',exact:true}).innerText(), '刷新中');
+    await page.waitForFunction(() => typeof window.taskFixture.finishListing === 'function');
+    await page.evaluate(() => { window.taskFixture.delayListing=false;window.taskFixture.finishListing();delete window.taskFixture.finishListing; });
+    await page.getByText('刷新完成，服务器统计暂无变化。', {exact:true}).waitFor();
+    assert.match(await page.locator('.task-scan-status').innerText(), /最近读取：/);
+    assert.equal(await page.evaluate(() => window.taskFixture.refreshRequests.length), 0, 'no expanded or owned batch does not request a global rescan');
     assert.equal(await page.getByRole('button', {name:'立即统计', exact:true}).count(), 0);
     assert.equal(await page.getByRole("button", { name: "已被领取", exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "领取", exact: true }).count(), 2);
@@ -88,6 +106,24 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.getByRole("button", { name: "2026-09-03-Fridge2", exact: true }).click();
     await page.getByRole("button", { name: "Fridge2_001", exact: true }).waitFor();
     assert.equal(await page.getByText("已审核 · 不通过", { exact: true }).count(), 1);
+    await page.evaluate(() => { window.taskFixture.delayRefresh=true; });
+    await page.getByRole('button', {name:'刷新任务进度',exact:true}).evaluate(button=>{button.click();button.click();});
+    await page.getByText('已请求服务器核对当前批次 QC，完成后自动更新；可继续审核。', {exact:true}).waitFor();
+    assert.deepEqual(await page.evaluate(()=>window.taskFixture.refreshRequests.map(r=>r.paths)), [['2026-09-03-Fridge2']]);
+    assert.equal(await page.getByText('批次 QC 核对完成', {exact:false}).count(), 0, 'a queued request is not a completed refresh');
+    await page.waitForFunction(()=>document.querySelector('.task-tree').getAttribute('aria-busy')==='false');
+    await page.evaluate(()=>{window.taskFixture.delayRefresh=false;window.taskFixture.finishRefresh();});
+    await page.getByText(/批次 QC 核对完成/).waitFor();
+    await page.waitForFunction(()=>document.querySelector('.task-tree').getAttribute('aria-busy')==='false');
+    await page.evaluate(()=>{window.taskFixture.refreshError='服务器核对请求写入失败：权限不足';});
+    await page.getByRole('button',{name:'刷新任务进度',exact:true}).click();
+    await page.getByRole('alert').filter({hasText:'权限不足'}).waitFor();
+    await page.waitForFunction(()=>document.querySelector('.task-tree').getAttribute('aria-busy')==='false');
+    assert.equal(await page.getByText('请求批次核对失败，仍尝试读取可用索引；请根据原因重试。',{exact:true}).isVisible(),true,'an unrelated index read cannot hide a failed reconciliation request');
+    await page.evaluate(()=>{window.taskFixture.refreshError='';});
+    await page.getByRole('button',{name:'刷新任务进度',exact:true}).click();
+    await page.getByText(/批次 QC 核对完成/).waitFor();
+    await page.waitForFunction(()=>document.querySelector('.task-tree').getAttribute('aria-busy')==='false');
     const pendingFilter = page.getByRole("button", { name: "仅未审核", exact: true });
     await pendingFilter.click();
     await page.getByRole("button", { name: "显示全部", exact: true }).waitFor();
@@ -187,13 +223,14 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await mkdir("artifacts/task-center", { recursive: true });
     await page.screenshot({ path: "artifacts/task-center/desktop.png", fullPage: true });
     for (const width of [960, 390]) {
-      await page.setViewportSize({ width, height: 844 });
+      await page.setViewportSize({ width, height: width === 960 ? 680 : 844 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
       const overflow = await page.locator(".task-center").evaluate((element) => element.scrollWidth > element.clientWidth);
       assert.equal(overflow, false);
       for (const button of await page.locator(".task-center button").all()) {
         assert.equal(await button.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, "button text must fit");
       }
+      await page.screenshot({ path: `artifacts/task-center/width-${width}.png`, fullPage: true });
     }
     await page.screenshot({ path: "artifacts/task-center/mobile.png", fullPage: true });
     const release = page.getByRole('button', {name:'释放',exact:true});
