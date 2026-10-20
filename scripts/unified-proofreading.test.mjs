@@ -536,7 +536,7 @@ test("deleting a segment moves the next real boundary and saved review, with wor
     const before = await saved();
     await page.getByRole("button", { name: "删除机标片段 2", exact: true }).focus();
     await page.getByRole("button", { name: "删除机标片段 2", exact: true }).click();
-    await page.waitForFunction(() => document.querySelectorAll(".machine-segment").length === 2 && document.querySelector(".quality-save-state").textContent.includes("已实时保存"));
+    await page.waitForFunction(() => document.querySelectorAll(".machine-segment").length === 2 && document.querySelector(".quality-save-state").textContent.includes("人工结果已保存"));
     assert.equal(await page.getByLabel("复核起始帧", { exact: true }).inputValue(), String(before.segments[0].endFrame + 1));
     const after = await saved();
     assert.equal(after.segments[1].deleted, true);
@@ -544,7 +544,7 @@ test("deleting a segment moves the next real boundary and saved review, with wor
     assert.equal(after.segments[2].endFrame, before.segments[2].endFrame);
     await page.screenshot({ path: "artifacts/unified-proofreading/delete-aligned.png", fullPage: true });
     await page.getByRole("button", { name: "恢复删除的片段", exact: true }).click();
-    await page.waitForFunction(() => document.querySelectorAll(".machine-segment").length === 3 && document.querySelector(".quality-save-state").textContent.includes("已实时保存"));
+    await page.waitForFunction(() => document.querySelectorAll(".machine-segment").length === 3 && document.querySelector(".quality-save-state").textContent.includes("人工结果已保存"));
     assert.deepEqual((await saved()).segments.map((s) => [s.startFrame,s.endFrame,s.deleted]), before.segments.map((s) => [s.startFrame,s.endFrame,s.deleted]));
   } finally { await page.close(); }
 });
@@ -599,7 +599,8 @@ test("rejection uses buttons, requires other text, persists the reason and clear
       assert.equal(state.status, "rejected");
       assert.equal(state.rejectionReason, expected);
       assert.equal(state.revisionLabel, `${state.versionId} · 审核不通过：${expected}`);
-      assert.equal(await page.locator(".review-revision").textContent(), state.revisionLabel);
+      assert.equal(await page.locator(".review-revision").textContent(), `${state.versionId} · 历史修订（非当前结论）`);
+      assert.equal(await page.locator(".review-revision").getAttribute("title"), state.revisionLabel);
     }
     await page.getByRole("button", { name: "通过", exact: true }).click();
     await page.waitForFunction(async () => (await (await import("/src/lib/backend.ts")).loadMachineReview("/demo/2026-07-13_07-34-12")).status === "approved");
@@ -1032,5 +1033,32 @@ test("inferred machine boundary stays visible and requires explicit review befor
     await page.getByRole("button", { name: "重新读取机标", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
     assert.equal(await approve.isDisabled(), true);
+  } finally { await page.close(); }
+});
+
+
+test("current QC badge stays pending despite approved historical metadata and unknown on read failure", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  await page.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const body = original.replace(/revision: 0,\s+qcStatus: "pending",/, 'revision: 7, status: "approved", versionId: "historical-id", revisionLabel: "historical-id · 审核通过", qcStatus: window.testQcStatus ?? "pending", qcStatusError: window.testQcStatus === "unknown" ? "测试读取失败" : "",');
+    assert.notEqual(body, original);
+    await route.fulfill({ response, body });
+  });
+  try {
+    await open(page, "machineAnnotation=present");
+    await page.locator(".quality-output span").getByText("待审核", { exact: true }).waitFor();
+    assert.doesNotMatch(await page.locator(".quality-footer").innerText(), /审核通过|已通过/);
+    for (const width of [1440, 960, 390]) {
+      await page.setViewportSize({ width, height: 920 });
+      await page.locator(".quality-output").scrollIntoViewIfNeeded();
+      assert.equal(await page.locator(".quality-output span").innerText(), "待审核");
+    }
+    await page.evaluate(() => { window.testQcStatus = "unknown"; });
+    await page.getByRole("button", { name: "重新读取机标", exact: true }).click();
+    await page.locator(".quality-output span").getByText("审核状态未知", { exact: true }).waitFor();
+    assert.match(await page.locator(".quality-footer").innerText(), /当前目录审核状态读取失败/);
+    assert.doesNotMatch(await page.locator(".quality-footer").innerText(), /审核通过|已通过/);
   } finally { await page.close(); }
 });

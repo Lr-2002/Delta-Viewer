@@ -254,7 +254,7 @@ if (!browserExecutable) {
     });
     await page.getByLabel("复核动作描述").fill("人工修改动作");
     await page.getByLabel("复核结束帧", { exact: true }).fill("65");
-    await page.getByText("review 已实时保存", { exact: false }).waitFor();
+    await page.getByText("人工结果已保存", { exact: false }).waitFor();
     let saved = await state();
     assert.equal(saved.published, true);
     assert.equal(saved.segments[0].description, "人工修改动作");
@@ -281,7 +281,7 @@ if (!browserExecutable) {
     const approvedVersion = saved.versionId;
     assert.equal(saved.segments.filter((segment) => segment.deleted).length, 1);
     await page.getByLabel("复核动作描述").fill("后续修改");
-    await page.getByText("review 已实时保存", { exact: false }).waitFor();
+    await page.getByText("人工结果已保存", { exact: false }).waitFor();
     saved = await state();
     assert.equal(saved.segments[2].description, "后续修改");
     assert.equal(saved.status, "pending");

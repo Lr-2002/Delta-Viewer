@@ -1105,12 +1105,13 @@ async fn load_machine_review(
     auth: State<'_, AuthState>,
     source_path: String,
     source_name: Option<String>,
-) -> Result<machine_review::ReviewState, String> {
+) -> Result<machine_review::ReviewView, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
     ensure_source_directory_responsive(&source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
         machine_review::load_selected(&data_root, Path::new(&source_path), source_name.as_deref())
+            .map(|state| machine_review::view_for_root(Path::new(&source_path), state))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1122,14 +1123,16 @@ async fn save_machine_review(
     app: AppHandle,
     auth: State<'_, AuthState>,
     request: machine_review::SaveReviewRequest,
-) -> Result<machine_review::ReviewState, String> {
+) -> Result<machine_review::ReviewView, String> {
     let user = auth
         .require_managed_user()
         .map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
     ensure_source_directory_responsive(&request.source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
+        let root = std::path::PathBuf::from(&request.source_path);
         machine_review::save_for_user(&data_root, request, &user.display_name, &user.username)
+            .map(|state| machine_review::view_for_root(&root, state))
     })
     .await
     .map_err(|error| error.to_string())?
