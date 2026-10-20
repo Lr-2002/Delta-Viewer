@@ -1046,7 +1046,7 @@ pub fn reject_pending_for_user(
         Ok(current) => current,
         Err(_) => return reject_pending_without_media(root, &reason, reviewer, username),
     };
-    if current.published && current.status != "pending" {
+    if current.output_hash.is_some() && current.status != "pending" {
         return Ok(None);
     }
     let snapshot = PendingReviewSnapshot {
@@ -1218,7 +1218,7 @@ fn save_for_user_mode(
     {
         return Err(failure("描述已由管理员勘误，请重新读取后继续审核"));
     }
-    if only_pending && current.published && current.status != "pending" {
+    if only_pending && current.output_hash.is_some() && current.status != "pending" {
         return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
     }
     let previous_draft = machine_annotation::read_bytes(&draft)?
@@ -1909,6 +1909,9 @@ mod tests {
             .unwrap();
             fs::write(f.root.join("session.json"), br#"{"qc":""}"#).unwrap();
             if old_status != "pending" {
+                let mut shared = f.output();
+                shared["_human_review"]["published"] = json!(false);
+                fs::write(f.root.join(OUTPUT), serde_json::to_vec(&shared).unwrap()).unwrap();
                 assert!(reject_pending_for_user(
                     &f.local,
                     &f.root,
