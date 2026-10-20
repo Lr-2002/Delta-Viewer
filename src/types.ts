@@ -500,6 +500,9 @@ export interface AccountReview {
 }
 
 export interface MachineReview {
+  qcStatus?: "pending" | "approved" | "rejected" | "unknown";
+  qcRejectionReason?: string;
+  qcStatusError?: string;
   recoveryWarnings?: string[];
   reviewerUsername?: string;
   rejectionReason?: string;

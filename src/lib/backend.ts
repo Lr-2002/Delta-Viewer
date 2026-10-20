@@ -622,7 +622,7 @@ export async function loadMachineReview(sourcePath: string, sourceName?: string)
   if (saved) return structuredClone(saved);
   const annotation = await loadMachineAnnotation(sourcePath, sourceName);
   if (!annotation) throw new Error("未找到机标");
-  return { sourceHash: annotation.sourceHash ?? "demo-machine", revision: 0, published: false, outputHash: null,
+  return { sourceHash: annotation.sourceHash ?? "demo-machine", revision: 0, qcStatus: "pending", published: false, outputHash: null,
     updatedAtMs: 0, reviewer: "", segments: annotation.segments.map((segment, sourceIndex) => ({
       sourceIndex, startFrame: segment.startFrame, endFrame: segment.endFrame,
       description: segment.description, deleted: false, decision: "pending",
@@ -658,7 +658,7 @@ export async function saveMachineReview(sourcePath: string, sourceHash: string, 
   else if (state.status && state.status !== status) changes.push("改为待审核");
   if (!changes.length) changes.push("保存待审核记录");
   const changeSummary = changes.join("；");
-  const next = { ...state, workflowVersion: 4, status, versionId, previousVersionId: state.versionId ?? "", revision: state.revision + 1,
+  const next = { ...state, workflowVersion: 4, status, qcStatus: status, qcRejectionReason: reason, qcStatusError: "", versionId, previousVersionId: state.versionId ?? "", revision: state.revision + 1,
     rejectionReason: reason, changeSummary, revisionLabel: `${versionId} · ${changeSummary}`, appVersion: APP_VERSION,
     segments: segments.map((item) => ({ ...item, decision: item.deleted ? "pending" as const : status })), published: true, updatedAtMs: Date.now(), reviewer: "demo" };
   const user = demoActor();

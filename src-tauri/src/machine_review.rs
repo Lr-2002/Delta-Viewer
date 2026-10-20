@@ -60,6 +60,55 @@ pub struct ReviewState {
     pub reviewer: String,
 }
 
+// UI-only envelope: never persist a copied QC value into drafts or human JSON.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewView {
+    #[serde(flatten)]
+    pub review: ReviewState,
+    pub qc_status: String,
+    pub qc_rejection_reason: String,
+    pub qc_status_error: String,
+}
+
+pub fn view_for_root(root: &Path, review: ReviewState) -> ReviewView {
+    let qc = (|| -> AppResult<(String, String)> {
+        let session: Value = machine_annotation::read_bytes(&root.join("session.json"))?
+            .map(|bytes| serde_json::from_slice(&bytes))
+            .transpose()?
+            .unwrap_or_else(|| json!({}));
+        if !session.is_object() {
+            return Err(failure("当前目录 session.json 不是对象，审核状态未知"));
+        }
+        match session.get("qc") {
+            None | Some(Value::Null) => Ok(("pending".into(), String::new())),
+            Some(Value::String(value)) => match value.trim() {
+                "" | "待审核" | "未审核" => Ok(("pending".into(), String::new())),
+                "通过" => Ok(("approved".into(), String::new())),
+                "不通过" => Ok(("rejected".into(), String::new())),
+                value if value.starts_with("不通过：") || value.starts_with("不通过:") => {
+                    Ok((
+                        "rejected".into(),
+                        value.chars().skip(4).collect::<String>().trim().into(),
+                    ))
+                }
+                _ => Err(failure("当前目录 QC 无法识别，审核状态未知")),
+            },
+            _ => Err(failure("当前目录 QC 无法识别，审核状态未知")),
+        }
+    })();
+    let (qc_status, qc_rejection_reason, qc_status_error) = match qc {
+        Ok((status, reason)) => (status, reason, String::new()),
+        Err(error) => ("unknown".into(), String::new(), error.to_string()),
+    };
+    ReviewView {
+        review,
+        qc_status,
+        qc_rejection_reason,
+        qc_status_error,
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveReviewRequest {
@@ -227,7 +276,12 @@ fn load_inner(
     annotation: &MachineAnnotation,
 ) -> AppResult<ReviewState> {
     match load_inner_checked(data_root, root, annotation) {
-        Ok(state) => Ok(state),
+        Ok(mut state) => {
+            if state.output_hash.is_none() {
+                state.published = false;
+            }
+            Ok(state)
+        }
         Err(error)
             if matches!(&error, AppError::Json(_))
                 || matches!(&error, AppError::Message(message) if message.starts_with("MACHINE_ANNOTATION_INVALID:")) =>
@@ -311,6 +365,7 @@ fn load_inner_checked(
         if output.is_none() {
             let mut retained = draft;
             retained.output_hash = None;
+            retained.published = false;
             return recover_loaded_state(data_root, root, annotation, retained);
         }
     }
@@ -946,7 +1001,7 @@ pub fn save_for_user(
     reviewer: &str,
     username: &str,
 ) -> AppResult<ReviewState> {
-    save_for_user_mode(data_root, request, reviewer, username, false)
+    save_for_user_mode(data_root, request, reviewer, username, None)
 }
 
 fn pending_qc(root: &Path) -> AppResult<bool> {
@@ -991,15 +1046,18 @@ pub fn reject_pending_for_user(
         Ok(current) => current,
         Err(_) => return reject_pending_without_media(root, &reason, reviewer, username),
     };
-    if current.status != "pending" {
+    if current.output_hash.is_some() && current.status != "pending" {
         return Ok(None);
     }
+    let snapshot = PendingReviewSnapshot {
+        output_hash: current.output_hash.clone(),
+    };
     let result = save_for_user_mode(
         data_root,
         SaveReviewRequest {
             source_path: root.to_string_lossy().into(),
             source_name: Some(annotation.source_name),
-            source_hash: current.source_hash,
+            source_hash: annotation.source_hash,
             expected_revision: current.revision,
             segments: current.segments,
             status: Some("rejected".into()),
@@ -1007,7 +1065,7 @@ pub fn reject_pending_for_user(
         },
         reviewer,
         username,
-        true,
+        Some(snapshot),
     );
     match result {
         Err(AppError::Message(message)) if message == "BATCH_REVIEW_SKIPPED" => Ok(None),
@@ -1112,13 +1170,18 @@ fn reject_pending_without_media(
     }))
 }
 
+struct PendingReviewSnapshot {
+    output_hash: Option<String>,
+}
+
 fn save_for_user_mode(
     data_root: &Path,
     mut request: SaveReviewRequest,
     reviewer: &str,
     username: &str,
-    only_pending: bool,
+    pending_snapshot: Option<PendingReviewSnapshot>,
 ) -> AppResult<ReviewState> {
+    let only_pending = pending_snapshot.is_some();
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
     let root = Path::new(&request.source_path).canonicalize()?;
     let annotation = machine_annotation::load_for_review(
@@ -1155,7 +1218,7 @@ fn save_for_user_mode(
     {
         return Err(failure("描述已由管理员勘误，请重新读取后继续审核"));
     }
-    if only_pending && current.status != "pending" {
+    if only_pending && current.output_hash.is_some() && current.status != "pending" {
         return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
     }
     let previous_draft = machine_annotation::read_bytes(&draft)?
@@ -1168,9 +1231,15 @@ fn save_for_user_mode(
     };
     let rebased = request.source_hash != annotation.source_hash
         || request.expected_revision != current.revision
-        || previous_draft
-            .as_ref()
-            .is_some_and(|saved| saved.output_hash != current.output_hash);
+        || match &pending_snapshot {
+            // Batch preflight just loaded the current shared result. A stale
+            // local draft is not a concurrent edit; compare that fresh snapshot
+            // instead, including bytes changed without a revision increment.
+            Some(snapshot) => snapshot.output_hash != current.output_hash,
+            None => previous_draft
+                .as_ref()
+                .is_some_and(|saved| saved.output_hash != current.output_hash),
+        };
     if only_pending && rebased {
         return Err(failure("审核内容已改变，请刷新后重试，未批量覆盖"));
     }
@@ -1778,6 +1847,157 @@ mod tests {
     }
 
     #[test]
+    fn batch_rejection_accepts_stale_local_hashes_and_retains_latest_human_text() {
+        for changed_source in [false, true] {
+            let f = Fixture::new(0, true);
+            let state = load(&f.local, &f.root).unwrap();
+            f.save(&state).unwrap();
+            let mut doc = f.output();
+            doc["episode_results"][0]["annotations"][0]["attributes_zh"] =
+                json!({"动作描述": "其他电脑最新修改的动作"});
+            let before = serde_json::to_vec(&doc).unwrap();
+            fs::write(f.root.join(OUTPUT), &before).unwrap();
+            if changed_source {
+                let mut machine: Value = serde_json::from_slice(&f.original).unwrap();
+                machine["generation"] = json!("new-export-same-segments");
+                fs::write(
+                    f.root.join(machine_annotation::DEFAULT_SOURCE),
+                    serde_json::to_vec(&machine).unwrap(),
+                )
+                .unwrap();
+            }
+            let machine_before = fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap();
+            let result =
+                reject_pending_for_user(&f.local, &f.root, "镜头遮挡", "Reviewer", "alice")
+                    .unwrap()
+                    .expect("fresh batch read must not conflict with stale local cache");
+            assert_eq!(result.status, "rejected");
+            assert_eq!(result.segments[0].description, "其他电脑最新修改的动作");
+            let session: Value =
+                serde_json::from_slice(&fs::read(f.root.join("session.json")).unwrap()).unwrap();
+            assert_eq!(session["qc"], "不通过：镜头遮挡");
+            assert_eq!(
+                fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+                machine_before
+            );
+            assert!(
+                reject_pending_for_user(&f.local, &f.root, "无效数据", "Reviewer", "alice")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn batch_rejection_accepts_orphan_drafts_but_preserves_shared_completed_results() {
+        for old_status in ["pending", "approved", "rejected"] {
+            let f = Fixture::new(0, true);
+            let current = load(&f.local, &f.root).unwrap();
+            let saved = save(
+                &f.local,
+                SaveReviewRequest {
+                    source_path: f.root.to_string_lossy().into(),
+                    source_name: None,
+                    source_hash: current.source_hash,
+                    expected_revision: current.revision,
+                    segments: current.segments,
+                    status: Some(old_status.into()),
+                    rejection_reason: Some("任务不符".into()),
+                },
+                "old-reviewer",
+            )
+            .unwrap();
+            fs::write(f.root.join("session.json"), br#"{"qc":""}"#).unwrap();
+            if old_status != "pending" {
+                let mut shared = f.output();
+                shared["_human_review"]["published"] = json!(false);
+                fs::write(f.root.join(OUTPUT), serde_json::to_vec(&shared).unwrap()).unwrap();
+                assert!(reject_pending_for_user(
+                    &f.local,
+                    &f.root,
+                    "镜头遮挡",
+                    "Reviewer",
+                    "alice"
+                )
+                .unwrap()
+                .is_none());
+            }
+            fs::remove_file(f.root.join(OUTPUT)).unwrap();
+            let result =
+                reject_pending_for_user(&f.local, &f.root, "镜头遮挡", "Reviewer", "alice")
+                    .unwrap()
+                    .expect("an orphan local conclusion must not hide a pending source record");
+            assert_eq!(result.status, "rejected");
+            assert_eq!(result.rejection_reason, "镜头遮挡");
+            assert_eq!(result.revision, saved.revision + 1);
+            assert_eq!(
+                result
+                    .segments
+                    .iter()
+                    .map(|s| (&s.description, s.start_frame, s.end_frame))
+                    .collect::<Vec<_>>(),
+                saved
+                    .segments
+                    .iter()
+                    .map(|s| (&s.description, s.start_frame, s.end_frame))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+                f.original
+            );
+        }
+    }
+
+    #[test]
+    fn batch_snapshot_rejects_real_shared_or_source_changes_after_preflight() {
+        for changed_source in [false, true] {
+            let f = Fixture::new(0, true);
+            let state = load(&f.local, &f.root).unwrap();
+            f.save(&state).unwrap();
+            let state = load(&f.local, &f.root).unwrap();
+            let snapshot = PendingReviewSnapshot {
+                output_hash: state.output_hash.clone(),
+            };
+            if changed_source {
+                let mut machine: Value = serde_json::from_slice(&f.original).unwrap();
+                machine["generation"] = json!("changed-after-preflight");
+                fs::write(
+                    f.root.join(machine_annotation::DEFAULT_SOURCE),
+                    serde_json::to_vec(&machine).unwrap(),
+                )
+                .unwrap();
+            } else {
+                let mut doc = f.output();
+                doc["episode_results"][0]["annotations"][0]["attributes_zh"] =
+                    json!({"动作描述":"准备之后的新修改"});
+                // Deliberately do not increment the revision: byte identity must protect it.
+                fs::write(f.root.join(OUTPUT), serde_json::to_vec(&doc).unwrap()).unwrap();
+            }
+            let output = fs::read(f.root.join(OUTPUT)).unwrap();
+            let session = fs::read(f.root.join("session.json")).unwrap();
+            let result = save_for_user_mode(
+                &f.local,
+                SaveReviewRequest {
+                    source_path: f.root.to_string_lossy().into(),
+                    source_name: None,
+                    source_hash: state.source_hash,
+                    expected_revision: state.revision,
+                    segments: state.segments,
+                    status: Some("rejected".into()),
+                    rejection_reason: Some("镜头遮挡".into()),
+                },
+                "Reviewer",
+                "alice",
+                Some(snapshot),
+            );
+            assert!(result.unwrap_err().to_string().contains("审核内容已改变"));
+            assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), output);
+            assert_eq!(fs::read(f.root.join("session.json")).unwrap(), session);
+        }
+    }
+
+    #[test]
     fn batch_rejection_rechecks_qc_under_save_lock() {
         let fixture = Fixture::new(0, true);
         let state = load_selected(&fixture.local, &fixture.root, None).unwrap();
@@ -1799,7 +2019,9 @@ mod tests {
             },
             "审核甲",
             "alice",
-            true,
+            Some(PendingReviewSnapshot {
+                output_hash: state.output_hash,
+            }),
         );
         assert!(result
             .unwrap_err()
@@ -1971,6 +2193,91 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.temp);
         }
+    }
+
+    #[test]
+    fn current_root_qc_does_not_inherit_local_or_shared_approval() {
+        let f = Fixture::new(0, true);
+        let mut state = load(&f.local, &f.root).unwrap();
+        state.status = "approved".into();
+        state.published = true;
+        state.revision = 7;
+        state.reviewer_username = "another-account".into();
+        state.output_hash = Some("deleted-output".into());
+        let root = f.root.canonicalize().unwrap();
+        fs::create_dir_all(f.local.join("machine-reviews")).unwrap();
+        atomic_json(
+            &draft_path(&f.local, &root),
+            &serde_json::to_value(&state).unwrap(),
+        )
+        .unwrap();
+        let recovered = load(&f.local, &f.root).unwrap();
+        assert!(!recovered.published);
+        assert_eq!(recovered.segments, state.segments);
+        assert_eq!(recovered.revision, 7);
+        assert_eq!(view_for_root(&f.root, recovered).qc_status, "pending");
+        state.output_hash = None;
+        atomic_json(
+            &draft_path(&f.local, &root),
+            &serde_json::to_value(&state).unwrap(),
+        )
+        .unwrap();
+        assert!(!load(&f.local, &f.root).unwrap().published);
+        // A shared historical result is equally insufficient: root QC is current.
+        let document = reviewed_document(&source(&f.root).unwrap(), &state).unwrap();
+        let output = serde_json::to_vec(&document).unwrap();
+        fs::write(f.root.join(OUTPUT), &output).unwrap();
+        let shared = load(&f.temp.join("fresh-host"), &f.root).unwrap();
+        assert_eq!(shared.status, "approved");
+        assert!(shared.published);
+        assert_eq!(view_for_root(&f.root, shared).qc_status, "pending");
+        assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), output);
+        for qc in [Value::Null, json!(""), json!("待审核"), json!("未审核")] {
+            let raw = serde_json::to_vec(&json!({"qc": qc, "capture": "keep"})).unwrap();
+            fs::write(f.root.join("session.json"), &raw).unwrap();
+            let view = view_for_root(&f.root, state.clone());
+            assert_eq!(view.qc_status, "pending");
+            assert_eq!(view.review.status, "approved");
+            assert_eq!(fs::read(f.root.join("session.json")).unwrap(), raw);
+        }
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            f.original
+        );
+    }
+
+    #[test]
+    fn current_qc_is_read_again_after_external_changes_and_errors_are_not_approval() {
+        let f = Fixture::new(0, true);
+        let state = load(&f.local, &f.root).unwrap();
+        for (qc, expected, reason) in [
+            (json!("通过"), "approved", ""),
+            (json!("不通过：动作失范"), "rejected", "动作失范"),
+            (json!("不通过:状态异常"), "rejected", "状态异常"),
+            (json!("待审核"), "pending", ""),
+            (json!(true), "unknown", ""),
+            (json!("异常"), "unknown", ""),
+        ] {
+            fs::write(
+                f.root.join("session.json"),
+                serde_json::to_vec(&json!({"qc": qc})).unwrap(),
+            )
+            .unwrap();
+            let view = view_for_root(&f.root, state.clone());
+            assert_eq!(view.qc_status, expected);
+            assert_eq!(view.qc_rejection_reason, reason);
+            assert_eq!(!view.qc_status_error.is_empty(), expected == "unknown");
+        }
+        for bytes in [b"{".as_slice(), b"[]"] {
+            fs::write(f.root.join("session.json"), bytes).unwrap();
+            let view = view_for_root(&f.root, state.clone());
+            assert_eq!(view.qc_status, "unknown");
+            assert!(!view.qc_status_error.is_empty());
+        }
+        // A read failure must not fall back to the previous successful QC read.
+        fs::remove_file(f.root.join("session.json")).unwrap();
+        fs::create_dir(f.root.join("session.json")).unwrap();
+        assert_eq!(view_for_root(&f.root, state).qc_status, "unknown");
     }
 
     #[test]

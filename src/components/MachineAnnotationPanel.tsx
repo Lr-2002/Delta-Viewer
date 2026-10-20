@@ -204,7 +204,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   useEffect(() => {
     mounted.current = true;
     let active = true;
-    setLoading(true); setError(""); setRecoveryMessages([]); setPlaying(false); setBoundariesConfirmed(false);
+    setLoading(true); setReview(null); stateRef.current = null; setError(""); setRecoveryMessages([]); setPlaying(false); setBoundariesConfirmed(false);
     void (async () => {
       await saves.get(root);
       const loaded = await loadMachineAnnotation(root, sourceName);
@@ -602,15 +602,16 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         </div>
       </div>
       <footer className="quality-footer">
-        <div className="quality-save-state" role="status">{saving ? "正在保存…" : saveError ? "保存失败" : review?.published ? "review 已实时保存" : "尚无人工修改"}
-          {review?.versionId && <span className="review-revision" title={review.revisionLabel ?? review.versionId}>{review.revisionLabel ?? `${review.versionId} · 历史审核记录`}</span>}
+        <div className="quality-save-state" role="status">{saving ? "正在保存…" : saveError ? "保存失败" : review?.published ? "人工结果已保存" : review?.revision ? "仅有本机历史草稿" : "尚无人工修改"}
+          {review?.versionId && <span className="review-revision" title={review.revisionLabel ?? review.versionId}>{`${review.versionId} · 历史修订（非当前结论）`}</span>}
         </div>
         {recoveryError && <p role="alert" className="machine-message">{recoveryError}</p>}
         {auditPreparationError && <p role="alert" className="machine-message">{auditPreparationError}</p>}
         {auditCompletionError && <div role="alert" className="machine-message audit-completion-error"><span>{auditCompletionError}</span><button type="button" className="button button-secondary" disabled={finishing} onClick={() => void finishAuditCompletion()}>重试保存操作记录</button></div>}
         {saveError && <div role="alert" className="machine-message">{saveError}<button className="icon-button" aria-label="重试保存复核" title="重试保存复核" onClick={() => void persist(pending.current ?? { segments: editsRef.current, status: "pending" })}><RefreshCw size={15} /></button></div>}
-        <div className="quality-output" title={`${root}/${outputName}`}>{outputName}<span>{review?.status === "approved" ? "已通过" : review?.status === "rejected" ? "未通过" : "待审核"}</span></div>
-        {review?.status === "rejected" && review.rejectionReason && <p className="review-rejection-reason" title={review.rejectionReason}>不通过：{review.rejectionReason}</p>}
+        <div className="quality-output" title={`${root}/${outputName}`}>{outputName}<span>{review?.qcStatus === "approved" ? "已通过" : review?.qcStatus === "rejected" ? "未通过" : review?.qcStatus === "pending" ? "待审核" : "审核状态未知"}</span></div>
+        {review?.qcStatusError && <p role="alert" className="machine-message">当前目录审核状态读取失败，请重新读取：{review.qcStatusError}</p>}
+        {review?.qcStatus === "rejected" && review.qcRejectionReason && <p className="review-rejection-reason" title={review.qcRejectionReason}>不通过：{review.qcRejectionReason}</p>}
         <div className="quality-decisions">
           <button ref={rejectButton} className="button button-secondary" disabled={!canEdit} onClick={openRejection}><X size={16} />不通过</button>
           <button className="button button-primary" disabled={!canEdit || !rows.length || (!!result?.inferredEndFrames?.length && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>
