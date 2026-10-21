@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
 import { deferMachineReview, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
 import { createDeferredReviewEvent, persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
-import { addReviewSegment, recoverReviewSegments, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
+import { addReviewSegment, recoverReviewSegments, reviewVideoIntersection, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
 import { RejectionReasons } from "./RejectionReasons";
@@ -91,6 +91,9 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const [reasonChoice, setReasonChoice] = useState("");
   const [otherReason, setOtherReason] = useState("");
   const [boundariesConfirmed, setBoundariesConfirmed] = useState(false);
+  const [timelineAdapted, setTimelineAdapted] = useState(false);
+  const [rangeRepairOpen, setRangeRepairOpen] = useState(false);
+  const [rangeRepairConfirmed, setRangeRepairConfirmed] = useState(false);
   const [labelLibraryOpen, setLabelLibraryOpen] = useState(false);
   const [labelLibrary, setLabelLibrary] = useState<LabelLibraryItem[]>([]);
   const [labelLibraryError, setLabelLibraryError] = useState("");
@@ -224,7 +227,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   useEffect(() => {
     mounted.current = true;
     let active = true;
-    setLoading(true); setReview(null); stateRef.current = null; setError(""); setRecoveryMessages([]); setPlaying(false); setBoundariesConfirmed(false);
+    setLoading(true); setReview(null); stateRef.current = null; setError(""); setRecoveryMessages([]); setPlaying(false); setBoundariesConfirmed(false); setTimelineAdapted(false); setRangeRepairOpen(false); setRangeRepairConfirmed(false);
     void (async () => {
       await saves.get(root);
       const loaded = await loadMachineAnnotation(root, sourceName);
@@ -236,6 +239,9 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       if (!active) return;
       stateRef.current = state;
       const segments = state.segments;
+      const videoCount = data.summary.streams.find(stream => stream.name === "cam0")?.frameCount;
+      if (videoCount && (!loaded.videoFrameCount || loaded.videoFrameCount === videoCount) && loaded.frameCount !== videoCount && (state.published || state.pendingSourceWrite || state.revision > 0)
+        && segments.every(item => item.deleted || item.endFrame < videoCount)) setTimelineAdapted(true);
       setReview(state); setEdits(segments); editsRef.current = segments;
       setSelected(segments.find((item) => !item.deleted)?.sourceIndex ?? 0);
       setFrame(segments.find((item) => !item.deleted)?.startFrame ?? 0);
@@ -244,7 +250,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       if (raw) {
         let recovery: Snapshot & { sourceHash: string };
         try { recovery = JSON.parse(raw); } catch { recovery = {} as typeof recovery; }
-        const restored = recoverReviewSegments(recovery?.segments, loaded.frameCount);
+        const restored = recoverReviewSegments(recovery?.segments, videoCount ?? loaded.frameCount, loaded.frameCount);
         const invalidStatus = !["pending", "approved", "rejected"].includes(recovery?.status ?? "pending");
         if (!restored.segments || restored.repaired || invalidStatus) {
           try {
@@ -259,6 +265,8 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
             : "旧应急草稿的片段范围或格式不适用于当前视频，原记录已在本机备份，当前显示已加载的机标或人工结果。"]);
         }
         if (!restored.segments) return;
+        if (videoCount && (!loaded.videoFrameCount || loaded.videoFrameCount === videoCount) && loaded.frameCount !== videoCount
+          && restored.segments.every(item => item.deleted || item.endFrame < videoCount)) setTimelineAdapted(true);
         setEdits(restored.segments); editsRef.current = restored.segments;
         const snapshot = { segments: restored.segments, status: restored.repaired || invalidStatus ? "pending" as const : recovery.status ?? "pending", rejectionReason: recovery.rejectionReason };
         if (ownRaw) void persist(snapshot);
@@ -274,7 +282,13 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   }, [root, reload]);
 
   const primary = data.summary.streams.find((stream) => stream.name === "cam0");
-  const mapping = useMemo(() => result ? machineTimelineMapping(result, primary) : null, [result, primary]);
+  const editFrameCount = timelineAdapted && primary ? primary.frameCount : result?.frameCount ?? 0;
+  const mapping = useMemo(() => result ? machineTimelineMapping({ ...result, frameCount: editFrameCount }, primary) : null, [result, editFrameCount, primary]);
+  const rangeRepair = useMemo(() => result && primary && !skeletonMode && result.frameCount !== primary.frameCount
+    && (!result.videoFrameCount || result.videoFrameCount === primary.frameCount)
+    ? reviewVideoIntersection(edits, primary.frameCount) : null, [result, primary, edits, skeletonMode]);
+  const sourceOverflow = Boolean(result && primary && result.segments.some(item => item.endFrame >= primary.frameCount));
+  const requiresBoundaryCheck = Boolean(result?.inferredEndFrames?.length || (timelineAdapted && sourceOverflow));
   const rows = useMemo(() => edits.filter((segment) => !segment.deleted).sort((a, b) => a.startFrame - b.startFrame || a.sourceIndex - b.sourceIndex), [edits]);
   const active = rows.find((segment) => segment.sourceIndex === selected) ?? rows[0];
   const issueKey = (index: number, description: string, original: string) => JSON.stringify([index,description,original]);
@@ -333,10 +347,11 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     if (mapping && !mapping.error) playback?.onSeek(mapping.offset + next * mapping.step);
   }, [mapping, playback?.onSeek]);
   const visibleFrame = playback && result && mapping && !mapping.error
-    ? Math.max(0, Math.min(result.frameCount - 1, Math.floor((playback.frame - mapping.offset) / mapping.step))) : frame;
+    ? Math.max(0, Math.min(editFrameCount - 1, Math.floor((playback.frame - mapping.offset) / mapping.step))) : frame;
 
   function change(next: ReviewSegment[]) {
     if (!canEdit || finishLock.current) return;
+    if (timelineAdapted && sourceOverflow) setBoundariesConfirmed(false);
     for (const item of next) {
       const old = editsRef.current.find((row) => row.sourceIndex === item.sourceIndex);
       if (!old || old.description !== item.description || old.startFrame !== item.startFrame || old.endFrame !== item.endFrame || old.deleted !== item.deleted) {
@@ -404,7 +419,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   }
   function boundary(kind: "startFrame" | "endFrame", value: number) {
     if (!active || !result || !canEdit) return;
-    const updated = adjustReviewBoundary(editsRef.current, active.sourceIndex, kind, value, result.frameCount);
+    const updated = adjustReviewBoundary(editsRef.current, active.sourceIndex, kind, value, editFrameCount);
     if (updated === editsRef.current) return;
     change(updated); seek(updated.find((item) => item.sourceIndex === active.sourceIndex)![kind]);
   }
@@ -438,7 +453,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation();
         const delta = event.key === "ArrowLeft" ? -1 : 1;
-        if (boundaryFocus.current === "playhead" && result) seek(Math.max(0, Math.min(result.frameCount - 1, visibleFrame + delta)));
+        if (boundaryFocus.current === "playhead" && result) seek(Math.max(0, Math.min(editFrameCount - 1, visibleFrame + delta)));
         else if (active && boundaryFocus.current !== "playhead") boundary(boundaryFocus.current, active[boundaryFocus.current] + delta);
       } else if (event.code === "KeyX" || event.key.toLowerCase() === "x") {
         event.preventDefault(); event.stopImmediatePropagation();
@@ -456,7 +471,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   });
   function addSegment() {
     if (!canEdit || !result) return;
-    const next = addReviewSegment(editsRef.current, visibleFrame, result.frameCount);
+    const next = addReviewSegment(editsRef.current, visibleFrame, editFrameCount);
     if (next === editsRef.current) return;
     change(next); setSelected(next[next.length - 1].sourceIndex); seek(next[next.length - 1].startFrame);
   }
@@ -479,9 +494,20 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     change(next);
     if (target) { setSelected(target.sourceIndex); seek(target.startFrame); }
   }
+  function confirmVideoRange() {
+    if (!rangeRepair || !rangeRepairConfirmed || !primary || !review || loading || error || saving || busy || finishLock.current || running.current) return;
+    const next = rangeRepair.segments;
+    setTimelineAdapted(true); setBoundariesConfirmed(false); setRangeRepairOpen(false);
+    setEdits(next); editsRef.current = next;
+    const first = next.find(item => !item.deleted);
+    setSelected(first?.sourceIndex ?? 0); setFrame(first?.startFrame ?? 0);
+    playback?.onPause(); playback?.onSeek(primary.firstFrame ?? 0);
+    recordReviewInteraction("control", { target: "video_range_repair", value: `人工确认当前视频范围，截去 ${rangeRepair.trimmed} 段越界部分，排除 ${rangeRepair.excluded} 段`, before: String(result?.frameCount), after: String(primary.frameCount) }, root);
+    void persist({ segments: next, status: "pending" });
+  }
   async function finish(status: "approved" | "rejected", rejectionReason?: string, textConfirmed = false) {
     if (!canEdit || finishLock.current || running.current) return;
-    if (status === "approved" && result?.inferredEndFrames?.length && !boundariesConfirmed) return;
+    if (status === "approved" && requiresBoundaryCheck && !boundariesConfirmed) return;
     if (status === "rejected" && !rejectionReason?.trim()) return;
     if (status === "approved" && allTextIssues.length > 0 && !textConfirmed) {
       playback?.onPause(); setPlaying(false); setTextCheckOpen(true); return;
@@ -541,18 +567,18 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   return <div className="quality-review proofreading-view">
     {playback ? <section className="quality-timeline" aria-label="校对时间轴">
       <div className="proofreading-transport">{playback.controls}<button className="icon-button" type="button" aria-label="剪切片段" aria-keyshortcuts="X" title="剪切片段：在当前帧分割 (X)" disabled={!canEdit || !active || active.endFrame <= active.startFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
-      {valid && <ReviewTimeline frame={visibleFrame} frameCount={result.frameCount} start={active?.startFrame ?? 0}
-        end={active?.endFrame ?? result.frameCount - 1} editable={canEdit && Boolean(active)} segments={rows}
+      {valid && <ReviewTimeline frame={visibleFrame} frameCount={editFrameCount} start={active?.startFrame ?? 0}
+        end={active?.endFrame ?? editFrameCount - 1} editable={canEdit && Boolean(active)} segments={rows}
         selected={active?.sourceIndex} onSeek={seek} onBoundary={boundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }} />}
       {!valid && primary?.firstFrame !== null && primary?.lastFrame !== null && primary && <input
         className="machine-boundary-slider" type="range" aria-label="校对播放帧" min={primary.firstFrame} max={primary.lastFrame}
         value={playback.frame} onChange={(event) => playback.onSeek(event.currentTarget.valueAsNumber)} />}
     </section> : <section className="quality-media" aria-label="视频与骨架">
-      <header className="quality-heading"><h2>机标校对</h2><span className="frame-counter">帧 {frame} / {result ? result.frameCount - 1 : "--"}</span></header>
-      {valid && <ProofreadPlayer root={root} stream={primary} offset={mapping.offset} step={mapping.step} frameCount={result.frameCount}
+      <header className="quality-heading"><h2>机标校对</h2><span className="frame-counter">帧 {frame} / {result ? editFrameCount - 1 : "--"}</span></header>
+      {valid && <ProofreadPlayer root={root} stream={primary} offset={mapping.offset} step={mapping.step} frameCount={editFrameCount}
         skeleton={data.skeleton} skeletonError={data.skeletonError} segments={rows} selected={active?.sourceIndex}
         editable={canEdit && Boolean(active)} onBoundary={boundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }}
-        frame={frame} start={active?.startFrame ?? 0} end={active?.endFrame ?? result.frameCount - 1} playing={playing} onFrame={setFrame} onPlaying={setPlaying} />}
+        frame={frame} start={active?.startFrame ?? 0} end={active?.endFrame ?? editFrameCount - 1} playing={playing} onFrame={setFrame} onPlaying={setPlaying} />}
     </section>}
     <section className="quality-inspector" aria-label="机标结果">
       <header className="machine-heading"><div className="segment-channel-tabs" role="tablist" aria-label="片段类型">
@@ -564,7 +590,15 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       </header>
       {loading && <p role="status" className="machine-message"><LoaderCircle size={15} />{skeletonMode ? "正在读取骨架描述" : "正在读取机标"}</p>}
       {error && <p role="alert" className="machine-message">{error}</p>}
-      {mapping?.error && <p role="alert" className="machine-message">{mapping.error}</p>}
+      {mapping?.error && <div role="alert" className="machine-message"><p>{mapping.error}</p>
+        {rangeRepair && <><p>机标范围与当前视频不一致，原因尚未确定。可核对后处理越界范围，或从“机标来源”选择其他文件。</p><button type="button" className="button button-secondary" disabled={busy || loading || saving || !review || Boolean(error)} onClick={() => { playback?.onPause(); setRangeRepairConfirmed(false); setRangeRepairOpen(true); }}>查看越界片段并处理</button></>}
+        {result?.videoFrameCount && primary && result.videoFrameCount !== primary.frameCount ? <p>载入后视频清单发生变化，请重新加载当前数据后再处理，避免使用过期帧数。</p> : null}
+      </div>}
+      {timelineAdapted && sourceOverflow && <div className="machine-boundary-warning" role="region" aria-label="越界片段待核对">
+        <strong>已按人工确认保留当前视频范围，尚未证明整段时间对齐</strong>
+        <p>机标声明 {result?.frameCount} 帧，当前视频 {primary?.frameCount} 帧。仅保留范围交集，未按比例缩放；完全越界片段已排除，原机标及本机恢复记录保留原文字和边界。请回放核对全部片段，必要时调整或判为不通过。</p>
+        <label><input type="checkbox" checked={boundariesConfirmed} disabled={!canEdit || saving} onChange={event => setBoundariesConfirmed(event.currentTarget.checked)} />我已回放核对保留片段的动作与边界</label>
+      </div>}
       {!loading && !error && !result && <p className="machine-message">未发现 {sourceName ?? "机标 JSON"}</p>}
       {result?.identityWarning && <MachineIdentityNotice key={JSON.stringify([username, root, result.sourceName, result.sourceHash, result.identityWarning, result.identityVerified])} username={username} root={root} result={result} />}
       {result?.timelineWarning && <div className="machine-boundary-warning" role="region" aria-label="机标帧数适配提示"><strong>已按当前视频帧数适配</strong><p>{result.timelineWarning}</p></div>}
@@ -590,7 +624,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         onDelete={deleteSegment} />
       <div className="quality-editor" aria-label="人工复核">
         <header className="machine-heading"><strong>{active ? `片段 ${rows.indexOf(active) + 1}` : "动作描述"}</strong>
-          <button className="icon-button" title="恢复删除的片段" aria-label="恢复删除的片段" disabled={!canEdit || !edits.some((item) => item.deleted)} onClick={() => change(restoreReviewSegments(editsRef.current))}><Undo2 size={15} /></button>
+          <button className="icon-button" title="恢复视频范围内删除的片段" aria-label="恢复删除的片段" disabled={!canEdit || !edits.some((item) => item.deleted && item.endFrame < editFrameCount)} onClick={() => change([...restoreReviewSegments(editsRef.current.filter(item => item.endFrame < editFrameCount)), ...editsRef.current.filter(item => item.endFrame >= editFrameCount)])}><Undo2 size={15} /></button>
         </header>
         <div className="quality-description-shell">
           <textarea ref={descriptionInput} aria-label="复核动作描述" placeholder="中文动作描述" value={active?.description ?? ""} disabled={!canEdit || !active}
@@ -638,11 +672,20 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         {!skeletonMode && review?.qcStatus === "rejected" && review.qcRejectionReason && <p className="review-rejection-reason" title={review.qcRejectionReason}>不通过：{review.qcRejectionReason}</p>}
         {!skeletonMode && <div className="quality-decisions">
           <button ref={rejectButton} className="button button-secondary" disabled={!canEdit || saving} onClick={openRejection}><X size={16} />不通过</button>
-          <button className="button button-primary" disabled={!canEdit || saving || !rows.length || (!!result?.inferredEndFrames?.length && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>
+          <button className="button button-primary" disabled={!canEdit || saving || !rows.length || (requiresBoundaryCheck && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>
         </div>}
       </footer>
     </section>
     {textCheckOpen && <dialog className="text-quality-dialog" aria-label="通过前文字检查" ref={node=>{if(node&&!node.open)node.showModal();}} onCancel={()=>setTextCheckOpen(false)}><h2>通过前文字检查</h2><p>{allTextIssues.length} 个疑似问题</p><ul className="text-check-summary">{allTextIssues.map((issue,i)=><li key={i}><button className="review-user-link" onClick={()=>{setTextCheckOpen(false);setSelected(issue.row.sourceIndex);seek(issue.row.startFrame);}}>片段 {rows.indexOf(issue.row)+1}：{issue.row.description}</button><p>{issue.original} → {issue.suggestion}（{issue.reason}）</p></li>)}</ul><footer><button className="button button-secondary" autoFocus onClick={()=>setTextCheckOpen(false)}>返回检查</button><button className="button button-primary" disabled={finishing} onClick={()=>{recordReviewInteraction("control",{value:`已核对 ${allTextIssues.length} 项文字提示并继续通过`},root);setTextCheckOpen(false);void finish("approved",undefined,true);}}><Check size={16}/>已核对，继续通过</button></footer></dialog>}
+    {rangeRepairOpen && rangeRepair && <dialog className="rejection-dialog video-range-dialog" aria-label="处理机标越界范围" ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setRangeRepairOpen(false)}>
+      <header><h2>处理机标越界范围</h2></header>
+      <p>机标 {result?.frameCount} 帧，当前 Camera 0 {primary?.frameCount} 帧。帧数不同不能确定视频是否相同，请先核对内容。</p>
+      <p>将截去 {rangeRepair.trimmed} 个片段的越界尾部，排除 {rangeRepair.excluded} 个完全越界片段。有效范围的帧号和描述保持原样，不按比例缩放。</p>
+      <div className="video-range-affected" role="list" aria-label="受影响的机标片段">{rangeRepair.affected.map(item => <p role="listitem" key={item.sourceIndex}>片段 {item.sourceIndex + 1} · 原范围 [{item.startFrame}, {item.endFrame + 1}) · {item.description || "暂无中文描述"}</p>)}</div>
+      <p>确认后保存为待审核草稿，已有通过／不通过会变为待审核。原机标保持不变，原人工结果和机标另存本机恢复备份；之后仍需逐段回放核对才能通过。若视频不对应，请取消并选择正确来源。</p>
+      <label><input type="checkbox" checked={rangeRepairConfirmed} onChange={event => setRangeRepairConfirmed(event.currentTarget.checked)} />我已核对视频内容，确认按上述方式处理</label>
+      <footer><button className="button button-secondary" autoFocus onClick={() => setRangeRepairOpen(false)}>取消</button><button className="button button-primary" disabled={!rangeRepairConfirmed || saving || busy} onClick={confirmVideoRange}>应用处理并保存待审核草稿</button></footer>
+    </dialog>}
     {rejectOpen && <dialog className="rejection-dialog" aria-labelledby="rejection-title" ref={(node) => { if (node && !node.open) node.showModal(); }}
       onCancel={(event) => { event.preventDefault(); closeRejection(); }}>
       <form onSubmit={(event) => { event.preventDefault(); if (reasonChoice && (reasonChoice !== "其他原因" || otherReason.trim())) void finish("rejected", reasonChoice === "其他原因" ? `其他原因：${otherReason.trim()}` : reasonChoice); }}>

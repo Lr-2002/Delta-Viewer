@@ -601,6 +601,7 @@ fn parse_with_boundary_policy(
         completed_at: episode.completed_at,
         validation_status: quality_string("validation_status"),
         frame_count,
+        video_frame_count: camera_frames,
         timeline_warning,
         attribute_warnings,
         warnings,

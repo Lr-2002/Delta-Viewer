@@ -16,7 +16,7 @@ export function machineTimelineMapping(annotation: MachineAnnotation, stream: St
 
 // Restore emergency edits without submitting stale/invalid indices or ranges.
 // Range errors preserve the raw snapshot and let the caller keep the loaded source.
-export function recoverReviewSegments(value: unknown, frameCount: number): { segments: ReviewSegment[] | null; repaired: boolean } {
+export function recoverReviewSegments(value: unknown, frameCount: number, originalFrameCount = frameCount): { segments: ReviewSegment[] | null; repaired: boolean } {
   if (!Array.isArray(value) || value.length > 2000) return { segments: null, repaired: false };
   const used = new Set<number>();
   let next = value.length + 2000;
@@ -25,7 +25,7 @@ export function recoverReviewSegments(value: unknown, frameCount: number): { seg
   for (const entry of value) {
     if (!entry || typeof entry !== "object") return { segments: null, repaired: false };
     const item = entry as Partial<ReviewSegment>;
-    if (!Number.isSafeInteger(item.startFrame) || !Number.isSafeInteger(item.endFrame) || item.startFrame! < 0 || item.startFrame! > item.endFrame! || item.endFrame! >= frameCount || typeof item.description !== "string" || new TextEncoder().encode(item.description).length > 16384) return { segments: null, repaired: false };
+    if (!Number.isSafeInteger(item.startFrame) || !Number.isSafeInteger(item.endFrame) || item.startFrame! < 0 || item.startFrame! > item.endFrame! || item.endFrame! >= (item.deleted === true ? Math.max(frameCount, originalFrameCount) : frameCount) || typeof item.description !== "string" || new TextEncoder().encode(item.description).length > 16384) return { segments: null, repaired: false };
     let index = item.sourceIndex;
     if (!Number.isSafeInteger(index) || index! < 0 || used.has(index!)) {
       while (used.has(next) || value.some(other => other?.sourceIndex === next)) next++;
@@ -37,6 +37,22 @@ export function recoverReviewSegments(value: unknown, frameCount: number): { seg
     segments.push({ sourceIndex: index!, startFrame: item.startFrame!, endFrame: item.endFrame!, description: item.description, deleted: item.deleted === true, decision });
   }
   return { segments, repaired };
+}
+
+// Explicit, human-confirmed intersection with the playable video, never a time stretch.
+// Keep fully outside rows as deleted history with their exact original text/range.
+export function reviewVideoIntersection(segments: ReviewSegment[], frameCount: number) {
+  if (!Number.isSafeInteger(frameCount) || frameCount < 1) return null;
+  const affected = segments.filter(item => !item.deleted && item.endFrame >= frameCount);
+  return {
+    affected,
+    trimmed: affected.filter(item => item.startFrame < frameCount).length,
+    excluded: affected.filter(item => item.startFrame >= frameCount).length,
+    segments: segments.map(item => item.deleted || item.endFrame < frameCount ? item : {
+      ...item, endFrame: item.startFrame < frameCount ? frameCount - 1 : item.endFrame,
+      deleted: item.startFrame >= frameCount, decision: "pending" as const,
+    }),
+  };
 }
 
 export function machineSegmentRange(segment: MachineSegment, offset: number, step: number): ExportRange {

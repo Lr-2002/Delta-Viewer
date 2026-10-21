@@ -602,10 +602,11 @@ fn load_inner_checked(
                     decision: state.status.clone(),
                 });
             }
-            if annotation.source_name == machine_annotation::SKELETON_SOURCE {
-                actual.extend(state.segments.iter().filter(|s| s.deleted).cloned());
-                actual.sort_by_key(|s| s.source_index);
-            }
+            // The hash-bound technical record also owns excluded history. Keep
+            // its text/ranges on a fresh host instead of reconstructing blank
+            // descriptions from a machine source with no Chinese translation.
+            actual.extend(state.segments.iter().filter(|s| s.deleted).cloned());
+            actual.sort_by_key(|s| s.source_index);
             state.segments = actual;
         }
         if state.workflow_version >= 3 && state.source_hash == annotation.source_hash {
@@ -786,15 +787,28 @@ fn validate(annotation: &MachineAnnotation, edits: &[ReviewSegment]) -> AppResul
         return Err(failure("片段数量超过 2000"));
     }
     let mut seen = BTreeSet::new();
+    let playable = annotation
+        .video_frame_count
+        .unwrap_or(annotation.frame_count);
     for (position, edit) in edits.iter().enumerate() {
+        // An excluded source row is history, not a playable or exportable range.
+        // Permit only the exact original bounds outside the current video.
+        let preserved_source = edit.deleted
+            && annotation.segments.iter().any(|original| {
+                original.source_index == edit.source_index
+                    && original.start_frame == edit.start_frame
+                    && original.end_frame == edit.end_frame
+            });
         let problem = if !seen.insert(edit.source_index) {
             Some(format!("原始索引 {} 重复", edit.source_index))
-        } else if edit.start_frame > edit.end_frame || edit.end_frame >= annotation.frame_count {
+        } else if edit.start_frame > edit.end_frame
+            || (edit.end_frame >= playable && !preserved_source)
+        {
             Some(format!(
                 "帧范围 [{}, {}] 无效，允许范围为 [0, {}]",
                 edit.start_frame,
                 edit.end_frame,
-                annotation.frame_count.saturating_sub(1)
+                playable.saturating_sub(1)
             ))
         } else if edit.description.len() > 16_384 {
             Some("动作描述超过 16384 字节".into())
@@ -829,8 +843,10 @@ fn reviewed_document(annotation: &MachineAnnotation, state: &ReviewState) -> App
         .iter_mut()
         .find(|entry| entry["episode_id"].as_str() == Some(&annotation.episode_id))
         .ok_or_else(|| failure("机标记录不存在"))?;
-    if annotation.timeline_warning.is_some() {
-        episode["media"]["frame_count"] = json!(annotation.frame_count);
+    if annotation.timeline_warning.is_some() || annotation.video_frame_count.is_some() {
+        episode["media"]["frame_count"] = json!(annotation
+            .video_frame_count
+            .unwrap_or(annotation.frame_count));
     }
     let base = episode["media"]["frame_index_base"].as_u64().unwrap_or(0);
     let exclusive = episode["media"]["interval_convention"].as_str() != Some("[start,end]");
@@ -1042,8 +1058,10 @@ fn human_document(
                 .find(|item| item["episode_id"].as_str() == Some(&selected_id))
         })
         .ok_or_else(|| failure("人工 description 中未找到当前记录"))?;
-    if annotation.timeline_warning.is_some() {
-        episode["media"]["frame_count"] = json!(annotation.frame_count);
+    if annotation.timeline_warning.is_some() || annotation.video_frame_count.is_some() {
+        episode["media"]["frame_count"] = json!(annotation
+            .video_frame_count
+            .unwrap_or(annotation.frame_count));
     }
     let base = episode["media"]["frame_index_base"].as_u64().unwrap_or(0);
     let exclusive = episode["media"]["interval_convention"].as_str() != Some("[start,end]");
@@ -1357,6 +1375,11 @@ fn reject_pending_mode(
     });
     if current.output_hash.is_some() && current.status != "pending" && !own_partial {
         return Ok(None);
+    }
+    if validate(&annotation, &current.segments).is_err() {
+        // Batch rejection must remain usable for damaged/unreconciled data.
+        // It cannot silently trim annotations on the operator's behalf.
+        return reject_pending_without_media(root, &reason, reviewer, username, deferred);
     }
     let snapshot = PendingReviewSnapshot {
         output_hash: current.output_hash.clone(),
@@ -1680,6 +1703,19 @@ fn save_for_user_mode(
         }
     }
     validate(&annotation, &request.segments)?;
+    if annotation.video_frame_count.is_some_and(|count| {
+        annotation
+            .segments
+            .iter()
+            .any(|item| item.end_frame >= count)
+    }) {
+        // Before the first explicit repair save, preserve original bytes locally.
+        // Loading, proposing a repair, and cancelling never modify source files.
+        preserve_recovery_bytes(data_root, annotation.source_json.as_bytes())?;
+        if let Some(bytes) = machine_annotation::read_bytes(&write_root.join(output))? {
+            preserve_recovery_bytes(data_root, &bytes)?;
+        }
+    }
     if !rebased {
         align_deleted_segments(&current.segments, &mut request.segments);
     }
@@ -3674,6 +3710,158 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.temp);
         }
+    }
+
+    fn video_fixture(f: &Fixture, frames: u64) {
+        fs::create_dir_all(f.root.join(".session_meta")).unwrap();
+        fs::create_dir_all(f.root.join("cam0")).unwrap();
+        fs::write(f.root.join("cam0/part.mp4"), b"isolated unchanged media").unwrap();
+        fs::write(f.root.join(".session_meta/manifest.json"), serde_json::to_vec(&json!({
+            "storage_format":"h264-split-mp4-v1", "segment_seconds":300,
+            "streams":{"cam0":{"fps":30,"frame_count":frames,"width":320,"height":180,"segments":[{"path":"cam0/part.mp4"}]}}
+        })).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn explicit_video_intersection_saves_real_ranges_and_preserves_source_and_history() {
+        for (base, exclusive) in [(0, true), (1, true), (0, false), (1, false)] {
+            let f = Fixture::new(base, exclusive);
+            video_fixture(&f, 15);
+            // A pre-existing result must also be preserved byte-for-byte locally.
+            fs::write(f.root.join(OUTPUT), &f.original).unwrap();
+            let annotation = source(&f.root).unwrap();
+            assert_eq!(annotation.frame_count, 30);
+            assert_eq!(annotation.video_frame_count, Some(15));
+            let mut state = load(&f.local, &f.root).unwrap();
+            assert!(
+                f.save(&state).is_err(),
+                "unrepaired active overflow is rejected"
+            );
+            assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), f.original);
+            assert!(!f.root.join("session.json").exists());
+            state.segments[1].end_frame = 14;
+            state.segments[2].deleted = true;
+            let saved = f.save(&state).unwrap();
+            let output = f.output();
+            assert_eq!(output["episode_results"][0]["media"]["frame_count"], 15);
+            let rows = output["episode_results"][0]["annotations"]
+                .as_array()
+                .unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0]["start_frame"], base);
+            assert_eq!(rows[0]["end_frame"], 9 + base + u64::from(exclusive));
+            assert_eq!(rows[1]["start_frame"], 10 + base);
+            assert_eq!(rows[1]["end_frame"], 14 + base + u64::from(exclusive));
+            let original: Value = serde_json::from_slice(&f.original).unwrap();
+            assert_eq!(output["episode_results"][1], original["episode_results"][1]);
+            assert_eq!(
+                rows[0]["attributes"],
+                original["episode_results"][0]["annotations"][0]["attributes"]
+            );
+            assert_eq!(
+                fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+                f.original
+            );
+            let backup = f
+                .local
+                .join("machine-review-recovery")
+                .join(format!("{}.json", blake3::hash(&f.original).to_hex()));
+            assert_eq!(fs::read(backup).unwrap(), f.original);
+            for local in [&f.local, &f.temp.join("fresh-review-host")] {
+                let reopened = load(local, &f.root).unwrap();
+                assert!(reopened.recovery_warnings.is_empty());
+                assert_eq!(reopened.segments, saved.segments);
+                assert_eq!(reopened.segments[2].start_frame, 20);
+                assert_eq!(reopened.segments[2].end_frame, 29);
+                assert!(reopened.segments[2].deleted);
+            }
+            let before = fs::read(f.root.join(OUTPUT)).unwrap();
+            let mut invalid = saved.clone();
+            invalid.segments[2].end_frame = 28;
+            assert!(
+                f.save(&invalid).is_err(),
+                "cannot disguise a new out-of-bounds row as source history"
+            );
+            invalid = saved.clone();
+            invalid.segments[2].deleted = false;
+            assert!(
+                f.save(&invalid).is_err(),
+                "excluded history cannot be restored outside video"
+            );
+            assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), before);
+            for status in ["approved", "rejected"] {
+                let current = load(&f.local, &f.root).unwrap();
+                let result = save_for_user(
+                    &f.local,
+                    SaveReviewRequest {
+                        source_path: f.root.to_string_lossy().into(),
+                        source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+                        source_hash: current.source_hash,
+                        expected_revision: current.revision,
+                        segments: current.segments,
+                        status: Some(status.into()),
+                        rejection_reason: Some("无效数据".into()),
+                    },
+                    "reviewer",
+                    "reviewer",
+                )
+                .unwrap();
+                assert_eq!(result.status, status);
+                assert_eq!(f.output()["_human_review"].as_object().unwrap().len(), 3);
+            }
+        }
+    }
+
+    #[test]
+    fn video_intersection_backup_failure_cannot_overwrite_existing_result() {
+        let f = Fixture::new(0, true);
+        video_fixture(&f, 15);
+        let mut state = load(&f.local, &f.root).unwrap();
+        state.segments[1].end_frame = 14;
+        state.segments[2].deleted = true;
+        fs::create_dir_all(&f.local).unwrap();
+        fs::write(
+            f.local.join("machine-review-recovery"),
+            b"simulate unavailable backup storage",
+        )
+        .unwrap();
+        assert!(f.save(&state).is_err());
+        assert!(!f.root.join(OUTPUT).exists());
+        assert!(!f.root.join("session.json").exists());
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            f.original
+        );
+    }
+
+    #[test]
+    fn batch_rejection_of_video_overflow_keeps_machine_and_human_bytes_unchanged() {
+        let f = Fixture::new(0, true);
+        video_fixture(&f, 15);
+        fs::write(
+            f.root.join("session.json"),
+            r#"{"qc":"待审核","capture":"keep"}"#,
+        )
+        .unwrap();
+        fs::write(f.root.join(OUTPUT), &f.original).unwrap();
+        let result = reject_pending_for_user(&f.local, &f.root, "无效数据", "reviewer", "reviewer")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.status, "rejected");
+        let session: Value =
+            serde_json::from_slice(&fs::read(f.root.join("session.json")).unwrap()).unwrap();
+        assert_eq!(session["qc"], "不通过：无效数据");
+        assert_eq!(session["capture"], "keep");
+        assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), f.original);
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            f.original
+        );
+        assert!(
+            reject_pending_for_user(&f.local, &f.root, "无效数据", "reviewer", "reviewer")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

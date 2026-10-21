@@ -197,6 +197,11 @@
 .rejection-options .rejection-drop-target { outline: 2px solid #087e79; outline-offset: 2px; }
 .machine-boundary-warning { padding: 12px; margin: 8px 0; border: 1px solid #c28a24; border-radius: 6px; background: #fff7df; color: #624500; font-size: 13px; overflow-wrap: anywhere; }
 .machine-boundary-warning p { margin: 8px 0; }
+.video-range-dialog { width: min(620px, calc(100vw - 32px)); overflow-wrap: anywhere; }
+.video-range-dialog label { display: flex; align-items: flex-start; gap: 8px; margin: 16px 0; }
+.video-range-dialog footer { flex-wrap: wrap; }
+.video-range-dialog .button { white-space: normal; height: auto; min-height: 36px; }
+.video-range-affected { max-height: 220px; overflow-y: auto; border-block: 1px solid var(--line); padding-inline: 8px; }
 .machine-boundary-warning label { display: flex; align-items: flex-start; gap: 8px; }
 .rejection-detail { display: grid; gap: 8px; margin-bottom: 16px; font-size: 13px; }
 .rejection-detail textarea { box-sizing: border-box; width: 100%; min-height: 96px; resize: vertical; }

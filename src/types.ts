@@ -462,6 +462,7 @@ export interface MachineSegment {
 }
 
 export interface MachineAnnotation {
+  videoFrameCount?: number | null;
   identityWarning?: string | null;
   identityVerified?: boolean;
   timelineWarning?: string | null;

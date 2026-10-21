@@ -706,6 +706,7 @@ pub struct MachineAnnotation {
     pub validation_status: Option<String>,
     pub frame_count: u64,
     pub warnings: Vec<String>,
+    pub video_frame_count: Option<u64>,
     pub identity_warning: Option<String>,
     pub identity_verified: bool,
     pub timeline_warning: Option<String>,

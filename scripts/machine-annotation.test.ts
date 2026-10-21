@@ -1,7 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { recoverReviewSegments, addReviewSegment, splitReviewSegment, deleteReviewSegment, restoreReviewSegments, adjustReviewBoundary, machineSegmentRange, machineTimelineMapping } from "../src/lib/machine-annotation.ts";
+import { recoverReviewSegments, reviewVideoIntersection, addReviewSegment, splitReviewSegment, deleteReviewSegment, restoreReviewSegments, adjustReviewBoundary, machineSegmentRange, machineTimelineMapping } from "../src/lib/machine-annotation.ts";
 import type { ReviewSegment } from "../src/types.ts";
+
+test("explicit video intersection preserves original records and never rescales valid frames", () => {
+  const original: ReviewSegment[] = [[0,9],[10,19],[20,29]].map(([startFrame,endFrame],sourceIndex) => ({ sourceIndex,startFrame,endFrame,description:`原动作 ${sourceIndex}`,deleted:false,decision:"approved" }));
+  const snapshot = structuredClone(original);
+  const repair = reviewVideoIntersection(original, 15)!;
+  assert.deepEqual(original, snapshot, "proposing or cancelling cannot mutate raw records");
+  assert.equal(repair.trimmed, 1);
+  assert.equal(repair.excluded, 1);
+  assert.deepEqual(repair.affected, snapshot.slice(1));
+  assert.deepEqual(repair.segments.map(s => [s.startFrame,s.endFrame,s.deleted]), [[0,9,false],[10,14,false],[20,29,true]]);
+  assert.equal(repair.segments[0], original[0]);
+  assert.equal(repair.segments[1].decision, "pending");
+  assert.equal(repair.segments[2].description, original[2].description);
+  assert.deepEqual(recoverReviewSegments(repair.segments,15,30).segments, repair.segments);
+  assert.equal(recoverReviewSegments(original,15,30).segments, null, "active overflow cannot be submitted as playable");
+  assert.equal(recoverReviewSegments([{...repair.segments[2],endFrame:30}],15,30).segments, null);
+  for (const invalid of [0,-1,NaN,Infinity,1.5]) assert.equal(reviewVideoIntersection(original,invalid),null);
+  assert.deepEqual(reviewVideoIntersection(repair.segments,15)?.affected, []);
+});
 
 test("the first human segment covers the full video even when playback is in the middle", () => {
   const rows = addReviewSegment([], 578, 1065);
