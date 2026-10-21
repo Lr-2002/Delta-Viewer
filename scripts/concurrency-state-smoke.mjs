@@ -321,6 +321,7 @@ try {
         if (command.startsWith("plugin:dialog|")) return true;
 
         switch (command) {
+          case "get_pending_source_reviews": return {pending:0,items:[],ready:false,storageError:""};
           case "get_auth_status":
             return {
               workspaceMode: "managed",
@@ -641,7 +642,7 @@ try {
   await rejectDialog.getByRole('textbox', {name:'批量不通过原因'}).fill('无效数据');
   await rejectDialog.getByRole('checkbox').check();
   await rejectDialog.getByRole('button', {name:'确认不通过', exact:true}).click();
-  await rejectDialog.getByText('成功 1 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
+  await rejectDialog.getByText('成功 1 · 本机待写 0 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
   assert.deepEqual(await page.evaluate(() => window.__concurrencyMock.calls.batchRejections.map(call => call.sourcePath)), ['/source/batch/episode-1']);
   await rejectDialog.getByRole('button', {name:'完成', exact:true}).click();
   await page.getByRole('checkbox', {name:'选择 episode-2', exact:true}).check();
@@ -659,7 +660,7 @@ try {
   await rejectDialog.getByRole('textbox', {name:'批量不通过原因'}).fill('任务不符');
   await rejectDialog.getByRole('checkbox').check();
   await rejectDialog.getByRole('button', {name:'确认不通过', exact:true}).click();
-  await rejectDialog.getByText('成功 1 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
+  await rejectDialog.getByText('成功 1 · 本机待写 0 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
   assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.folderRejectionRoots.at(-1)), '/source/other-batch');
   assert.deepEqual(await page.evaluate(() => window.__concurrencyMock.calls.batchRejections.map(call => call.sourcePath)), ['/source/batch/episode-1', '/source/other-batch/episode-1']);
   await rejectDialog.getByRole('button', {name:'完成', exact:true}).click();
@@ -675,7 +676,7 @@ try {
   await rejectDialog.getByRole('textbox', {name:'批量不通过原因'}).fill('视频无法读取，无效数据');
   await rejectDialog.getByRole('checkbox').check();
   await rejectDialog.getByRole('button', {name:'确认不通过', exact:true}).click();
-  await rejectDialog.getByText('成功 1 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
+  await rejectDialog.getByText('成功 1 · 本机待写 0 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
   assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.batchRejections.at(-1).sourcePath), '/source/other-batch/episode-2');
   await rejectDialog.getByRole('button', {name:'完成', exact:true}).click();
   await page.locator('.episode-item').filter({hasText:'episode-2'}).getByText('我已审·不通过', {exact:true}).waitFor();

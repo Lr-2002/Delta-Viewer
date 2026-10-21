@@ -1997,7 +1997,7 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {currentUser?.role === "operator" && <SourceReviewNotice key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} disabled={busy || reviewHasUnsaved} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录，操作记录将在后台补传；任务中心等待服务器读取 QC 更新。"); }} />}
+          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} disabled={busy || reviewHasUnsaved} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录，操作记录将在后台补传；任务中心等待服务器读取 QC 更新。"); }} />}
           {currentUser && (reviewSyncStatus || reviewAuditError) && <AuditSyncNotice key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} status={reviewSyncStatus?.owner === `${authStatus.userCenter.serviceId ?? "demo"}:${currentUser.username}` ? reviewSyncStatus : undefined} username={currentUser.username} error={reviewAuditError} onError={setReviewAuditError} onPendingChange={() => {}} flush={retryReviewAudit} autoRetry={false} message="监管记录同步状态" />}
           {data || view === "batch" ? (
             <>
