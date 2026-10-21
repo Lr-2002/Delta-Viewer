@@ -144,7 +144,22 @@ test("NAS storage failures save a local conclusion and advance without claiming 
     body = body.replace(/(export async function deferMachineReview\([^]*?\) \{)/, `$1
       if(window.localQueueFails) throw Error("SOURCE_REVIEW_LOCAL_STORAGE: 本机磁盘写入失败");
       window.localReviewRows ??= []; window.localReviewRows.push({request,base,audit});
+      window.dispatchEvent(new Event("source-review-pending"));
       return {...base,segments:request.segments,status:request.status,pendingSourceWrite:true,published:false,sourceWriteError:error};
+    `);
+    body = body.replace(/export const getPendingSourceReviews = [^]*?export const publishPendingSourceReviews = [^]*?;\n/, `
+      export async function getPendingSourceReviews(checkStorage=false,sourcePaths){
+        const items=(window.localReviewRows??[]).filter(row=>!sourcePaths||sourcePaths.includes(row.request.sourcePath)).map(row=>({sourcePath:row.request.sourcePath,name:row.request.sourcePath,channel:'action',status:row.request.status,createdAtMs:row.audit.occurredAtMs,error:''}));
+        return {pending:items.length,items,ready:false,storageError:''};
+      }
+      export async function publishPendingSourceReviews(){
+        const rows=window.localReviewRows??[];
+        const key='dohc.demo.account-reviews:review-test';
+        const records=JSON.parse(localStorage.getItem(key)??'{}');
+        for(const row of rows) records[row.request.sourcePath]={sourcePath:row.request.sourcePath,status:row.request.status};
+        localStorage.setItem(key,JSON.stringify(records));window.localReviewRows=[];
+        return {written:rows.length,remaining:0,errors:[]};
+      }
     `);
     await route.fulfill({response,body});
   });
@@ -163,6 +178,21 @@ test("NAS storage failures save a local conclusion and advance without claiming 
     await page.getByRole("button",{name:"通过",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('.episode-item.selected')?.textContent.includes('session-b'));
     const rows=await page.evaluate(()=>window.localReviewRows);
+    const pendingBadge = page.locator('.episode-item').filter({hasText:'session-a'}).getByLabel('本机待写回');
+    await pendingBadge.waitFor();
+    assert.match(await pendingBadge.innerText(), /本机通过 · 待写回 NAS/);
+    assert.equal(await page.locator('.episode-item').filter({hasText:'session-a'}).getByLabel('已审核',{exact:true}).count(),0);
+    for(const width of [1440,960,390]) {
+      await page.setViewportSize({width,height:920});await pendingBadge.scrollIntoViewIfNeeded();
+      const box=await pendingBadge.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=width);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      await page.screenshot({path:`artifacts/unified-proofreading/sidebar-pending-${width}.png`});
+    }
+    await page.getByRole('button',{name:'查看待写结果',exact:true}).click();
+    await page.getByRole('button',{name:'确认写回数据目录',exact:true}).click();
+    await pendingBadge.waitFor({state:'detached'});
+    await page.locator('.episode-item').filter({hasText:'session-a'}).getByLabel('已审核',{exact:true}).waitFor();
+    assert.match(await page.locator('.episode-item').filter({hasText:'session-a'}).textContent(),/我已审·通过/);
     assert.equal(rows.length,2);assert.equal(rows[1].audit.action,"approved");
     assert.equal(rows[1].audit.sessionId,rows[0].audit.sessionId);
     const audit=await page.evaluate(()=>JSON.parse(localStorage.getItem("dohc.demo.review-events")??"[]"));

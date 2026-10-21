@@ -69,6 +69,7 @@ import {
   isTauriRuntime,
   listAnnotatedEpisodes,
   listMyMachineReviews,
+  getPendingSourceReviews,
   listOperationErrors,
   listTaskDefinitions,
   listAssignedTaskDefinitions,
@@ -200,6 +201,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.2.3": "修复旧分组根目录导致任务中心目录和历史领取人不显示；展示批次路径。侧栏区分本机待写结果与已写入审核，确认写回后立即刷新本人审核标记。包含独立骨架片段功能。",
   "1.2.2": "新增独立骨架片段描述入口，支持增删、裁剪、边界微调与快捷键；预置六个标签并可自定义，保存至 skeleton.description.json，不设置审核结论、不改变 QC。补齐三组目录改名后的独立批次识别及连续迁移映射。",
   "1.2.1": "包含三支线目录适配与人工审核信息精简；补齐新增目录解析接口的浏览器测试，兼容 Windows 标准路径和扩展路径，迁移前本机待写结果仍可恢复。1.2.0 因 CI 测试替身未更新而未发布安装包。",
   "1.2.0": "适配三支线分组目录，批次独立领取，保留已确认迁移前的批次归属；修复旧路径恢复、子批次加载和 desorption.json 保存。人工结果审核信息只保留结论、审核人、审核日期，恢复及并发技术记录独立保存；新增删除片段继续写入实际数组，保留本机待写及冲突保护。",
@@ -340,6 +342,7 @@ function App() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>("mcap");
   const [exportResult, setExportResult] = useState<ExportResult | null>(null);
   const [annotationTags, setAnnotationTags] = useState<Record<string, EpisodeAnnotation>>({});
+  const [pendingReviewEpisodes, setPendingReviewEpisodes] = useState<Record<string, string>>({});
   const [reviewedEpisodes, setReviewedEpisodes] = useState<Record<string, "pending" | "approved" | "rejected">>({});
   const [annotatedEpisodes, setAnnotatedEpisodes] = useState<AnnotatedEpisodeSummary[]>([]);
   const [batchSelectedIds, setBatchSelectedIds] = useState<string[]>([]);
@@ -1658,7 +1661,24 @@ function App() {
       }));
     }).catch((reason) => { if (active) setNotice(`账号审核记录读取失败，可重新加载目录重试：${toMessage(reason)}`); });
     return () => { active = false; };
-  }, [authStatus?.currentUser?.username, scan]);
+  }, [authStatus?.currentUser?.username, scan, batchReviewRevision]);
+
+  useEffect(() => {
+    let active = true;
+    let generation = 0;
+    setPendingReviewEpisodes({});
+    if (!authStatus?.currentUser || !scan) return;
+    const refresh = async () => {
+      const own = ++generation;
+      try {
+        const result = await getPendingSourceReviews(false, scan.episodes.map(episode => episode.root));
+        if (active && own === generation) setPendingReviewEpisodes(Object.fromEntries(result.items.filter(item => item.channel !== "skeleton").map(item => [item.sourcePath, item.status])));
+      } catch (cause) { if (active && own === generation) setNotice(`本机待写状态读取失败：${toMessage(cause)}`); }
+    };
+    void refresh();
+    window.addEventListener("source-review-pending", refresh);
+    return () => { active = false; window.removeEventListener("source-review-pending", refresh); };
+  }, [authStatus?.currentUser?.username, scan, batchReviewRevision]);
 
   const visibleEpisodes = useMemo(
     () => scan?.episodes.filter((episode) => (!skippedEpisodeRoots[episode.root] || Boolean(reviewedEpisodes[episode.root]))) ?? [],
@@ -1987,7 +2007,7 @@ function App() {
               visibleEpisodes.map((episode) => <EpisodeListRow
                 key={episode.root} episode={episode} selected={selectedEpisode?.root === episode.root}
                 sourceState={episodeSourceStates[episode.root] ?? "available"}
-                savedAnnotation={annotationTags[episode.root]} reviewStatus={reviewedEpisodes[episode.root]} busy={busy}
+                savedAnnotation={annotationTags[episode.root]} reviewStatus={reviewedEpisodes[episode.root]} pendingReviewStatus={pendingReviewEpisodes[episode.root]} busy={busy}
                 rejectionSelectable={isManagedWorkspace && currentUser?.role === "operator"}
                 rejectionSelected={Boolean(batchRejectionSelection[episode.root])}
                 actions={episodeActions} buttonRefs={episodeButtonRefs}
@@ -2314,13 +2334,14 @@ function EmptyWorkspace({
 // Keep the NAS catalog out of the per-frame video render work. Action refs
 // retain current application state without invalidating every row on a tick.
 const EpisodeListRow = memo(function EpisodeListRow({
-  episode, selected, sourceState, savedAnnotation, reviewStatus, busy, actions, buttonRefs, rejectionSelectable, rejectionSelected,
+  episode, selected, sourceState, savedAnnotation, reviewStatus, pendingReviewStatus, busy, actions, buttonRefs, rejectionSelectable, rejectionSelected,
 }: {
   episode: EpisodeSummary;
   selected: boolean;
   sourceState: EpisodeSourceState;
   savedAnnotation?: EpisodeAnnotation;
   reviewStatus?: "pending" | "approved" | "rejected";
+  pendingReviewStatus?: string;
   busy: boolean;
   rejectionSelectable: boolean;
   rejectionSelected: boolean;
@@ -2360,9 +2381,10 @@ const EpisodeListRow = memo(function EpisodeListRow({
         {completed && savedAnnotation ? <span className="episode-annotation-tag"
           title={`已标注 · ${savedAnnotation.trajectoryCode} · r${savedAnnotation.revision}`}
           aria-label="已标注">已标注</span> : null}
-        {reviewStatus ? <span className="episode-annotation-tag" aria-label="已审核">我已审·{reviewStatus === "pending" ? "待复审" : reviewStatus === "approved" ? "通过" : "不通过"}</span> : null}
+        {reviewStatus && !pendingReviewStatus ? <span className="episode-annotation-tag" aria-label="已审核">我已审·{reviewStatus === "pending" ? "待复审" : reviewStatus === "approved" ? "通过" : "不通过"}</span> : null}
         <EpisodeSourceMark state={sourceState} /><ChevronRight size={15} />
       </span>
+      {pendingReviewStatus && <span className="episode-annotation-tag episode-local-pending" aria-label="本机待写回">本机{pendingReviewStatus === "approved" ? "通过" : pendingReviewStatus === "rejected" ? "不通过" : "草稿"} · 待写回 NAS</span>}
       <span className="episode-item-meta">{episode.indexed
         ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
         : episode.stateCount ? `${episode.stateCount} states · 快速预览` : "待读取"}</span>

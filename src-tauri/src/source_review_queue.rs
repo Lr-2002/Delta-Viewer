@@ -390,6 +390,76 @@ pub fn status(
         storage_error,
     })
 }
+/// Sidebar lookup is local only and is not truncated to the notice's 200 rows.
+/// Read small summary columns, never retain all result payloads in memory.
+pub fn status_for_paths(
+    root: &Path,
+    service: &str,
+    username: &str,
+    paths: &[String],
+) -> AppResult<PendingStatus> {
+    if paths.len() > 20_000 {
+        return Err(failure("目录记录数量超过 20000"));
+    }
+    let mut aliases = std::collections::HashMap::new();
+    for path in paths {
+        for alias in path_aliases(root, path)? {
+            let key = if cfg!(windows) {
+                alias.to_lowercase()
+            } else {
+                alias
+            };
+            aliases.insert(key, path);
+        }
+    }
+    let db = open(root)?;
+    let mut query = db.prepare("SELECT source_path,json_extract(payload,'$.request.status'),json_extract(payload,'$.createdAtMs') FROM source_reviews WHERE service=? AND username=? AND source_name!=? ORDER BY json_extract(payload,'$.audit.occurredAtMs')").map_err(failure)?;
+    let rows = query
+        .query_map(
+            params![
+                service,
+                username,
+                crate::machine_annotation::SKELETON_SOURCE
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, u64>(2)?,
+                ))
+            },
+        )
+        .map_err(failure)?;
+    let mut items = std::collections::BTreeMap::new();
+    for row in rows {
+        let (path, status, created_at_ms) = row.map_err(failure)?;
+        let key = if cfg!(windows) {
+            path.to_lowercase()
+        } else {
+            path
+        };
+        if let Some(current) = aliases.get(&key) {
+            items.insert(
+                (*current).clone(),
+                PendingItem {
+                    channel: "action".into(),
+                    name: String::new(),
+                    source_path: (*current).clone(),
+                    status: status.unwrap_or_else(|| "pending".into()),
+                    error: String::new(),
+                    created_at_ms,
+                },
+            );
+        }
+    }
+    Ok(PendingStatus {
+        pending: items.len(),
+        items: items.into_values().collect(),
+        ready: false,
+        storage_error: String::new(),
+    })
+}
+
 pub fn publish(
     root: &Path,
     service: &str,
@@ -569,6 +639,65 @@ mod path_tests {
                     .is_none());
             }
         }
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sidebar_summaries_are_account_scoped_untruncated_and_do_not_read_nas() {
+        let root = std::env::temp_dir().join(format!(
+            "viewer-sidebar-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = open(&root).unwrap();
+        let paths: Vec<String> = (0..205)
+            .map(|i| format!("/unavailable-nas/sample-{i}"))
+            .collect();
+        for (i, path) in paths.iter().enumerate() {
+            let payload = json!({"request":{"status":"approved"},"createdAtMs":i+100,"audit":{"occurredAtMs":i+200}}).to_string();
+            for (service, username, source) in [
+                ("s", "alice", ""),
+                ("s", "bob", ""),
+                ("other", "alice", ""),
+                ("s", "alice", crate::machine_annotation::SKELETON_SOURCE),
+            ] {
+                db.execute(
+                    "INSERT INTO source_reviews VALUES(?,?,?,?,?,?)",
+                    params![service, username, path, source, payload, format!("id-{i}")],
+                )
+                .unwrap();
+            }
+        }
+        assert_eq!(
+            status_for_paths(&root, "s", "alice", &paths)
+                .unwrap()
+                .items
+                .len(),
+            205
+        );
+        let one = status_for_paths(&root, "s", "alice", &paths[204..]).unwrap();
+        assert_eq!(one.pending, 1);
+        assert_eq!(one.items[0].source_path, paths[204]);
+        assert_eq!(one.items[0].status, "approved");
+        assert_eq!(one.items[0].created_at_ms, 304);
+        assert!(status_for_paths(&root, "s", "absent", &paths)
+            .unwrap()
+            .items
+            .is_empty());
+        assert!(status_for_paths(&root, "absent", "alice", &paths)
+            .unwrap()
+            .items
+            .is_empty());
+        assert!(
+            status_for_paths(&root, "s", "alice", &["/other/sample-204".into()])
+                .unwrap()
+                .items
+                .is_empty()
+        );
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }

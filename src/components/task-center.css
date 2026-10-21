@@ -66,3 +66,5 @@
   .task-claim-actions { order: 4; }
   .task-qc { font-size: 11px; }
 }
+
+.task-node-path { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }

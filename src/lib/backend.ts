@@ -676,8 +676,8 @@ export async function saveMachineReview(sourcePath: string, sourceHash: string, 
   return structuredClone(saved);
 }
 
-export const getPendingSourceReviews = (checkStorage = false) => isTauriRuntime()
-  ? invoke<import("../types").PendingSourceReviewStatus>("get_pending_source_reviews", { checkStorage })
+export const getPendingSourceReviews = (checkStorage = false, sourcePaths?: string[]) => isTauriRuntime()
+  ? invoke<import("../types").PendingSourceReviewStatus>("get_pending_source_reviews", { checkStorage, sourcePaths })
   : Promise.resolve({ pending: 0, ready: false, storageError: "", items: [] });
 export const publishPendingSourceReviews = () => invoke<import("../types").SourceReviewPublishResult>("publish_pending_source_reviews", { operationId: Date.now() });
 export async function rejectPendingMachineReview(sourcePath: string, name: string, reason: string, elapsedMs: number): Promise<import("../types").MachineReview | null> {

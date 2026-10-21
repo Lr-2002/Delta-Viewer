@@ -354,12 +354,12 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const children = !filteringThisBatch && !isBatch ? sourceChildren.filter((child) => matches(child, depth + 1)) : sourceChildren;
     return <div key={node.relativePath} className="task-tree-node">
       <div className={`task-tree-row${isRoot ? " task-tree-root" : ""}${node.session ? " task-tree-session" : ""}`} style={{ "--tree-depth": depth } as React.CSSProperties}>
-        <button className="task-node-name" type="button" title={isRoot ? root : node.name} aria-expanded={node.session ? undefined : open}
+        <button className="task-node-name" type="button" aria-label={isRoot ? root : node.name} title={isRoot ? root : node.relativePath} aria-expanded={node.session ? undefined : open}
           disabled={node.session && (!onOpen || Boolean(pending) || Boolean(error))}
           onClick={() => node.session ? void openNode(node) : void toggle(node)}>
           {node.session ? <span className="task-chevron-spacer" /> : open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           {open && !node.session ? <FolderOpen size={17} /> : <Folder size={17} />}
-          <span>{isRoot ? root : node.name}</span>
+          <span>{isRoot ? root : node.name}{isBatch && !isRoot && <small className="task-node-path">{node.relativePath}</small>}</span>
         </button>
         {node.session ? <span className={`task-qc task-qc-${node.status}`} title={node.error}>{node.status === "approved" ? "已审核 · 通过" : node.status === "rejected" ? "已审核 · 不通过" : node.status === "error" ? "QC 异常" : "未审核"}</span>
           : <><span className="task-owner">{isBatch ? `领取人：${claim ? `${claim.displayName} (@${claim.username})` : claimsReady ? "暂无" : "--"}` : ""}</span>

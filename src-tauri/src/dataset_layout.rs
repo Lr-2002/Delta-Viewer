@@ -315,6 +315,24 @@ pub fn batch_root(path: &Path) -> Option<PathBuf> {
     Some(share.join(dataset).join(batch_relative(rest)))
 }
 
+/// Task center is a batch catalog. A remembered grouping root must show the
+/// dataset, including current groups and any still-existing legacy directory.
+/// This does not redirect or modify an existing source directory.
+pub fn task_center_root(path: &Path) -> PathBuf {
+    if path
+        .file_name()
+        .is_some_and(|name| grouping_name(&name.to_string_lossy()))
+    {
+        if let Some(parent) = path.parent().filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case("Delta-D1"))
+        }) {
+            return parent.to_path_buf();
+        }
+    }
+    path.to_path_buf()
+}
+
 pub fn batch_key(namespace: &str, batch: &str, registry: &Registry) -> String {
     let relative = format!("{namespace}/{batch}");
     let original = registry.translate(&relative, true).unwrap_or(relative);
@@ -488,6 +506,27 @@ mod tests {
         );
         for invalid in ["2026-02-30", "中文目录测试", "2026-10-210", "2026-13-01"] {
             assert!(!dated(invalid));
+        }
+    }
+
+    #[test]
+    fn remembered_group_catalog_opens_dataset_without_redirecting_source_paths() {
+        let dataset = Path::new("/share/Delta-D1");
+        for group in [
+            "D1 daily",
+            "D1-Daily",
+            "D1-Yiqi",
+            "D1 validation",
+            "D1-Motion caption",
+        ] {
+            assert_eq!(task_center_root(&dataset.join(group)), dataset);
+        }
+        for path in [
+            dataset.to_path_buf(),
+            dataset.join("D1-Daily/2026-09-20-Sofa"),
+            PathBuf::from("/other/D1 daily"),
+        ] {
+            assert_eq!(task_center_root(&path), path);
         }
     }
 

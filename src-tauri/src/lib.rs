@@ -842,8 +842,13 @@ async fn get_task_center_root(
         .map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?.join("task-center");
     tauri::async_runtime::spawn_blocking(move || {
-        assigned_source::load_for_user(&data_root, &user.username)
-            .map(|root| root.or_else(task_center::default_source))
+        assigned_source::load_for_user(&data_root, &user.username).map(|root| {
+            root.or_else(task_center::default_source).map(|value| {
+                dataset_layout::task_center_root(Path::new(&value))
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -862,7 +867,11 @@ async fn set_task_center_root(
     ensure_source_directory_responsive(&source_root).await?;
     let data_root = app_data_root(&app)?.join("task-center");
     tauri::async_runtime::spawn_blocking(move || {
-        assigned_source::save_for_user(&data_root, &user.username, Path::new(&source_root))
+        assigned_source::save_for_user(
+            &data_root,
+            &user.username,
+            &dataset_layout::task_center_root(Path::new(&source_root)),
+        )
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1229,12 +1238,17 @@ async fn get_pending_source_reviews(
     app: AppHandle,
     auth: State<'_, AuthState>,
     check_storage: bool,
+    source_paths: Option<Vec<String>>,
 ) -> Result<source_review_queue::PendingStatus, String> {
     let data = app_data_root(&app)?;
     let (user, service) =
         user_center::source_review_owner(&data, auth.inner()).map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        source_review_queue::status(&data, &service, &user.username, check_storage)
+        if let Some(paths) = source_paths {
+            source_review_queue::status_for_paths(&data, &service, &user.username, &paths)
+        } else {
+            source_review_queue::status(&data, &service, &user.username, check_storage)
+        }
     })
     .await
     .map_err(|e| e.to_string())?
