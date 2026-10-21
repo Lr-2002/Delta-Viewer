@@ -66,6 +66,46 @@ fn owner_lock(root: &Path, service: &str, username: &str) -> AppResult<std::fs::
     let key = blake3::hash(format!("{service}\n{username}").as_bytes()).to_hex();
     machine_review::lock_file(&directory.join(format!("source-{key}.lock")))
 }
+// Windows canonicalize adds a verbatim prefix; old queues/UI paths may omit it.
+// This is lexical only: the local durability path must not stat the NAS.
+fn plain_path(path: &str) -> String {
+    let windows = path.starts_with(r"\\") || path.as_bytes().get(1) == Some(&b':');
+    if !windows {
+        return path.into();
+    }
+    let path = path.replace('/', "\\");
+    if path
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"\\?\UNC\"))
+    {
+        format!(r"\\{}", &path[8..])
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(&path).into()
+    }
+}
+fn verbatim_path(path: &str) -> String {
+    if let Some(tail) = path.strip_prefix(r"\\") {
+        format!(r"\\?\UNC\{tail}")
+    } else if path.as_bytes().get(1) == Some(&b':') {
+        format!(r"\\?\{path}")
+    } else {
+        path.into()
+    }
+}
+fn path_aliases(root: &Path, path: &str) -> AppResult<[String; 5]> {
+    let plain = plain_path(path);
+    let historical = crate::dataset_layout::historical_cached(root, Path::new(&plain))?
+        .to_string_lossy()
+        .into_owned();
+    Ok([
+        path.into(),
+        plain.clone(),
+        verbatim_path(&plain),
+        historical.clone(),
+        verbatim_path(&historical),
+    ])
+}
+
 pub fn get(
     root: &Path,
     service: &str,
@@ -74,18 +114,41 @@ pub fn get(
     source: Option<&str>,
 ) -> AppResult<Option<DeferredReview>> {
     let db = open(root)?;
-    let historical = crate::dataset_layout::historical_cached(root, Path::new(path))?
-        .to_string_lossy()
-        .into_owned();
-    let raw: Option<String> = db.query_row("SELECT payload FROM source_reviews WHERE service=? AND username=? AND source_path IN (?,?) AND source_name=? ORDER BY CASE WHEN source_path=? THEN 0 ELSE 1 END LIMIT 1", params![service,username,path,historical,source.unwrap_or(""),path], |r| r.get(0)).optional().map_err(failure)?;
+    let paths = path_aliases(root, path)?;
+    let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
+    let sql=format!("SELECT payload FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (?,?,?,?,?) AND source_name=? ORDER BY CASE WHEN source_path=? THEN 0 ELSE 1 END LIMIT 1");
+    let raw: Option<String> = db
+        .query_row(
+            &sql,
+            params![
+                service,
+                username,
+                paths[0],
+                paths[1],
+                paths[2],
+                paths[3],
+                paths[4],
+                source.unwrap_or(""),
+                path
+            ],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(failure)?;
     raw.map(|s| serde_json::from_str(&s).map_err(failure))
         .transpose()
 }
 pub fn contains_path(root: &Path, service: &str, username: &str, path: &str) -> AppResult<bool> {
-    let historical = crate::dataset_layout::historical_cached(root, Path::new(path))?
-        .to_string_lossy()
-        .into_owned();
-    open(root)?.query_row("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path IN (?,?))", params![service,username,path,historical], |row| row.get(0)).map_err(failure)
+    let paths = path_aliases(root, path)?;
+    let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
+    let sql=format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (?,?,?,?,?))");
+    open(root)?
+        .query_row(
+            &sql,
+            params![service, username, paths[0], paths[1], paths[2], paths[3], paths[4]],
+            |row| row.get(0),
+        )
+        .map_err(failure)
 }
 pub fn store(
     root: &Path,
@@ -409,4 +472,87 @@ pub(crate) fn publish_with_probe(
         remaining: status(root, service, &user.username, false)?.pending,
         errors,
     })
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    #[test]
+    fn durable_lookup_accepts_windows_verbatim_aliases_without_network_io() {
+        let root = std::env::temp_dir().join(format!(
+            "queue-alias-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = open(&root).unwrap();
+        let mut entry = DeferredReview {
+            request: SaveReviewRequest {
+                source_path: r"C:\数据\sample".into(),
+                source_name: None,
+                source_hash: "isolated".into(),
+                expected_revision: 0,
+                segments: vec![],
+                status: Some("pending".into()),
+                rejection_reason: None,
+            },
+            output_hash: None,
+            qc_content_hash: None,
+            only_pending: false,
+            audit: json!({"eventId":"isolated"}),
+            error: "simulated".into(),
+            created_at_ms: 1,
+        };
+        for stored in [r"C:\数据\sample", r"\\?\C:\数据\sample"] {
+            db.execute("DELETE FROM source_reviews", []).unwrap();
+            entry.request.source_path = stored.into();
+            db.execute(
+                "INSERT INTO source_reviews VALUES (?,?,?,?,?,?)",
+                params![
+                    "s",
+                    "alice",
+                    stored,
+                    "",
+                    serde_json::to_string(&entry).unwrap(),
+                    "isolated"
+                ],
+            )
+            .unwrap();
+            for lookup in [r"C:\数据\sample", r"\\?\C:\数据\sample"] {
+                assert_eq!(
+                    get(&root, "s", "alice", lookup, None)
+                        .unwrap()
+                        .unwrap()
+                        .request
+                        .source_path,
+                    stored
+                );
+                assert!(contains_path(&root, "s", "alice", lookup).unwrap());
+                assert!(get(&root, "s", "bob", lookup, None).unwrap().is_none());
+                assert!(get(&root, "other", "alice", lookup, None)
+                    .unwrap()
+                    .is_none());
+            }
+        }
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn canonical_windows_paths_keep_legacy_drive_unc_and_mixed_separator_aliases() {
+        for (input, plain) in [
+            (
+                r"\\?\UNC\nas\Datasets\Delta-D1/old/sample",
+                r"\\nas\Datasets\Delta-D1\old\sample",
+            ),
+            (r"\\?\C:\data\sample", r"C:\data\sample"),
+            (r"C:/data/sample", r"C:\data\sample"),
+        ] {
+            assert_eq!(plain_path(input), plain);
+            assert_eq!(plain_path(&verbatim_path(plain)), plain);
+        }
+        assert_eq!(plain_path("/data/Sample"), "/data/Sample");
+    }
 }

@@ -189,6 +189,7 @@ if (!browserExecutable && requireBrowser) {
             return null;
           }
           switch (command) {
+          case "resolve_source_path": return args.batchRoot ? "" : args.path;
             case "get_auth_status":
               return {
                 workspaceMode: "managed",

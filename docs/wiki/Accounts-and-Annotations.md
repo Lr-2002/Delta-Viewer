@@ -1,5 +1,7 @@
 # 账号与数据标注
 
+1.2.1 包含以下精简与目录兼容功能，并兼容 Windows 标准路径、扩展盘符及 UNC 路径的本机待写恢复；本机查询不访问 NAS。1.2.0 未通过云端测试替身检查，未交付安装包。
+
 ## 人工结果与技术记录分离（1.2.0）
 
 人工结果的 `_human_review` 仅含 `status`（approved 通过、rejected 不通过、pending 待审核）、`reviewer` 和 `reviewedAt`。待审核不带上次署名与日期。片段内容仍在 `episode_results` 中，新增和删除直接反映在片段数组。

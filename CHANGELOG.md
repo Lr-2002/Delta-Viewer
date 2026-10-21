@@ -3,6 +3,12 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.2.1 - 2026-10-21
+
+- 包含 1.2.0 的三支线目录兼容、独立批次领取、人工结果审核信息精简及技术记录分离。1.2.0 的云端 CI 在并发操作 smoke 发现旧模拟后端尚未实现新增目录解析接口，未生成版本 tag 或公开安装包。
+- 为并发操作及对话框恢复测试补齐目录解析接口，保留原有领取后直接加载、取消与操作归属断言，不跳过或放宽回归。
+- 修复 Windows 标准 UNC/盘符路径与 canonicalize 扩展路径格式不同，可能导致迁移前本机待写结果无法匹配的问题；仅在本机查询确定的等价路径，不访问 NAS、不重写原队列键，不跨账号匹配。
+
 ## 1.2.0 - 2026-10-21
 
 - 适配 `D1 daily`、`D1 validation`、`D1 yiqi` 分组后的日期批次。分组不可领取，各子批次使用独立标识；已确认迁移保留原批次领取身份。旧版误领的整组记录原样保留，不推测拆分。
