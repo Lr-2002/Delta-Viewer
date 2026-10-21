@@ -153,6 +153,14 @@ export function requireReviewAuditSession(root: string): void {
     throw Error("审核操作记录未就绪，请保持当前数据打开并重试");
 }
 
+export async function createDeferredReviewEvent(root: string, name: string, action: "saved" | "approved" | "rejected", reason: string): Promise<ReviewAuditEvent> {
+  requireReviewAuditSession(root);
+  const current = session!;
+  const episodeKey = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(root))), byte => byte.toString(16).padStart(2, "0")).join("");
+  return { eventId: crypto.randomUUID(), sessionId: current.id, episodeKey, episodeName: name.slice(0, 256), action,
+    occurredAtMs: Date.now(), elapsedMs: Math.max(0, Math.round(performance.now() - current.clock)), details: { reason, target: "本机待写回审核结果" } };
+}
+
 export function beginReviewAudit(root: string, name: string) {
   endReviewAudit();
   if (!queue) {

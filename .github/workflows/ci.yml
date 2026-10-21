@@ -84,6 +84,9 @@ jobs:
       - name: Run review audit recovery regressions
         run: pnpm test:review-audit:browser
 
+      - name: Run local review writeback confirmation regressions
+        run: pnpm test:source-review:browser
+
       - name: Run native MP4 playback regression coverage
         env:
           PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome

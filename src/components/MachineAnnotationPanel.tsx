@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
-import { listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
-import { persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
+import { deferMachineReview, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
+import { createDeferredReviewEvent, persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { addReviewSegment, recoverReviewSegments, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
@@ -16,7 +16,7 @@ interface Props {
   username: string;
   busy: boolean;
   onReviewSaved?: (review: MachineReview) => void;
-  onComplete?: (status: "approved" | "rejected") => void;
+  onComplete?: (status: "approved" | "rejected", local?: boolean) => void;
   onUnsavedChange?: (unsaved: boolean) => void;
   playback?: {
     frame: number;
@@ -75,6 +75,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const [error, setError] = useState("");
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [saveSlow, setSaveSlow] = useState(false);
   const [loading, setLoading] = useState(true);
   const [finishing, setFinishing] = useState(false);
   const [reload, setReload] = useState(0);
@@ -156,6 +157,12 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     window.addEventListener("beforeunload", beforeUnload);
     return () => window.removeEventListener("beforeunload", beforeUnload);
   }, [unsaved]);
+  useEffect(() => {
+    setSaveSlow(false);
+    if (!saving) return;
+    const timer = window.setTimeout(() => setSaveSlow(true), 8000);
+    return () => clearTimeout(timer);
+  }, [saving]);
 
   function persist(snapshot: Snapshot): Promise<boolean> {
     pending.current = snapshot;
@@ -174,8 +181,16 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
           const state = stateRef.current;
           const audit = reviewAuditRecorder(root);
           try {
-            const saved = await saveMachineReview(root, state.sourceHash, state.revision, next.segments, loadedSource.current, next.status, next.rejectionReason);
-            audit(saved.status === "approved" ? "approved" : saved.status === "rejected" ? "rejected" : "saved", { revision: saved.revisionLabel ?? String(saved.revision), reason: saved.rejectionReason ?? "" });
+            const deferredAudit = await createDeferredReviewEvent(root, data.summary.name, next.status === "pending" ? "saved" : next.status, next.rejectionReason ?? "");
+            let saved: MachineReview;
+            try {
+              saved = await saveMachineReview(root, state.sourceHash, state.revision, next.segments, loadedSource.current, next.status, next.rejectionReason, [deferredAudit.eventId, deferredAudit.occurredAtMs]);
+            } catch (cause) {
+              const message = String(cause);
+              if (!/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|SOURCE_REVIEW_DEFERRED|I\/O 错误/.test(message)) throw cause;
+              saved = await deferMachineReview({ sourcePath: root, sourceName: loadedSource.current, sourceHash: state.sourceHash, expectedRevision: state.revision, segments: next.segments, status: next.status, rejectionReason: next.rejectionReason }, state, message, deferredAudit);
+            }
+            if (!saved.pendingSourceWrite) audit(saved.status === "approved" ? "approved" : saved.status === "rejected" ? "rejected" : "saved", { revision: saved.revisionLabel ?? String(saved.revision), reason: saved.rejectionReason ?? "" });
             stateRef.current = saved;
             if (mounted.current) { setReview(saved); onReviewSaved?.(saved); }
             if (!pending.current) {
@@ -460,7 +475,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     if (target) { setSelected(target.sourceIndex); seek(target.startFrame); }
   }
   async function finish(status: "approved" | "rejected", rejectionReason?: string, textConfirmed = false) {
-    if (!canEdit || finishLock.current) return;
+    if (!canEdit || finishLock.current || running.current) return;
     if (status === "approved" && result?.inferredEndFrames?.length && !boundariesConfirmed) return;
     if (status === "rejected" && !rejectionReason?.trim()) return;
     if (status === "approved" && allTextIssues.length > 0 && !textConfirmed) {
@@ -496,7 +511,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       await persistPendingReviewAudit();
       completionAwaitingAudit.current = null;
       setAuditCompletionError(""); setRejectOpen(false);
-      onUnsavedChange?.(false); onComplete?.(status);
+      onUnsavedChange?.(false); onComplete?.(status, stateRef.current?.pendingSourceWrite);
     } catch (reason) {
       // The source conclusion is already committed. Retry ONLY persistence,
       // never repeat the save or invent another revision/submission time.
@@ -602,19 +617,20 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         </div>
       </div>
       <footer className="quality-footer">
-        <div className="quality-save-state" role="status">{saving ? "正在保存…" : saveError ? "保存失败" : review?.published ? "人工结果已保存" : review?.revision ? "仅有本机历史草稿" : "尚无人工修改"}
+        <div className="quality-save-state" role="status">{saving ? "正在保存到数据目录…" : saveError ? "数据目录保存失败" : review?.pendingSourceWrite ? "结果已保存本机 · 待写回数据目录" : review?.published ? "人工结果已保存" : review?.revision ? "仅有本机历史草稿" : "尚无人工修改"}
           {review?.versionId && <span className="review-revision" title={review.revisionLabel ?? review.versionId}>{`${review.versionId} · 历史修订（非当前结论）`}</span>}
         </div>
         {recoveryError && <p role="alert" className="machine-message">{recoveryError}</p>}
         {auditPreparationError && <p role="alert" className="machine-message">{auditPreparationError}</p>}
         {auditCompletionError && <div role="alert" className="machine-message audit-completion-error"><span>{auditCompletionError}</span><button type="button" className="button button-secondary" disabled={finishing} onClick={() => void finishAuditCompletion()}>重试保存操作记录</button></div>}
-        {saveError && <div role="alert" className="machine-message">{saveError}<button className="icon-button" aria-label="重试保存复核" title="重试保存复核" onClick={() => void persist(pending.current ?? { segments: editsRef.current, status: "pending" })}><RefreshCw size={15} /></button></div>}
+        {saveSlow && saving && <div role="status" className="machine-message">保存耗时较长，正在等待数据目录的检查或写入确认，尚未确认提交成功。{!recoveryError && "本机应急草稿已保留。"}请保持应用打开，等待结果后再重试；用户中心的操作记录上传独立进行。</div>}
+        {saveError && <div role="alert" className="machine-message review-save-error"><span>{saveError}{!recoveryError && " 本机应急草稿已保留，恢复后请重试保存。"}</span><button type="button" className="button button-secondary" aria-label="重试保存复核" onClick={() => void persist(pending.current ?? { segments: editsRef.current, status: "pending" })}><RefreshCw size={15} />重试保存</button></div>}
         <div className="quality-output" title={`${root}/${outputName}`}>{outputName}<span>{review?.qcStatus === "approved" ? "已通过" : review?.qcStatus === "rejected" ? "未通过" : review?.qcStatus === "pending" ? "待审核" : "审核状态未知"}</span></div>
         {review?.qcStatusError && <p role="alert" className="machine-message">当前目录审核状态读取失败，请重新读取：{review.qcStatusError}</p>}
         {review?.qcStatus === "rejected" && review.qcRejectionReason && <p className="review-rejection-reason" title={review.qcRejectionReason}>不通过：{review.qcRejectionReason}</p>}
         <div className="quality-decisions">
-          <button ref={rejectButton} className="button button-secondary" disabled={!canEdit} onClick={openRejection}><X size={16} />不通过</button>
-          <button className="button button-primary" disabled={!canEdit || !rows.length || (!!result?.inferredEndFrames?.length && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>
+          <button ref={rejectButton} className="button button-secondary" disabled={!canEdit || saving} onClick={openRejection}><X size={16} />不通过</button>
+          <button className="button button-primary" disabled={!canEdit || saving || !rows.length || (!!result?.inferredEndFrames?.length && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>
         </div>
       </footer>
     </section>
@@ -627,7 +643,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         {reasonChoice === "其他原因" && <label className="rejection-detail">其他原因<textarea autoFocus aria-label="其他原因内容" required maxLength={1000} value={otherReason} disabled={finishing} onChange={(event) => setOtherReason(event.currentTarget.value)} /></label>}
         {saveError && <p role="alert" className="machine-message">{saveError}</p>}
         <footer><button type="button" className="button button-secondary" disabled={finishing} onClick={closeRejection}>取消</button>
-          <button type="submit" className="button button-primary" disabled={!canEdit || !reasonChoice || (reasonChoice === "其他原因" && !otherReason.trim())}>{finishing ? <LoaderCircle size={16} className="spin" /> : <X size={16} />}确认不通过</button></footer>
+          <button type="submit" className="button button-primary" disabled={!canEdit || saving || !reasonChoice || (reasonChoice === "其他原因" && !otherReason.trim())}>{finishing ? <LoaderCircle size={16} className="spin" /> : <X size={16} />}确认不通过</button></footer>
       </form>
     </dialog>}
     {showJson && result && <dialog className="machine-json" aria-label="机标 JSON" ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={() => setShowJson(false)}><header className="machine-heading"><strong>{result.sourceName ?? "bailian_annotation.json"}</strong><button autoFocus className="icon-button" aria-label="关闭 JSON" title="关闭 JSON" onClick={() => setShowJson(false)}><X size={16} /></button></header><pre>{result.sourceJson ?? JSON.stringify(result, null, 2)}</pre></dialog>}

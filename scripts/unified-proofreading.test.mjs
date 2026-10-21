@@ -85,6 +85,91 @@ test("audit disk failure blocks completion; retry preserves the saved conclusion
 });
 
 
+test("storage failure retains edits; slow writes stay single-flight and never claim submission", async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await context.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const body = original.replace(/(export async function saveMachineReview\([^]*?\) \{)/, `$1
+      window.storageSaveAttempts = (window.storageSaveAttempts || 0) + 1;
+      if (window.holdStorageSave) await new Promise(resolve => { window.releaseStorageSave = resolve; });
+      if (window.storageFull) throw Error("REVIEW_STORAGE_FULL: 数据目录所在磁盘/NAS 可用空间不足，原子保存需至少 32 MiB 临时空间。尚未开始本次写入；请管理员释放空间或扩容后重试。此问题与用户中心上传无关。");
+    `);
+    assert.notEqual(body, original);
+    await route.fulfill({ response, body });
+  });
+  try {
+    await open(page, "machineAnnotation=present");
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    await page.evaluate(() => { window.holdStorageSave = true; window.storageFull = true; });
+    await page.getByLabel("复核动作描述").fill("空间不足时保留人工文字");
+    await page.getByText(/保存耗时较长，正在等待数据目录/).waitFor({ timeout: 15000 });
+    assert.equal(await page.getByRole("button", { name: "通过", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "重试保存复核" }).count(), 0);
+    assert.equal(await page.evaluate(() => window.storageSaveAttempts), 1);
+    assert.ok(await page.evaluate(() => localStorage.getItem("dohc.machine-review.pending:/demo/2026-07-13_07-34-12:account:review-test")));
+    await page.evaluate(() => window.releaseStorageSave());
+    const retry = page.getByRole("button", { name: "重试保存复核" });
+    await retry.waitFor();
+    assert.match(await page.locator(".review-save-error").textContent(), /本机应急草稿已保留/);
+    assert.equal(await page.getByText(/保存耗时较长，正在等待数据目录/).count(), 0);
+    for (const width of [1440, 960, 390]) {
+      await page.setViewportSize({ width, height: 920 });
+      await retry.scrollIntoViewIfNeeded();
+      const box = await retry.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width);
+      assert.equal(await retry.innerText(), "重试保存");
+      await page.screenshot({ path: `artifacts/unified-proofreading/storage-full-${width}.png` });
+    }
+    await page.evaluate(() => { window.storageFull = false; window.holdStorageSave = false; });
+    await retry.click();
+    await retry.waitFor({ state: "detached" });
+    assert.equal(await page.evaluate(() => window.storageSaveAttempts), 2);
+    assert.equal(await page.evaluate(() => localStorage.getItem("dohc.machine-review.pending:/demo/2026-07-13_07-34-12:account:review-test")), null);
+    assert.equal(await page.getByLabel("复核动作描述").inputValue(), "空间不足时保留人工文字");
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test("NAS storage failures save a local conclusion and advance without claiming shared approval", async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+  const page = await context.newPage();
+  await context.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    let body = await response.text();
+    body = body.replace(/(export async function saveMachineReview\([^]*?\) \{)/, '$1\n throw Error("REVIEW_STORAGE_FULL: NAS 磁盘已满");');
+    body = body.replace(/(export async function deferMachineReview\([^]*?\) \{)/, `$1
+      if(window.localQueueFails) throw Error("SOURCE_REVIEW_LOCAL_STORAGE: 本机磁盘写入失败");
+      window.localReviewRows ??= []; window.localReviewRows.push({request,base,audit});
+      return {...base,segments:request.segments,status:request.status,pendingSourceWrite:true,published:false,sourceWriteError:error};
+    `);
+    await route.fulfill({response,body});
+  });
+  try {
+    await open(page, "demoScenario=session-activation&machineAnnotation=present");
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    await page.evaluate(()=>{window.localQueueFails=true;});
+    await page.getByRole("button",{name:"通过",exact:true}).click();
+    await page.getByRole("button",{name:"重试保存复核"}).waitFor();
+    assert.match(await page.locator(".episode-item.selected").textContent(),/session-a/);
+    await page.evaluate(()=>{window.localQueueFails=false;});
+    await page.getByRole("button",{name:"重试保存复核"}).click();
+    await page.getByText("结果已保存本机 · 待写回数据目录").waitFor();
+    assert.equal(await page.locator(".quality-output").textContent(),"description.json待审核");
+    assert.equal(await page.getByRole("button",{name:"通过",exact:true}).isEnabled(),true);
+    await page.getByRole("button",{name:"通过",exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.episode-item.selected')?.textContent.includes('session-b'));
+    const rows=await page.evaluate(()=>window.localReviewRows);
+    assert.equal(rows.length,2);assert.equal(rows[1].audit.action,"approved");
+    assert.equal(rows[1].audit.sessionId,rows[0].audit.sessionId);
+    const audit=await page.evaluate(()=>JSON.parse(localStorage.getItem("dohc.demo.review-events")??"[]"));
+    assert.equal(audit.filter(e=>e.action==="approved").length,0,"do not upload a shared approval before NAS confirmation");
+  } finally {await context.close();}
+});
+
 test("failed save keeps a recovery snapshot, releases navigation and survives reload", async () => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
   const page = await context.newPage();

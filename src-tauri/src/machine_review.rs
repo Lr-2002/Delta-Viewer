@@ -69,11 +69,19 @@ pub struct ReviewView {
     pub qc_status: String,
     pub qc_rejection_reason: String,
     pub qc_status_error: String,
+    pub pending_source_write: bool,
+    pub source_write_error: String,
+    pub qc_content_hash: Option<String>,
 }
 
 pub fn view_for_root(root: &Path, review: ReviewState) -> ReviewView {
+    let mut qc_content_hash = None;
     let qc = (|| -> AppResult<(String, String)> {
-        let session: Value = machine_annotation::read_bytes(&root.join("session.json"))?
+        let bytes = machine_annotation::read_bytes(&root.join("session.json"))?;
+        qc_content_hash = bytes
+            .as_ref()
+            .map(|bytes| blake3::hash(bytes).to_hex().to_string());
+        let session: Value = bytes
             .map(|bytes| serde_json::from_slice(&bytes))
             .transpose()?
             .unwrap_or_else(|| json!({}));
@@ -106,10 +114,13 @@ pub fn view_for_root(root: &Path, review: ReviewState) -> ReviewView {
         qc_status,
         qc_rejection_reason,
         qc_status_error,
+        pending_source_write: false,
+        source_write_error: String::new(),
+        qc_content_hash,
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveReviewRequest {
     pub source_path: String,
@@ -982,8 +993,36 @@ pub(crate) fn atomic_json(path: &Path, document: &Value) -> AppResult<String> {
     if result.is_err() {
         let _ = fs::remove_file(&partial);
     }
-    result?;
+    result.map_err(|error| match error {
+        AppError::Io(error) => review_write_error(path, error),
+        error => error,
+    })?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn review_write_error(path: &Path, error: std::io::Error) -> AppError {
+    let (code, advice) = match error.kind() {
+        std::io::ErrorKind::StorageFull => (
+            "REVIEW_STORAGE_FULL",
+            "保存目标磁盘/NAS 空间不足，请释放空间或扩容后重试",
+        ),
+        std::io::ErrorKind::PermissionDenied => (
+            "REVIEW_STORAGE_PERMISSION_DENIED",
+            "保存目标拒绝写入，请检查共享目录写权限后重试",
+        ),
+        std::io::ErrorKind::TimedOut => (
+            "REVIEW_STORAGE_TIMEOUT",
+            "保存目标写入超时，请检查 NAS 负载及共享目录连接后重试",
+        ),
+        _ => (
+            "REVIEW_STORAGE_WRITE_FAILED",
+            "保存目标 I/O 失败，具体原因请见系统信息；请检查存储状态后重试",
+        ),
+    };
+    AppError::Message(format!(
+        "{code}: {advice}。位置：{}。系统信息：{error}。未确认审核保存成功，请勿当作已提交。",
+        path.display()
+    ))
 }
 
 #[cfg(test)]
@@ -1001,7 +1040,25 @@ pub fn save_for_user(
     reviewer: &str,
     username: &str,
 ) -> AppResult<ReviewState> {
-    save_for_user_mode(data_root, request, reviewer, username, None)
+    save_for_user_mode(data_root, request, reviewer, username, None, None)
+}
+
+pub fn save_with_event_for_user(
+    data_root: &Path,
+    request: SaveReviewRequest,
+    reviewer: &str,
+    username: &str,
+    event: Option<(String, u64)>,
+) -> AppResult<ReviewState> {
+    if let Some((id, time)) = &event {
+        if id.len() != 36 || !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') || *time == 0 {
+            return Err(failure("审核提交标识或时间无效"));
+        }
+    }
+    if event.is_none() {
+        return save_for_user(data_root, request, reviewer, username);
+    }
+    save_for_user_mode(data_root, request, reviewer, username, None, event)
 }
 
 fn pending_qc(root: &Path) -> AppResult<bool> {
@@ -1033,6 +1090,43 @@ pub fn reject_pending_for_user(
     reviewer: &str,
     username: &str,
 ) -> AppResult<Option<ReviewState>> {
+    reject_pending_mode(data_root, root, reason, reviewer, username, None)
+}
+
+pub fn reject_pending_deferred(
+    data_root: &Path,
+    root: &Path,
+    reason: &str,
+    reviewer: &str,
+    username: &str,
+    deferred: (String, u64),
+) -> AppResult<Option<ReviewState>> {
+    let session: Value = machine_annotation::read_bytes(&root.join("session.json"))?
+        .map(|bytes| serde_json::from_slice(&bytes))
+        .transpose()?
+        .unwrap_or_else(|| json!({}));
+    let expected = deferred.0.replace('-', "");
+    if session["revision"]
+        .as_str()
+        .is_some_and(|label| label.split(" · ").next() == Some(expected.as_str()))
+        && session["reviewerUsername"] == username
+        && session["qc"] == format!("不通过：{reason}")
+    {
+        return Ok(Some(serde_json::from_value(
+            json!({"sourceHash":"", "revision":0,"segments":[],"published":true,"outputHash":null,"updatedAtMs":deferred.1,"reviewer":reviewer,"reviewerUsername":username,"status":"rejected","rejectionReason":reason,"versionId":expected,"revisionLabel":session["revision"]}),
+        )?));
+    }
+    reject_pending_mode(data_root, root, reason, reviewer, username, Some(deferred))
+}
+
+fn reject_pending_mode(
+    data_root: &Path,
+    root: &Path,
+    reason: &str,
+    reviewer: &str,
+    username: &str,
+    deferred: Option<(String, u64)>,
+) -> AppResult<Option<ReviewState>> {
     let reason = validated_rejection_reason("rejected", Some(reason))?;
     if !pending_qc(root)? {
         return Ok(None);
@@ -1040,17 +1134,26 @@ pub fn reject_pending_for_user(
     // An unreadable annotation or capture can still receive a QC-only rejection.
     let annotation = machine_annotation::load_for_review(root, None).unwrap_or(None);
     let Some(annotation) = annotation else {
-        return reject_pending_without_media(root, &reason, reviewer, username);
+        return reject_pending_without_media(root, &reason, reviewer, username, deferred);
     };
     let current = match load_selected(data_root, root, Some(&annotation.source_name)) {
         Ok(current) => current,
-        Err(_) => return reject_pending_without_media(root, &reason, reviewer, username),
+        Err(_) => return reject_pending_without_media(root, &reason, reviewer, username, deferred),
     };
-    if current.output_hash.is_some() && current.status != "pending" {
+    let own_partial = deferred.as_ref().is_some_and(|(id, _)| {
+        current.version_id == id.replace('-', "")
+            && current.reviewer_username == username
+            && current.status == "rejected"
+            && current.rejection_reason == reason
+    });
+    if current.output_hash.is_some() && current.status != "pending" && !own_partial {
         return Ok(None);
     }
     let snapshot = PendingReviewSnapshot {
         output_hash: current.output_hash.clone(),
+        only_pending: true,
+        qc_content_hash: None,
+        deferred,
     };
     let result = save_for_user_mode(
         data_root,
@@ -1066,6 +1169,7 @@ pub fn reject_pending_for_user(
         reviewer,
         username,
         Some(snapshot),
+        None,
     );
     match result {
         Err(AppError::Message(message)) if message == "BATCH_REVIEW_SKIPPED" => Ok(None),
@@ -1081,6 +1185,7 @@ fn reject_pending_without_media(
     reason: &str,
     reviewer: &str,
     username: &str,
+    deferred: Option<(String, u64)>,
 ) -> AppResult<Option<ReviewState>> {
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
     let root = root.canonicalize()?;
@@ -1110,13 +1215,18 @@ fn reject_pending_without_media(
     }
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).map_err(|_| failure("无法生成唯一质检版本号"))?;
-    let version_id: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    let version_id: String = deferred
+        .as_ref()
+        .map(|(id, _)| id.replace('-', ""))
+        .unwrap_or_else(|| nonce.iter().map(|byte| format!("{byte:02x}")).collect());
     let revision = 1;
     let revision_label = format!("{version_id} · 媒体不可用；不通过");
-    let updated_at_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let updated_at_ms = deferred.as_ref().map(|(_, time)| *time).unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    });
     session["qc"] = json!(format!("不通过：{reason}"));
     session["revision"] = json!(&revision_label);
     session["appVersion"] = json!(env!("CARGO_PKG_VERSION"));
@@ -1172,6 +1282,69 @@ fn reject_pending_without_media(
 
 struct PendingReviewSnapshot {
     output_hash: Option<String>,
+    only_pending: bool,
+    qc_content_hash: Option<String>,
+    deferred: Option<(String, u64)>,
+}
+
+pub fn publish_deferred_for_user(
+    data_root: &Path,
+    mut request: SaveReviewRequest,
+    mut output_hash: Option<String>,
+    qc_content_hash: Option<String>,
+    reviewer: &str,
+    username: &str,
+    deferred: (String, u64),
+) -> AppResult<ReviewState> {
+    // If the source commit succeeded but local queue acknowledgement failed,
+    // acknowledge that same result without changing its revision or time again.
+    let current = load_selected(
+        data_root,
+        Path::new(&request.source_path),
+        request.source_name.as_deref(),
+    )?;
+    let status = request.status.as_deref().unwrap_or("pending");
+    if current.output_hash.is_some()
+        && current.version_id == deferred.0.replace('-', "")
+        && current.source_hash == request.source_hash
+        && current.reviewer_username == username
+        && current.status == status
+        && current.rejection_reason == request.rejection_reason.clone().unwrap_or_default()
+        && current.segments.len() == request.segments.len()
+        && current
+            .segments
+            .iter()
+            .zip(&request.segments)
+            .all(|(a, b)| {
+                a.source_index == b.source_index
+                    && a.start_frame == b.start_frame
+                    && a.end_frame == b.end_frame
+                    && a.description == b.description
+                    && a.deleted == b.deleted
+            })
+    {
+        let qc = view_for_root(Path::new(&request.source_path), current.clone());
+        if qc.qc_status == current.status {
+            return Ok(current);
+        }
+        // Own description committed before QC failed: finish only if the
+        // original QC baseline is still unchanged under the shared lock.
+        request.expected_revision = current.revision;
+        output_hash = current.output_hash.clone();
+    }
+    save_for_user_mode(
+        data_root,
+        request,
+        reviewer,
+        username,
+        Some(PendingReviewSnapshot {
+            output_hash,
+            only_pending: false,
+            qc_content_hash,
+            deferred: Some(deferred),
+        }),
+        None,
+    )
 }
 
 fn save_for_user_mode(
@@ -1180,8 +1353,14 @@ fn save_for_user_mode(
     reviewer: &str,
     username: &str,
     pending_snapshot: Option<PendingReviewSnapshot>,
+    commit_event: Option<(String, u64)>,
 ) -> AppResult<ReviewState> {
-    let only_pending = pending_snapshot.is_some();
+    let commit_event =
+        commit_event.or_else(|| pending_snapshot.as_ref().and_then(|s| s.deferred.clone()));
+    let guarded = pending_snapshot.is_some();
+    let only_pending = pending_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.only_pending);
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
     let root = Path::new(&request.source_path).canonicalize()?;
     let annotation = machine_annotation::load_for_review(
@@ -1207,6 +1386,18 @@ fn save_for_user_mode(
     let output = output_name(&annotation);
     let lock_path = write_root.join(format!(".{}.lock", output.trim_end_matches(".json")));
     let _output_lock = lock_file(&lock_path)?;
+    if let Some(snapshot) = pending_snapshot
+        .as_ref()
+        .filter(|snapshot| !snapshot.only_pending)
+    {
+        let current_qc = machine_annotation::read_bytes(&write_root.join("session.json"))?
+            .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
+        if snapshot.qc_content_hash != current_qc {
+            return Err(failure(
+                "共享目录 QC 或采集记录已改变，本机待写结果已保留，请打开数据核对；未覆盖",
+            ));
+        }
+    }
     if only_pending && !pending_qc(&write_root)? {
         return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
     }
@@ -1218,7 +1409,15 @@ fn save_for_user_mode(
     {
         return Err(failure("描述已由管理员勘误，请重新读取后继续审核"));
     }
-    if only_pending && current.output_hash.is_some() && current.status != "pending" {
+    let own_partial = commit_event.as_ref().is_some_and(|(id, _)| {
+        current.version_id == id.replace('-', "")
+            && current.reviewer_username == username
+            && current.status == "rejected"
+            && request.status.as_deref() == Some("rejected")
+            && Some(current.rejection_reason.as_str()) == request.rejection_reason.as_deref()
+    });
+    if only_pending && current.output_hash.is_some() && current.status != "pending" && !own_partial
+    {
         return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
     }
     let previous_draft = machine_annotation::read_bytes(&draft)?
@@ -1240,8 +1439,12 @@ fn save_for_user_mode(
                 .as_ref()
                 .is_some_and(|saved| saved.output_hash != current.output_hash),
         };
-    if only_pending && rebased {
-        return Err(failure("审核内容已改变，请刷新后重试，未批量覆盖"));
+    if guarded && rebased {
+        return Err(failure(if only_pending {
+            "审核内容已改变，请刷新后重试，未批量覆盖"
+        } else {
+            "审核内容已改变，本机待写记录已保留；请重新读取并核对，未覆盖共享结果"
+        }));
     }
     if rebased {
         // Preserve the displaced shared result before accepting the operator's snapshot.
@@ -1270,7 +1473,10 @@ fn save_for_user_mode(
     }
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).map_err(|_| failure("无法生成唯一质检版本号"))?;
-    let version_id: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    let version_id: String = commit_event
+        .as_ref()
+        .map(|(id, _)| id.replace('-', ""))
+        .unwrap_or_else(|| nonce.iter().map(|byte| format!("{byte:02x}")).collect());
     let expected_output_hash = if current.workflow_version >= 2 {
         current.output_hash.clone()
     } else {
@@ -1305,10 +1511,15 @@ fn save_for_user_mode(
         published: true,
         reviewer: reviewer.into(),
         reviewer_username: username.into(),
-        updated_at_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64,
+        updated_at_ms: commit_event
+            .as_ref()
+            .map(|(_, time)| *time)
+            .unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64
+            }),
         ..current
     };
     if state.published {
@@ -1559,7 +1770,9 @@ pub(crate) fn lock_file(path: &Path) -> AppResult<fs::File> {
         use std::os::windows::fs::OpenOptionsExt;
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let file = options.open(path)?;
+    let file = options
+        .open(path)
+        .map_err(|error| review_write_error(path, error))?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(failure("复核锁必须是普通文件"));
@@ -1606,6 +1819,25 @@ pub fn is_review_path(root: &Path, path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn save_io_errors_distinguish_full_permissions_timeout_and_unknown() {
+        for (kind, code) in [
+            (std::io::ErrorKind::StorageFull, "REVIEW_STORAGE_FULL"),
+            (
+                std::io::ErrorKind::PermissionDenied,
+                "REVIEW_STORAGE_PERMISSION_DENIED",
+            ),
+            (std::io::ErrorKind::TimedOut, "REVIEW_STORAGE_TIMEOUT"),
+            (std::io::ErrorKind::Other, "REVIEW_STORAGE_WRITE_FAILED"),
+        ] {
+            let error =
+                review_write_error(Path::new("test/description.json"), kind.into()).to_string();
+            assert!(error.contains(code));
+            assert!(error.contains("test/description.json"));
+            assert!(error.contains("未确认审核保存成功"));
+        }
+    }
 
     #[test]
     fn inferred_end_is_written_to_human_annotations_and_mirrors_only() {
@@ -1754,7 +1986,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            reject_pending_without_media(&f.root, "无效数据", "Reviewer", "alice")
+            reject_pending_without_media(&f.root, "无效数据", "Reviewer", "alice", None)
                 .unwrap()
                 .is_none()
         );
@@ -1958,6 +2190,9 @@ mod tests {
             let state = load(&f.local, &f.root).unwrap();
             let snapshot = PendingReviewSnapshot {
                 output_hash: state.output_hash.clone(),
+                only_pending: true,
+                qc_content_hash: None,
+                deferred: None,
             };
             if changed_source {
                 let mut machine: Value = serde_json::from_slice(&f.original).unwrap();
@@ -1990,6 +2225,7 @@ mod tests {
                 "Reviewer",
                 "alice",
                 Some(snapshot),
+                None,
             );
             assert!(result.unwrap_err().to_string().contains("审核内容已改变"));
             assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), output);
@@ -2021,7 +2257,11 @@ mod tests {
             "alice",
             Some(PendingReviewSnapshot {
                 output_hash: state.output_hash,
+                only_pending: true,
+                qc_content_hash: None,
+                deferred: None,
             }),
+            None,
         );
         assert!(result
             .unwrap_err()
@@ -2126,6 +2366,339 @@ mod tests {
             Some(machine_annotation::DEFAULT_SOURCE)
         )
         .is_err());
+    }
+
+    #[test]
+    fn deferred_result_survives_restart_accounts_conflicts_and_idempotent_writeback() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        fs::write(
+            f.root.join("session.json"),
+            r#"{"qc":"待审核","capture":"keep"}"#.as_bytes(),
+        )
+        .unwrap();
+        let state = load(&f.local, &f.root).unwrap();
+        let view = view_for_root(&f.root, state.clone());
+        let user = crate::model::UserIdentity {
+            username: "alice".into(),
+            display_name: "审核甲".into(),
+            role: Some("operator".into()),
+        };
+        let event = json!({"eventId":"11111111-1111-4111-8111-111111111111","sessionId":"22222222-2222-4222-8222-222222222222","episodeKey":"a".repeat(64),"episodeName":"sample","action":"approved","occurredAtMs":1792548000000u64,"elapsedMs":1000,"details":{}});
+        let entry = queue::DeferredReview {
+            request: SaveReviewRequest {
+                source_path: f.root.to_string_lossy().into(),
+                source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+                source_hash: state.source_hash.clone(),
+                expected_revision: state.revision,
+                segments: state.segments.clone(),
+                status: Some("approved".into()),
+                rejection_reason: None,
+            },
+            output_hash: state.output_hash,
+            qc_content_hash: view.qc_content_hash,
+            only_pending: false,
+            audit: event.clone(),
+            error: "REVIEW_STORAGE_FULL".into(),
+            created_at_ms: 0,
+        };
+        queue::store(&f.local, "service", &user.username, entry.clone()).unwrap();
+        assert!(!f.root.join(OUTPUT).exists());
+        assert_eq!(queue::list(&f.local, "service", "bob").unwrap().len(), 0);
+        assert_eq!(
+            queue::list(&f.local, "different-service", "alice")
+                .unwrap()
+                .len(),
+            0
+        );
+        let restored = queue::get(
+            &f.local,
+            "service",
+            "alice",
+            &entry.request.source_path,
+            entry.request.source_name.as_deref(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(restored.audit, event);
+        assert!(queue::local_view(&restored, &user, None).pending_source_write);
+        assert!(!queue::local_view(&restored, &user, None).review.published);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let full = queue::publish_with_probe(&f.local, "service", &user, &cancel, &|_| {
+            Err(failure("REVIEW_STORAGE_FULL"))
+        })
+        .unwrap();
+        assert_eq!((full.written, full.remaining), (0, 1));
+        assert!(!f.root.join(OUTPUT).exists());
+        fs::write(
+            f.root.join("session.json"),
+            r#"{"qc":"通过","capture":"keep"}"#.as_bytes(),
+        )
+        .unwrap();
+        let conflict =
+            queue::publish_with_probe(&f.local, "service", &user, &cancel, &|_| Ok(())).unwrap();
+        assert_eq!((conflict.written, conflict.remaining), (0, 1));
+        assert!(conflict.errors[0].contains("已改变"));
+        assert!(!f.root.join(OUTPUT).exists());
+        fs::write(
+            f.root.join("session.json"),
+            r#"{"qc":"待审核","capture":"keep"}"#.as_bytes(),
+        )
+        .unwrap();
+        let published =
+            queue::publish_with_probe(&f.local, "service", &user, &cancel, &|_| Ok(())).unwrap();
+        assert_eq!((published.written, published.remaining), (1, 0));
+        let shared_before = fs::read(f.root.join(OUTPUT)).unwrap();
+        let session_before = fs::read(f.root.join("session.json")).unwrap();
+        let doc: Value = serde_json::from_slice(&session_before).unwrap();
+        assert_eq!(doc["qc"], "通过");
+        assert_eq!(doc["capture"], "keep");
+        let saved = load(&f.local, &f.root).unwrap();
+        assert_eq!(saved.updated_at_ms, 1792548000000u64);
+        assert_eq!(saved.version_id, "11111111111141118111111111111111");
+        let events = crate::review_outbox::batch(&f.local, "service", "alice", false).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["eventId"], event["eventId"]);
+        assert_eq!(events[0]["occurredAtMs"], event["occurredAtMs"]);
+        // Emulate source success before queue removal: same event must not save again.
+        queue::store(&f.local, "service", "alice", entry).unwrap();
+        let retried =
+            queue::publish_with_probe(&f.local, "service", &user, &cancel, &|_| Ok(())).unwrap();
+        assert_eq!((retried.written, retried.remaining), (1, 0));
+        assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), shared_before);
+        assert_eq!(
+            fs::read(f.root.join("session.json")).unwrap(),
+            session_before
+        );
+        assert_eq!(
+            crate::review_outbox::batch(&f.local, "service", "alice", false)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            f.original
+        );
+    }
+
+    #[test]
+    fn deferred_partial_initial_commit_finishes_qc_with_original_identity() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        fs::write(
+            f.root.join("session.json"),
+            br#"{"qc":"pending","capture":"keep"}"#,
+        )
+        .unwrap();
+        let session = fs::read(f.root.join("session.json")).unwrap();
+        let initial = load(&f.local, &f.root).unwrap();
+        let view = view_for_root(&f.root, initial.clone());
+        let request = SaveReviewRequest {
+            source_path: f.root.to_string_lossy().into(),
+            source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+            source_hash: initial.source_hash,
+            expected_revision: initial.revision,
+            segments: initial.segments,
+            status: Some("approved".into()),
+            rejection_reason: None,
+        };
+        let id = "33333333-3333-4333-8333-333333333333";
+        let time = 1792548000000u64;
+        let saved = save_with_event_for_user(
+            &f.local,
+            request.clone(),
+            "甲",
+            "alice",
+            Some((id.into(), time)),
+        )
+        .unwrap();
+        assert_eq!(saved.version_id, id.replace('-', ""));
+        // Isolate the state after description commit but before QC commit.
+        fs::write(f.root.join("session.json"), session).unwrap();
+        queue::store(
+            &f.local,
+            "s",
+            "alice",
+            queue::DeferredReview {
+                request,
+                output_hash: initial.output_hash,
+                qc_content_hash: view.qc_content_hash,
+                only_pending: false,
+                audit: json!({"eventId":id,"action":"approved","occurredAtMs":time,"details":{}}),
+                error: "REVIEW_STORAGE_FULL".into(),
+                created_at_ms: 0,
+            },
+        )
+        .unwrap();
+        let user = crate::model::UserIdentity {
+            username: "alice".into(),
+            display_name: "甲".into(),
+            role: Some("operator".into()),
+        };
+        let result = queue::publish_with_probe(
+            &f.local,
+            "s",
+            &user,
+            &std::sync::atomic::AtomicBool::new(false),
+            &|_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!((result.written, result.remaining), (1, 0));
+        let confirmed = load(&f.local, &f.root).unwrap();
+        assert_eq!(confirmed.updated_at_ms, time);
+        assert_eq!(confirmed.version_id, id.replace('-', ""));
+        assert_eq!(view_for_root(&f.root, confirmed).qc_status, "approved");
+    }
+
+    #[test]
+    fn deferred_edits_keep_first_baseline_and_preserve_displaced_local_results() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        let state = load(&f.local, &f.root).unwrap();
+        let mut entry = queue::DeferredReview {
+            request: SaveReviewRequest {
+                source_path: f.root.to_string_lossy().into(),
+                source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+                source_hash: state.source_hash.clone(),
+                expected_revision: 0,
+                segments: state.segments,
+                status: Some("pending".into()),
+                rejection_reason: None,
+            },
+            output_hash: None,
+            qc_content_hash: None,
+            only_pending: false,
+            audit: json!({"eventId":"11111111-1111-4111-8111-111111111111","action":"saved","occurredAtMs":1792548000000u64,"details":{}}),
+            error: "full".into(),
+            created_at_ms: 0,
+        };
+        queue::store(&f.local, "s", "alice", entry.clone()).unwrap();
+        entry.output_hash = Some("untrusted later baseline".into());
+        entry.request.expected_revision = 100;
+        entry.request.source_hash = "changed".into();
+        entry.request.segments[0].description = "第二次本机修改".into();
+        entry.audit["eventId"] = json!("22222222-2222-4222-8222-222222222222");
+        queue::store(&f.local, "s", "alice", entry.clone()).unwrap();
+        let rows = queue::list(&f.local, "s", "alice").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].request.expected_revision, 0);
+        assert_eq!(rows[0].request.source_hash, state.source_hash);
+        assert_eq!(rows[0].output_hash, None);
+        assert_eq!(rows[0].request.segments[0].description, "第二次本机修改");
+        let db = crate::review_outbox::open(&f.local).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM source_review_history", [], |row| row
+                .get::<_, u64>(
+                0
+            ))
+            .unwrap(),
+            1
+        );
+        let bad = f.temp.join("not-directory");
+        fs::write(&bad, b"keep").unwrap();
+        assert!(queue::store(&bad, "s", "alice", entry).is_err());
+        assert_eq!(queue::list(&f.local, "s", "alice").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deferred_batch_resumes_own_partial_description_but_preserves_other_decisions() {
+        let f = Fixture::new(0, true);
+        fs::write(f.root.join("session.json"), r#"{"qc":"待审核"}"#.as_bytes()).unwrap();
+        let session = fs::read(f.root.join("session.json")).unwrap();
+        let current = load(&f.local, &f.root).unwrap();
+        let id = "44444444-4444-4444-8444-444444444444";
+        let time = 1792548000000u64;
+        let event = (id.to_string(), time);
+        save_with_event_for_user(
+            &f.local,
+            SaveReviewRequest {
+                source_path: f.root.to_string_lossy().into(),
+                source_name: None,
+                source_hash: current.source_hash,
+                expected_revision: current.revision,
+                segments: current.segments,
+                status: Some("rejected".into()),
+                rejection_reason: Some("动作失范".into()),
+            },
+            "甲",
+            "alice",
+            Some(event.clone()),
+        )
+        .unwrap();
+        fs::write(f.root.join("session.json"), session).unwrap();
+        let saved =
+            reject_pending_deferred(&f.local, &f.root, "动作失范", "甲", "alice", event.clone())
+                .unwrap()
+                .unwrap();
+        assert_eq!(saved.version_id, id.replace('-', ""));
+        assert_eq!(saved.updated_at_ms, time);
+        assert_eq!(view_for_root(&f.root, saved).qc_status, "rejected");
+        fs::write(f.root.join("session.json"), r#"{"qc":"通过"}"#.as_bytes()).unwrap();
+        assert!(
+            reject_pending_deferred(&f.local, &f.root, "动作失范", "甲", "alice", event)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            fs::read(f.root.join("session.json")).unwrap(),
+            r#"{"qc":"通过"}"#.as_bytes()
+        );
+    }
+
+    #[test]
+    fn deferred_batch_rejection_is_idempotent_and_never_overwrites_completed_qc() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        fs::remove_file(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap();
+        fs::write(
+            f.root.join("session.json"),
+            r#"{"qc":"待审核","capture":"keep"}"#.as_bytes(),
+        )
+        .unwrap();
+        let user = crate::model::UserIdentity {
+            username: "alice".into(),
+            display_name: "甲".into(),
+            role: Some("operator".into()),
+        };
+        let entry = queue::DeferredReview {
+            request: SaveReviewRequest {
+                source_path: f.root.to_string_lossy().into(),
+                source_name: None,
+                source_hash: String::new(),
+                expected_revision: 0,
+                segments: vec![],
+                status: Some("rejected".into()),
+                rejection_reason: Some("动作失范".into()),
+            },
+            output_hash: None,
+            qc_content_hash: None,
+            only_pending: true,
+            audit: json!({"eventId":"11111111-1111-4111-8111-111111111111","action":"rejected","occurredAtMs":1792548000000u64,"details":{}}),
+            error: "full".into(),
+            created_at_ms: 0,
+        };
+        queue::store(&f.local, "s", "alice", entry.clone()).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let result = queue::publish_with_probe(&f.local, "s", &user, &cancel, &|_| Ok(())).unwrap();
+        assert_eq!(result.written, 1);
+        let before = fs::read(f.root.join("session.json")).unwrap();
+        queue::store(&f.local, "s", "alice", entry.clone()).unwrap();
+        assert_eq!(
+            queue::publish_with_probe(&f.local, "s", &user, &cancel, &|_| Ok(()))
+                .unwrap()
+                .written,
+            1
+        );
+        assert_eq!(fs::read(f.root.join("session.json")).unwrap(), before);
+        fs::write(f.root.join("session.json"), r#"{"qc":"通过"}"#.as_bytes()).unwrap();
+        queue::store(&f.local, "s", "alice", entry).unwrap();
+        let result = queue::publish_with_probe(&f.local, "s", &user, &cancel, &|_| Ok(())).unwrap();
+        assert_eq!((result.written, result.remaining), (0, 1));
+        assert_eq!(
+            fs::read(f.root.join("session.json")).unwrap(),
+            r#"{"qc":"通过"}"#.as_bytes()
+        );
     }
 
     struct Fixture {

@@ -40,7 +40,7 @@ fn database_error(error: impl std::fmt::Display) -> AppError {
     AppError::Message(format!("REVIEW_OUTBOX_STORAGE: {error}"))
 }
 
-fn open(root: &Path) -> AppResult<Connection> {
+pub(crate) fn open(root: &Path) -> AppResult<Connection> {
     let directory = root.join("review-outbox");
     fs::create_dir_all(&directory)?;
     let metadata = fs::symlink_metadata(&directory)?;
