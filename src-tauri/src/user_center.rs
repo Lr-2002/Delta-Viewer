@@ -304,6 +304,17 @@ pub async fn record_annotation_audit(
     Ok(())
 }
 
+pub(crate) fn source_review_owner(
+    data_root: &Path,
+    state: &AuthState,
+) -> AppResult<(UserIdentity, String)> {
+    let user = state.require_managed_user()?;
+    if user.role.as_deref() != Some("operator") {
+        return Err(AppError::Message("REVIEWER_REQUIRED".into()));
+    }
+    Ok((user, load_config(data_root)?.service_id))
+}
+
 pub(crate) fn check_review_owner(
     data_root: &Path,
     state: &AuthState,

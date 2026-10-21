@@ -35,8 +35,14 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
           return {sourceRoot:'/source/batch',tree:{name:'batch',relativePath:'',session:false,incomplete:false,children:[1,2,3,4].map(i=>({name:'session-'+i,relativePath:String(i),session:true,status:i===2?'approved':i===4?'error':'pending',incomplete:false,children:[]}))}};
         }
         if(command==='cancel_task') return true;
+        if(command==='defer_machine_review') {
+          window.fixture.local ??= [];window.fixture.local.push(args.entry);
+          return {pendingSourceWrite:true,status:'rejected'};
+        }
         if(command==='reject_pending_machine_review') {
           window.fixture.calls.push(args);
+          if(window.fixture.full) throw Error('REVIEW_STORAGE_FULL: NAS 空间不足');
+          if(window.fixture.existing) throw Error('SOURCE_REVIEW_EXISTS: 已有本机待写结果');
           if(window.fixture.delay) await new Promise(resolve=>window.fixture.finish=resolve);
           if(args.sourcePath.endsWith('/2')) return null;
           if(args.sourcePath.endsWith('/3')) throw Error('目录只读，未保存');
@@ -62,7 +68,7 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
     assert.equal(await page.locator('dialog').evaluate(el=>el.scrollWidth<=el.clientWidth),true);
     await page.screenshot({path:'artifacts/batch-rejection/mobile.png'});
     await confirm.evaluate(button=>{button.click();button.click();});
-    await page.getByText('成功 1 · 跳过 1 · 失败 1 · 未执行 0',{exact:true}).waitFor();
+    await page.getByText('成功 1 · 本机待写 0 · 跳过 1 · 失败 1 · 未执行 0',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>window.fixture.calls.length),3);
     assert.equal(await page.evaluate(()=>window.fixture.audit.filter(e=>e.action==='rejected').length),1);
     assert.equal(await page.evaluate(()=>window.fixture.audit[0].details.reason),'其他原因：轨迹不动，统一检查确认无效');
@@ -73,14 +79,26 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
     await page.waitForFunction(()=>typeof window.fixture.finish==='function');
     await page.getByRole('button',{name:'停止',exact:true}).click();
     await page.evaluate(()=>window.fixture.finish());
-    await page.getByText('成功 1 · 跳过 0 · 失败 0 · 未执行 2',{exact:true}).waitFor();
+    await page.getByText('成功 1 · 本机待写 0 · 跳过 0 · 失败 0 · 未执行 2',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>window.fixture.calls.length),1);
     await page.getByRole('button',{name:'完成',exact:true}).click();
     await page.evaluate(()=>{window.fixture.delay=false;window.fixture.calls=[];window.showBatch(true);});
     await page.getByText('待处理 2 条 · 已排除已审核或异常数据 2 条',{exact:true}).waitFor();
     await reason.fill('任务不符');await acknowledge.check();await confirm.click();
-    await page.getByText('成功 1 · 跳过 0 · 失败 1 · 未执行 0',{exact:true}).waitFor();
+    await page.getByText('成功 1 · 本机待写 0 · 跳过 0 · 失败 1 · 未执行 0',{exact:true}).waitFor();
     assert.deepEqual(await page.evaluate(()=>window.fixture.calls.map(c=>c.sourcePath)),['/source/batch/1','/source/batch/3']);
+    await page.getByRole('button',{name:'完成',exact:true}).click();
+    await page.evaluate(()=>{window.fixture.full=true;window.fixture.saved=[];window.fixture.audit=[];window.showBatch();});
+    await reason.fill('无效数据');await acknowledge.check();await confirm.click();
+    await page.getByText('成功 0 · 本机待写 3 · 跳过 0 · 失败 0 · 未执行 0',{exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>window.fixture.local.length),3);
+    assert.equal(await page.evaluate(()=>window.fixture.saved.length),0);
+    assert.equal(await page.evaluate(()=>window.fixture.audit.filter(e=>e.action==='rejected').length),0);
+    await page.getByRole('button',{name:'完成',exact:true}).click();
+    await page.evaluate(()=>{window.fixture.full=false;window.fixture.existing=true;window.showBatch();});
+    await reason.fill('无效数据');await acknowledge.check();await confirm.click();
+    await page.getByText('成功 0 · 本机待写 0 · 跳过 0 · 失败 3 · 未执行 0',{exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>window.fixture.local.length),3,'existing local results cannot be overwritten by repeat batch');
     await page.getByRole('button',{name:'完成',exact:true}).click();
     await page.evaluate(()=>{window.fixture.scanError=true;window.showBatch(true);});
     await page.getByRole('alert').waitFor();

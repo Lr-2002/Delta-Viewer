@@ -21,6 +21,7 @@ mod skeleton;
 mod source;
 mod source_index_cache;
 mod source_path_probe;
+mod source_review_queue;
 mod storage;
 pub mod stress;
 mod supervision;
@@ -172,6 +173,20 @@ async fn ensure_source_directory_responsive(path: &str) -> Result<(), String> {
     let path = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
         source_path_probe::ensure_directory_responsive(&path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+pub fn run_review_storage_probe_if_requested() {
+    source_path_probe::run_review_probe_if_requested();
+}
+
+async fn ensure_review_storage_responsive(path: &str) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    tauri::async_runtime::spawn_blocking(move || {
+        source_path_probe::ensure_review_storage_responsive(&path)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1108,10 +1123,27 @@ async fn load_machine_review(
 ) -> Result<machine_review::ReviewView, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
+    let owner = user_center::source_review_owner(&data_root, auth.inner()).ok();
     ensure_source_directory_responsive(&source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
-        machine_review::load_selected(&data_root, Path::new(&source_path), source_name.as_deref())
-            .map(|state| machine_review::view_for_root(Path::new(&source_path), state))
+        let view = machine_review::load_selected(
+            &data_root,
+            Path::new(&source_path),
+            source_name.as_deref(),
+        )
+        .map(|state| machine_review::view_for_root(Path::new(&source_path), state))?;
+        if let Some((user, service)) = owner {
+            if let Some(entry) = source_review_queue::get(
+                &data_root,
+                &service,
+                &user.username,
+                &source_path,
+                source_name.as_deref(),
+            )? {
+                return Ok(source_review_queue::local_view(&entry, &user, Some(view)));
+            }
+        }
+        Ok::<_, error::AppError>(view)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1123,20 +1155,106 @@ async fn save_machine_review(
     app: AppHandle,
     auth: State<'_, AuthState>,
     request: machine_review::SaveReviewRequest,
+    commit_event: Option<(String, u64)>,
 ) -> Result<machine_review::ReviewView, String> {
     let user = auth
         .require_managed_user()
         .map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
-    ensure_source_directory_responsive(&request.source_path).await?;
+    let (_, service) =
+        user_center::source_review_owner(&data_root, auth.inner()).map_err(|e| e.to_string())?;
+    let existing = {
+        let (root, name, data, username) = (
+            request.source_path.clone(),
+            request.source_name.clone(),
+            data_root.clone(),
+            user.username.clone(),
+        );
+        let service = service.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let entry = source_review_queue::get(&data, &service, &username, &root, name.as_deref())?;
+            if entry.is_none() && source_review_queue::contains_path(&data, &service, &username, &root)? {
+                return Err(error::AppError::Message("SOURCE_REVIEW_EXISTS: 此数据有另一来源或批量待写结果，请先在待写回提示中确认处理".into()));
+            }
+            Ok(entry)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?
+    };
+    if existing.is_some() {
+        return Err(
+            "SOURCE_REVIEW_DEFERRED: 此数据有本机待写结果，继续保存到本机，等待确认写回".into(),
+        );
+    }
+    ensure_review_storage_responsive(&request.source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let root = std::path::PathBuf::from(&request.source_path);
-        machine_review::save_for_user(&data_root, request, &user.display_name, &user.username)
-            .map(|state| machine_review::view_for_root(&root, state))
+        machine_review::save_with_event_for_user(
+            &data_root,
+            request,
+            &user.display_name,
+            &user.username,
+            commit_event,
+        )
+        .map(|state| machine_review::view_for_root(&root, state))
     })
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn defer_machine_review(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    entry: source_review_queue::DeferredReview,
+) -> Result<machine_review::ReviewView, String> {
+    let data = app_data_root(&app)?;
+    let (user, service) =
+        user_center::source_review_owner(&data, auth.inner()).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        source_review_queue::store(&data, &service, &user.username, entry)
+            .map(|saved| source_review_queue::local_view(&saved, &user, None))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn get_pending_source_reviews(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    check_storage: bool,
+) -> Result<source_review_queue::PendingStatus, String> {
+    let data = app_data_root(&app)?;
+    let (user, service) =
+        user_center::source_review_owner(&data, auth.inner()).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        source_review_queue::status(&data, &service, &user.username, check_storage)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn publish_pending_source_reviews(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    operation_id: u64,
+) -> Result<source_review_queue::PublishResult, String> {
+    let data = app_data_root(&app)?;
+    let (user, service) =
+        user_center::source_review_owner(&data, auth.inner()).map_err(|e| e.to_string())?;
+    let task = control.start(operation_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = &task;
+        source_review_queue::publish(&data, &service, &user, &task.cancelled())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1291,6 +1409,7 @@ async fn reject_pending_machine_review(
     source_path: String,
     reason: String,
     operation_id: u64,
+    commit_event: Option<(String, u64)>,
 ) -> Result<Option<machine_review::ReviewState>, String> {
     let user = auth
         .require_managed_user()
@@ -1300,9 +1419,32 @@ async fn reject_pending_machine_review(
     }
     let task = control.start(operation_id)?;
     let data_root = app_data_root(&app)?;
-    ensure_source_directory_responsive(&source_path).await?;
+    let (_, service) =
+        user_center::source_review_owner(&data_root, auth.inner()).map_err(|e| e.to_string())?;
+    let (data, path, username) = (
+        data_root.clone(),
+        source_path.clone(),
+        user.username.clone(),
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        if source_review_queue::contains_path(&data, &service, &username, &path)? {
+            return Err(error::AppError::Message("SOURCE_REVIEW_EXISTS: 本机已有该数据的待写结果，请在待写回提示中确认处理，未重复不通过".into()));
+        }
+        Ok::<_, error::AppError>(())
+    }).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    ensure_review_storage_responsive(&source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
+        if let Some(event) = commit_event {
+            return machine_review::reject_pending_deferred(
+                &data_root,
+                Path::new(&source_path),
+                &reason,
+                &user.display_name,
+                &user.username,
+                event,
+            );
+        }
         machine_review::reject_pending_for_user(
             &data_root,
             Path::new(&source_path),
@@ -2038,6 +2180,9 @@ pub fn run() {
             list_machine_annotation_sources,
             load_machine_review,
             save_machine_review,
+            defer_machine_review,
+            get_pending_source_reviews,
+            publish_pending_source_reviews,
             scan_description_issues,
             apply_description_corrections,
             get_text_policy,

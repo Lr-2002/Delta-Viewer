@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { rejectPendingMachineReview } from "../lib/backend";
 import { AlertTriangle, LoaderCircle, Square, X } from "lucide-react";
 import { cancelTaskCenterScan, scanTaskCenter, type TaskNode } from "../lib/task-center";
 import { recordBatchRejection } from "../lib/review-audit";
-import type { MachineReview } from "../types";
 
 export interface RejectionTarget { path: string; name: string }
 interface Props {
@@ -12,7 +11,7 @@ interface Props {
   onSaved: (path: string) => void;
   onClose: () => void;
 }
-type Result = RejectionTarget & { status: "rejected" | "skipped" | "failed"; message: string };
+type Result = RejectionTarget & { status: "rejected" | "local" | "skipped" | "failed"; message: string };
 
 export function BatchRejectionDialog({ folder, selected, onSaved, onClose }: Props) {
   const [targets, setTargets] = useState<RejectionTarget[]>(selected ?? []);
@@ -65,8 +64,9 @@ export function BatchRejectionDialog({ folder, selected, onSaved, onClose }: Pro
       setProgress(target.name);
       const started = performance.now();
       try {
-        const result = await invoke<MachineReview | null>("reject_pending_machine_review", { sourcePath: target.path, reason: savedReason, operationId: Date.now() });
+        const result = await rejectPendingMachineReview(target.path, target.name, savedReason, Math.max(0, Math.round(performance.now() - started)));
         if (!result) completed.push({...target, status:"skipped", message:"已审核，未修改"});
+        else if (result.pendingSourceWrite) completed.push({...target, status:"local", message:"已保存本机，待确认写回 NAS；任务进度暂不增加"});
         else {
           completed.push({...target, status:"rejected", message:"已保存不通过"});
           onSaved(target.path);
@@ -81,6 +81,7 @@ export function BatchRejectionDialog({ folder, selected, onSaved, onClose }: Pro
   const success = results.filter(item => item.status === "rejected").length;
   const skipped = results.filter(item => item.status === "skipped").length;
   const failed = results.filter(item => item.status === "failed").length;
+  const local = results.filter(item => item.status === "local").length;
   return <dialog className="batch-rejection-dialog rejection-dialog" aria-labelledby="batch-rejection-title"
     ref={node => { if (node && !node.open) node.showModal(); }} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
     <form onSubmit={event => { event.preventDefault(); void submit(); }}>
@@ -91,7 +92,7 @@ export function BatchRejectionDialog({ folder, selected, onSaved, onClose }: Pro
       <label className="rejection-detail">不通过原因<textarea aria-label="批量不通过原因" required maxLength={1000} value={reason} disabled={busy || finished} onChange={event => setReason(event.target.value)} /></label>
       <label className="batch-rejection-confirm"><input type="checkbox" checked={confirmed} disabled={busy || finished} onChange={event => setConfirmed(event.target.checked)} />我已确认这些未审核数据应判为不通过</label>
       {error && <p role="alert" className="task-center-error">{error}</p>}
-      {(running || finished) && <p role="status">成功 {success} · 跳过 {skipped} · 失败 {failed} · 未执行 {targets.length - results.length}{running ? ` · ${progress}` : ""}</p>}
+      {(running || finished) && <p role="status">成功 {success} · 本机待写 {local} · 跳过 {skipped} · 失败 {failed} · 未执行 {targets.length - results.length}{running ? ` · ${progress}` : ""}</p>}
       {results.length > 0 && <ul className="batch-rejection-results">{results.map(item => <li key={item.path} className={item.status === "failed" ? "task-qc-error" : ""}><span>{item.name}</span><span>{item.message}</span></li>)}</ul>}
       <footer>{busy ? <button type="button" className="button button-secondary" onClick={() => void cancel()}><Square size={14} />停止</button> : <button type="button" className="button button-secondary" onClick={onClose}>{finished ? "完成" : "取消"}</button>}
         {!finished && <button type="submit" className="button button-primary" disabled={busy || Boolean(error) || !targets.length || !confirmed || !reason.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <X size={16} />}确认不通过</button>}</footer>

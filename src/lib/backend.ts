@@ -629,8 +629,8 @@ export async function loadMachineReview(sourcePath: string, sourceName?: string)
     })) };
 }
 
-export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending", rejectionReason?: string): Promise<import("../types").MachineReview> {
-  if (isTauriRuntime()) return invoke("save_machine_review", { request: { sourcePath, sourceHash, expectedRevision, segments, sourceName, status, rejectionReason } });
+export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending", rejectionReason?: string, commitEvent?: [string, number]): Promise<import("../types").MachineReview> {
+  if (isTauriRuntime()) return invoke("save_machine_review", { request: { sourcePath, sourceHash, expectedRevision, segments, sourceName, status, rejectionReason }, commitEvent });
   demoActor();
   const state = await loadMachineReview(sourcePath, sourceName);
   // The latest explicit human snapshot wins, with a new revision of the stored result.
@@ -673,6 +673,30 @@ export async function saveMachineReview(sourcePath: string, sourceHash: string, 
   const saved = { ...next, reviewerUsername: user.username };
   demoMachineReviews.set(`${sourcePath}:${sourceName ?? "bailian_annotation.json"}`, saved);
   return structuredClone(saved);
+}
+
+export const getPendingSourceReviews = (checkStorage = false) => isTauriRuntime()
+  ? invoke<import("../types").PendingSourceReviewStatus>("get_pending_source_reviews", { checkStorage })
+  : Promise.resolve({ pending: 0, ready: false, storageError: "", items: [] });
+export const publishPendingSourceReviews = () => invoke<import("../types").SourceReviewPublishResult>("publish_pending_source_reviews", { operationId: Date.now() });
+export async function rejectPendingMachineReview(sourcePath: string, name: string, reason: string, elapsedMs: number): Promise<import("../types").MachineReview | null> {
+  const event = { eventId: crypto.randomUUID(), sessionId: crypto.randomUUID(), episodeKey: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sourcePath))), byte => byte.toString(16).padStart(2, "0")).join(""), episodeName: name.slice(0, 256), action: "rejected" as const, occurredAtMs: Date.now(), elapsedMs, details: { reason, target: "批量不通过 · 本机待写回" } };
+  try { return await invoke("reject_pending_machine_review", { sourcePath, reason, operationId: Date.now(), commitEvent: [event.eventId, event.occurredAtMs] }); }
+  catch (cause) {
+    if (!/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|I\/O 错误/.test(String(cause))) throw cause;
+    return deferMachineReview({ sourcePath, sourceHash: "", expectedRevision: 0, segments: [], status: "rejected", rejectionReason: reason }, { outputHash: null } as import("../types").MachineReview, String(cause), event, true);
+  }
+}
+export async function deferMachineReview(request: {
+  sourcePath: string; sourceName?: string; sourceHash: string; expectedRevision: number;
+  segments: import("../types").ReviewSegment[]; status: "pending" | "approved" | "rejected"; rejectionReason?: string;
+}, base: import("../types").MachineReview, error: string, audit: import("./review-audit-types").ReviewAuditEvent, onlyPending = false): Promise<import("../types").MachineReview> {
+  if (!isTauriRuntime()) throw Error(error);
+  const result = await invoke<import("../types").MachineReview>("defer_machine_review", {
+    entry: { request, outputHash: base.outputHash ?? null, qcContentHash: base.qcContentHash ?? null, audit, error, onlyPending },
+  });
+  window.dispatchEvent(new Event("source-review-pending"));
+  return result;
 }
 
 const AUDIT_QUEUE_KEY = "dohc-viewer.pending-audits.v1";

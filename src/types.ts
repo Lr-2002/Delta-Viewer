@@ -500,6 +500,9 @@ export interface AccountReview {
 }
 
 export interface MachineReview {
+  pendingSourceWrite?: boolean;
+  sourceWriteError?: string;
+  qcContentHash?: string | null;
   qcStatus?: "pending" | "approved" | "rejected" | "unknown";
   qcRejectionReason?: string;
   qcStatusError?: string;
@@ -520,6 +523,14 @@ export interface MachineReview {
   updatedAtMs: number;
   reviewer: string;
 }
+
+export interface PendingSourceReviewStatus {
+  pending: number;
+  ready: boolean;
+  storageError: string;
+  items: { name: string; sourcePath: string; status: string; error: string; createdAtMs: number }[];
+}
+export interface SourceReviewPublishResult { written: number; remaining: number; errors: string[] }
 
 export type Severity = "warning" | "error";
 

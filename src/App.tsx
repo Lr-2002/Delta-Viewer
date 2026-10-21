@@ -35,6 +35,7 @@ import { AppUpdates } from "./components/AppUpdates";
 import { MachineAnnotationPanel, flushMachineReviewSaves } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
 import { AuditSyncNotice } from "./components/AuditSyncNotice";
+import { SourceReviewNotice } from "./components/SourceReviewNotice";
 import { BatchExportPanel } from "./components/BatchExportPanel";
 import { BatchRejectionDialog, type RejectionTarget } from "./components/BatchRejectionDialog";
 import { ChecksPanel } from "./components/ChecksPanel";
@@ -198,6 +199,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.1.9": "NAS 满盘或写入失败时，审核结果先可靠保存本机，成功后可继续审核；后台检查恢复并弹窗提醒确认写回。待写结果按账号隔离、重启保留，冲突不覆盖；任务进度以 NAS 已写 QC 为准。新增容量限时检查和明确故障原因，用户中心操作记录独立补传。",
   "1.1.8": "修复未审核数据右下角误显示已通过：结论以当前目录 QC 为准，历史修订单独标注；人工结果缺失时不再把本机草稿显示为已保存，状态读取失败明确显示未知；批量不通过不再因过期草稿误报内容已改变，保留真实并发修改保护。",
   "1.1.7": "修复任务中心下滑时统计提示遮挡目录，新增领取人、采集日期范围和批次名称组合查询；刷新使用专属服务器回执及对应索引，避免 SMB 旧缓存导致长时间等待。",
   "1.1.6": "修复任务中心刷新无反馈和目录替换后统计漏更新：刷新可请求服务器核对展开或本人领取批次的 QC，明确显示等待、完成及失败；读取超时保留结果并可重试，不扫描媒体。",
@@ -343,7 +345,8 @@ function App() {
   const [view, setView] = useState<View>("proofread");
   const [pendingSourceRestore, setPendingSourceRestore] = useState<string | null>(null);
   const reviewUnsaved = useRef(false);
-  const handleReviewUnsaved = useCallback((value: boolean) => { reviewUnsaved.current = value; }, []);
+  const [reviewHasUnsaved, setReviewHasUnsaved] = useState(false);
+  const handleReviewUnsaved = useCallback((value: boolean) => { reviewUnsaved.current = value; setReviewHasUnsaved(value); }, []);
   const [metric, setMetric] = useState<MetricKey>("position");
   const [currentFrame, setCurrentFrame] = useState(0);
   const [clipStartFrame, setClipStartFrame] = useState(0);
@@ -353,7 +356,8 @@ function App() {
   const [fpsOverride, setFpsOverride] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [operationBusy, setBusy] = useState(false);
-  const busy = operationBusy || Boolean(batchRejection);
+  const [sourcePublishing, setSourcePublishing] = useState(false);
+  const busy = operationBusy || Boolean(batchRejection) || sourcePublishing;
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -483,7 +487,7 @@ function App() {
   }, [playbackStart, primaryPlaybackEndFrame, primaryStreamName]);
 
   function beginOperation(): OperationToken | null {
-    if (batchRejection) return null;
+    if (batchRejection || sourcePublishing) return null;
     const operation = operationScopeRef.current.begin();
     if (!operation) return null;
     setBusy(true);
@@ -1104,7 +1108,7 @@ function App() {
   }, [data, primaryStreamName]);
 
   function resetLoadedData() {
-    reviewUnsaved.current = false;
+    reviewUnsaved.current = false; setReviewHasUnsaved(false);
     setMachinePreviewRange(null);
     settledFrameByStreamRef.current.clear();
     setAnnotationReadyRoot(null);
@@ -1161,6 +1165,7 @@ function App() {
   }
 
   async function logout() {
+    if (sourcePublishing) return;
     if (reviewUnsaved.current) return;
     if (operationScopeRef.current.current()) return;
     let resumeAudit: (() => void) | undefined;
@@ -1992,6 +1997,7 @@ function App() {
         </aside>
 
         <main className="main-content">
+          {currentUser?.role === "operator" && <SourceReviewNotice key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} disabled={busy || reviewHasUnsaved} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录，操作记录将在后台补传；任务中心等待服务器读取 QC 更新。"); }} />}
           {currentUser && (reviewSyncStatus || reviewAuditError) && <AuditSyncNotice key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} status={reviewSyncStatus?.owner === `${authStatus.userCenter.serviceId ?? "demo"}:${currentUser.username}` ? reviewSyncStatus : undefined} username={currentUser.username} error={reviewAuditError} onError={setReviewAuditError} onPendingChange={() => {}} flush={retryReviewAudit} autoRetry={false} message="监管记录同步状态" />}
           {data || view === "batch" ? (
             <>
@@ -2148,13 +2154,14 @@ function App() {
                         </>
                       ) }}
                       onReviewSaved={(saved) => {
+                        if (saved.pendingSourceWrite) return;
                         setReviewedEpisodes((current) => saved.status === "approved" || saved.status === "rejected" || current[data.summary.root]
                           ? { ...current, [data.summary.root]: saved.status ?? "pending" } : current);
                       }}
-                      onUnsavedChange={handleReviewUnsaved} onComplete={(status) => {
+                      onUnsavedChange={handleReviewUnsaved} onComplete={(status, local) => {
                         const nextRoot = nextAvailableEpisodeRoot(data.summary.root);
-                        setNotice(`${data.summary.name} 质检${status === "approved" ? "通过" : "不通过"}，review 已保存。${nextRoot ? "正在载入下一条。" : "已是最后一条。"}`);
-                        setReviewedEpisodes((current) => ({ ...current, [data.summary.root]: status }));
+                        setNotice(`${data.summary.name} ${local ? "审核结果已保存本机，待恢复后确认写回 NAS，任务进度暂不增加。" : `质检${status === "approved" ? "通过" : "不通过"}，review 已保存。`}${nextRoot ? "正在载入下一条。" : "已是最后一条。"}`);
+                        if (!local) setReviewedEpisodes((current) => ({ ...current, [data.summary.root]: status }));
                         if (authStatus.currentUser?.role === "operator") {
                           writeReviewResume(authStatus.currentUser.username, {
                             sourceRoot: sourcePath,
