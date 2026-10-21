@@ -52,6 +52,10 @@ fn review_available_space(path: &Path) -> std::io::Result<u64> {
 }
 
 fn review_probe_code(path: &Path, available: impl FnOnce(&Path) -> std::io::Result<u64>) -> i32 {
+    let Ok(resolved) = crate::dataset_layout::resolve(path) else {
+        return 2;
+    };
+    let path = resolved.as_path();
     if !path.is_dir() {
         return 2;
     }

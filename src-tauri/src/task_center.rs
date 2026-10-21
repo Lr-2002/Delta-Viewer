@@ -1,7 +1,6 @@
 use crate::error::{AppError, AppResult};
 use rayon::prelude::*;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +14,8 @@ pub struct TaskNode {
     name: String,
     relative_path: String,
     batch_key: String,
+    claimable: bool,
+    batch_root: String,
     session: bool,
     status: String,
     error: String,
@@ -87,6 +88,7 @@ struct ScanContext<'a> {
     cancelled: &'a AtomicBool,
     cache: &'a QcCache,
     force: bool,
+    registry: crate::dataset_layout::Registry,
     update: &'a (dyn Fn(ScanUpdate) + Sync),
 }
 
@@ -188,11 +190,7 @@ pub fn scan_streaming(
                 .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Delta-D1"))
         })
         .unwrap_or(&root);
-    let namespace = dataset
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_lowercase();
+    let namespace = dataset.file_name().unwrap_or_default().to_string_lossy();
     let context = ScanContext {
         root: &root,
         dataset,
@@ -206,6 +204,7 @@ pub fn scan_streaming(
         cancelled,
         cache,
         force,
+        registry: crate::dataset_layout::Registry::read(&root)?,
         update,
     };
     // One bounded pool shares work across batches AND sessions in a large batch.
@@ -242,7 +241,7 @@ fn empty_node(path: &Path, context: &ScanContext<'_>) -> TaskNode {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/");
-    let batch = dataset_relative.split('/').next().unwrap_or("");
+    let batch = crate::dataset_layout::batch_relative(&dataset_relative);
     TaskNode {
         name: path
             .file_name()
@@ -250,10 +249,14 @@ fn empty_node(path: &Path, context: &ScanContext<'_>) -> TaskNode {
             .to_string_lossy()
             .into_owned(),
         relative_path: relative.clone(),
-        batch_key: format!(
-            "{:x}",
-            Sha256::digest(format!("{namespace}\n{batch}").as_bytes())
-        ),
+        batch_key: crate::dataset_layout::batch_key(namespace, &batch, &context.registry),
+        batch_root: dataset.join(&batch).to_string_lossy().into_owned(),
+        claimable: !dataset_relative.is_empty()
+            && dataset_relative == batch
+            && !matches!(
+                dataset_relative.as_str(),
+                "D1 daily" | "D1 validation" | "D1 yiqi"
+            ),
         session: false,
         status: "pending".into(),
         error: String::new(),

@@ -4,7 +4,7 @@ export interface TaskNode {
   name: string; relativePath: string; batchKey: string; session: boolean;
   status: string; error: string; total: number; reviewed: number;
   approved: number; rejected: number; errors: number; incomplete: boolean; scanning: boolean; children: TaskNode[];
-  childrenLoaded?: boolean;
+  childrenLoaded?: boolean; claimable?: boolean; batchRoot?: string;
 }
 export interface TaskIndexStatus {
   completedAtMs?: number; updatedAtMs?: number; generation?: string;
@@ -86,3 +86,15 @@ export async function lookupClaims(keys: string[]): Promise<BatchClaim[]> {
 }
 export const mutateClaim = (action: "claim" | "release" | "transfer", batchKey: string, username?: string) =>
   invoke<{ claim: BatchClaim | null }>("task_center_claims", { action, body: { batchKey, ...(username ? { username } : {}) } });
+
+// Old browser fixtures omit claimable; native nodes declare it explicitly.
+export const isTaskBatch = (node: TaskNode, depth: number) => node.claimable ?? (depth === 1 || (depth === 0 && node.session));
+export function taskBatches(tree: TaskNode, depth = 0): TaskNode[] {
+  if (isTaskBatch(tree, depth) && !tree.session) return [tree];
+  if (tree.session) return isTaskBatch(tree, depth) ? [tree] : [];
+  return tree.children.flatMap(child => taskBatches(child, depth + 1));
+}
+export function findTaskNode(tree: TaskNode, path: string): TaskNode | undefined {
+  if (tree.relativePath === path) return tree;
+  for (const child of tree.children) { const found = findTaskNode(child, path); if (found) return found; }
+}

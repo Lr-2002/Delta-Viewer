@@ -242,6 +242,13 @@ pub fn load_with_receipt(
         });
     }
     tree["relativePath"] = json!(relative);
+    let registry = crate::dataset_layout::Registry::read(source)?;
+    crate::dataset_layout::adapt_node(&mut tree, source, &prefix, &registry);
+    if let Some(children) = tree["children"].as_array_mut() {
+        for child in children {
+            crate::dataset_layout::adapt_node(child, source, &prefix, &registry);
+        }
+    }
     Ok(
         json!({"catalog": {"sourceRoot": source.to_string_lossy(), "tree": tree}, "server": {
             "completedAtMs": manifest["completedAtMs"], "updatedAtMs": manifest["updatedAtMs"],

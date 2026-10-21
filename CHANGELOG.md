@@ -3,6 +3,14 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.2.0 - 2026-10-21
+
+- 适配 `D1 daily`、`D1 validation`、`D1 yiqi` 分组后的日期批次。分组不可领取，各子批次使用独立标识；已确认迁移保留原批次领取身份。旧版误领的整组记录原样保留，不推测拆分。
+- 任务中心递归展示和查询实际批次，按真实批次加载、定位单条和筛选未审核；直接扫描增加有界递归。显式迁移映射恢复旧目录、上次记录、草稿、本机待写结果和仍匹配原片的旧预览，不按相同编号搜索猜测。
+- 修复选中旧人工 `desorption.json` 后仍固定更新 `description.json` 的问题；通过、不通过、增加/删除片段均保存到实际人工结果和根级 `session.json.qc`，机标及采集文件保持只读。
+- 人工结果 `_human_review` 只保留 `status`、`reviewer`、`reviewedAt`。修订、改动摘要、来源及恢复状态另存 `.description.review-state.json` 或 `.desorption.review-state.json`，与人工文件内容哈希绑定。兼容读取旧完整格式，明确保存才转换；实际片段数组仍保存全部增删改。
+- 勘误与撤销继续支持精简人工结果；技术记录先落盘，失败不确认保存。本机待写队列只读本机迁移缓存，NAS 不可用时仍可暂存；原事件 ID、时间、账号隔离和防覆盖保护保持有效。
+
 ## 1.1.9 - 2026-10-21
 
 - NAS 满盘或共享目录写入失败时，单条审核、批量及整文件夹不通过先可靠保存到本机 SQLite，明确标记“待写回数据目录”。本机保存成功后可继续审核；本机也无法保存时保留应急草稿并阻止完成，不虚报提交。

@@ -26,7 +26,7 @@ pub fn load_for_review(
             return Ok(annotation);
         }
     }
-    let root = root.canonicalize()?;
+    let root = crate::dataset_layout::resolve(root)?.canonicalize()?;
     let camera = crate::source::review_camera_summary(&root)?;
     if camera.frame_count == 0 {
         return Ok(None);
@@ -65,7 +65,7 @@ pub(crate) fn validate_source_name(name: &str) -> AppResult<()> {
 }
 
 pub fn list_sources(root: &Path) -> AppResult<Vec<String>> {
-    let root = root.canonicalize()?;
+    let root = crate::dataset_layout::resolve(root)?.canonicalize()?;
     let mut names = Vec::new();
     for directory in [root.to_path_buf(), root.join(".session_meta")] {
         match fs::symlink_metadata(&directory) {
@@ -263,7 +263,7 @@ pub fn load_selected(
     root: &Path,
     source_name: Option<&str>,
 ) -> AppResult<Option<MachineAnnotation>> {
-    let root = fs::canonicalize(root)?;
+    let root = crate::dataset_layout::resolve(root)?.canonicalize()?;
     if let Some(name) = source_name {
         validate_source_name(name)?;
         return load_named(&root, name);

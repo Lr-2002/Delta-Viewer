@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, UserMinus, ListFilter, X } from "lucide-react";
 import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex, refreshTaskIndex } from "../lib/backend";
-import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus } from "../lib/task-center";
+import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus, isTaskBatch, taskBatches, findTaskNode } from "../lib/task-center";
 import type { UserIdentity } from "../types";
 import { emptyTaskFilters, matchesTaskBatch } from "../lib/task-center-filter";
 import "./task-center.css";
@@ -20,7 +20,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const [claims, setClaims] = useState<Record<string, BatchClaim>>({});
   const [filters, setFilters] = useState(emptyTaskFilters);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
-  const [pendingOnlyBatch, setPendingOnlyBatch] = useState("");
+  const [pendingOnlyBatch, setPendingOnlyBatch] = useState<string | null>(null);
   const [pendingResults, setPendingResults] = useState<{ path: string; nodes: TaskNode[]; loading: boolean; error: string }>({ path: "", nodes: [], loading: false, error: "" });
   const [loading, setLoading] = useState(false);
   const [refreshNotice, setRefreshNotice] = useState("");
@@ -57,21 +57,22 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const ownerRef = useRef(currentUser.username); ownerRef.current = currentUser.username;
   const admin = currentUser.role === "admin";
   useEffect(() => {
-    if (!pendingOnlyBatch || !catalog) return;
-    const batch = catalog.tree.children.find((node) => node.relativePath === pendingOnlyBatch);
+    if (pendingOnlyBatch === null || !catalog) return;
+    const batch = findTaskNode(catalog.tree, pendingOnlyBatch);
     if (batch && !batch.incomplete && !batch.scanning && batch.total > 0 && batch.reviewed === batch.total) {
       // A live index refresh can complete a batch while its pending filter is open.
       // Restore the full tree before removing the filter's only exit button.
-      setPendingOnlyBatch("");
+      setPendingOnlyBatch(null);
     }
   }, [catalog, pendingOnlyBatch]);
   useEffect(() => {
-    if (!pendingOnlyBatch) return;
+    if (pendingOnlyBatch === null) return;
+    const selectedBatch = pendingOnlyBatch;
     let active = true;
     let timer: number;
     async function query() {
-      setPendingResults({ path: pendingOnlyBatch, nodes: [], loading: true, error: "" });
-      const queue = [pendingOnlyBatch];
+      setPendingResults({ path: selectedBatch, nodes: [], loading: true, error: "" });
+      const queue = [selectedBatch];
       const nodes: TaskNode[] = [];
       try {
         // Read only directory index shards in this batch, with bounded NAS concurrency.
@@ -88,9 +89,9 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
             }
           }
         }
-        if (active) setPendingResults({ path: pendingOnlyBatch, nodes, loading: false, error: "" });
+        if (active) setPendingResults({ path: selectedBatch, nodes, loading: false, error: "" });
       } catch (reason) {
-        if (active) setPendingResults({ path: pendingOnlyBatch, nodes: [], loading: false, error: String(reason) });
+        if (active) setPendingResults({ path: selectedBatch, nodes: [], loading: false, error: String(reason) });
       } finally { if (active) timer = window.setTimeout(query, 15000); }
     }
     void query();
@@ -122,7 +123,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     setCatalog(cached?.catalog ?? null); setServer(null); setLoadingNodes(new Set()); setRequestNotice("");
     setRefreshNotice(""); setCheckedAtMs(0); setManualRefreshing(false); manualRequested.current = false;
     setRefreshError(""); qcRequest.current = null; confirmedRequest.current = undefined; refreshActive.current = false; setFilters(emptyTaskFilters());
-    setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setPendingOnlyBatch(""); setError(""); setClaimError(""); setClaimActionError(""); setOpenError("");
+    setClaims({}); setClaimsReady(false); setExpanded(new Set([""])); setPendingOnlyBatch(null); setError(""); setClaimError(""); setClaimActionError(""); setOpenError("");
   }, [root, currentUser.username]);
   useEffect(() => {
     if (!root) return;
@@ -157,7 +158,17 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
         if (next.catalog) {
           cacheTaskCatalog(currentUser.username, root, next.catalog);
           let current = catalogRef.current ? { ...next.catalog, tree: mergeIndexedNode(catalogRef.current.tree, next.catalog.tree) } : next.catalog;
+          const groups = current.tree.children.filter(node => node.claimable === false && !node.session && node.childrenLoaded === false).map(node => node.relativePath);
+          while (groups.length) {
+            const details = await Promise.all(groups.splice(0, 4).map(path => readTaskIndex(root, path, readReceipt)));
+            if (!active) return;
+            for (const detail of details) if (detail.catalog) {
+              current = { ...current, tree: mergeIndexedNode(current.tree, detail.catalog.tree) };
+              groups.push(...detail.catalog.tree.children.filter(node => node.claimable === false && !node.session && node.childrenLoaded === false).map(node => node.relativePath));
+            }
+          }
           setCatalog(current);
+          cacheTaskCatalog(currentUser.username, root, current);
           // Fetch only expanded index shards here; QC rechecks run on the server.
           for (const path of [...expandedRef.current].filter(Boolean).sort((a, b) => a.length - b.length)) {
             const contains = (node: TaskNode): boolean => node.relativePath === path || node.children.some(contains);
@@ -193,7 +204,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       active = false; window.clearTimeout(timer);
     };
   }, [root, revision, currentUser.username]);
-  const claimKeys = JSON.stringify(catalog ? catalog.tree.session ? [catalog.tree.batchKey] : catalog.tree.children.map((node) => node.batchKey) : []);
+  const claimKeys = JSON.stringify(catalog ? [...new Set(taskBatches(catalog.tree).map(node => node.batchKey))].sort() : []);
   useEffect(() => {
     const keys: string[] = JSON.parse(claimKeys);
     if (!keys.length) return;
@@ -222,7 +233,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     setManualRefreshing(true); setRefreshNotice("正在刷新服务器统计…"); setRefreshError("");
     try {
       const opened = [...expandedRef.current].filter(Boolean);
-      const owned = catalogRef.current?.tree.children.filter((node) => claims[node.batchKey]?.username === currentUser.username).map((node) => node.relativePath) ?? [];
+      const owned = (catalogRef.current ? taskBatches(catalogRef.current.tree) : []).filter((node) => claims[node.batchKey]?.username === currentUser.username).map((node) => node.relativePath) ?? [];
       const candidates = opened.length ? opened : owned;
       const paths = candidates.filter((path) => !candidates.some((parent) => parent !== path && path.startsWith(`${parent}/`)));
       if (!paths.length && root.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1)?.toLowerCase() !== "delta-d1") paths.push("");
@@ -288,7 +299,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       const batch = node.relativePath.split("/")[0];
       // Keep the first argument as the selected node path for existing integrations;
       // the batch root is explicit so the reviewer can scan the batch and focus that node.
-      await onOpen(nodePath, node.session ? nodePath : undefined, node.session && batch ? `${base}/${batch}` : undefined);
+      await onOpen(nodePath, node.session ? nodePath : undefined, node.session ? node.batchRoot ?? (batch ? `${base}/${batch}` : undefined) : undefined);
       if (alive.current && rootRef.current === selectedRoot) onClose?.();
     } catch (reason) {
       if (alive.current && rootRef.current === selectedRoot) setOpenError(`数据加载失败：${String(reason)}`);
@@ -322,7 +333,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   }
   async function togglePendingOnly(node: TaskNode) {
     if (pendingOnlyBatch === node.relativePath) {
-      setPendingOnlyBatch("");
+      setPendingOnlyBatch(null);
       await loadChildren(node);
       return;
     }
@@ -331,14 +342,16 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   }
   function row(node: TaskNode, depth: number): React.ReactNode {
     const isRoot = depth === 0;
-    const isBatch = depth === 1 || (isRoot && node.session);
+    const isBatch = isTaskBatch(node, depth) && (!node.session || isRoot);
     const open = expanded.has(node.relativePath);
     const claim = claims[node.batchKey];
     const percent = node.total && !node.incomplete && !node.scanning ? Math.floor(node.reviewed * 100 / node.total) : null;
-    const filteringThisBatch = percent !== 100 && Boolean(pendingOnlyBatch) && pendingOnlyBatch === node.relativePath;
+    const filteringThisBatch = percent !== 100 && pendingOnlyBatch !== null && pendingOnlyBatch === node.relativePath;
     const filterLoading = filteringThisBatch && (pendingResults.path !== pendingOnlyBatch || pendingResults.loading);
     const sourceChildren = filteringThisBatch ? filterLoading ? [] : pendingResults.nodes : node.children;
-    const children = isRoot ? sourceChildren.filter((child) => matchesTaskBatch(child, claims[child.batchKey], filters)) : sourceChildren;
+    const matches = (child: TaskNode, childDepth: number): boolean => isTaskBatch(child, childDepth)
+      ? matchesTaskBatch(child, claims[child.batchKey], filters) : child.children.some(c => matches(c, childDepth + 1));
+    const children = !filteringThisBatch && !isBatch ? sourceChildren.filter((child) => matches(child, depth + 1)) : sourceChildren;
     return <div key={node.relativePath} className="task-tree-node">
       <div className={`task-tree-row${isRoot ? " task-tree-root" : ""}${node.session ? " task-tree-session" : ""}`} style={{ "--tree-depth": depth } as React.CSSProperties}>
         <button className="task-node-name" type="button" title={isRoot ? root : node.name} aria-expanded={node.session ? undefined : open}
@@ -396,7 +409,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       <label className="task-date-filter">采集日期起<input type="date" value={filters.dateFrom} max={filters.dateTo || undefined} onChange={(event) => setFilters((previous) => ({ ...previous, dateFrom: event.target.value }))} /></label>
       <label className="task-date-filter">采集日期止<input type="date" value={filters.dateTo} min={filters.dateFrom || undefined} onChange={(event) => setFilters((previous) => ({ ...previous, dateTo: event.target.value }))} /></label>
       <button type="button" className="button button-secondary" disabled={!Object.values(filters).some(Boolean)} onClick={() => setFilters(emptyTaskFilters())}>清空查询</button>
-      <span className="task-filter-summary" role="status">{filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo ? "起始日期不能晚于结束日期。" : catalog ? `显示 ${catalog.tree.children.filter((node) => matchesTaskBatch(node, claims[node.batchKey], filters)).length} / ${catalog.tree.children.length} 个批次` : "等待读取批次"} · 日期按批次文件夹名称；组合条件即时生效{filters.owner.trim() && !claimsReady ? "；领取状态尚未读取成功，查询结果待确认" : ""}</span>
+      <span className="task-filter-summary" role="status">{filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo ? "起始日期不能晚于结束日期。" : catalog ? `显示 ${taskBatches(catalog.tree).filter((node) => matchesTaskBatch(node, claims[node.batchKey], filters)).length} / ${taskBatches(catalog.tree).length} 个批次` : "等待读取批次"} · 日期按批次文件夹名称；组合条件即时生效{filters.owner.trim() && !claimsReady ? "；领取状态尚未读取成功，查询结果待确认" : ""}</span>
     </form>
     <div className="task-tree" aria-busy={loading}>{catalog ? row(catalog.tree, 0) : <p className="task-empty">{loading ? "正在读取服务器统计…" : error ? "统计读取失败" : "等待服务器首次统计完成"}</p>}</div>
   </section>;

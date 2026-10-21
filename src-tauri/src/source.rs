@@ -1266,16 +1266,22 @@ fn fingerprint_indexed_files(files: &[IndexedFile]) -> String {
 }
 
 fn discover_episode_roots(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathBuf>> {
-    let (root_is_episode, child_directories) = inspect_episode_directory(root, cancelled)?;
-    if root_is_episode {
-        return Ok(vec![root.to_path_buf()]);
-    }
-
     let mut roots = Vec::new();
-    for path in child_directories {
+    let mut pending = vec![(root.to_path_buf(), 0)];
+    let mut visited = 0;
+    while let Some((path, depth)) = pending.pop() {
         check_cancelled(cancelled)?;
-        if inspect_episode_directory(&path, cancelled)?.0 {
+        visited += 1;
+        if depth > 32 || visited > 100_000 {
+            return Err(AppError::Message(
+                "源目录超过扫描上限，请选择具体批次".into(),
+            ));
+        }
+        let (episode, children) = inspect_episode_directory(&path, cancelled)?;
+        if episode {
             roots.push(path);
+        } else {
+            pending.extend(children.into_iter().map(|p| (p, depth + 1)));
         }
     }
     roots.sort();
@@ -1300,6 +1306,12 @@ fn inspect_episode_directory(
             let name = entry.file_name();
             if name.to_str().is_some_and(|value| value.starts_with('.'))
                 || name == OsStr::new("System Volume Information")
+                || matches!(
+                    name.to_str(),
+                    Some(
+                        "@eaDir" | "#recycle" | "Delta-Viewer-Previews" | "Delta-Viewer-TaskIndex"
+                    )
+                )
             {
                 continue;
             }
@@ -1313,6 +1325,7 @@ fn inspect_episode_directory(
         } else if file_type.is_file() {
             let name = entry.file_name();
             if name == OsStr::new("states.jsonl")
+                || name == OsStr::new("session.json")
                 || segment_bin::segment_number_from_name(&name).is_some()
             {
                 return Ok((true, Vec::new()));

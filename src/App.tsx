@@ -50,6 +50,7 @@ import { beginReviewAudit, getReviewSyncStatus, configureReviewAudit, endReviewA
 import { TelemetryChart } from "./components/TelemetryChart";
 import {
   APP_VERSION,
+  resolveSourcePath,
   IS_DEVELOPMENT_EDITION,
   DEMO_ROOT,
   cancelTask,
@@ -199,6 +200,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.2.0": "适配三支线分组目录，批次独立领取，保留已确认迁移前的批次归属；修复旧路径恢复、子批次加载和 desorption.json 保存。人工结果审核信息只保留结论、审核人、审核日期，恢复及并发技术记录独立保存；新增删除片段继续写入实际数组，保留本机待写及冲突保护。",
   "1.1.9": "NAS 满盘或写入失败时，审核结果先可靠保存本机，成功后可继续审核；后台检查恢复并弹窗提醒确认写回。待写结果按账号隔离、重启保留，冲突不覆盖；任务进度以 NAS 已写 QC 为准。新增容量限时检查和明确故障原因，用户中心操作记录独立补传。",
   "1.1.8": "修复未审核数据右下角误显示已通过：结论以当前目录 QC 为准，历史修订单独标注；人工结果缺失时不再把本机草稿显示为已保存，状态读取失败明确显示未知；批量不通过不再因过期草稿误报内容已改变，保留真实并发修改保护。",
   "1.1.7": "修复任务中心下滑时统计提示遮挡目录，新增领取人、采集日期范围和批次名称组合查询；刷新使用专属服务器回执及对应索引，避免 SMB 旧缓存导致长时间等待。",
@@ -582,7 +584,9 @@ function App() {
       void getAssignedTasks().then((value) => { if (active) setAssignedTasks(value); }).catch(failed);
       const navigationVersion = sourceNavigationVersion.current;
       const resume = readReviewResume(authStatus.currentUser.username);
-      if (resume) setPendingSourceRestore(resume.sourceRoot);
+      if (resume) void resolveSourcePath(resume.episodeRoot, true).catch(() => "").then((batchRoot) => {
+        if (active && sourceNavigationVersion.current === navigationVersion) setPendingSourceRestore(batchRoot || resume.sourceRoot);
+      });
       else void getAssignedSourceRoot().then((root) => {
         if (!active || sourceNavigationVersion.current !== navigationVersion) return;
         setPendingSourceRestore(root);
@@ -751,6 +755,9 @@ function App() {
     let operation = "scan_source";
     let loadingEpisode: EpisodeSummary | null = null;
     try {
+      path = await resolveSourcePath(path);
+      if (preferredEpisodeRoot) preferredEpisodeRoot = await resolveSourcePath(preferredEpisodeRoot);
+      ensureOperationActive(owner);
       const result = await scanSource(path, owner.id);
       ensureOperationActive(owner);
       if (propagateFailure && autoLoad && !result.episodes.length) throw new Error("该目录未发现可加载的数据，请检查批次目录是否完整。");
@@ -775,6 +782,13 @@ function App() {
       ));
       const username = authStatus?.currentUser?.role === "operator" ? authStatus.currentUser.username : "";
       const resume = username ? readReviewResume(username) : null;
+      if (resume) {
+        // A missing old resume must not block opening a different, valid batch.
+        const resolvedBatch = await resolveSourcePath(resume.episodeRoot, true).catch(() => "");
+        resume.sourceRoot = resolvedBatch || await resolveSourcePath(resume.sourceRoot).catch(() => resume.sourceRoot);
+        resume.episodeRoot = await resolveSourcePath(resume.episodeRoot).catch(() => resume.episodeRoot);
+        ensureOperationActive(owner);
+      }
       const lastAssignedRoot = username && !resume
         ? localStorage.getItem(`dohc-viewer.last-assigned-episode.v1:${username}`)
         : null;
@@ -784,8 +798,9 @@ function App() {
       const assignedInThisBatch = lastAssignedRoot
         ? visibleResult.episodes.find((episode) => sameReviewPath(episode.root, lastAssignedRoot))
         : null;
-      const preferred = preferredEpisodeRoot
-        ? visibleResult.episodes.find((episode) => sameReviewPath(episode.root, preferredEpisodeRoot))
+      const preferredRoot = preferredEpisodeRoot;
+      const preferred = preferredRoot
+        ? visibleResult.episodes.find((episode) => sameReviewPath(episode.root, preferredRoot))
         : null;
       if (preferredEpisodeRoot && !preferred) throw new Error("所选记录已不在该批次目录中，请刷新任务中心后重试。");
       let resumeCompleted = false;

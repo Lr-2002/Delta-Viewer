@@ -1539,3 +1539,7 @@ function sessionActivationDemoSummary(
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
+
+export async function resolveSourcePath(path: string, batchRoot = false): Promise<string> {
+  return isTauriRuntime() ? invoke<string>("resolve_source_path", { path, batchRoot }) : batchRoot ? "" : path;
+}

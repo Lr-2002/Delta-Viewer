@@ -470,7 +470,12 @@ fn mark_pending(session: &mut Value, doc: &mut Value) -> AppResult<()> {
     }
     if let Some(review) = doc.get_mut("_human_review") {
         review["status"] = json!("pending");
-        review["rejectionReason"] = json!("");
+        if review.get("segments").is_some() {
+            review["rejectionReason"] = json!("");
+        } else {
+            review["reviewer"] = json!("");
+            review["reviewedAt"] = json!("");
+        }
     }
     Ok(())
 }
@@ -568,7 +573,8 @@ pub fn apply(
             let mut nonce = [0u8; 16];
             getrandom::fill(&mut nonce).map_err(|_| fail("无法创建勘误 ID"))?;
             let id = nonce.iter().map(|b| format!("{b:02x}")).collect::<String>();
-            doc["_text_correction"] = json!({"id":id,"atMs":now(),"reviewer":reviewer,"mode":mode,"reason":reason,"needsReexport":true});
+            let correction = json!({"id":id,"atMs":now(),"reviewer":reviewer,"mode":mode,"reason":reason,"needsReexport":true});
+            doc.as_object_mut().unwrap().remove("_text_correction");
             let after_hash = hash(&serde_json::to_vec_pretty(&doc)?);
             let session_after_hash = if mode == "semantic" {
                 hash(&serde_json::to_vec_pretty(&session)?)
@@ -597,6 +603,7 @@ pub fn apply(
             if mode == "semantic" {
                 machine_review::atomic_json(&session_path, &session)?;
             }
+            machine_review::correction_technical(&path, &record.before_hash, &doc, correction)?;
             machine_review::atomic_json(&path, &doc)?;
             record.status = "committed".into();
             machine_review::atomic_json(&record_path, &serde_json::to_value(record)?)?;
@@ -656,8 +663,13 @@ pub fn undo(data: &Path, id: &str, reviewer: &str) -> AppResult<()> {
             &reverse,
         )?;
         bump_revision(&mut doc);
-        doc["_text_correction"] =
-            json!({"undoOf":id,"reviewer":reviewer,"atMs":now(),"needsReexport":true});
+        doc.as_object_mut().unwrap().remove("_text_correction");
+        machine_review::correction_technical(
+            &path,
+            &actual,
+            &doc,
+            json!({"undoOf":id,"reviewer":reviewer,"atMs":now(),"needsReexport":true}),
+        )?;
         machine_review::atomic_json(&path, &doc)?;
     } else if !(record.status == "prepared" && actual == record.before_hash) {
         return Err(fail("描述已被再次修改，不能撤销；请重新扫描"));

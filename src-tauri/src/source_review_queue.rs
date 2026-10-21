@@ -74,12 +74,18 @@ pub fn get(
     source: Option<&str>,
 ) -> AppResult<Option<DeferredReview>> {
     let db = open(root)?;
-    let raw: Option<String> = db.query_row("SELECT payload FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=?", params![service,username,path,source.unwrap_or("")], |r| r.get(0)).optional().map_err(failure)?;
+    let historical = crate::dataset_layout::historical_cached(root, Path::new(path))?
+        .to_string_lossy()
+        .into_owned();
+    let raw: Option<String> = db.query_row("SELECT payload FROM source_reviews WHERE service=? AND username=? AND source_path IN (?,?) AND source_name=? ORDER BY CASE WHEN source_path=? THEN 0 ELSE 1 END LIMIT 1", params![service,username,path,historical,source.unwrap_or(""),path], |r| r.get(0)).optional().map_err(failure)?;
     raw.map(|s| serde_json::from_str(&s).map_err(failure))
         .transpose()
 }
 pub fn contains_path(root: &Path, service: &str, username: &str, path: &str) -> AppResult<bool> {
-    open(root)?.query_row("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path=?)", params![service,username,path], |row| row.get(0)).map_err(failure)
+    let historical = crate::dataset_layout::historical_cached(root, Path::new(path))?
+        .to_string_lossy()
+        .into_owned();
+    open(root)?.query_row("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path IN (?,?))", params![service,username,path,historical], |row| row.get(0)).map_err(failure)
 }
 pub fn store(
     root: &Path,
@@ -140,6 +146,8 @@ pub fn store(
         ));
     }
     if let Some(old) = old {
+        // Keep the original SQLite key; publication resolves only the filesystem path.
+        entry.request.source_path = old.request.source_path;
         entry.output_hash = old.output_hash;
         entry.qc_content_hash = old.qc_content_hash;
         entry.request.expected_revision = old.request.expected_revision;
@@ -203,6 +211,7 @@ pub fn local_view(
             updated_at_ms: entry.created_at_ms,
             reviewer: user.display_name.clone(),
         },
+        output_name: "".into(),
         qc_status: "unknown".into(),
         qc_rejection_reason: String::new(),
         qc_status_error: String::new(),

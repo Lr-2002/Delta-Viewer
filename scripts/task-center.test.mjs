@@ -317,6 +317,38 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
       }
       await page.screenshot({path:`artifacts/task-center/scroll-filter-${width}.png`,fullPage:true});
     }
+    // Grouping folders never expose claims; nested date batches remain independent.
+    await page.setViewportSize({width:1440,height:920});
+    await page.evaluate(() => {
+      window.hideTask();
+      const f=window.taskFixture; f.offline=false;f.serverError='';f.stale=false;f.delayRelease=false;
+      for(const key of Object.keys(f.claims))delete f.claims[key];
+      const template=f.tree.children[0];
+      f.tree.claimable=false;
+      f.tree.children=[{...template,name:'D1 daily',relativePath:'D1 daily',batchKey:'f'.repeat(64),claimable:false,total:2,reviewed:0,children:[
+        {...template,name:'2026-10-21-A',relativePath:'D1 daily/2026-10-21-A',batchKey:'1'.repeat(64),claimable:true,reviewed:0,total:1,children:[]},
+        {...template,name:'2026-10-21-B',relativePath:'D1 daily/2026-10-21-B',batchKey:'2'.repeat(64),claimable:true,reviewed:0,total:1,children:[]}
+      ]}];
+    });
+    await page.locator('.task-center').waitFor({state:'detached'});
+    await page.evaluate(()=>window.showTask());
+    await page.getByText('显示 2 / 2 个批次',{exact:false}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'领取',exact:true}).count(),0,'group cannot be claimed');
+    await page.getByRole('button',{name:'D1 daily',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'领取',exact:true}).count(),2);
+    await page.getByRole('button',{name:'领取',exact:true}).first().click();
+    await page.getByRole('button',{name:'进入审核',exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'领取',exact:true}).count(),1,'other batch remains unclaimed');
+    assert.ok(await page.evaluate(()=>window.taskFixture.openCalls.at(-1).endsWith('/D1 daily/2026-10-21-A')));
+    await page.getByLabel('批次名称').fill('2026-10-21-B');
+    assert.equal(await page.getByRole('button',{name:'2026-10-21-A',exact:true}).count(),0);
+    assert.equal(await page.getByRole('button',{name:'2026-10-21-B',exact:true}).count(),1);
+    await page.getByRole('button',{name:'清空查询',exact:true}).click();
+    for(const [width,height] of [[1440,920],[960,680],[390,844]]) {
+      await page.setViewportSize({width,height});
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+      await page.screenshot({path:`artifacts/task-center/grouped-${width}.png`,fullPage:true});
+    }
     assert.deepEqual(errors, []);
   } finally { await browser.close(); await server.close(); }
 });

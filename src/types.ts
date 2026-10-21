@@ -500,6 +500,7 @@ export interface AccountReview {
 }
 
 export interface MachineReview {
+  outputName?: string;
   pendingSourceWrite?: boolean;
   sourceWriteError?: string;
   qcContentHash?: string | null;

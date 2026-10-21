@@ -322,7 +322,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       document.removeEventListener("focusin", cancel);
     };
   }, [canEdit, active?.sourceIndex, labelLibrary, labelLibraryOpen, draggedLabelId, root]);
-  const outputName = "description.json";
+  const outputName = loadedSource.current?.endsWith("desorption.json") ? "desorption.json" : review?.outputName || "description.json";
   const seek = useCallback((next: number) => {
     setFrame(next); setPlaying(false);
     if (mapping && !mapping.error) playback?.onSeek(mapping.offset + next * mapping.step);

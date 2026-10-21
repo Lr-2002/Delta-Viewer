@@ -290,6 +290,7 @@ fn inspect(root: &Path, cancelled: &AtomicBool) -> AppResult<ReviewRow> {
     for name in [
         "session.json",
         "description.json",
+        "desorption.json",
         "manifest.json",
         ".session_meta/manifest.json",
     ] {
@@ -486,8 +487,26 @@ fn quick_states_timing(root: &Path, cancelled: &AtomicBool) -> AppResult<Option<
 }
 
 fn effective(root: &Path, frames: u64, seconds: f64) -> AppResult<f64> {
-    let document = json(&root.join("description.json"))?
-        .ok_or_else(|| fail("缺少人工审核 description.json"))?;
+    let primary = json(&root.join("description.json"))?;
+    let session = json(&root.join("session.json"))?.unwrap_or(Value::Null);
+    let matches_current = |doc: &Value| {
+        session["reviewedAt"].as_str().is_some_and(|date| {
+            !date.is_empty()
+                && doc["_human_review"]["reviewedAt"].as_str() == Some(date)
+                && doc["_human_review"]["reviewer"] == session["reviewerName"]
+        })
+    };
+    let document = if primary.as_ref().is_some_and(matches_current) {
+        primary
+    } else {
+        let secondary = json(&root.join("desorption.json"))?;
+        if secondary.as_ref().is_some_and(matches_current) {
+            secondary
+        } else {
+            primary.or(secondary)
+        }
+    }
+    .ok_or_else(|| fail("缺少人工审核 description.json / desorption.json"))?;
     let review = &document["_human_review"];
     if review["status"].as_str() != Some("approved") {
         return Err(fail("QC 与人工审核结论不一致"));
@@ -513,24 +532,45 @@ fn effective(root: &Path, frames: u64, seconds: f64) -> AppResult<f64> {
     if episode["media"]["frame_count"].as_u64() != Some(frames) {
         return Err(fail("人工审核与原始视频帧数不一致"));
     }
-    let segments = review["segments"]
-        .as_array()
-        .ok_or_else(|| fail("缺少人工保留片段"))?;
     let mut ranges = Vec::new();
-    for segment in segments {
-        if segment["deleted"].as_bool() == Some(true) {
-            continue;
+    if let Some(annotations) = episode["annotations"].as_array() {
+        let base = episode["media"]["frame_index_base"].as_u64().unwrap_or(0);
+        let inclusive = episode["media"]["interval_convention"].as_str() == Some("[start,end]");
+        for row in annotations {
+            let start = row["start_frame"]
+                .as_u64()
+                .and_then(|n| n.checked_sub(base))
+                .ok_or_else(|| fail("人工片段起始帧无效"))?;
+            let end = row["end_frame"]
+                .as_u64()
+                .and_then(|n| n.checked_sub(base))
+                .and_then(|n| n.checked_add(u64::from(inclusive)))
+                .ok_or_else(|| fail("人工片段结束帧无效"))?;
+            if start >= end || end > frames {
+                return Err(fail("人工片段超出视频范围"));
+            }
+            ranges.push((start, end));
         }
-        let start = segment["startFrame"]
-            .as_u64()
-            .ok_or_else(|| fail("人工片段起始帧无效"))?;
-        let end = segment["endFrame"]
-            .as_u64()
-            .ok_or_else(|| fail("人工片段结束帧无效"))?;
-        if start > end || end >= frames {
-            return Err(fail("人工片段超出视频范围"));
+    } else {
+        // Legacy metadata-only exports remain readable.
+        let segments = review["segments"]
+            .as_array()
+            .ok_or_else(|| fail("缺少人工保留片段"))?;
+        for segment in segments {
+            if segment["deleted"].as_bool() == Some(true) {
+                continue;
+            }
+            let start = segment["startFrame"]
+                .as_u64()
+                .ok_or_else(|| fail("人工片段起始帧无效"))?;
+            let end = segment["endFrame"]
+                .as_u64()
+                .ok_or_else(|| fail("人工片段结束帧无效"))?;
+            if start > end || end >= frames {
+                return Err(fail("人工片段超出视频范围"));
+            }
+            ranges.push((start, end + 1));
         }
-        ranges.push((start, end + 1));
     }
     if ranges.is_empty() {
         return Err(fail("通过数据没有人工保留片段"));
@@ -721,6 +761,43 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn compact_metadata_uses_actual_annotations_for_both_frame_conventions_and_names() {
+        let f = Fixture::new();
+        for (base, inclusive) in [(0, false), (1, true)] {
+            for name in ["description.json", "desorption.json"] {
+                for old in ["description.json", "desorption.json"] {
+                    let _ = fs::remove_file(f.source().join(old));
+                }
+                let doc = json!({"episode_results":[{"episode_id":"source","media":{"frame_count":30,
+                    "frame_index_base":base,"interval_convention":if inclusive {"[start,end]"} else {"[start,end)"}},
+                    "annotations":[{"start_frame":base+10,"end_frame":base+20-u64::from(inclusive)}]}],
+                    "_human_review":{"status":"approved","reviewer":"QA","reviewedAt":"2026-10-21T00:00:00Z"}});
+                write(&f.source().join(name), doc);
+                assert!((effective(&f.source(), 30, 10.0).unwrap() - 10.0 / 3.0).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn simultaneous_human_files_use_the_result_matching_the_current_qc_signature() {
+        let f = Fixture::new();
+        write(
+            &f.source().join("session.json"),
+            json!({"qc":"通过","reviewerName":"QA","reviewedAt":"2026-10-21T01:00:00Z"}),
+        );
+        write(
+            &f.source().join("description.json"),
+            json!({"_human_review":{"status":"rejected","reviewer":"QA","reviewedAt":"2026-10-20T01:00:00Z"}}),
+        );
+        write(
+            &f.source().join("desorption.json"),
+            json!({"_human_review":{"status":"approved","reviewer":"QA","reviewedAt":"2026-10-21T01:00:00Z"},
+            "episode_results":[{"episode_id":"source","media":{"frame_count":30},"annotations":[{"start_frame":0,"end_frame":15}]}]}),
+        );
+        assert!((effective(&f.source(), 30, 10.0).unwrap() - 5.0).abs() < 1e-9);
+    }
 
     static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 

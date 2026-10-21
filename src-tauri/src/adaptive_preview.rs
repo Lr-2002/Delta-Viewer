@@ -192,7 +192,8 @@ pub fn register_preview(
 ) -> AppResult<Option<Vec<String>>> {
     let saved = read_location(data_root)?;
     let root = root.canonicalize()?;
-    let location = if saved.source_root.is_empty() || saved.preview_root.is_empty() {
+    let automatic = saved.source_root.is_empty() || saved.preview_root.is_empty();
+    let location = if automatic {
         match automatic_location(&root) {
             Some(location) => location,
             None => return Ok(None),
@@ -212,12 +213,26 @@ pub fn register_preview(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(invalid(&format!("预览目录不可访问：{error}"))),
     };
-    let directory = match preview_root.join(relative).canonicalize() {
+    let mut preview_directory = preview_root.join(relative);
+    let mut allowed_preview_root = preview_root.clone();
+    if automatic && !preview_directory.exists() {
+        let historical = crate::dataset_layout::historical(&root)?;
+        if let Some(share) = crate::dataset_layout::share_root(&root) {
+            if historical != root {
+                let old_relative = historical
+                    .strip_prefix(share)
+                    .map_err(|_| invalid("历史预览目录越界"))?;
+                allowed_preview_root = share.join("Delta-Viewer-Previews").canonicalize()?;
+                preview_directory = allowed_preview_root.join(old_relative);
+            }
+        }
+    }
+    let directory = match preview_directory.canonicalize() {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if !directory.starts_with(&preview_root) {
+    if !directory.starts_with(&allowed_preview_root) {
         return Err(invalid("预览目录越界"));
     }
     let bytes = match read_bounded(&directory.join("preview.json"), 8 * 1024 * 1024) {
@@ -326,6 +341,67 @@ pub fn register_preview(
 #[cfg(test)]
 mod automatic_tests {
     use super::*;
+    #[test]
+    fn moved_session_reuses_registered_old_preview_only_while_source_stamps_match() {
+        use serde_json::json;
+        let temp = std::env::temp_dir().join(format!(
+            "preview-layout-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp.join("Delta-D1/D1 daily/2026-09-16-Test/sample");
+        let preview = temp.join("Delta-Viewer-Previews/Delta-D1/2026-09-16-Test/sample");
+        let registry = temp.join("Delta-Viewer-TaskIndex/Delta-D1");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&preview).unwrap();
+        fs::create_dir_all(&registry).unwrap();
+        fs::write(registry.join("layout.json"),serde_json::to_vec(&json!({"moves":[{"source":"Delta-D1/2026-09-16-Test","destination":"Delta-D1/D1 daily/2026-09-16-Test","state":"completed"}]})).unwrap()).unwrap();
+        fs::write(root.join("manifest.json"), b"{}").unwrap();
+        let original = b"original";
+        fs::write(root.join("clip.mp4"), original).unwrap();
+        let path = root.join("clip.mp4").canonicalize().unwrap();
+        let modified = fs::metadata(&path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        fs::write(preview.join("0.ts"), b"preview").unwrap();
+        let document = json!({"schemaVersion":1,"sourceManifest":{"path":"manifest.json","sha256":format!("{:x}",Sha256::digest(b"{}"))},
+            "streams":{"cam0":{"mediaFps":30.0,"sources":[{"path":"clip.mp4","size":original.len(),"modifiedSeconds":modified,
+                "sampleSha256":format!("{:x}",Sha256::new().chain_update(original).chain_update(original).finalize())}],
+                "segments":[{"frameCount":30,"variants":[{"width":640,"height":360,"bandwidth":500000,"fragments":[{"path":"0.ts","duration":1.0,"size":7}]}]}]}}});
+        fs::write(
+            preview.join("preview.json"),
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        let source = VideoSource {
+            adaptive_paths: None,
+            preview_error: None,
+            fps: 30.0,
+            media_fps: 30.0,
+            segment_seconds: 1.0,
+            start_frame: 0,
+            paths: vec![path.to_string_lossy().into()],
+        };
+        let server = MediaStreamServer::start().unwrap();
+        assert_eq!(
+            register_preview(&temp.join("app"), &root, "cam0", &source, &server)
+                .unwrap()
+                .unwrap()
+                .len(),
+            1
+        );
+        fs::write(&path, b"changed!").unwrap();
+        assert!(register_preview(&temp.join("app"), &root, "cam0", &source, &server).is_err());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
     #[test]
     fn maps_sessions_to_sibling_preview_root_without_manual_configuration() {
         let root = std::env::temp_dir().join("Delta-D1");

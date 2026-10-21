@@ -3,6 +3,7 @@
 mod adaptive_preview;
 mod annotations;
 mod assigned_source;
+mod dataset_layout;
 mod episode_metadata;
 mod error;
 mod export;
@@ -878,11 +879,8 @@ async fn read_task_index(
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        task_index::load_with_receipt(
-            Path::new(&source_root),
-            &relative_path,
-            refresh_id.as_deref(),
-        )
+        let resolved = dataset_layout::resolve(Path::new(&source_root))?;
+        task_index::load_with_receipt(&resolved, &relative_path, refresh_id.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -898,7 +896,8 @@ async fn refresh_task_index(
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        task_index::request_refresh(Path::new(&source_root), &relative_paths)
+        let resolved = dataset_layout::resolve(Path::new(&source_root))?;
+        task_index::request_refresh(&resolved, &relative_paths)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -914,7 +913,8 @@ async fn rebuild_task_index(auth: State<'_, AuthState>, source_root: String) -> 
         return Err("ADMIN_REQUIRED: 仅管理员可启动服务器统计".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        task_index::request_rebuild(Path::new(&source_root))
+        let resolved = dataset_layout::resolve(Path::new(&source_root))?;
+        task_index::request_rebuild(&resolved)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1517,6 +1517,33 @@ async fn list_annotated_episodes(
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn resolve_source_path(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    path: String,
+    batch_root: Option<bool>,
+) -> Result<String, String> {
+    auth.require_user().map_err(|e| e.to_string())?;
+    let probe_root = dataset_layout::share_root(Path::new(&path)).unwrap_or(Path::new(&path));
+    ensure_source_directory_responsive(&probe_root.to_string_lossy()).await?;
+    let data_root = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let resolved = dataset_layout::resolve(Path::new(&path))?;
+        dataset_layout::cache_registry(&data_root, &resolved)?;
+        Ok::<String, error::AppError>(if batch_root.unwrap_or(false) {
+            dataset_layout::batch_root(&resolved)
+                .map(|root| root.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        } else {
+            resolved.to_string_lossy().into_owned()
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2194,6 +2221,7 @@ pub fn run() {
             save_episode_annotation,
             list_annotated_episodes,
             scan_source,
+            resolve_source_path,
             load_episode,
             validate_episode,
             prepare_import_workspace,

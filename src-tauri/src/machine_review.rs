@@ -66,6 +66,7 @@ pub struct ReviewState {
 pub struct ReviewView {
     #[serde(flatten)]
     pub review: ReviewState,
+    pub output_name: String,
     pub qc_status: String,
     pub qc_rejection_reason: String,
     pub qc_status_error: String,
@@ -77,6 +78,7 @@ pub struct ReviewView {
 pub fn view_for_root(root: &Path, review: ReviewState) -> ReviewView {
     let mut qc_content_hash = None;
     let qc = (|| -> AppResult<(String, String)> {
+        let root = crate::dataset_layout::resolve(root)?;
         let bytes = machine_annotation::read_bytes(&root.join("session.json"))?;
         qc_content_hash = bytes
             .as_ref()
@@ -109,7 +111,15 @@ pub fn view_for_root(root: &Path, review: ReviewState) -> ReviewView {
         Ok((status, reason)) => (status, reason, String::new()),
         Err(error) => ("unknown".into(), String::new(), error.to_string()),
     };
+    let output_name = if root.join(OUTPUT).exists() {
+        OUTPUT
+    } else if root.join("desorption.json").exists() {
+        "desorption.json"
+    } else {
+        OUTPUT
+    };
     ReviewView {
+        output_name: output_name.into(),
         review,
         qc_status,
         qc_rejection_reason,
@@ -222,23 +232,48 @@ fn source(root: &Path) -> AppResult<MachineAnnotation> {
     machine_annotation::load(root)?.ok_or_else(|| failure("未找到机标文件"))
 }
 
-fn output_name(annotation: &MachineAnnotation) -> &'static str {
-    let _ = annotation;
-    OUTPUT
+fn human_source(annotation: &MachineAnnotation) -> bool {
+    matches!(
+        annotation.source_name.rsplit('/').next(),
+        Some("description.json" | "desorption.json")
+    )
+}
+
+fn output_name(annotation: &MachineAnnotation, root: &Path) -> &'static str {
+    if annotation.source_name.rsplit('/').next() == Some("desorption.json")
+        || (!root.join(OUTPUT).exists() && root.join("desorption.json").exists())
+    {
+        "desorption.json"
+    } else {
+        OUTPUT
+    }
 }
 
 fn selected_draft_path(data_root: &Path, root: &Path, annotation: &MachineAnnotation) -> PathBuf {
-    let path = draft_path(data_root, root);
-    if annotation.source_name == machine_annotation::FLASH_SOURCE {
-        path.with_extension("qwen3.8-flash.json")
-    } else if annotation.source_name == machine_annotation::DEFAULT_SOURCE {
-        path
-    } else {
-        path.with_extension(format!(
-            "{}.json",
-            blake3::hash(annotation.source_name.as_bytes()).to_hex()
-        ))
+    let select = |root: &Path| {
+        let path = draft_path(data_root, root);
+        if annotation.source_name == machine_annotation::FLASH_SOURCE {
+            path.with_extension("qwen3.8-flash.json")
+        } else if annotation.source_name == machine_annotation::DEFAULT_SOURCE {
+            path
+        } else {
+            path.with_extension(format!(
+                "{}.json",
+                blake3::hash(annotation.source_name.as_bytes()).to_hex()
+            ))
+        }
+    };
+    let current = select(root);
+    if current.exists() || current.with_extension("pending.json").exists() {
+        return current;
     }
+    if let Ok(old_root) = crate::dataset_layout::historical(root) {
+        let old = select(&old_root);
+        if old.exists() || old.with_extension("pending.json").exists() {
+            return old;
+        }
+    }
+    current
 }
 
 fn draft_path(data_root: &Path, root: &Path) -> PathBuf {
@@ -288,6 +323,9 @@ fn load_inner(
 ) -> AppResult<ReviewState> {
     match load_inner_checked(data_root, root, annotation) {
         Ok(mut state) => {
+            if human_source(annotation) {
+                state.source_hash = annotation.source_hash.clone();
+            }
             if state.output_hash.is_none() {
                 state.published = false;
             }
@@ -304,7 +342,7 @@ fn load_inner(
             for path in [
                 draft.clone(),
                 draft.with_extension("pending.json"),
-                root.join(output_name(annotation)),
+                root.join(output_name(annotation, root)),
                 root.join(
                     if annotation.source_name == machine_annotation::FLASH_SOURCE {
                         LEGACY_FLASH_OUTPUT
@@ -319,7 +357,7 @@ fn load_inner(
             }
             let mut state = initial(annotation);
             state.output_hash =
-                machine_annotation::read_bytes(&root.join(output_name(annotation)))?
+                machine_annotation::read_bytes(&root.join(output_name(annotation, root)))?
                     .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
             state.recovery_warnings = vec![format!(
                 "旧人工记录或本机草稿无法解析，已保留原字节并载入机标片段；原因：{error}。本机备份：{}。请核对后保存，加载未改写人工结果或 QC。",
@@ -341,7 +379,8 @@ fn load_inner_checked(
         .map(|bytes| serde_json::from_slice::<ReviewState>(&bytes))
         .transpose()?;
     let had_draft = draft.is_some();
-    let output = match machine_annotation::read_bytes(&root.join(output_name(annotation)))? {
+    let local_revision = draft.as_ref().map_or(0, |state| state.revision);
+    let output = match machine_annotation::read_bytes(&root.join(output_name(annotation, root)))? {
         Some(bytes) => Some(bytes),
         None => machine_annotation::read_bytes(&root.join(
             if annotation.source_name == machine_annotation::FLASH_SOURCE {
@@ -382,7 +421,53 @@ fn load_inner_checked(
     }
     if let Some(bytes) = output {
         let document: Value = serde_json::from_slice(&bytes)?;
-        let Some(mut review_value) = document.get("_human_review").cloned() else {
+        let technical = technical_review(
+            &root.join(output_name(annotation, root)),
+            output_hash.as_deref().unwrap_or_default(),
+        )?;
+        let mut review_value = technical
+            .map(serde_json::to_value)
+            .transpose()?
+            .or_else(|| document.get("_human_review").cloned());
+        // Compact metadata (or an externally edited result) is reconstructed from
+        // the actual annotations, never from a sidecar for different bytes.
+        if review_value
+            .as_ref()
+            .is_some_and(|v| v.get("segments").is_none())
+        {
+            let public = review_value
+                .take()
+                .ok_or_else(|| failure("人工审核信息缺失"))?;
+            let status = public["status"].as_str().unwrap_or("pending");
+            if !matches!(status, "pending" | "approved" | "rejected") {
+                // Use the existing read-only recovery path for unknown legacy states.
+                let _: ReviewState = serde_json::from_value(public)?;
+                return Err(failure("人工审核状态未知，原文件已保留"));
+            }
+            let human =
+                machine_annotation::parse_human_in_directory(&bytes, &annotation.episode_id, root)?;
+            let mut state = initial(&human);
+            state.workflow_version = 4;
+            state.published = true;
+            state.revision = local_revision;
+            state.status = status.into();
+            state.reviewer = public["reviewer"].as_str().unwrap_or_default().into();
+            state.updated_at_ms = public["reviewedAt"]
+                .as_str()
+                .and_then(|s| {
+                    time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+                        .ok()
+                })
+                .map_or(0, |date| {
+                    (date.unix_timestamp_nanos() / 1_000_000).max(0) as u64
+                });
+            for segment in &mut state.segments {
+                segment.decision = state.status.clone();
+            }
+            state.output_hash = output_hash;
+            return recover_loaded_state(data_root, root, annotation, state);
+        }
+        let Some(mut review_value) = review_value else {
             if had_draft && document.get("episode_results").is_none() {
                 return Err(failure(
                     "description.json 不是可识别的人工标注，原文件已保留",
@@ -400,7 +485,9 @@ fn load_inner_checked(
             state.output_hash = output_hash;
             return Ok(state);
         };
-        if review_value["workflowVersion"].as_u64().unwrap_or(0) >= 4 {
+        if review_value["workflowVersion"].as_u64().unwrap_or(0) >= 4
+            && review_value.get("reviewRevision").is_some()
+        {
             let sequence = review_value
                 .as_object_mut()
                 .and_then(|fields| fields.remove("reviewRevision"))
@@ -522,7 +609,7 @@ fn load_inner_checked(
 #[cfg(test)]
 pub fn load(data_root: &Path, root: &Path) -> AppResult<ReviewState> {
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
-    let root = root.canonicalize()?;
+    let root = crate::dataset_layout::resolve(root)?.canonicalize()?;
     load_inner(data_root, &root, &source(&root)?)
 }
 
@@ -532,7 +619,7 @@ pub fn load_selected(
     source_name: Option<&str>,
 ) -> AppResult<ReviewState> {
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
-    let root = root.canonicalize()?;
+    let root = crate::dataset_layout::resolve(root)?.canonicalize()?;
     let annotation = machine_annotation::load_for_review(&root, source_name)?
         .ok_or_else(|| failure("未找到机标文件"))?;
     load_inner(data_root, &root, &annotation)
@@ -560,7 +647,7 @@ fn recover_loaded_state(
     for path in [
         draft.clone(),
         draft.with_extension("pending.json"),
-        root.join(output_name(annotation)),
+        root.join(output_name(annotation, root)),
     ] {
         if let Some(bytes) = machine_annotation::read_bytes(&path)? {
             preserve_recovery_bytes(data_root, &bytes)?;
@@ -867,20 +954,11 @@ fn reviewed_document(annotation: &MachineAnnotation, state: &ReviewState) -> App
         episode["annotation_count"] = json!(patched.len());
     }
     episode["annotations"] = Value::Array(patched);
-    let mut metadata = state.clone();
-    metadata.output_hash = None;
-    metadata.workflow_version = 4;
-    metadata.segments.retain(|item| !item.deleted);
-    let mut published = serde_json::to_value(metadata)?;
-    published["reviewRevision"] = published["revision"].clone();
-    published["revision"] = json!(state.revision_label);
-    published.as_object_mut().unwrap().remove("revisionLabel");
-    for segment in published["segments"].as_array_mut().unwrap() {
-        let fields = segment.as_object_mut().unwrap();
-        fields.remove("decision");
-        fields.remove("deleted");
-    }
-    document["_human_review"] = published;
+    document
+        .as_object_mut()
+        .ok_or_else(|| failure("人工结果必须是对象"))?
+        .remove("_text_correction");
+    document["_human_review"] = public_review(state)?;
     Ok(document)
 }
 
@@ -890,10 +968,11 @@ fn human_document(
     state: &ReviewState,
     root: &Path,
 ) -> AppResult<Value> {
-    let mut document: Value = machine_annotation::read_bytes(&root.join(OUTPUT))?
-        .map(|bytes| serde_json::from_slice(&bytes))
-        .transpose()?
-        .unwrap_or(serde_json::from_str(&annotation.source_json)?);
+    let mut document: Value =
+        machine_annotation::read_bytes(&root.join(output_name(annotation, root)))?
+            .map(|bytes| serde_json::from_slice(&bytes))
+            .transpose()?
+            .unwrap_or(serde_json::from_str(&annotation.source_json)?);
     if document.get("episode_results").is_none() {
         document = serde_json::from_str(&annotation.source_json)?;
     }
@@ -939,24 +1018,109 @@ fn human_document(
     if episode.get("segments").is_some() {
         episode["segments"] = json!(rows);
     }
-    // Publication metadata keeps the internal counter separate from the visible label.
-    let mut published = serde_json::to_value(state)?;
-    published["outputHash"] = Value::Null;
-    published["workflowVersion"] = json!(4);
-    published["reviewRevision"] = json!(state.revision);
-    published["revision"] = json!(state.revision_label);
-    published.as_object_mut().unwrap().remove("revisionLabel");
-    published["segments"] = json!(state
-        .segments
-        .iter()
-        .filter(|item| !item.deleted)
-        .collect::<Vec<_>>());
-    for item in published["segments"].as_array_mut().unwrap() {
-        item.as_object_mut().unwrap().remove("deleted");
-        item.as_object_mut().unwrap().remove("decision");
-    }
-    document["_human_review"] = published;
+    document
+        .as_object_mut()
+        .ok_or_else(|| failure("人工结果必须是对象"))?
+        .remove("_text_correction");
+    document["_human_review"] = public_review(state)?;
     Ok(document)
+}
+
+// The human result is a data deliverable. Recovery/CAS state is app metadata.
+fn public_review(state: &ReviewState) -> AppResult<Value> {
+    let date = time::OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(state.updated_at_ms) * 1_000_000,
+    )
+    .map_err(|_| failure("审核时间无效"))?
+    .format(&time::format_description::well_known::Rfc3339)
+    .map_err(|_| failure("审核时间格式无效"))?;
+    Ok(
+        json!({"status":state.status,"reviewer":if state.status == "pending" { "" } else { &state.reviewer },
+        "reviewedAt":if state.status == "pending" { "" } else { &date }}),
+    )
+}
+
+pub(crate) fn technical_path(output: &Path) -> PathBuf {
+    output.with_file_name(format!(
+        ".{}.review-state.json",
+        output.file_stem().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+fn technical_review(output: &Path, content_hash: &str) -> AppResult<Option<ReviewState>> {
+    let Some(bytes) = machine_annotation::read_bytes(&technical_path(output))? else {
+        return Ok(None);
+    };
+    let record: Value = serde_json::from_slice(&bytes)?;
+    if record["schemaVersion"] != 1
+        || record["contentHash"].as_str() != Some(content_hash)
+        || record["outputName"].as_str() != output.file_name().and_then(|s| s.to_str())
+    {
+        return Ok(None);
+    }
+    record
+        .get("review")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn write_technical(output: &Path, content_hash: &str, state: &ReviewState) -> AppResult<()> {
+    let path = technical_path(output);
+    // Validate an existing reserved file before replacing it.
+    if let Some(bytes) = machine_annotation::read_bytes(&path)? {
+        let old: Value = serde_json::from_slice(&bytes)?;
+        if old["schemaVersion"] != 1 {
+            return Err(failure("技术记录格式未知，未覆盖；请保留文件后联系管理员"));
+        }
+    }
+    atomic_json(
+        &path,
+        &json!({"schemaVersion":1,"outputName":output.file_name().and_then(|s| s.to_str()).unwrap_or_default(),
+        "contentHash":content_hash,"review":state}),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn correction_technical(
+    output: &Path,
+    before: &str,
+    document: &Value,
+    correction: Value,
+) -> AppResult<()> {
+    let after = blake3::hash(&serde_json::to_vec_pretty(document)?)
+        .to_hex()
+        .to_string();
+    let mut record = json!({"schemaVersion":1,"outputName":output.file_name().and_then(|s| s.to_str()).unwrap_or_default(),
+        "contentHash":after,"correction":correction});
+    if let Some(mut review) = technical_review(output, before)? {
+        review.revision = review
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| failure("修订计数超限"))?;
+        review.output_hash = Some(after);
+        if document["_human_review"]["status"] == "pending" {
+            review.status = "pending".into();
+            review.reviewer.clear();
+            review.reviewer_username.clear();
+            review.rejection_reason.clear();
+        }
+        record["review"] = serde_json::to_value(review)?;
+    }
+    atomic_json(&technical_path(output), &record)?;
+    Ok(())
+}
+
+fn has_correction(output: &Path, content_hash: Option<&str>) -> AppResult<bool> {
+    let Some(bytes) = machine_annotation::read_bytes(&technical_path(output))? else {
+        return Ok(false);
+    };
+    let record: Value = serde_json::from_slice(&bytes)?;
+    Ok(record["schemaVersion"] == 1
+        && record["contentHash"].as_str() == content_hash
+        && record.get("correction").is_some())
 }
 
 pub(crate) fn atomic_json(path: &Path, document: &Value) -> AppResult<String> {
@@ -1062,6 +1226,7 @@ pub fn save_with_event_for_user(
 }
 
 fn pending_qc(root: &Path) -> AppResult<bool> {
+    let root = crate::dataset_layout::resolve(root)?;
     let session: Value = machine_annotation::read_bytes(&root.join("session.json"))?
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?
@@ -1188,13 +1353,18 @@ fn reject_pending_without_media(
     deferred: Option<(String, u64)>,
 ) -> AppResult<Option<ReviewState>> {
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
-    let root = root.canonicalize()?;
+    let root = crate::dataset_layout::resolve(root)?.canonicalize()?;
     let write_root = storage::review_write_root(&root)?;
     let _output_lock = lock_file(&write_root.join(".description.lock"))?;
     if !pending_qc(&write_root)? {
         return Ok(None);
     }
-    for name in [OUTPUT, LEGACY_OUTPUT, LEGACY_FLASH_OUTPUT] {
+    for name in [
+        OUTPUT,
+        "desorption.json",
+        LEGACY_OUTPUT,
+        LEGACY_FLASH_OUTPUT,
+    ] {
         if let Some(bytes) = machine_annotation::read_bytes(&write_root.join(name))? {
             if let Ok(document) = serde_json::from_slice::<Value>(&bytes) {
                 if matches!(
@@ -1362,7 +1532,7 @@ fn save_for_user_mode(
         .as_ref()
         .is_some_and(|snapshot| snapshot.only_pending);
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
-    let root = Path::new(&request.source_path).canonicalize()?;
+    let root = crate::dataset_layout::resolve(Path::new(&request.source_path))?.canonicalize()?;
     let annotation = machine_annotation::load_for_review(
         &root,
         request
@@ -1383,8 +1553,8 @@ fn save_for_user_mode(
     let draft = selected_draft_path(data_root, &root, &annotation);
     fs::create_dir_all(draft.parent().ok_or_else(|| failure("草稿目录无效"))?)?;
     let _draft_lock = lock_file(&draft.with_extension("lock"))?;
-    let output = output_name(&annotation);
-    let lock_path = write_root.join(format!(".{}.lock", output.trim_end_matches(".json")));
+    let output = output_name(&annotation, &write_root);
+    let lock_path = write_root.join(".description.lock");
     let _output_lock = lock_file(&lock_path)?;
     if let Some(snapshot) = pending_snapshot
         .as_ref()
@@ -1402,9 +1572,10 @@ fn save_for_user_mode(
         return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
     }
     let current = load_inner(data_root, &root, &annotation)?;
-    if machine_annotation::read_bytes(&write_root.join(output))?
+    if (machine_annotation::read_bytes(&write_root.join(output))?
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .is_some_and(|doc| doc.get("_text_correction").is_some())
+        || has_correction(&write_root.join(output), current.output_hash.as_deref())?)
         && request.expected_revision != current.revision
     {
         return Err(failure("描述已由管理员勘误，请重新读取后继续审核"));
@@ -1523,7 +1694,7 @@ fn save_for_user_mode(
         ..current
     };
     if state.published {
-        let output = output_name(&annotation);
+        let output = output_name(&annotation, &write_root);
         let session_path = write_root.join("session.json");
         let mut session: Value = machine_annotation::read_bytes(&session_path)?
             .map(|bytes| serde_json::from_slice(&bytes))
@@ -1546,7 +1717,8 @@ fn save_for_user_mode(
             if actual != expected_output_hash {
                 return Err(failure("复核结果已改变，拒绝覆盖"));
             }
-            let document = if state.source_hash != annotation.source_hash
+            let document = if human_source(&annotation)
+                || state.source_hash != annotation.source_hash
                 || request.source_hash != annotation.source_hash
                 || annotation.segments.iter().any(|original| {
                     !state
@@ -1566,11 +1738,25 @@ fn save_for_user_mode(
             );
             atomic_json(
                 &draft.with_extension("pending.json"),
-                &serde_json::to_value(pending)?,
+                &serde_json::to_value(&pending)?,
+            )?;
+            write_technical(
+                &write_root.join(output),
+                pending
+                    .output_hash
+                    .as_deref()
+                    .ok_or_else(|| failure("缺少人工结果指纹"))?,
+                &pending,
             )?;
             atomic_json(&write_root.join(output), &document)
         })();
         state.output_hash = Some(result?);
+        if human_source(&annotation) {
+            state.source_hash = state
+                .output_hash
+                .clone()
+                .ok_or_else(|| failure("缺少人工结果指纹"))?;
+        }
         let qc = match state.status.as_str() {
             "approved" => "通过",
             "rejected" => "不通过",
@@ -1799,12 +1985,19 @@ pub fn is_review_path(root: &Path, path: &Path) -> bool {
             .and_then(|name| name.to_str())
             .is_some_and(|name| {
                 name == OUTPUT
+                    || name == "desorption.json"
                     || name == FLASH_OUTPUT
                     || name == LEGACY_OUTPUT
                     || name == LEGACY_FLASH_OUTPUT
                     || name == ".review.3.8max.lock"
                     || name == ".review.3.8flash.lock"
                     || name == ".description.lock"
+                    || name == ".description.review-state.json"
+                    || name == ".desorption.review-state.json"
+                    || name.starts_with("..description.review-state.json.partial-")
+                    || name.starts_with("..desorption.review-state.json.partial-")
+                    || name.starts_with(".description.json.partial-")
+                    || name.starts_with(".desorption.json.partial-")
                     || name.starts_with(".session.json.partial-")
                     || name.starts_with(".review.3.8max.json.partial-")
                     || name.starts_with(".review.3.8flash.json.partial-")
@@ -1819,6 +2012,254 @@ pub fn is_review_path(root: &Path, path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn compact_metadata_is_read_only_until_save_and_stale_technical_bytes_are_not_applied() {
+        let f = Fixture::new(0, true);
+        let state = load(&f.local, &f.root).unwrap();
+        let saved = f.save(&state).unwrap();
+        let before = fs::read(f.root.join(OUTPUT)).unwrap();
+        let sidecar = fs::read(technical_path(&f.root.join(OUTPUT))).unwrap();
+        let fresh = load(&f.temp.join("fresh-host"), &f.root).unwrap();
+        assert_eq!(fresh.revision, saved.revision);
+        assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), before);
+        assert_eq!(
+            fs::read(technical_path(&f.root.join(OUTPUT))).unwrap(),
+            sidecar
+        );
+        let mut external = f.output();
+        external["episode_results"][0]["annotations"]
+            .as_array_mut()
+            .unwrap()
+            .remove(1);
+        external["episode_results"][0]["annotation_count"] = json!(2);
+        atomic_json(&f.root.join(OUTPUT), &external).unwrap();
+        let loaded = load(&f.temp.join("other-host"), &f.root).unwrap();
+        assert_eq!(loaded.segments.iter().filter(|s| !s.deleted).count(), 2);
+        assert_eq!(
+            loaded.revision, 0,
+            "mismatched sidecar must not supply a revision or segments"
+        );
+        assert_eq!(
+            external["_human_review"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["reviewedAt", "reviewer", "status"]
+        );
+    }
+
+    #[test]
+    fn compact_human_result_supports_corrections_undo_and_pending_semantics() {
+        let f = Fixture::new(0, true);
+        let mut initial = load(&f.local, &f.root).unwrap();
+        initial.segments[0].description = "原始动作".into();
+        let saved = save_for_user(
+            &f.local,
+            SaveReviewRequest {
+                source_path: f.root.to_string_lossy().into(),
+                source_name: None,
+                source_hash: initial.source_hash,
+                expected_revision: 0,
+                segments: initial.segments,
+                status: Some("approved".into()),
+                rejection_reason: None,
+            },
+            "Reviewer",
+            "alice",
+        )
+        .unwrap();
+        for mode in ["typo", "semantic"] {
+            let state = load(&f.local, &f.root).unwrap();
+            let path = f.root.join(OUTPUT);
+            let file_hash = blake3::hash(&fs::read(&path).unwrap()).to_hex().to_string();
+            let session_hash = blake3::hash(&fs::read(f.root.join("session.json")).unwrap())
+                .to_hex()
+                .to_string();
+            let changes = vec![crate::text_quality::Correction {
+                file_path: path.to_string_lossy().into(),
+                file_hash,
+                session_hash,
+                segment_index: 0,
+                original: state.segments[0].description.clone(),
+                replacement: format!("更正动作{mode}"),
+            }];
+            let result = crate::text_quality::apply(
+                &f.local,
+                &f.root,
+                changes,
+                mode,
+                "核对修正",
+                "Admin",
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert!(result[0].error.is_empty(), "{}", result[0].error);
+            let corrected = load(&f.temp.join(format!("fresh-{mode}")), &f.root).unwrap();
+            assert_eq!(corrected.segments[0].description, format!("更正动作{mode}"));
+            assert_eq!(
+                corrected.status,
+                if mode == "typo" {
+                    "approved"
+                } else {
+                    "pending"
+                }
+            );
+            assert_eq!(f.output()["_human_review"].as_object().unwrap().len(), 3);
+            assert!(f.output().get("_text_correction").is_none());
+            crate::text_quality::undo(&f.local, result[0].history_id.as_deref().unwrap(), "Admin")
+                .unwrap();
+            let undone = load(&f.temp.join(format!("undo-{mode}")), &f.root).unwrap();
+            assert_eq!(
+                undone.segments[0].description,
+                state.segments[0].description
+            );
+            assert!(undone.revision > saved.revision);
+            if mode == "semantic" {
+                assert_eq!(undone.status, "pending");
+            }
+        }
+    }
+
+    #[test]
+    fn selected_human_source_self_save_does_not_block_guarded_offline_writeback() {
+        for name in ["description.json", "desorption.json"] {
+            let f = Fixture::new(0, true);
+            let initial = load(&f.local, &f.root).unwrap();
+            f.save(&initial).unwrap();
+            if name == "desorption.json" {
+                fs::rename(f.root.join(OUTPUT), f.root.join(name)).unwrap();
+            }
+            let selected = format!("./{name}");
+            let state = load_selected(&f.local, &f.root, Some(&selected)).unwrap();
+            let request = |state: &ReviewState, status: &str| SaveReviewRequest {
+                source_path: f.root.to_string_lossy().into(),
+                source_name: Some(selected.clone()),
+                source_hash: state.source_hash.clone(),
+                expected_revision: state.revision,
+                segments: state.segments.clone(),
+                status: Some(status.into()),
+                rejection_reason: Some("动作失范".into()),
+            };
+            let saved = save_for_user(&f.local, request(&state, "pending"), "QA", "qa").unwrap();
+            let view = view_for_root(&f.root, saved.clone());
+            let approved = publish_deferred_for_user(
+                &f.local,
+                request(&saved, "approved"),
+                saved.output_hash.clone(),
+                view.qc_content_hash,
+                "QA",
+                "qa",
+                ("55555555-5555-4555-8555-555555555555".into(), 1792548000000),
+            )
+            .unwrap();
+            assert_eq!(approved.status, "approved");
+            assert_eq!(
+                approved.source_hash,
+                approved.output_hash.as_deref().unwrap()
+            );
+            let doc: Value = serde_json::from_slice(&fs::read(f.root.join(name)).unwrap()).unwrap();
+            assert_eq!(doc["_human_review"].as_object().unwrap().len(), 3);
+            let fresh =
+                load_selected(&f.temp.join("fresh-host"), &f.root, Some(&selected)).unwrap();
+            assert_eq!(fresh.status, "approved");
+            assert_eq!(fresh.source_hash, approved.source_hash);
+        }
+    }
+
+    #[test]
+    fn technical_write_failure_preserves_the_human_result_and_qc() {
+        let f = Fixture::new(0, true);
+        let state = load(&f.local, &f.root).unwrap();
+        fs::create_dir(technical_path(&f.root.join(OUTPUT))).unwrap();
+        assert!(f.save(&state).is_err());
+        assert!(!f.root.join(OUTPUT).exists());
+        assert!(!f.root.join("session.json").exists());
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            f.original
+        );
+    }
+
+    #[test]
+    fn relocated_offline_queue_uses_local_alias_and_publishes_original_event_once() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        let old = f.temp.join("Delta-D1/2026-09-16-Test/sample");
+        let moved = f.temp.join("Delta-D1/D1 daily/2026-09-16-Test/sample");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::rename(&f.root, &old).unwrap();
+        let state = load(&f.local, &old).unwrap();
+        let id = "44444444-4444-4444-8444-444444444444";
+        let at = 1792548000000u64;
+        queue::store(
+            &f.local,
+            "s",
+            "alice",
+            queue::DeferredReview {
+                request: SaveReviewRequest {
+                    source_path: old.to_string_lossy().into(),
+                    source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+                    source_hash: state.source_hash,
+                    expected_revision: state.revision,
+                    segments: state.segments,
+                    status: Some("approved".into()),
+                    rejection_reason: None,
+                },
+                output_hash: None,
+                qc_content_hash: None,
+                only_pending: false,
+                audit: json!({"eventId":id,"action":"approved","occurredAtMs":at,"details":{}}),
+                error: "REVIEW_STORAGE_FULL".into(),
+                created_at_ms: 0,
+            },
+        )
+        .unwrap();
+        fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        fs::rename(&old, &moved).unwrap();
+        let registry = f.temp.join("Delta-Viewer-TaskIndex/Delta-D1/layout.json");
+        fs::create_dir_all(registry.parent().unwrap()).unwrap();
+        let config = json!({"moves":[{"source":"Delta-D1/2026-09-16-Test","destination":"Delta-D1/D1 daily/2026-09-16-Test","state":"completed"}]});
+        atomic_json(&registry, &config).unwrap();
+        crate::dataset_layout::cache_registry(&f.local, &moved).unwrap();
+        fs::remove_file(&registry).unwrap();
+        let local = queue::get(
+            &f.local,
+            "s",
+            "alice",
+            &moved.to_string_lossy(),
+            Some(machine_annotation::DEFAULT_SOURCE),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(local.audit["eventId"], id);
+        assert!(queue::get(
+            &f.local,
+            "s",
+            "bob",
+            &moved.to_string_lossy(),
+            Some(machine_annotation::DEFAULT_SOURCE)
+        )
+        .unwrap()
+        .is_none());
+        assert!(queue::contains_path(&f.local, "s", "alice", &moved.to_string_lossy()).unwrap());
+        atomic_json(&registry, &config).unwrap();
+        let user = crate::model::UserIdentity {
+            username: "alice".into(),
+            display_name: "Alice".into(),
+            role: Some("operator".into()),
+        };
+        let result =
+            queue::publish_with_probe(&f.local, "s", &user, &AtomicBool::new(false), &|_| Ok(()))
+                .unwrap();
+        assert_eq!((result.written, result.remaining), (1, 0));
+        let saved = load(&f.temp.join("fresh"), &moved).unwrap();
+        assert_eq!(saved.version_id, id.replace('-', ""));
+        assert_eq!(saved.updated_at_ms, at);
+        assert_eq!(view_for_root(&moved, saved).qc_status, "approved");
+    }
 
     #[test]
     fn save_io_errors_distinguish_full_permissions_timeout_and_unknown() {
@@ -2701,6 +3142,142 @@ mod tests {
         );
     }
 
+    #[test]
+    fn grouped_moved_batches_keep_conclusions_and_structural_edits_on_fresh_hosts() {
+        for selected in [
+            machine_annotation::DEFAULT_SOURCE,
+            "./description.json",
+            "./desorption.json",
+        ] {
+            let f = Fixture::new(0, true);
+            let state = load_selected(&f.local, &f.root, None).unwrap();
+            f.save(&state).unwrap();
+            let root = f.temp.join("Delta-D1/D1 daily/2026-09-16-Test/sample");
+            fs::create_dir_all(root.parent().unwrap()).unwrap();
+            fs::rename(&f.root, &root).unwrap();
+            if selected.ends_with("desorption.json") {
+                fs::rename(root.join(OUTPUT), root.join("desorption.json")).unwrap();
+            }
+            let mut state = load_selected(&f.temp.join("new-host"), &root, Some(selected)).unwrap();
+            let mut segments = state.segments.clone();
+            segments[1].deleted = true;
+            segments[0].description = "目录移动后保留文字".into();
+            segments.push(ReviewSegment {
+                source_index: 3,
+                start_frame: 1,
+                end_frame: 2,
+                description: "新增片段".into(),
+                deleted: false,
+                decision: "pending".into(),
+            });
+            for status in ["pending", "approved", "rejected"] {
+                state = save_for_user(
+                    &f.temp.join("new-host"),
+                    SaveReviewRequest {
+                        source_path: root.to_string_lossy().into(),
+                        source_name: Some(selected.into()),
+                        source_hash: state.source_hash.clone(),
+                        expected_revision: state.revision,
+                        segments: segments.clone(),
+                        status: Some(status.into()),
+                        rejection_reason: Some("动作失范".into()),
+                    },
+                    "QA",
+                    "qa",
+                )
+                .unwrap();
+                let other = load_selected(
+                    &f.temp.join(format!("fresh-{status}")),
+                    &root,
+                    Some(selected),
+                )
+                .unwrap();
+                assert_eq!(view_for_root(&root, other.clone()).qc_status, status);
+                assert_eq!(other.status, status);
+                let output = if selected.ends_with("desorption.json") {
+                    "desorption.json"
+                } else {
+                    OUTPUT
+                };
+                let doc: Value =
+                    serde_json::from_slice(&fs::read(root.join(output)).unwrap()).unwrap();
+                let annotations = doc["episode_results"][0]["annotations"].as_array().unwrap();
+                assert_eq!(
+                    annotations.len(),
+                    3,
+                    "deleted one and added one: {selected}, {status}"
+                );
+                assert!(!annotations.iter().any(|a| a["segment_id"] == "seg1"));
+                assert!(other
+                    .segments
+                    .iter()
+                    .any(|s| !s.deleted && s.description == "新增片段"));
+                assert_eq!(
+                    other.segments.iter().filter(|s| !s.deleted).count(),
+                    3,
+                    "{selected}, {status}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "Local metadata-only reproduction; writes solely into a temporary fixture"]
+    fn moved_private_metadata_roundtrip() {
+        let original = PathBuf::from(std::env::var("DELTA_LAYOUT_SAMPLE").unwrap());
+        let f = Fixture::new(0, true);
+        let root = f.temp.join(original.file_name().unwrap());
+        fs::create_dir_all(root.join(".session_meta")).unwrap();
+        for name in [
+            "description.json",
+            "session.json",
+            ".session_meta/bailian_annotation.qwen3.8-flash.json",
+            ".session_meta/manifest.json",
+        ] {
+            fs::copy(original.join(name), root.join(name)).unwrap();
+        }
+        let state = load_selected(&f.local, &root, None).unwrap();
+        let ann = machine_annotation::load_for_review(&root, None)
+            .unwrap()
+            .unwrap();
+        let mut edits = state.segments.clone();
+        edits[0].deleted = true;
+        edits.push(ReviewSegment {
+            source_index: edits.iter().map(|s| s.source_index).max().unwrap() + 1,
+            start_frame: 0,
+            end_frame: 1,
+            description: "隔离新增片段".into(),
+            deleted: false,
+            decision: "pending".into(),
+        });
+        let saved = save_for_user(
+            &f.local,
+            SaveReviewRequest {
+                source_path: root.to_string_lossy().into(),
+                source_name: Some(ann.source_name),
+                source_hash: state.source_hash,
+                expected_revision: state.revision,
+                segments: edits,
+                status: Some("rejected".into()),
+                rejection_reason: Some("动作失范".into()),
+            },
+            "QA",
+            "qa",
+        )
+        .unwrap();
+        let loaded = load_selected(&f.temp.join("fresh-account"), &root, None).unwrap();
+        assert_eq!(loaded.status, "rejected");
+        assert_eq!(view_for_root(&root, loaded.clone()).qc_status, "rejected");
+        assert!(loaded
+            .segments
+            .iter()
+            .any(|s| s.description == "隔离新增片段"));
+        assert_eq!(
+            loaded.segments.iter().filter(|s| !s.deleted).count(),
+            saved.segments.iter().filter(|s| !s.deleted).count()
+        );
+    }
+
     struct Fixture {
         temp: PathBuf,
         root: PathBuf,
@@ -3031,10 +3608,17 @@ mod tests {
             assert_eq!(session["device"]["serial"], "keep");
             assert!(session.get("decision").is_none() && session.get("deleted").is_none());
             let published = f.output();
-            assert_eq!(published["_human_review"]["revision"], session["revision"]);
-            for item in published["_human_review"]["segments"].as_array().unwrap() {
-                assert!(item.get("decision").is_none() && item.get("deleted").is_none());
-            }
+            assert_eq!(published["_human_review"].as_object().unwrap().len(), 3);
+            assert_eq!(published["_human_review"]["reviewer"], "张审核");
+            assert!(published["_human_review"]["reviewedAt"]
+                .as_str()
+                .unwrap()
+                .contains('T'));
+            let technical =
+                technical_review(&f.root.join(OUTPUT), state.output_hash.as_deref().unwrap())
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(technical.revision_label, session["revision"]);
             let reloaded = load(&f.temp.join(format!("another-host-{index}")), &f.root).unwrap();
             assert_eq!(reloaded.rejection_reason, reason);
             assert_eq!(reloaded.revision_label, state.revision_label);
@@ -3179,13 +3763,13 @@ mod tests {
                 assert_eq!(values[1]["start_frame"], 10 + base);
                 assert_eq!(values[1]["end_frame"], 29 + base + u64::from(exclusive));
             }
-            let public = output["_human_review"]["segments"].as_array().unwrap();
-            assert_eq!(public.len(), 2);
-            assert!(public.iter().all(|item| item.get("deleted").is_none()
-                && item.get("decision").is_none()
-                && item["sourceIndex"] != 1));
-            assert_eq!(public[1]["startFrame"], 10);
-            assert_eq!(output["_human_review"]["workflowVersion"], 4);
+            assert_eq!(output["_human_review"].as_object().unwrap().len(), 3);
+            let technical =
+                technical_review(&f.root.join(OUTPUT), saved.output_hash.as_deref().unwrap())
+                    .unwrap()
+                    .unwrap();
+            assert!(technical.segments[1].deleted);
+            assert_eq!(technical.segments[2].start_frame, 10);
             let reopened = load(&f.temp.join("new-host"), &f.root).unwrap();
             assert_eq!(reopened.segments, saved.segments);
             assert_eq!(
@@ -3196,7 +3780,7 @@ mod tests {
             retry.segments[2].description = "new edit".into();
             f.save(&retry).unwrap();
             assert_eq!(
-                f.output()["_human_review"]["segments"]
+                f.output()["episode_results"][0]["annotations"]
                     .as_array()
                     .unwrap()
                     .len(),
@@ -3246,7 +3830,7 @@ mod tests {
         let output: Value =
             serde_json::from_slice(&fs::read(native_root.join(OUTPUT)).unwrap()).unwrap();
         assert_eq!(
-            output["_human_review"]["segments"]
+            output["episode_results"][0]["annotations"]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -3860,6 +4444,15 @@ mod tests {
         let state = load(&f.local, &f.root).unwrap();
         f.save(&state).unwrap();
         let mut doc = f.output();
+        let legacy = technical_review(
+            &f.root.join(OUTPUT),
+            blake3::hash(&fs::read(f.root.join(OUTPUT)).unwrap())
+                .to_hex()
+                .as_ref(),
+        )
+        .unwrap()
+        .unwrap();
+        doc["_human_review"] = serde_json::to_value(legacy).unwrap();
         doc["_human_review"]["status"] = json!("legacy-approved");
         let original = serde_json::to_vec(&doc).unwrap();
         fs::write(f.root.join(OUTPUT), &original).unwrap();
@@ -3882,7 +4475,19 @@ mod tests {
         let mut doc = f.output();
         doc["episode_results"][0]["episode_id"] = json!("original_folder_009");
         doc["asset_id"] = json!("original_folder_009");
-        doc["_human_review"]["sourceHash"] = json!("older-model-hash");
+        let mut legacy = serde_json::to_value(
+            technical_review(
+                &f.root.join(OUTPUT),
+                blake3::hash(&fs::read(f.root.join(OUTPUT)).unwrap())
+                    .to_hex()
+                    .as_ref(),
+            )
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+        legacy["sourceHash"] = json!("older-model-hash");
+        doc["_human_review"] = legacy;
         let original = serde_json::to_vec(&doc).unwrap();
         fs::write(f.root.join(OUTPUT), &original).unwrap();
         let restored = load(&f.temp.join("fresh"), &f.root).unwrap();
