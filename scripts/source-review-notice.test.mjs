@@ -12,7 +12,7 @@ test("local review results persistently show pending, prompt on recovery, requir
       res.setHeader("Content-Type", "text/html");
       res.end(await vite.transformIndexHtml(req.url, `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module">
         import React from 'react'; import {createRoot} from 'react-dom/client'; import {SourceReviewNotice} from '/src/components/SourceReviewNotice.tsx'; import '/src/styles.css';
-        window.queue={pending:2,ready:false,storageError:'REVIEW_STORAGE_FULL: NAS 空间不足',items:[{name:'sample-long-name-001',sourcePath:'/sample/001',status:'approved',error:'REVIEW_STORAGE_FULL',createdAtMs:1792548000000}]};
+        window.queue={pending:2,ready:false,storageError:'REVIEW_STORAGE_FULL: NAS 空间不足',items:[{name:'sample-long-name-001',sourcePath:'/sample/001',status:'approved',error:'REVIEW_STORAGE_FULL',createdAtMs:1792548000000},{name:'sample-long-name-001',sourcePath:'/sample/001',channel:'skeleton',status:'pending',error:'REVIEW_STORAGE_FULL',createdAtMs:1792548000001}]};
         window.uploads=0;window.busy=[];window.written=0;
         const root=createRoot(document.getElementById('root'));window.renderNotice=(disabled=false,key='alice')=>root.render(React.createElement(SourceReviewNotice,{key,disabled,onBusy:value=>window.busy.push(value),onWritten:()=>window.written++}));window.renderNotice();
       </script></body></html>`));
@@ -29,13 +29,15 @@ test("local review results persistently show pending, prompt on recovery, requir
   ` }));
   await page.clock.install();
   await page.goto(server.resolvedUrls.local[0] + "__source-review");
-  await page.getByText("2 条审核结果已保存本机，待写回数据目录").waitFor();
+  await page.getByText("2 条结果已保存本机，待写回数据目录").waitFor();
   assert.equal(await page.getByRole("dialog").count(), 0);
   assert.equal(await page.evaluate(() => window.uploads), 0);
   await page.evaluate(() => { window.queue.ready = true; window.queue.storageError = ''; });
   await page.clock.fastForward(30001);
   const dialog = page.getByRole("dialog", { name: "本机审核结果待写回" });
   await dialog.waitFor();
+  assert.equal(await dialog.getByText("sample-long-name-001 · 骨架描述", {exact:true}).count(), 1);
+  assert.equal(await dialog.getByText("sample-long-name-001 · 本机通过", {exact:true}).count(), 1);
   assert.equal(await page.evaluate(() => window.uploads), 0, "recovery cannot write without confirmation");
   const confirm = dialog.getByRole("button", { name: "确认写回数据目录" });
   await mkdir("artifacts/review-submit-1.1.9", { recursive: true });
@@ -70,6 +72,6 @@ test("local review results persistently show pending, prompt on recovery, requir
   await page.evaluate(() => { window.queryFail = true; });
   await page.clock.fastForward(30001);
   await page.getByText('本机待写结果状态未知，请重新检查').waitFor();
-  assert.equal(await page.getByText(/条审核结果已保存本机/).count(),0,'a failed query must not claim local results were saved');
+  assert.equal(await page.getByText(/条结果已保存本机/).count(),0,'a failed query must not claim local results were saved');
   assert.deepEqual(errors, []);
 });

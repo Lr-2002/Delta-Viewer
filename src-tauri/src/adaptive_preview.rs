@@ -216,14 +216,18 @@ pub fn register_preview(
     let mut preview_directory = preview_root.join(relative);
     let mut allowed_preview_root = preview_root.clone();
     if automatic && !preview_directory.exists() {
-        let historical = crate::dataset_layout::historical(&root)?;
         if let Some(share) = crate::dataset_layout::share_root(&root) {
-            if historical != root {
+            for historical in crate::dataset_layout::historical_paths_for(&root)? {
                 let old_relative = historical
                     .strip_prefix(share)
                     .map_err(|_| invalid("历史预览目录越界"))?;
-                allowed_preview_root = share.join("Delta-Viewer-Previews").canonicalize()?;
-                preview_directory = allowed_preview_root.join(old_relative);
+                let old_root = share.join("Delta-Viewer-Previews");
+                let candidate = old_root.join(old_relative);
+                if candidate.exists() {
+                    allowed_preview_root = old_root.canonicalize()?;
+                    preview_directory = candidate;
+                    break;
+                }
             }
         }
     }

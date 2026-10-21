@@ -1628,3 +1628,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-review-notice .button { flex: none; font-size: 12px; }
 .source-review-dialog footer { display: flex; flex-wrap: wrap; gap: 8px; }
 .source-review-dialog .batch-rejection-results li { display: flex; flex-direction: column; overflow-wrap: anywhere; }
+
+/* Both annotation channels share one editor and timeline, with a clear active tab. */
+.segment-channel-tabs { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.segment-channel-tabs button { padding: 7px 9px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); font: inherit; font-size: 15px; font-weight: 650; cursor: pointer; }
+.segment-channel-tabs button.active { color: var(--ink); border-color: var(--line); background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.segment-channel-tabs button:focus-visible { outline: 2px solid #167c78; outline-offset: 2px; }
+.segment-channel-tabs button:disabled { cursor: wait; opacity: .55; }

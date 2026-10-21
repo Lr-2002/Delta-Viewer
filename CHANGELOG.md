@@ -3,6 +3,13 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.2.2 - 2026-10-21
+
+- “动作片段”旁新增“骨架片段”切换入口，初次为空，不导入机标动作。支持新增、删除、恢复、裁剪、边界微调、片段回放和现有键盘快捷键；只作为描述入口，无通过/不通过及 Enter 审核行为，不改变当前数据 QC 和审核进度。
+- 骨架标签库按账号独立保存，预置往前走、抬肘、踢腿、蹲下、顶门、关上洗碗机；支持自定义描述、数字快捷键、拖动排序和删除。
+- 骨架描述独立写入与 description.json 平级的 skeleton.description.json，恢复/并发信息另存专属技术文件；只读打开并恢复已有骨架描述，原机标、动作结果与 session.json 保持不变。写入失败沿用本机暂存和手动确认写回，动作与骨架队列独立，原事件 ID、时间及账号隔离保留。
+- 补齐现场后续改名 D1-Daily、D1-Validation、D1-Yiqi、D1-Motion caption 的分组识别，分组不可领取，日期或 Skeleton 子批次独立。明确迁移映射支持连续改名，保留旧批次身份，不按相同文件名猜测位置；不自动拆分旧误领整组记录。
+
 ## 1.2.1 - 2026-10-21
 
 - 包含 1.2.0 的三支线目录兼容、独立批次领取、人工结果审核信息精简及技术记录分离。1.2.0 的云端 CI 在并发操作 smoke 发现旧模拟后端尚未实现新增目录解析接口，未生成版本 tag 或公开安装包。

@@ -27,6 +27,7 @@ pub struct DeferredReview {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingItem {
+    pub channel: String,
     pub name: String,
     pub source_path: String,
     pub status: String,
@@ -92,18 +93,17 @@ fn verbatim_path(path: &str) -> String {
         path.into()
     }
 }
-fn path_aliases(root: &Path, path: &str) -> AppResult<[String; 5]> {
+fn path_aliases(root: &Path, path: &str) -> AppResult<Vec<String>> {
     let plain = plain_path(path);
-    let historical = crate::dataset_layout::historical_cached(root, Path::new(&plain))?
-        .to_string_lossy()
-        .into_owned();
-    Ok([
-        path.into(),
-        plain.clone(),
-        verbatim_path(&plain),
-        historical.clone(),
-        verbatim_path(&historical),
-    ])
+    let mut paths = vec![path.to_owned(), plain.clone(), verbatim_path(&plain)];
+    for historical in crate::dataset_layout::historical_paths_cached(root, Path::new(&plain))? {
+        let value = historical.to_string_lossy().into_owned();
+        paths.push(value.clone());
+        paths.push(verbatim_path(&value));
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 pub fn get(
@@ -116,18 +116,14 @@ pub fn get(
     let db = open(root)?;
     let paths = path_aliases(root, path)?;
     let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
-    let sql=format!("SELECT payload FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (?,?,?,?,?) AND source_name=? ORDER BY CASE WHEN source_path=? THEN 0 ELSE 1 END LIMIT 1");
+    let sql=format!("SELECT payload FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND source_name=? ORDER BY CASE WHEN source_path=? THEN 0 ELSE 1 END LIMIT 1");
     let raw: Option<String> = db
         .query_row(
             &sql,
             params![
                 service,
                 username,
-                paths[0],
-                paths[1],
-                paths[2],
-                paths[3],
-                paths[4],
+                serde_json::to_string(&paths)?,
                 source.unwrap_or(""),
                 path
             ],
@@ -139,13 +135,29 @@ pub fn get(
         .transpose()
 }
 pub fn contains_path(root: &Path, service: &str, username: &str, path: &str) -> AppResult<bool> {
+    contains_related(root, service, username, path, None)
+}
+pub fn contains_related(
+    root: &Path,
+    service: &str,
+    username: &str,
+    path: &str,
+    source: Option<&str>,
+) -> AppResult<bool> {
     let paths = path_aliases(root, path)?;
+    let skeleton = source == Some(crate::machine_annotation::SKELETON_SOURCE);
     let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
-    let sql=format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (?,?,?,?,?))");
+    let sql=format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND (source_name=?)=?)");
     open(root)?
         .query_row(
             &sql,
-            params![service, username, paths[0], paths[1], paths[2], paths[3], paths[4]],
+            params![
+                service,
+                username,
+                serde_json::to_string(&paths)?,
+                crate::machine_annotation::SKELETON_SOURCE,
+                skeleton
+            ],
             |row| row.get(0),
         )
         .map_err(failure)
@@ -203,7 +215,15 @@ pub fn store(
         &entry.request.source_path,
         entry.request.source_name.as_deref(),
     )?;
-    if old.is_none() && contains_path(root, service, username, &entry.request.source_path)? {
+    if old.is_none()
+        && contains_related(
+            root,
+            service,
+            username,
+            &entry.request.source_path,
+            entry.request.source_name.as_deref(),
+        )?
+    {
         return Err(failure(
             "该数据已有另一来源或批量待写结果，请先确认写回，原结果保留",
         ));
@@ -282,6 +302,12 @@ pub fn local_view(
         qc_content_hash: entry.qc_content_hash.clone(),
         source_write_error: entry.error.clone(),
     });
+    if entry.request.source_name.as_deref() == Some(crate::machine_annotation::SKELETON_SOURCE) {
+        view.output_name = crate::machine_annotation::SKELETON_SOURCE.into();
+        view.qc_status.clear();
+        view.qc_status_error.clear();
+        view.qc_rejection_reason.clear();
+    }
     view.review.segments = entry.request.segments.clone();
     view.review.status = entry
         .request
@@ -311,7 +337,7 @@ pub fn status(
             |row| row.get::<_, usize>(0),
         )
         .map_err(failure)?;
-    let mut query=db.prepare("SELECT source_path,json_extract(payload,'$.request.status'),json_extract(payload,'$.error'),json_extract(payload,'$.createdAtMs') FROM source_reviews WHERE service=? AND username=? ORDER BY rowid LIMIT 200").map_err(failure)?;
+    let mut query=db.prepare("SELECT source_path,json_extract(payload,'$.request.status'),json_extract(payload,'$.error'),json_extract(payload,'$.createdAtMs'),source_name FROM source_reviews WHERE service=? AND username=? ORDER BY rowid LIMIT 200").map_err(failure)?;
     let rows = query
         .query_map(params![service, username], |row| {
             Ok((
@@ -319,13 +345,20 @@ pub fn status(
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, u64>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })
         .map_err(failure)?;
     let mut items = vec![];
     for row in rows {
-        let (path, status, error, created_at_ms) = row.map_err(failure)?;
+        let (path, status, error, created_at_ms, source_name) = row.map_err(failure)?;
         items.push(PendingItem {
+            channel: if source_name == crate::machine_annotation::SKELETON_SOURCE {
+                "skeleton"
+            } else {
+                "action"
+            }
+            .into(),
             name: Path::new(&path)
                 .file_name()
                 .unwrap_or_default()

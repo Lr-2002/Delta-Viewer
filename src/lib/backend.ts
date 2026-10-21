@@ -538,8 +538,8 @@ export async function loadMachineAnnotation(sourcePath: string, sourceName?: str
   if (isTauriRuntime()) return invoke<MachineAnnotation | null>("load_machine_annotation", { sourcePath, sourceName });
   demoActor();
   const scenario = new URLSearchParams(window.location.search).get("machineAnnotation");
-  if (!scenario || scenario === "missing" || sourceName === "manual") return {
-    sourceName: "manual", sourceHash: "demo-manual", episodeId: sourcePath.split("/").at(-1) ?? "demo",
+  if (!scenario || scenario === "missing" || sourceName === "manual" || sourceName === "skeleton.description.json") return {
+    sourceName: sourceName === "skeleton.description.json" ? sourceName : "manual", sourceHash: "demo-manual", episodeId: sourcePath.split("/").at(-1) ?? "demo",
     model: null, completedAt: null, validationStatus: null, frameCount: 196, warnings: [], segments: [],
   };
   if (scenario === "invalid") throw new Error("MACHINE_ANNOTATION_INVALID: 机标 JSON 格式无效");
@@ -658,10 +658,11 @@ export async function saveMachineReview(sourcePath: string, sourceHash: string, 
   else if (state.status && state.status !== status) changes.push("改为待审核");
   if (!changes.length) changes.push("保存待审核记录");
   const changeSummary = changes.join("；");
-  const next = { ...state, workflowVersion: 4, status, qcStatus: status, qcRejectionReason: reason, qcStatusError: "", versionId, previousVersionId: state.versionId ?? "", revision: state.revision + 1,
+  const next = { ...state, workflowVersion: 4, status, qcStatus: sourceName === "skeleton.description.json" ? state.qcStatus : status, qcRejectionReason: reason, qcStatusError: "", versionId, previousVersionId: state.versionId ?? "", revision: state.revision + 1,
     rejectionReason: reason, changeSummary, revisionLabel: `${versionId} · ${changeSummary}`, appVersion: APP_VERSION,
     segments: segments.map((item) => ({ ...item, decision: item.deleted ? "pending" as const : status })), published: true, updatedAtMs: Date.now(), reviewer: "demo" };
   const user = demoActor();
+  if (sourceName === "skeleton.description.json") { demoMachineReviews.set(`${sourcePath}:${sourceName}`, next); return structuredClone(next); }
   const key = `dohc.demo.account-reviews:${user.username}`;
   const records = JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, import("../types").AccountReview>;
   if (status !== "pending" || records[sourcePath]) {

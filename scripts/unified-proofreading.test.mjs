@@ -415,6 +415,62 @@ async function open(page, query, username = "review-test") {
   await page.waitForFunction(() => document.querySelectorAll(".camera-grid .frame-panel").length === 7);
 }
 
+test("skeleton descriptions have independent empty segments, presets, custom labels and no QC", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  try {
+    await open(page, "machineAnnotation=present");
+    await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    const before = await page.evaluate(async () => (await import("/src/lib/backend.ts")).loadMachineReview("/demo/2026-07-13_07-34-12"));
+    await page.getByRole("tab", { name: "骨架片段", exact: true }).click();
+    await page.getByText("暂无骨架片段，点击加号新增，使用标签库或输入自定义描述。").waitFor();
+    assert.equal(await page.getByRole("button", { name: "通过", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "不通过", exact: true }).count(), 0);
+    assert.equal(await page.getByLabel("机标来源", { exact: true }).count(), 0);
+    await page.getByRole("button", { name: "新增片段", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[role="tab"]').disabled);
+    await page.getByRole("button", { name: "标签库", exact: true }).click();
+    for (const text of ["往前走", "抬肘", "踢腿", "蹲下", "顶门", "关上洗碗机"]) assert.equal(await page.getByRole("button", { name: text, exact: true }).count(), 1);
+    await page.getByRole("button", { name: "往前走", exact: true }).click();
+    await page.getByLabel("复核动作描述", { exact: true }).fill("骨架自定义描述");
+    await page.getByRole("button", { name: "标签库", exact: true }).click();
+    await page.getByRole("button", { name: "保存当前描述", exact: true }).click();
+    assert.equal(await page.getByRole("button", { name: "骨架自定义描述", exact: true }).count(), 1);
+    await page.getByRole("button", { name: "关闭标签库", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[role="tab"]').disabled);
+    await page.getByRole("tab", { name: "骨架片段", exact: true }).click();
+    await page.keyboard.press("x");
+    await page.waitForFunction(() => document.querySelectorAll(".machine-segment").length === 2);
+    // Numeric shortcuts apply only in the selected channel, with normal text input protected.
+    await page.getByRole("button", { name: "定位机标片段 1", exact: true }).click();
+    await page.keyboard.press("2");
+    assert.equal(await page.getByLabel("复核动作描述").inputValue(), "抬肘");
+    await page.waitForFunction(() => !document.querySelector('[role="tab"]').disabled);
+    await page.getByRole("tab", { name: "动作片段", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    const after = await page.evaluate(async () => (await import("/src/lib/backend.ts")).loadMachineReview("/demo/2026-07-13_07-34-12"));
+    assert.deepEqual(after, before, "skeleton edits cannot mutate action segments or QC");
+    await page.getByRole("tab", { name: "骨架片段", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    assert.equal(await page.getByLabel("复核动作描述").inputValue(), "抬肘");
+    await page.getByRole("button", { name: "删除机标片段 1", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[role="tab"]').disabled);
+    assert.equal(await page.locator(".machine-segment").count(), 1);
+    await page.keyboard.press("Enter");
+    assert.equal(await page.getByRole("dialog", {name:"不通过原因"}).count(), 0);
+    for (const width of [1440, 960, 390]) {
+      await page.setViewportSize({ width, height: 920 });
+      const tab = page.getByRole("tab", {name:"骨架片段",exact:true});
+      await tab.scrollIntoViewIfNeeded();
+      const box = await tab.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width, "tabs fit narrow screens");
+      await page.screenshot({ path: `artifacts/unified-proofreading/skeleton-${width}.png` });
+    }
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("review controls support segment/global play, shortcuts, splitting and saved edits", async () => {
   const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
   const errors = [];

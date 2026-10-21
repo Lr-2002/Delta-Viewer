@@ -64,10 +64,42 @@ impl Registry {
                 ));
             }
         }
+        for m in registry.moves.iter().filter(|m| m.state == "completed") {
+            let mut value = m.source.clone();
+            let mut seen = std::collections::BTreeSet::new();
+            seen.insert(value.clone());
+            for _ in 0..registry.moves.len() {
+                let Some(next) = registry.translate_once(&value, false) else {
+                    break;
+                };
+                if !seen.insert(next.clone()) {
+                    return Err(AppError::Message(
+                        "DATASET_LAYOUT_INVALID: 目录迁移映射循环".into(),
+                    ));
+                }
+                value = next;
+            }
+        }
         Ok(registry)
     }
 
     pub fn translate(&self, value: &str, reverse: bool) -> Option<String> {
+        let mut current = value.to_owned();
+        let mut seen = std::collections::BTreeSet::new();
+        seen.insert(current.clone());
+        for _ in 0..self.moves.len() {
+            let Some(next) = self.translate_once(&current, reverse) else {
+                break;
+            };
+            if !seen.insert(next.clone()) {
+                return None;
+            }
+            current = next;
+        }
+        (current != value).then_some(current)
+    }
+
+    fn translate_once(&self, value: &str, reverse: bool) -> Option<String> {
         self.moves
             .iter()
             .filter(|m| m.state == "completed")
@@ -149,14 +181,14 @@ pub fn cache_registry(data_root: &Path, path: &Path) -> AppResult<()> {
     Ok(())
 }
 
-pub fn historical_cached(data_root: &Path, path: &Path) -> AppResult<PathBuf> {
+pub fn historical_paths_cached(data_root: &Path, path: &Path) -> AppResult<Vec<PathBuf>> {
     let Some(share) = share_root(path) else {
-        return Ok(path.to_path_buf());
+        return Ok(vec![]);
     };
     let Some(bytes) =
         crate::machine_annotation::read_bytes(&data_root.join("dataset-layout.json"))?
     else {
-        return Ok(path.to_path_buf());
+        return Ok(vec![]);
     };
     let registry: Registry = serde_json::from_slice(&bytes)?;
     if registry.moves.len() > 10_000
@@ -169,17 +201,41 @@ pub fn historical_cached(data_root: &Path, path: &Path) -> AppResult<PathBuf> {
             "DATASET_LAYOUT_INVALID: 本机映射无效".into(),
         ));
     }
-    let relative = path
+    historical_paths(&registry, share, path)
+}
+
+fn historical_paths(registry: &Registry, share: &Path, path: &Path) -> AppResult<Vec<PathBuf>> {
+    let mut relative = path
         .strip_prefix(share)
         .map_err(|_| AppError::Message("映射目录越界".into()))?
         .to_string_lossy()
         .replace('\\', "/");
-    Ok(registry
-        .translate(&relative, true)
-        .map(|p| share.join(p))
-        .unwrap_or_else(|| path.to_path_buf()))
+    let mut seen = std::collections::BTreeSet::new();
+    seen.insert(relative.clone());
+    let mut paths = vec![];
+    for _ in 0..registry.moves.len() {
+        let Some(next) = registry.translate_once(&relative, true) else {
+            break;
+        };
+        if !seen.insert(next.clone()) {
+            return Err(AppError::Message(
+                "DATASET_LAYOUT_INVALID: 本机映射循环".into(),
+            ));
+        }
+        relative = next;
+        paths.push(share.join(&relative));
+    }
+    Ok(paths)
 }
 
+pub fn historical_paths_for(path: &Path) -> AppResult<Vec<PathBuf>> {
+    let Some(share) = share_root(path) else {
+        return Ok(vec![]);
+    };
+    historical_paths(&Registry::read(path)?, share, path)
+}
+
+#[cfg(test)]
 pub fn historical(path: &Path) -> AppResult<PathBuf> {
     let Some(share) = share_root(path) else {
         return Ok(path.to_path_buf());
@@ -217,13 +273,31 @@ pub fn dated(name: &str) -> bool {
         && name.as_bytes().get(10).is_none_or(|c| !c.is_ascii_digit())
 }
 
+pub fn grouping_name(name: &str) -> bool {
+    let normalized: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    matches!(
+        normalized.as_str(),
+        "d1daily" | "d1validation" | "d1yiqi" | "d1motioncaption"
+    )
+}
+
 /// First dated folder is the batch; grouping folders never own their descendants.
 pub fn batch_relative(relative: &str) -> String {
     let parts: Vec<_> = relative.split('/').filter(|s| !s.is_empty()).collect();
-    let count = parts
-        .iter()
-        .position(|name| dated(name))
-        .map_or(1, |i| i + 1);
+    let count = parts.iter().position(|name| dated(name)).map_or_else(
+        || {
+            if parts.first().is_some_and(|p| grouping_name(p)) {
+                2
+            } else {
+                1
+            }
+        },
+        |i| i + 1,
+    );
     parts[..count.min(parts.len())].join("/")
 }
 
@@ -268,7 +342,7 @@ pub fn adapt_node(node: &mut serde_json::Value, source: &Path, prefix: &str, reg
         })
         .unwrap_or(source);
     let namespace = dataset.file_name().unwrap_or_default().to_string_lossy();
-    let grouping = matches!(full.as_str(), "D1 daily" | "D1 validation" | "D1 yiqi")
+    let grouping = grouping_name(&full)
         || !full.is_empty()
             && !full.split('/').any(dated)
             && node["children"]
@@ -286,6 +360,54 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::fs;
+    #[test]
+    fn chained_branch_renames_preserve_identity_and_group_names_are_case_independent() {
+        let registry: Registry = serde_json::from_value(json!({"moves":[
+            {"source":"Delta-D1/2026-09-16-A", "destination":"Delta-D1/D1 daily/2026-09-16-A","state":"completed"},
+            {"source":"Delta-D1/D1 daily", "destination":"Delta-D1/D1-Daily","state":"completed"}
+        ]})).unwrap();
+        assert_eq!(
+            registry
+                .translate("Delta-D1/2026-09-16-A/001", false)
+                .unwrap(),
+            "Delta-D1/D1-Daily/2026-09-16-A/001"
+        );
+        assert_eq!(
+            registry
+                .translate("Delta-D1/D1-Daily/2026-09-16-A/001", true)
+                .unwrap(),
+            "Delta-D1/2026-09-16-A/001"
+        );
+        for name in ["D1-Daily", "D1-Validation", "D1-Yiqi", "D1-Motion caption"] {
+            let mut node =
+                json!({"relativePath":name,"session":false,"children":[],"childrenLoaded":false});
+            adapt_node(&mut node, Path::new("/share/Delta-D1"), "", &registry);
+            assert_eq!(node["claimable"], false);
+        }
+        assert_eq!(
+            batch_relative("D1-Motion caption/Skeleton/001"),
+            "D1-Motion caption/Skeleton"
+        );
+        let share = Path::new("/share");
+        let paths = historical_paths(
+            &registry,
+            share,
+            &share.join("Delta-D1/D1-Daily/2026-09-16-A/001"),
+        )
+        .unwrap();
+        assert_eq!(
+            paths,
+            vec![
+                share.join("Delta-D1/D1 daily/2026-09-16-A/001"),
+                share.join("Delta-D1/2026-09-16-A/001")
+            ]
+        );
+        assert_eq!(
+            batch_key("Delta-D1", "D1-Daily/2026-09-16-A", &registry),
+            batch_key("Delta-D1", "2026-09-16-A", &Registry::default())
+        );
+    }
+
     #[test]
     fn source_scan_discovers_nested_sessions_and_skips_hidden_or_media_subtrees() {
         let root = std::env::temp_dir().join(format!(

@@ -31,6 +31,8 @@ type Status = "pending" | "approved" | "rejected";
 type Snapshot = { segments: ReviewSegment[]; status: Status; rejectionReason?: string };
 type LabelLibraryItem = { id: string; text: string; createdAt: number };
 const LABEL_LIBRARY_LIMIT = 80;
+const SKELETON_SOURCE = "skeleton.description.json";
+const SKELETON_LABELS = ["往前走", "抬肘", "踢腿", "蹲下", "顶门", "关上洗碗机"];
 const saves = new Map<string, Promise<boolean>>();
 export async function flushMachineReviewSaves(root?: string) {
   if (!root) return;
@@ -47,6 +49,7 @@ function labelLibraryKey(username: string) {
 
 export function MachineAnnotationPanel(props: Props) {
   const [sourceName, setSourceName] = useState("");
+  const [channel, setChannel] = useState<"action" | "skeleton">("action");
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
   const [sourceBusy, setSourceBusy] = useState(false);
   const [sourceError, setSourceError] = useState("");
@@ -58,17 +61,18 @@ export function MachineAnnotationPanel(props: Props) {
   }, [props.data.summary.root]);
   const label = (name: string) => /(^|\/)(description|desorption)\.json$/.test(name) ? `人工结果（${name}）` : name;
   return <div className={`quality-workspace${props.playback ? " quality-embedded" : ""}`}>
-    <label className="machine-source-picker">机标来源<select aria-label="机标来源" value={sourceName} disabled={props.busy || sourceBusy}
+    {channel === "action" && <label className="machine-source-picker">机标来源<select aria-label="机标来源" value={sourceName} disabled={props.busy || sourceBusy}
       onChange={(event) => { props.playback?.onPause(); setSourceName(event.currentTarget.value); recordReviewInteraction("source", { sourceName: event.currentTarget.value || "auto" }); }}>
       <option value="">自动（优先 Flash）</option>{sourceOptions.map((name) => <option key={name} value={name}>{label(name)}</option>)}
-    </select></label>
-    {sourceError && <p role="alert">{sourceError}</p>}
-    <MachineAnnotationEditor {...props} key={`${props.username}:${props.data.summary.root}:${sourceName}`} sourceName={sourceName || undefined} onSourceBusy={setSourceBusy} />
+    </select></label>}
+    {channel === "action" && sourceError && <p role="alert">{sourceError}</p>}
+    <MachineAnnotationEditor {...props} key={`${props.username}:${props.data.summary.root}:${channel}:${sourceName}`} sourceName={channel === "skeleton" ? SKELETON_SOURCE : sourceName || undefined} onSourceBusy={setSourceBusy} channel={channel} onChannelChange={setChannel} />
   </div>;
 }
 
-function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBusy, onComplete, onReviewSaved, onUnsavedChange, playback }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void }) {
+function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBusy, onComplete, onReviewSaved, onUnsavedChange, playback, channel, onChannelChange }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void; channel: "action" | "skeleton"; onChannelChange: (channel: "action" | "skeleton") => void }) {
   const root = data.summary.root;
+  const skeletonMode = channel === "skeleton";
   const [result, setResult] = useState<MachineAnnotation | null>(null);
   const [review, setReview] = useState<MachineReview | null>(null);
   const [edits, setEdits] = useState<ReviewSegment[]>([]);
@@ -116,14 +120,15 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const [auditCompletionError, setAuditCompletionError] = useState("");
   const [auditPreparationError, setAuditPreparationError] = useState("");
   const completionAwaitingAudit = useRef<"approved" | "rejected" | null>(null);
-  const labelLibraryStorageKey = labelLibraryKey(username);
+  const labelLibraryStorageKey = skeletonMode ? `${labelLibraryKey(username)}:skeleton` : labelLibraryKey(username);
   const unsaved = saving || Boolean(saveError) || finishing || Boolean(auditCompletionError);
   const blocksNavigation = saving || finishing || Boolean(recoveryError) || Boolean(auditCompletionError);
   useEffect(() => {
     setLabelLibraryOpen(false);
     setLabelLibraryError("");
     try {
-      const parsed = JSON.parse(localStorage.getItem(labelLibraryStorageKey) ?? "[]") as unknown;
+      const defaults = skeletonMode ? SKELETON_LABELS.map((text, i) => ({ id: `skeleton-default-${i}`, text, createdAt: 0 })) : [];
+      const parsed = JSON.parse(localStorage.getItem(labelLibraryStorageKey) ?? JSON.stringify(defaults)) as unknown;
       if (!Array.isArray(parsed)) throw new Error("Invalid label library");
       const seen = new Set<string>();
       const normalized = parsed
@@ -145,7 +150,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     } catch {
       setLabelLibrary([]);
     }
-  }, [labelLibraryStorageKey]);
+  }, [labelLibraryStorageKey, skeletonMode]);
   useEffect(() => { onSourceBusy(loading || blocksNavigation); }, [loading, blocksNavigation, onSourceBusy]);
   useEffect(() => {
     onUnsavedChange?.(blocksNavigation);
@@ -192,7 +197,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
             }
             if (!saved.pendingSourceWrite) audit(saved.status === "approved" ? "approved" : saved.status === "rejected" ? "rejected" : "saved", { revision: saved.revisionLabel ?? String(saved.revision), reason: saved.rejectionReason ?? "" });
             stateRef.current = saved;
-            if (mounted.current) { setReview(saved); onReviewSaved?.(saved); }
+            if (mounted.current) { setReview(saved); if (!skeletonMode) onReviewSaved?.(saved); }
             if (!pending.current) {
               try {
                 localStorage.removeItem(recoveryKey());
@@ -322,7 +327,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       document.removeEventListener("focusin", cancel);
     };
   }, [canEdit, active?.sourceIndex, labelLibrary, labelLibraryOpen, draggedLabelId, root]);
-  const outputName = loadedSource.current?.endsWith("desorption.json") ? "desorption.json" : review?.outputName || "description.json";
+  const outputName = skeletonMode ? SKELETON_SOURCE : loadedSource.current?.endsWith("desorption.json") ? "desorption.json" : review?.outputName || "description.json";
   const seek = useCallback((next: number) => {
     setFrame(next); setPlaying(false);
     if (mapping && !mapping.error) playback?.onSeek(mapping.offset + next * mapping.step);
@@ -441,7 +446,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
           recordReviewInteraction("shortcut", { value: event.code }, root);
           splitSegment();
         }
-      } else if (event.key === "Enter" && !event.repeat) {
+      } else if (event.key === "Enter" && !event.repeat && !skeletonMode) {
         recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation(); void finish("approved");
       }
@@ -550,12 +555,14 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         frame={frame} start={active?.startFrame ?? 0} end={active?.endFrame ?? result.frameCount - 1} playing={playing} onFrame={setFrame} onPlaying={setPlaying} />}
     </section>}
     <section className="quality-inspector" aria-label="机标结果">
-      <header className="machine-heading"><h2>动作片段</h2><span className="machine-status">{rows.length} 段</span>
+      <header className="machine-heading"><div className="segment-channel-tabs" role="tablist" aria-label="片段类型">
+        {(["action", "skeleton"] as const).map(value => <button type="button" role="tab" key={value} aria-selected={channel === value} className={channel === value ? "active" : ""} disabled={loading || blocksNavigation || Boolean(saveError) || busy} onClick={() => { playback?.onPause(); onChannelChange(value); }}>{value === "action" ? "动作片段" : "骨架片段"}</button>)}
+      </div><span className="machine-status">{rows.length} 段</span>
         <button className="icon-button" title="新增片段" aria-label="新增片段" disabled={!canEdit} onClick={addSegment}><Plus size={15} /></button>
         <button className="icon-button" title="查看原始 JSON" aria-label="查看 JSON" disabled={!result} onClick={() => setShowJson(true)}><Code size={15} /></button>
-        <button className="icon-button" title="重新读取机标" aria-label="重新读取机标" disabled={loading || blocksNavigation || busy} onClick={() => setReload(reload + 1)}><RefreshCw size={15} /></button>
+        <button className="icon-button" title={skeletonMode ? "重新读取骨架描述" : "重新读取机标"} aria-label={skeletonMode ? "重新读取骨架描述" : "重新读取机标"} disabled={loading || blocksNavigation || busy} onClick={() => setReload(reload + 1)}><RefreshCw size={15} /></button>
       </header>
-      {loading && <p role="status" className="machine-message"><LoaderCircle size={15} />正在读取机标</p>}
+      {loading && <p role="status" className="machine-message"><LoaderCircle size={15} />{skeletonMode ? "正在读取骨架描述" : "正在读取机标"}</p>}
       {error && <p role="alert" className="machine-message">{error}</p>}
       {mapping?.error && <p role="alert" className="machine-message">{mapping.error}</p>}
       {!loading && !error && !result && <p className="machine-message">未发现 {sourceName ?? "机标 JSON"}</p>}
@@ -578,6 +585,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         <p>请回放核对并按需调整。原机标保持不变，保存时将当前边界写入人工结果。</p>
         <label><input type="checkbox" checked={boundariesConfirmed} disabled={!canEdit} onChange={event => setBoundariesConfirmed(event.currentTarget.checked)} />我已人工核对上述片段边界</label>
       </div>}
+      {skeletonMode && !loading && !error && !rows.length && <p className="machine-message">暂无骨架片段，点击加号新增，使用标签库或输入自定义描述。</p>}
       <SegmentList rows={rows} selected={active?.sourceIndex} disabled={!canEdit} onChoose={choose}
         onDelete={deleteSegment} />
       <div className="quality-editor" aria-label="人工复核">
@@ -625,13 +633,13 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         {auditCompletionError && <div role="alert" className="machine-message audit-completion-error"><span>{auditCompletionError}</span><button type="button" className="button button-secondary" disabled={finishing} onClick={() => void finishAuditCompletion()}>重试保存操作记录</button></div>}
         {saveSlow && saving && <div role="status" className="machine-message">保存耗时较长，正在等待数据目录的检查或写入确认，尚未确认提交成功。{!recoveryError && "本机应急草稿已保留。"}请保持应用打开，等待结果后再重试；用户中心的操作记录上传独立进行。</div>}
         {saveError && <div role="alert" className="machine-message review-save-error"><span>{saveError}{!recoveryError && " 本机应急草稿已保留，恢复后请重试保存。"}</span><button type="button" className="button button-secondary" aria-label="重试保存复核" onClick={() => void persist(pending.current ?? { segments: editsRef.current, status: "pending" })}><RefreshCw size={15} />重试保存</button></div>}
-        <div className="quality-output" title={`${root}/${outputName}`}>{outputName}<span>{review?.qcStatus === "approved" ? "已通过" : review?.qcStatus === "rejected" ? "未通过" : review?.qcStatus === "pending" ? "待审核" : "审核状态未知"}</span></div>
-        {review?.qcStatusError && <p role="alert" className="machine-message">当前目录审核状态读取失败，请重新读取：{review.qcStatusError}</p>}
-        {review?.qcStatus === "rejected" && review.qcRejectionReason && <p className="review-rejection-reason" title={review.qcRejectionReason}>不通过：{review.qcRejectionReason}</p>}
-        <div className="quality-decisions">
+        <div className="quality-output" title={`${root}/${outputName}`}>{outputName}{!skeletonMode && <span>{review?.qcStatus === "approved" ? "已通过" : review?.qcStatus === "rejected" ? "未通过" : review?.qcStatus === "pending" ? "待审核" : "审核状态未知"}</span>}</div>
+        {!skeletonMode && review?.qcStatusError && <p role="alert" className="machine-message">当前目录审核状态读取失败，请重新读取：{review.qcStatusError}</p>}
+        {!skeletonMode && review?.qcStatus === "rejected" && review.qcRejectionReason && <p className="review-rejection-reason" title={review.qcRejectionReason}>不通过：{review.qcRejectionReason}</p>}
+        {!skeletonMode && <div className="quality-decisions">
           <button ref={rejectButton} className="button button-secondary" disabled={!canEdit || saving} onClick={openRejection}><X size={16} />不通过</button>
           <button className="button button-primary" disabled={!canEdit || saving || !rows.length || (!!result?.inferredEndFrames?.length && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>
-        </div>
+        </div>}
       </footer>
     </section>
     {textCheckOpen && <dialog className="text-quality-dialog" aria-label="通过前文字检查" ref={node=>{if(node&&!node.open)node.showModal();}} onCancel={()=>setTextCheckOpen(false)}><h2>通过前文字检查</h2><p>{allTextIssues.length} 个疑似问题</p><ul className="text-check-summary">{allTextIssues.map((issue,i)=><li key={i}><button className="review-user-link" onClick={()=>{setTextCheckOpen(false);setSelected(issue.row.sourceIndex);seek(issue.row.startFrame);}}>片段 {rows.indexOf(issue.row)+1}：{issue.row.description}</button><p>{issue.original} → {issue.suggestion}（{issue.reason}）</p></li>)}</ul><footer><button className="button button-secondary" autoFocus onClick={()=>setTextCheckOpen(false)}>返回检查</button><button className="button button-primary" disabled={finishing} onClick={()=>{recordReviewInteraction("control",{value:`已核对 ${allTextIssues.length} 项文字提示并继续通过`},root);setTextCheckOpen(false);void finish("approved",undefined,true);}}><Check size={16}/>已核对，继续通过</button></footer></dialog>}
@@ -646,7 +654,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
           <button type="submit" className="button button-primary" disabled={!canEdit || saving || !reasonChoice || (reasonChoice === "其他原因" && !otherReason.trim())}>{finishing ? <LoaderCircle size={16} className="spin" /> : <X size={16} />}确认不通过</button></footer>
       </form>
     </dialog>}
-    {showJson && result && <dialog className="machine-json" aria-label="机标 JSON" ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={() => setShowJson(false)}><header className="machine-heading"><strong>{result.sourceName ?? "bailian_annotation.json"}</strong><button autoFocus className="icon-button" aria-label="关闭 JSON" title="关闭 JSON" onClick={() => setShowJson(false)}><X size={16} /></button></header><pre>{result.sourceJson ?? JSON.stringify(result, null, 2)}</pre></dialog>}
+    {showJson && result && <dialog className="machine-json" aria-label="机标 JSON" ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={() => setShowJson(false)}><header className="machine-heading"><strong>{result.sourceName ?? "bailian_annotation.json"}</strong><button autoFocus className="icon-button" aria-label="关闭 JSON" title="关闭 JSON" onClick={() => setShowJson(false)}><X size={16} /></button></header><pre>{skeletonMode ? JSON.stringify({ schema_version: 4, annotation_source: "skeleton-human", episode_results: [{ episode_id: result.episodeId, media: { frame_count: result.frameCount, frame_index_base: 0, interval_convention: "[start,end)" }, annotations: rows.map(row => ({ start_frame: row.startFrame, end_frame: row.endFrame + 1, attributes_zh: { "动作描述": row.description } })) }] }, null, 2) : result.sourceJson ?? JSON.stringify(result, null, 2)}</pre></dialog>}
   </div>;
 }
 

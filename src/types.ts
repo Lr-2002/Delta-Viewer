@@ -529,7 +529,7 @@ export interface PendingSourceReviewStatus {
   pending: number;
   ready: boolean;
   storageError: string;
-  items: { name: string; sourcePath: string; status: string; error: string; createdAtMs: number }[];
+  items: { name: string; sourcePath: string; channel?: "action" | "skeleton"; status: string; error: string; createdAtMs: number }[];
 }
 export interface SourceReviewPublishResult { written: number; remaining: number; errors: string[] }
 

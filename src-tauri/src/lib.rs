@@ -1131,7 +1131,9 @@ async fn load_machine_review(
             Path::new(&source_path),
             source_name.as_deref(),
         )
-        .map(|state| machine_review::view_for_root(Path::new(&source_path), state))?;
+        .map(|state| {
+            machine_review::view_for_source(Path::new(&source_path), source_name.as_deref(), state)
+        })?;
         if let Some((user, service)) = owner {
             if let Some(entry) = source_review_queue::get(
                 &data_root,
@@ -1173,7 +1175,7 @@ async fn save_machine_review(
         let service = service.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let entry = source_review_queue::get(&data, &service, &username, &root, name.as_deref())?;
-            if entry.is_none() && source_review_queue::contains_path(&data, &service, &username, &root)? {
+            if entry.is_none() && source_review_queue::contains_related(&data, &service, &username, &root, name.as_deref())? {
                 return Err(error::AppError::Message("SOURCE_REVIEW_EXISTS: 此数据有另一来源或批量待写结果，请先在待写回提示中确认处理".into()));
             }
             Ok(entry)
@@ -1190,6 +1192,7 @@ async fn save_machine_review(
     ensure_review_storage_responsive(&request.source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let root = std::path::PathBuf::from(&request.source_path);
+        let source_name = request.source_name.clone();
         machine_review::save_with_event_for_user(
             &data_root,
             request,
@@ -1197,7 +1200,7 @@ async fn save_machine_review(
             &user.username,
             commit_event,
         )
-        .map(|state| machine_review::view_for_root(&root, state))
+        .map(|state| machine_review::view_for_source(&root, source_name.as_deref(), state))
     })
     .await
     .map_err(|error| error.to_string())?

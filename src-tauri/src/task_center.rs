@@ -253,10 +253,7 @@ fn empty_node(path: &Path, context: &ScanContext<'_>) -> TaskNode {
         batch_root: dataset.join(&batch).to_string_lossy().into_owned(),
         claimable: !dataset_relative.is_empty()
             && dataset_relative == batch
-            && !matches!(
-                dataset_relative.as_str(),
-                "D1 daily" | "D1 validation" | "D1 yiqi"
-            ),
+            && !crate::dataset_layout::grouping_name(&dataset_relative),
         session: false,
         status: "pending".into(),
         error: String::new(),

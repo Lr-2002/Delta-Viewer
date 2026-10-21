@@ -75,6 +75,22 @@ pub struct ReviewView {
     pub qc_content_hash: Option<String>,
 }
 
+pub fn view_for_source(root: &Path, source: Option<&str>, review: ReviewState) -> ReviewView {
+    if source == Some(machine_annotation::SKELETON_SOURCE) {
+        return ReviewView {
+            review,
+            output_name: machine_annotation::SKELETON_SOURCE.into(),
+            qc_status: String::new(),
+            qc_rejection_reason: String::new(),
+            qc_status_error: String::new(),
+            pending_source_write: false,
+            source_write_error: String::new(),
+            qc_content_hash: None,
+        };
+    }
+    view_for_root(root, review)
+}
+
 pub fn view_for_root(root: &Path, review: ReviewState) -> ReviewView {
     let mut qc_content_hash = None;
     let qc = (|| -> AppResult<(String, String)> {
@@ -240,6 +256,9 @@ fn human_source(annotation: &MachineAnnotation) -> bool {
 }
 
 fn output_name(annotation: &MachineAnnotation, root: &Path) -> &'static str {
+    if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+        return machine_annotation::SKELETON_SOURCE;
+    }
     if annotation.source_name.rsplit('/').next() == Some("desorption.json")
         || (!root.join(OUTPUT).exists() && root.join("desorption.json").exists())
     {
@@ -267,10 +286,12 @@ fn selected_draft_path(data_root: &Path, root: &Path, annotation: &MachineAnnota
     if current.exists() || current.with_extension("pending.json").exists() {
         return current;
     }
-    if let Ok(old_root) = crate::dataset_layout::historical(root) {
-        let old = select(&old_root);
-        if old.exists() || old.with_extension("pending.json").exists() {
-            return old;
+    if let Ok(paths) = crate::dataset_layout::historical_paths_for(root) {
+        for old_root in paths {
+            let old = select(&old_root);
+            if old.exists() || old.with_extension("pending.json").exists() {
+                return old;
+            }
         }
     }
     current
@@ -323,14 +344,19 @@ fn load_inner(
 ) -> AppResult<ReviewState> {
     match load_inner_checked(data_root, root, annotation) {
         Ok(mut state) => {
-            if human_source(annotation) {
+            if human_source(annotation)
+                || annotation.source_name == machine_annotation::SKELETON_SOURCE
+            {
                 state.source_hash = annotation.source_hash.clone();
             }
             if state.output_hash.is_none() {
                 state.published = false;
+            } else if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+                state.published = true;
             }
             Ok(state)
         }
+        Err(error) if annotation.source_name == machine_annotation::SKELETON_SOURCE => Err(error),
         Err(error)
             if matches!(&error, AppError::Json(_))
                 || matches!(&error, AppError::Message(message) if message.starts_with("MACHINE_ANNOTATION_INVALID:")) =>
@@ -382,6 +408,7 @@ fn load_inner_checked(
     let local_revision = draft.as_ref().map_or(0, |state| state.revision);
     let output = match machine_annotation::read_bytes(&root.join(output_name(annotation, root)))? {
         Some(bytes) => Some(bytes),
+        None if annotation.source_name == machine_annotation::SKELETON_SOURCE => None,
         None => machine_annotation::read_bytes(&root.join(
             if annotation.source_name == machine_annotation::FLASH_SOURCE {
                 LEGACY_FLASH_OUTPUT
@@ -575,6 +602,10 @@ fn load_inner_checked(
                     decision: state.status.clone(),
                 });
             }
+            if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+                actual.extend(state.segments.iter().filter(|s| s.deleted).cloned());
+                actual.sort_by_key(|s| s.source_index);
+            }
             state.segments = actual;
         }
         if state.workflow_version >= 3 && state.source_hash == annotation.source_hash {
@@ -622,7 +653,20 @@ pub fn load_selected(
     let root = crate::dataset_layout::resolve(root)?.canonicalize()?;
     let annotation = machine_annotation::load_for_review(&root, source_name)?
         .ok_or_else(|| failure("未找到机标文件"))?;
-    load_inner(data_root, &root, &annotation)
+    let state = load_inner(data_root, &root, &annotation)?;
+    if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+        // Remember the exact shared baseline read by this editor even on a new
+        // host or after sidecar loss; a later external edit must not be overwritten.
+        let draft = selected_draft_path(data_root, &root, &annotation);
+        fs::create_dir_all(
+            draft
+                .parent()
+                .ok_or_else(|| failure("骨架描述草稿目录无效"))?,
+        )?;
+        let _draft_lock = lock_file(&draft.with_extension("lock"))?;
+        atomic_json(&draft, &serde_json::to_value(&state)?)?;
+    }
+    Ok(state)
 }
 
 // Legacy/local state can outlive a directory rename or a replacement model.
@@ -1493,8 +1537,14 @@ pub fn publish_deferred_for_user(
                     && a.deleted == b.deleted
             })
     {
-        let qc = view_for_root(Path::new(&request.source_path), current.clone());
-        if qc.qc_status == current.status {
+        let qc = view_for_source(
+            Path::new(&request.source_path),
+            request.source_name.as_deref(),
+            current.clone(),
+        );
+        if request.source_name.as_deref() == Some(machine_annotation::SKELETON_SOURCE)
+            || qc.qc_status == current.status
+        {
             return Ok(current);
         }
         // Own description committed before QC failed: finish only if the
@@ -1556,13 +1606,14 @@ fn save_for_user_mode(
     let output = output_name(&annotation, &write_root);
     let lock_path = write_root.join(".description.lock");
     let _output_lock = lock_file(&lock_path)?;
-    if let Some(snapshot) = pending_snapshot
-        .as_ref()
-        .filter(|snapshot| !snapshot.only_pending)
-    {
+    if let Some(snapshot) = pending_snapshot.as_ref().filter(|snapshot| {
+        !snapshot.only_pending && annotation.source_name != machine_annotation::SKELETON_SOURCE
+    }) {
         let current_qc = machine_annotation::read_bytes(&write_root.join("session.json"))?
             .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
-        if snapshot.qc_content_hash != current_qc {
+        if annotation.source_name != machine_annotation::SKELETON_SOURCE
+            && snapshot.qc_content_hash != current_qc
+        {
             return Err(failure(
                 "共享目录 QC 或采集记录已改变，本机待写结果已保留，请打开数据核对；未覆盖",
             ));
@@ -1610,7 +1661,7 @@ fn save_for_user_mode(
                 .as_ref()
                 .is_some_and(|saved| saved.output_hash != current.output_hash),
         };
-    if guarded && rebased {
+    if (guarded || annotation.source_name == machine_annotation::SKELETON_SOURCE) && rebased {
         return Err(failure(if only_pending {
             "审核内容已改变，请刷新后重试，未批量覆盖"
         } else {
@@ -1634,6 +1685,9 @@ fn save_for_user_mode(
     }
     validate(&annotation, &request.segments)?;
     let status = request.status.unwrap_or_else(pending_status);
+    if annotation.source_name == machine_annotation::SKELETON_SOURCE && status != "pending" {
+        return Err(failure("骨架片段仅支持描述，不设置审核结论"));
+    }
     if !["pending", "approved", "rejected"].contains(&status.as_str()) {
         return Err(failure("整条质检结论无效"));
     }
@@ -1696,10 +1750,14 @@ fn save_for_user_mode(
     if state.published {
         let output = output_name(&annotation, &write_root);
         let session_path = write_root.join("session.json");
-        let mut session: Value = machine_annotation::read_bytes(&session_path)?
-            .map(|bytes| serde_json::from_slice(&bytes))
-            .transpose()?
-            .unwrap_or_else(|| json!({}));
+        let mut session: Value = if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+            json!({})
+        } else {
+            machine_annotation::read_bytes(&session_path)?
+                .map(|bytes| serde_json::from_slice(&bytes))
+                .transpose()?
+                .unwrap_or_else(|| json!({}))
+        };
         if !session.is_object() {
             return Err(failure(
                 "根目录 session.json 必须是 JSON 对象，原文件未覆盖",
@@ -1717,7 +1775,7 @@ fn save_for_user_mode(
             if actual != expected_output_hash {
                 return Err(failure("复核结果已改变，拒绝覆盖"));
             }
-            let document = if human_source(&annotation)
+            let mut document = if human_source(&annotation)
                 || state.source_hash != annotation.source_hash
                 || request.source_hash != annotation.source_hash
                 || annotation.segments.iter().any(|original| {
@@ -1730,6 +1788,12 @@ fn save_for_user_mode(
             } else {
                 reviewed_document(&annotation, &state)?
             };
+            if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+                if let Some(fields) = document.as_object_mut() {
+                    fields.remove("_human_review");
+                }
+                document["annotation_source"] = json!("skeleton-human");
+            }
             let mut pending = state.clone();
             pending.output_hash = Some(
                 blake3::hash(&serde_json::to_vec_pretty(&document)?)
@@ -1757,70 +1821,72 @@ fn save_for_user_mode(
                 .clone()
                 .ok_or_else(|| failure("缺少人工结果指纹"))?;
         }
-        let qc = match state.status.as_str() {
-            "approved" => "通过",
-            "rejected" => "不通过",
-            _ => "待审核",
-        };
-        session["qc"] = json!(if qc == "不通过" {
-            format!("不通过：{}", state.rejection_reason)
-        } else {
-            qc.into()
-        });
-        session["revision"] = json!(state.revision_label);
-        session["appVersion"] = json!(state.app_version);
-        if let Some(fields) = session.as_object_mut() {
-            fields.remove("decision");
-            fields.remove("deleted");
-        }
-        if state.status == "pending" {
-            if let Some(fields) = session.as_object_mut() {
-                fields.remove("reviewerUsername");
-                fields.remove("reviewerName");
-                fields.remove("reviewedAt");
-            }
-        } else {
-            let reviewed_at = time::OffsetDateTime::from_unix_timestamp_nanos(
-                i128::from(state.updated_at_ms) * 1_000_000,
-            )
-            .map_err(|_| failure("审核时间无效"))?
-            .format(&time::format_description::well_known::Rfc3339)
-            .map_err(|_| failure("审核时间格式无效"))?;
-            session["reviewerUsername"] = json!(username);
-            session["reviewerName"] = json!(reviewer);
-            session["reviewedAt"] = json!(reviewed_at);
-        }
-        let account_path = account_review_path(data_root, username, &root);
-        let previous = read_account_review(&account_path)?;
-        let known_account = session
-            .get("qcReviewers")
-            .and_then(|value| value.get(username))
-            .is_some();
-        if state.status != "pending" || previous.is_some() || known_account {
-            let record = AccountReview {
-                source_path: root.to_string_lossy().into(),
-                username: username.into(),
-                reviewer_name: reviewer.into(),
-                status: state.status.clone(),
-                rejection_reason: state.rejection_reason.clone(),
-                revision: state.revision_label.clone(),
-                updated_at_ms: state.updated_at_ms,
+        if annotation.source_name != machine_annotation::SKELETON_SOURCE {
+            let qc = match state.status.as_str() {
+                "approved" => "通过",
+                "rejected" => "不通过",
+                _ => "待审核",
             };
-            if session.get("qcReviewers").is_none() {
-                session["qcReviewers"] = json!({});
+            session["qc"] = json!(if qc == "不通过" {
+                format!("不通过：{}", state.rejection_reason)
+            } else {
+                qc.into()
+            });
+            session["revision"] = json!(state.revision_label);
+            session["appVersion"] = json!(state.app_version);
+            if let Some(fields) = session.as_object_mut() {
+                fields.remove("decision");
+                fields.remove("deleted");
             }
-            let accounts = session["qcReviewers"]
-                .as_object_mut()
-                .ok_or_else(|| failure("session.qcReviewers 必须是对象，账号关联未覆盖"))?;
-            // The shared record contains identity and review metadata, never a machine-local path.
-            let mut shared = serde_json::to_value(&record)?;
-            shared.as_object_mut().unwrap().remove("sourcePath");
-            accounts.insert(username.into(), shared);
-            atomic_json(&session_path, &session)?;
-            fs::create_dir_all(account_path.parent().unwrap())?;
-            atomic_json(&account_path, &serde_json::to_value(record)?)?;
-        } else {
-            atomic_json(&session_path, &session)?;
+            if state.status == "pending" {
+                if let Some(fields) = session.as_object_mut() {
+                    fields.remove("reviewerUsername");
+                    fields.remove("reviewerName");
+                    fields.remove("reviewedAt");
+                }
+            } else {
+                let reviewed_at = time::OffsetDateTime::from_unix_timestamp_nanos(
+                    i128::from(state.updated_at_ms) * 1_000_000,
+                )
+                .map_err(|_| failure("审核时间无效"))?
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| failure("审核时间格式无效"))?;
+                session["reviewerUsername"] = json!(username);
+                session["reviewerName"] = json!(reviewer);
+                session["reviewedAt"] = json!(reviewed_at);
+            }
+            let account_path = account_review_path(data_root, username, &root);
+            let previous = read_account_review(&account_path)?;
+            let known_account = session
+                .get("qcReviewers")
+                .and_then(|value| value.get(username))
+                .is_some();
+            if state.status != "pending" || previous.is_some() || known_account {
+                let record = AccountReview {
+                    source_path: root.to_string_lossy().into(),
+                    username: username.into(),
+                    reviewer_name: reviewer.into(),
+                    status: state.status.clone(),
+                    rejection_reason: state.rejection_reason.clone(),
+                    revision: state.revision_label.clone(),
+                    updated_at_ms: state.updated_at_ms,
+                };
+                if session.get("qcReviewers").is_none() {
+                    session["qcReviewers"] = json!({});
+                }
+                let accounts = session["qcReviewers"]
+                    .as_object_mut()
+                    .ok_or_else(|| failure("session.qcReviewers 必须是对象，账号关联未覆盖"))?;
+                // The shared record contains identity and review metadata, never a machine-local path.
+                let mut shared = serde_json::to_value(&record)?;
+                shared.as_object_mut().unwrap().remove("sourcePath");
+                accounts.insert(username.into(), shared);
+                atomic_json(&session_path, &session)?;
+                fs::create_dir_all(account_path.parent().unwrap())?;
+                atomic_json(&account_path, &serde_json::to_value(record)?)?;
+            } else {
+                atomic_json(&session_path, &session)?;
+            }
         }
     }
     atomic_json(&draft, &serde_json::to_value(&state)?)?;
@@ -1985,6 +2051,10 @@ pub fn is_review_path(root: &Path, path: &Path) -> bool {
             .and_then(|name| name.to_str())
             .is_some_and(|name| {
                 name == OUTPUT
+                    || name == machine_annotation::SKELETON_SOURCE
+                    || name == ".skeleton.description.review-state.json"
+                    || name.starts_with("..skeleton.description.review-state.json.partial-")
+                    || name.starts_with(".skeleton.description.json.partial-")
                     || name == "desorption.json"
                     || name == FLASH_OUTPUT
                     || name == LEGACY_OUTPUT
@@ -2012,6 +2082,267 @@ pub fn is_review_path(root: &Path, path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn skeleton_descriptions_are_independent_reopenable_and_do_not_write_qc() {
+        let f = Fixture::new(0, true);
+        fs::create_dir_all(f.root.join(".session_meta")).unwrap();
+        fs::create_dir_all(f.root.join("cam0")).unwrap();
+        fs::write(f.root.join("cam0/part.mp4"), b"unchanged media").unwrap();
+        fs::write(f.root.join(".session_meta/manifest.json"), serde_json::to_vec(&json!({
+            "storage_format":"h264-split-mp4-v1", "segment_seconds":300,
+            "streams":{"cam0":{"fps":30,"frame_count":30,"width":320,"height":180,"segments":[{"path":"cam0/part.mp4"}]}}
+        })).unwrap()).unwrap();
+        let action = load(&f.local, &f.root).unwrap();
+        f.save(&action).unwrap();
+        let human_before = fs::read(f.root.join(OUTPUT)).unwrap();
+        let session_before = fs::read(f.root.join("session.json")).unwrap();
+        let machine_before = fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap();
+        let source = Some(machine_annotation::SKELETON_SOURCE);
+        let mut state = load_selected(&f.local, &f.root, source).unwrap();
+        assert!(
+            state.segments.is_empty(),
+            "never import machine or action segments"
+        );
+        assert!(!f.root.join(machine_annotation::SKELETON_SOURCE).exists());
+        let request = |state: &ReviewState, segments: Vec<ReviewSegment>| SaveReviewRequest {
+            source_path: f.root.to_string_lossy().into(),
+            source_name: source.map(Into::into),
+            source_hash: state.source_hash.clone(),
+            expected_revision: state.revision,
+            segments,
+            status: Some("pending".into()),
+            rejection_reason: None,
+        };
+        let segment = ReviewSegment {
+            source_index: 0,
+            start_frame: 0,
+            end_frame: 29,
+            description: "往前走".into(),
+            deleted: false,
+            decision: "pending".into(),
+        };
+        state = save_for_user(
+            &f.local,
+            request(&state, vec![segment.clone()]),
+            "Human",
+            "alice",
+        )
+        .unwrap();
+        state = save_for_user(
+            &f.local,
+            request(
+                &state,
+                vec![
+                    ReviewSegment {
+                        end_frame: 9,
+                        ..segment.clone()
+                    },
+                    ReviewSegment {
+                        source_index: 1,
+                        start_frame: 10,
+                        description: "抬肘".into(),
+                        ..segment
+                    },
+                ],
+            ),
+            "Human",
+            "alice",
+        )
+        .unwrap();
+        let new_host = f.temp.join("skeleton-new-host");
+        let reopened = load_selected(&new_host, &f.root, source).unwrap();
+        assert_eq!(reopened.segments, state.segments);
+        assert!(reopened.published);
+        let output = f.root.join(machine_annotation::SKELETON_SOURCE);
+        let doc: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        assert!(doc.get("_human_review").is_none());
+        assert_eq!(
+            doc["episode_results"][0]["annotations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(doc["episode_results"][0]["annotations"][1]["end_frame"], 30);
+        let mut rejected = request(&state, state.segments.clone());
+        rejected.status = Some("approved".into());
+        assert!(save_for_user(&f.local, rejected, "Human", "alice").is_err());
+        let mut removed = state.segments.clone();
+        removed[0].deleted = true;
+        state = save_for_user(&f.local, request(&state, removed), "Human", "alice").unwrap();
+        assert_eq!(
+            load_selected(&new_host, &f.root, source).unwrap().segments,
+            state.segments
+        );
+        assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), human_before);
+        assert_eq!(
+            fs::read(f.root.join("session.json")).unwrap(),
+            session_before
+        );
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            machine_before
+        );
+        // A missing technical sidecar still reloads actual annotations.
+        fs::remove_file(technical_path(&output)).unwrap();
+        let bare_host = f.temp.join("skeleton-without-sidecar");
+        let bare = load_selected(&bare_host, &f.root, source).unwrap();
+        assert_eq!(bare.segments.iter().filter(|s| !s.deleted).count(), 1);
+        let mut external: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        external["episode_results"][0]["annotations"][0]["attributes_zh"]["动作描述"] =
+            json!("外部修改");
+        atomic_json(&output, &external).unwrap();
+        assert!(
+            save_for_user(
+                &bare_host,
+                request(&bare, bare.segments.clone()),
+                "Human",
+                "bob"
+            )
+            .is_err(),
+            "stale editor cannot overwrite changed shared bytes"
+        );
+        // No machine JSON is needed, and malformed unrelated QC cannot block description-only editing.
+        fs::remove_file(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap();
+        fs::write(f.root.join("session.json"), b"malformed unrelated QC").unwrap();
+        let fresh = load_selected(&f.temp.join("only-skeleton"), &f.root, source).unwrap();
+        let saved = save_for_user(
+            &f.temp.join("only-skeleton"),
+            request(&fresh, vec![]),
+            "Human",
+            "bob",
+        )
+        .unwrap();
+        assert!(saved.segments.iter().all(|s| s.deleted));
+        assert_eq!(
+            fs::read(f.root.join("session.json")).unwrap(),
+            b"malformed unrelated QC"
+        );
+        assert!(is_review_path(&f.root, &output));
+        assert!(is_review_path(&f.root, &technical_path(&output)));
+        fs::write(&output, b"corrupt skeleton JSON").unwrap();
+        assert!(load_selected(&f.temp.join("corrupt-host"), &f.root, source).is_err());
+        assert_eq!(fs::read(&output).unwrap(), b"corrupt skeleton JSON");
+    }
+
+    #[test]
+    fn skeleton_and_action_offline_results_publish_independently_and_keep_event_identity() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        fs::create_dir_all(f.root.join(".session_meta")).unwrap();
+        fs::create_dir_all(f.root.join("cam0")).unwrap();
+        fs::write(f.root.join("cam0/part.mp4"), b"unchanged media").unwrap();
+        fs::write(f.root.join(".session_meta/manifest.json"), serde_json::to_vec(&json!({
+            "storage_format":"h264-split-mp4-v1", "segment_seconds":300,
+            "streams":{"cam0":{"fps":30,"frame_count":30,"width":320,"height":180,"segments":[{"path":"cam0/part.mp4"}]}}
+        })).unwrap()).unwrap();
+        let mut originals = Vec::new();
+        for (name, id) in [
+            (
+                machine_annotation::DEFAULT_SOURCE,
+                "11111111-1111-4111-8111-111111111111",
+            ),
+            (
+                machine_annotation::SKELETON_SOURCE,
+                "22222222-2222-4222-8222-222222222222",
+            ),
+        ] {
+            let state = load_selected(&f.local, &f.root, Some(name)).unwrap();
+            let view = view_for_source(&f.root, Some(name), state.clone());
+            let segments = if name == machine_annotation::SKELETON_SOURCE {
+                vec![ReviewSegment {
+                    source_index: 0,
+                    start_frame: 0,
+                    end_frame: 29,
+                    description: "蹲下".into(),
+                    deleted: false,
+                    decision: "pending".into(),
+                }]
+            } else {
+                state.segments.clone()
+            };
+            let entry = queue::DeferredReview {
+                request: SaveReviewRequest {
+                    source_path: f.root.to_string_lossy().into(),
+                    source_name: Some(name.into()),
+                    source_hash: state.source_hash,
+                    expected_revision: state.revision,
+                    segments,
+                    status: Some("pending".into()),
+                    rejection_reason: None,
+                },
+                output_hash: state.output_hash,
+                qc_content_hash: view.qc_content_hash,
+                only_pending: false,
+                error: "REVIEW_STORAGE_FULL".into(),
+                created_at_ms: 0,
+                audit: json!({"eventId":id,"action":"saved","occurredAtMs":1792548000000u64,"details":{}}),
+            };
+            originals.push(queue::store(&f.local, "s", "alice", entry).unwrap());
+        }
+        assert_eq!(
+            queue::status(&f.local, "s", "alice", false)
+                .unwrap()
+                .pending,
+            2
+        );
+        assert_eq!(
+            queue::status(&f.local, "s", "bob", false).unwrap().pending,
+            0
+        );
+        let skeleton = queue::get(
+            &f.local,
+            "s",
+            "alice",
+            f.root.to_str().unwrap(),
+            Some(machine_annotation::SKELETON_SOURCE),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(skeleton.request.segments[0].description, "蹲下");
+        let user = crate::model::UserIdentity {
+            username: "alice".into(),
+            display_name: "甲".into(),
+            role: Some("operator".into()),
+        };
+        let cancel = AtomicBool::new(false);
+        let failed = queue::publish_with_probe(&f.local, "s", &user, &cancel, &|_| {
+            Err(failure("disk unavailable"))
+        })
+        .unwrap();
+        assert_eq!((failed.written, failed.remaining), (0, 2));
+        let result = queue::publish_with_probe(&f.local, "s", &user, &cancel, &|_| Ok(())).unwrap();
+        assert_eq!(
+            (result.written, result.remaining),
+            (2, 0),
+            "{:?}",
+            result.errors
+        );
+        let session = fs::read(f.root.join("session.json")).unwrap();
+        let output = fs::read(f.root.join(machine_annotation::SKELETON_SOURCE)).unwrap();
+        // Interrupted local acknowledgement is idempotent even after unrelated QC changes.
+        let mut changed: Value = serde_json::from_slice(&session).unwrap();
+        changed["qc"] = json!("通过");
+        atomic_json(&f.root.join("session.json"), &changed).unwrap();
+        let qc_changed = fs::read(f.root.join("session.json")).unwrap();
+        queue::store(&f.local, "s", "alice", originals.pop().unwrap()).unwrap();
+        let again = queue::publish_with_probe(&f.local, "s", &user, &cancel, &|_| Ok(())).unwrap();
+        assert_eq!(
+            (again.written, again.remaining),
+            (1, 0),
+            "{:?}",
+            again.errors
+        );
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::SKELETON_SOURCE)).unwrap(),
+            output
+        );
+        assert_eq!(fs::read(f.root.join("session.json")).unwrap(), qc_changed);
+        let events = crate::review_outbox::batch(&f.local, "s", "alice", false).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|e| e["occurredAtMs"] == 1792548000000u64));
+    }
 
     #[test]
     fn compact_metadata_is_read_only_until_save_and_stale_technical_bytes_are_not_applied() {
