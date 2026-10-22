@@ -347,8 +347,10 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.waitForFunction(()=>window.taskFixture.refreshRequests.at(-1)?.paths[0]==='D1 daily/2026-10-21-A');
     assert.deepEqual(await page.evaluate(()=>window.taskFixture.refreshRequests.at(-1).paths), ['D1 daily/2026-10-21-A']);
     const groupRow=page.getByRole('button',{name:'D1 daily',exact:true}).locator('..');
-    assert.match(await groupRow.innerText(), /领取人：审核甲 · 已领取 1\/2 批次/);
+    assert.equal(await groupRow.locator('.task-owner').count(), 0, 'group row has no owner summary');
+    assert.equal(await page.locator('.task-tree-root .task-owner').count(), 0, 'dataset root has no owner summary');
     await page.getByRole('button',{name:'D1 daily',exact:true}).click();
+    assert.match(await page.getByRole('button',{name:'2026-10-21-A',exact:true}).locator('..').locator('.task-owner').innerText(), /领取人：审核甲/);
     await page.getByLabel('批次名称').fill('2026-10-21-B');
     assert.equal(await page.getByRole('button',{name:'2026-10-21-A',exact:true}).count(),0);
     assert.equal(await page.getByRole('button',{name:'2026-10-21-B',exact:true}).count(),1);

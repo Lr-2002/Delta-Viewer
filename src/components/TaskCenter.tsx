@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, UserMinus, ListFilter, X } from "lucide-react";
 import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex, refreshTaskIndex } from "../lib/backend";
-import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus, isTaskBatch, taskGroupOwnerSummary, taskBatches, findTaskNode } from "../lib/task-center";
+import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus, isTaskBatch, taskBatches, findTaskNode } from "../lib/task-center";
 import type { UserIdentity } from "../types";
 import { emptyTaskFilters, matchesTaskBatch } from "../lib/task-center-filter";
 import "./task-center.css";
@@ -348,7 +348,6 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const isBatch = isTaskBatch(node, depth) && (!node.session || isRoot);
     const open = expanded.has(node.relativePath);
     const claim = claims[node.batchKey];
-    const groupOwners = !isBatch && !node.session ? taskGroupOwnerSummary(node, depth, claims, claimsReady) : null;
     const percent = node.total && !node.incomplete && !node.scanning ? Math.floor(node.reviewed * 100 / node.total) : null;
     const filteringThisBatch = percent !== 100 && pendingOnlyBatch !== null && pendingOnlyBatch === node.relativePath;
     const filterLoading = filteringThisBatch && (pendingResults.path !== pendingOnlyBatch || pendingResults.loading);
@@ -366,7 +365,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
           <span>{isRoot ? root : node.name}{isBatch && !isRoot && <small className="task-node-path">{node.relativePath}</small>}</span>
         </button>
         {node.session ? <span className={`task-qc task-qc-${node.status}`} title={node.error}>{node.status === "approved" ? "已审核 · 通过" : node.status === "rejected" ? "已审核 · 不通过" : node.status === "error" ? "QC 异常" : "未审核"}</span>
-          : <><span className="task-owner" title={groupOwners?.title}>{isBatch ? `领取人：${claim ? `${claim.displayName} (@${claim.username})` : claimsReady ? "暂无" : "--"}` : groupOwners?.text}</span>
+          : <>{isBatch && <span className="task-owner">领取人：{claim ? `${claim.displayName} (@${claim.username})` : claimsReady ? "暂无" : "--"}</span>}
             <span className={`task-progress${percent === 100 ? " complete" : ""}`} title={node.error || `已审核 ${node.reviewed}/${node.total}；通过 ${node.approved}；不通过 ${node.rejected}；异常 ${node.errors}`}>
               <b>{percent === null ? "--" : `${percent}%`}</b><small>{node.scanning ? loading ? "统计中" : "未完成" : `${node.reviewed}/${node.total}`}{node.errors ? ` · ${node.errors} 异常` : ""}</small>
             </span></>}

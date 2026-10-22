@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.2.6 - 2026-10-22
+
+- 任务中心仅在具体批次行显示审核领取人；移除根目录及上级分组的领取人、人数和已领取批次数汇总，保留各级审核进度。
+
 ## 1.2.5 - 2026-10-22
 
 - 修复目录迁移映射缺失时历史领取人无法匹配的问题：支持读取已核实的备用映射；无法确认身份时明确报错并保留上次结果，避免把已有任务显示为未领取。分组行增加子批次领取人汇总，具体领取与释放仍以独立批次为准。

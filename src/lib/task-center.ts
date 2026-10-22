@@ -99,20 +99,3 @@ export function findTaskNode(tree: TaskNode, path: string): TaskNode | undefined
   if (tree.relativePath === path) return tree;
   for (const child of tree.children) { const found = findTaskNode(child, path); if (found) return found; }
 }
-
-export function taskGroupOwnerSummary(node: TaskNode, depth: number, claims: Record<string, BatchClaim>, ready: boolean) {
-  const batches = taskBatches(node, depth);
-  if (!batches.length) return { text: node.childrenLoaded === false ? "正在读取批次领取信息…" : "无可领取批次", title: "" };
-  const owners = new Map<string, BatchClaim>();
-  let claimed = 0;
-  for (const batch of batches) {
-    const claim = claims[batch.batchKey];
-    if (claim) { claimed++; owners.set(claim.username, claim); }
-  }
-  if (!ready) return { text: "领取信息待确认", title: "正在查询用户中心；未确认前不能视为未领取" };
-  const values = [...owners.values()].sort((a, b) => a.username.localeCompare(b.username));
-  return {
-    text: `领取人：${values.length ? values.slice(0, 2).map(c => c.displayName || c.username).join("、") + (values.length > 2 ? `等 ${values.length} 人` : "") : "暂无"} · 已领取 ${claimed}/${batches.length} 批次`,
-    title: values.map(c => `${c.displayName} (@${c.username})`).join("；") || "子批次均未领取",
-  };
-}
