@@ -274,7 +274,7 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.getByRole('button', {name:'进入审核',exact:true}).waitFor();
     await page.evaluate(() => { window.taskFixture.running = true; });
     await page.getByRole('button', { name: '刷新任务进度', exact: true }).click();
-    await page.getByText('服务器正在统计 · 已统计 5418 条 · 显示上次结果', {exact:true}).waitFor();
+    await page.getByText('服务器完整校准中 · 已统计 5418 条 · 显示上次结果', {exact:true}).waitFor();
     assert.equal(await page.getByRole('button', {name:'领取',exact:true}).isDisabled(), false, 'background rebuild does not block existing batches');
     await page.evaluate(() => { window.taskFixture.running = false; window.taskFixture.serverError = '统计失败：权限不足'; });
     await page.getByRole('button', { name: '刷新任务进度', exact: true }).click();
@@ -340,6 +340,15 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
     await page.getByRole('button',{name:'进入审核',exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'领取',exact:true}).count(),1,'other batch remains unclaimed');
     assert.ok(await page.evaluate(()=>window.taskFixture.openCalls.at(-1).endsWith('/D1 daily/2026-10-21-A')));
+
+    await page.getByRole('button',{name:'D1 daily',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'2026-10-21-A',exact:true}).count(),0);
+    await page.getByRole('button',{name:'刷新任务进度',exact:true}).click();
+    await page.waitForFunction(()=>window.taskFixture.refreshRequests.at(-1)?.paths[0]==='D1 daily/2026-10-21-A');
+    assert.deepEqual(await page.evaluate(()=>window.taskFixture.refreshRequests.at(-1).paths), ['D1 daily/2026-10-21-A']);
+    const groupRow=page.getByRole('button',{name:'D1 daily',exact:true}).locator('..');
+    assert.match(await groupRow.innerText(), /领取人：审核甲 · 已领取 1\/2 批次/);
+    await page.getByRole('button',{name:'D1 daily',exact:true}).click();
     await page.getByLabel('批次名称').fill('2026-10-21-B');
     assert.equal(await page.getByRole('button',{name:'2026-10-21-A',exact:true}).count(),0);
     assert.equal(await page.getByRole('button',{name:'2026-10-21-B',exact:true}).count(),1);

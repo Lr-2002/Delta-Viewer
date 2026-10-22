@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, UserMinus, ListFilter, X } from "lucide-react";
 import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex, refreshTaskIndex } from "../lib/backend";
-import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus, isTaskBatch, taskBatches, findTaskNode } from "../lib/task-center";
+import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus, isTaskBatch, taskGroupOwnerSummary, taskBatches, findTaskNode } from "../lib/task-center";
 import type { UserIdentity } from "../types";
 import { emptyTaskFilters, matchesTaskBatch } from "../lib/task-center-filter";
 import "./task-center.css";
@@ -232,7 +232,10 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     qcRequest.current = null;
     setManualRefreshing(true); setRefreshNotice("正在刷新服务器统计…"); setRefreshError("");
     try {
-      const opened = [...expandedRef.current].filter(Boolean);
+      const opened = [...expandedRef.current].filter((path) => {
+        const node = path && catalogRef.current ? findTaskNode(catalogRef.current.tree, path) : null;
+        return node && isTaskBatch(node, path.split("/").length);
+      });
       const owned = (catalogRef.current ? taskBatches(catalogRef.current.tree) : []).filter((node) => claims[node.batchKey]?.username === currentUser.username).map((node) => node.relativePath) ?? [];
       const candidates = opened.length ? opened : owned;
       const paths = candidates.filter((path) => !candidates.some((parent) => parent !== path && path.startsWith(`${parent}/`)));
@@ -345,6 +348,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
     const isBatch = isTaskBatch(node, depth) && (!node.session || isRoot);
     const open = expanded.has(node.relativePath);
     const claim = claims[node.batchKey];
+    const groupOwners = !isBatch && !node.session ? taskGroupOwnerSummary(node, depth, claims, claimsReady) : null;
     const percent = node.total && !node.incomplete && !node.scanning ? Math.floor(node.reviewed * 100 / node.total) : null;
     const filteringThisBatch = percent !== 100 && pendingOnlyBatch !== null && pendingOnlyBatch === node.relativePath;
     const filterLoading = filteringThisBatch && (pendingResults.path !== pendingOnlyBatch || pendingResults.loading);
@@ -362,7 +366,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
           <span>{isRoot ? root : node.name}{isBatch && !isRoot && <small className="task-node-path">{node.relativePath}</small>}</span>
         </button>
         {node.session ? <span className={`task-qc task-qc-${node.status}`} title={node.error}>{node.status === "approved" ? "已审核 · 通过" : node.status === "rejected" ? "已审核 · 不通过" : node.status === "error" ? "QC 异常" : "未审核"}</span>
-          : <><span className="task-owner">{isBatch ? `领取人：${claim ? `${claim.displayName} (@${claim.username})` : claimsReady ? "暂无" : "--"}` : ""}</span>
+          : <><span className="task-owner" title={groupOwners?.title}>{isBatch ? `领取人：${claim ? `${claim.displayName} (@${claim.username})` : claimsReady ? "暂无" : "--"}` : groupOwners?.text}</span>
             <span className={`task-progress${percent === 100 ? " complete" : ""}`} title={node.error || `已审核 ${node.reviewed}/${node.total}；通过 ${node.approved}；不通过 ${node.rejected}；异常 ${node.errors}`}>
               <b>{percent === null ? "--" : `${percent}%`}</b><small>{node.scanning ? loading ? "统计中" : "未完成" : `${node.reviewed}/${node.total}`}{node.errors ? ` · ${node.errors} 异常` : ""}</small>
             </span></>}
@@ -397,7 +401,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       <span>每日 23:00 自动统计</span>
       {server?.updatedAtMs && server.updatedAtMs !== server.completedAtMs ? <span>进度更新：{new Date(server.updatedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</span> : null}
       {checkedAtMs > 0 && <span>最近读取：{new Date(checkedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（北京时间）</span>}
-      {server && Date.now() - server.heartbeatAtMs > 90000 ? <span className="task-center-error">服务器状态未更新（共享缓存或服务无响应），显示上次结果</span> : server?.running ? <span>服务器正在统计 · 已统计 {server.sessions} 条 · 显示上次结果</span> : null}
+      {server && Date.now() - server.heartbeatAtMs > 90000 ? <span className="task-center-error">服务器状态未更新（共享缓存或服务无响应），显示上次结果</span> : server?.running ? <span>服务器完整校准中 · 已统计 {server.sessions} 条 · {server.liveQcDuringScan ? "审核进度独立更新" : "显示上次结果"}</span> : null}
       {server?.error && <span role="alert" className="task-center-error">{server.error}；保留上次成功结果</span>}
       {requestNotice && <span>{requestNotice}</span>}
       {refreshNotice && <span className="task-refresh-notice">{refreshNotice}</span>}

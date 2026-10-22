@@ -29,3 +29,5 @@ Delta Viewer 不提供 ext4 驱动。Windows 和 macOS 只能直接选择操作�
 当前 Release 通道明确为 `UNSIGNED`，即没有可信发布者身份：Windows 没有 Authenticode，macOS 没有 Developer ID 或 Apple notarization，Ubuntu deb 没有可信发行者签名。macOS app 仍使用完整的本地 ad-hoc seal，并在合成 quarantine 下执行策略检查。若 GitHub runner 的 XProtect 服务不可用，只有独立构建的最小 control app 得到相同内部错误时才能把它记录为环境状态；产品独有的 XProtect 错误和任何资源封印损坏都会阻止发布。Release 只有在 Windows x64、macOS arm64 和 Ubuntu deb 全部完成依赖校验、安装或挂载、启动 smoke 和 SHA-256 汇总后才会公开。每个 Release 同时附带 `SHA256SUMS.txt`、`release-manifest.json` 和 GitHub build provenance。
 
 这些自动检查不能替代真实 SD 卡、干净 Win10/Win11 断网机器和目标 Mac 的现场验收；对应限制会保留在发布说明中。
+
+- [任务中心领取归属与实时统计调查](https://github.com/Lr-2002/Delta-Viewer/blob/main/docs/task-center-live-20261022.md)

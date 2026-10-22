@@ -243,6 +243,17 @@ pub fn load_with_receipt(
     }
     tree["relativePath"] = json!(relative);
     let registry = crate::dataset_layout::Registry::read(source)?;
+    registry.require_task_identity(&selected)?;
+    for child in tree["children"].as_array().unwrap() {
+        let relative = child["relativePath"].as_str().unwrap();
+        registry.require_task_identity(
+            &[prefix.as_str(), relative]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("/"),
+        )?;
+    }
     crate::dataset_layout::adapt_node(&mut tree, source, &prefix, &registry);
     if let Some(children) = tree["children"].as_array_mut() {
         for child in children {
@@ -256,6 +267,7 @@ pub fn load_with_receipt(
             "heartbeatAtMs": status["heartbeatAtMs"], "startedAtMs": status["startedAtMs"],
             "sessions": status["sessions"], "error": status["error"], "schedule": status["schedule"],
             "refreshQcV1": status["refreshQcV1"], "refreshResults": status["refreshResults"],
+            "liveQcDuringScan": status["liveQcDuringScan"],
             "refreshReceiptId": confirmed
         }}),
     )

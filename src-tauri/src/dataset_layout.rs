@@ -41,8 +41,14 @@ impl Registry {
         let Some(share) = share_root(path) else {
             return Ok(Self::default());
         };
-        let file = share.join("Delta-Viewer-TaskIndex/Delta-D1/layout.json");
-        let Some(bytes) = crate::machine_annotation::read_bytes(&file)? else {
+        let directory = share.join("Delta-Viewer-TaskIndex/Delta-D1");
+        let bytes = match crate::machine_annotation::read_bytes(&directory.join("layout.json"))? {
+            Some(bytes) => Some(bytes),
+            None => {
+                crate::machine_annotation::read_bytes(&directory.join("layout.last-good.json"))?
+            }
+        };
+        let Some(bytes) = bytes else {
             return Ok(Self::default());
         };
         let registry: Self = serde_json::from_slice(&bytes)?;
@@ -81,6 +87,13 @@ impl Registry {
             }
         }
         Ok(registry)
+    }
+
+    pub fn require_task_identity(&self, relative: &str) -> AppResult<()> {
+        if self.moves.is_empty() && relative.split('/').next().is_some_and(grouping_name) {
+            return Err(AppError::Message("DATASET_LAYOUT_UNAVAILABLE: 目录迁移映射缺失，无法确认历史领取归属；已保留上次结果，请联系管理员恢复 layout.json。不会将未知归属显示为未领取。".into()));
+        }
+        Ok(())
     }
 
     pub fn translate(&self, value: &str, reverse: bool) -> Option<String> {
@@ -171,7 +184,8 @@ pub fn resolve(path: &Path) -> AppResult<PathBuf> {
 /// The durable offline queue must never consult the unavailable NAS.
 pub fn cache_registry(data_root: &Path, path: &Path) -> AppResult<()> {
     let registry = Registry::read(path)?;
-    if share_root(path).is_some() {
+    if share_root(path).is_some() && !registry.moves.is_empty() {
+        // A fresh/unconfigured dataset must not erase known offline relocation history.
         std::fs::create_dir_all(data_root)?;
         crate::machine_review::atomic_json(
             &data_root.join("dataset-layout.json"),
@@ -507,6 +521,48 @@ mod tests {
         for invalid in ["2026-02-30", "中文目录测试", "2026-10-210", "2026-13-01"] {
             assert!(!dated(invalid));
         }
+    }
+
+    #[test]
+    fn missing_registry_uses_valid_backup_and_never_reports_unknown_group_claims_as_free() {
+        let root = std::env::temp_dir().join(format!(
+            "viewer-layout-backup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let dataset = root.join("Delta-D1");
+        let index = root.join("Delta-Viewer-TaskIndex/Delta-D1");
+        fs::create_dir_all(&dataset).unwrap();
+        fs::create_dir_all(&index).unwrap();
+        let empty = Registry::read(&dataset).unwrap();
+        assert!(empty
+            .require_task_identity("D1-Daily/2026-09-20-Sofa")
+            .is_err());
+        assert!(empty.require_task_identity("2026-09-20-Sofa").is_ok());
+        let raw = serde_json::to_vec(&json!({"moves":[{"source":"Delta-D1/2026-09-20-Sofa","destination":"Delta-D1/D1-Daily/2026-09-20-Sofa","state":"completed"}]})).unwrap();
+        fs::write(index.join("layout.last-good.json"), &raw).unwrap();
+        let recovered = Registry::read(&dataset).unwrap();
+        recovered.require_task_identity("D1-Daily").unwrap();
+        assert_eq!(
+            batch_key("Delta-D1", "D1-Daily/2026-09-20-Sofa", &recovered),
+            batch_key("Delta-D1", "2026-09-20-Sofa", &Registry::default())
+        );
+        fs::write(index.join("layout.json"), b"corrupt").unwrap();
+        assert!(
+            Registry::read(&dataset).is_err(),
+            "a present but invalid primary cannot silently use stale backup"
+        );
+        fs::remove_file(index.join("layout.json")).unwrap();
+        let local = root.join("local");
+        cache_registry(&local, &dataset).unwrap();
+        let before = fs::read(local.join("dataset-layout.json")).unwrap();
+        fs::remove_file(index.join("layout.last-good.json")).unwrap();
+        cache_registry(&local, &dataset).unwrap();
+        assert_eq!(fs::read(local.join("dataset-layout.json")).unwrap(), before);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

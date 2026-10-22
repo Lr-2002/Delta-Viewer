@@ -174,13 +174,18 @@ class TaskIndex:
                          "updatedAtMs": 0, "generation": "", "nodes": {}}
         self.status = {"running": False, "startedAtMs": 0, "heartbeatAtMs": 0,
                        "sessions": 0, "error": "", "schedule": "23:00 Asia/Shanghai",
-                       "refreshQcV1": True, "refreshReceiptV1": True, "refreshResults": []}
+                       "refreshQcV1": True, "refreshReceiptV1": True, "liveQcDuringScan": True, "refreshResults": []}
         self.last_progress = 0
         self.sessions = 0
         self.visited = 0
         self.last_attempt = 0
         self.request_stamp = None
         self.last_gc = 0
+        self.pending = set()
+        self.rebuild_dirty = None
+        self.rescan_requested = False
+        self.last_live = 0
+        self.refresh_jobs = {}
 
     def publish_status(self, **changes):
         self.status.update(changes)
@@ -216,6 +221,10 @@ class TaskIndex:
                     rejected=0, errors=0, incomplete=False, scanning=False, childrenLoaded=True, children=[])
 
     def visit(self, path, nodes, depth=0):
+        # Cooperate with the live QC/receipt loop while a full scan is in progress.
+        # The previous published tree remains authoritative until the new one commits.
+        if self.rebuild_dirty is not None:
+            self.service_live()
         self.visited += 1
         if self.visited > 250000 or depth > 32:
             raise ValueError("Task directory limit exceeded")
@@ -323,33 +332,64 @@ class TaskIndex:
         self.last_attempt = now_ms()
         self.sessions = self.visited = 0
         self.publish_status(running=True, startedAtMs=self.last_attempt, sessions=0, error="")
-        previous = self.nodes
+        self.rebuild_dirty = set()
         try:
             nodes = {}
             self.visit(self.source, nodes)
+            self.service_live(force=True)
+            # A QC may change after its directory was visited. Replay all observed
+            # edits/explicit refreshes into the new snapshot before publishing it.
+            nodes, _ = self.updated_nodes(nodes, self.rebuild_dirty)
+            previous = self.nodes  # includes live updates accepted during this scan
             self.nodes = nodes
-            self.publish(completed=True)
+            try:
+                self.publish(completed=True)
+            except Exception:
+                self.nodes = previous
+                raise
             if self.watcher:
                 self.watcher.retain({self.source / relative for relative in nodes})
-            self.publish_status(running=False, sessions=self.sessions, error="")
+            self.publish_status(running=False, sessions=self.sessions)
             return True
         except Exception as error:
-            self.nodes = previous
             self.publish_status(running=False, error="统计失败: " + str(error))
             return False
+        finally:
+            self.rebuild_dirty = None
 
-    def update(self, paths):
+    def service_live(self, force=False):
+        if not force and time.monotonic() - self.last_live < 2:
+            return
+        self.last_live = time.monotonic()
+        if self.watcher:
+            dirty, overflow = self.watcher.drain()
+            self.pending.update(dirty)
+            self.rescan_requested |= overflow
+            if self.rebuild_dirty is not None:
+                self.rebuild_dirty.update(dirty)
+        known = {path for path in self.pending if self.nodes.get(
+            "" if path == self.source else path.relative_to(self.source).as_posix(), {}).get("session")
+            and self.ordinary_source_directory(path)}
+        try:
+            if known:
+                self.update(known)
+                self.pending.difference_update(known)
+            self.refresh_requests()
+        except Exception as error:
+            self.publish_status(error="增量统计失败: " + str(error))
+        else:
+            if self.status["error"].startswith("增量统计失败: "):
+                self.publish_status(error="")
+
+    def updated_nodes(self, previous, paths):
         # Re-read changed QC from disk, never trust a client-supplied conclusion.
-        previous = self.nodes
         staged = dict(previous)
         changed = False
         for path in paths:
-            relative = path.relative_to(self.source).as_posix()
-            if relative == ".":
-                relative = ""
+            relative = "" if path == self.source else path.relative_to(self.source).as_posix()
             node = staged.get(relative)
-            if not node or not node["session"] or not path.is_dir() or path.is_symlink():
-                continue  # New/removed directories are reconciled by a rebuild below.
+            if not node or not node["session"] or not self.ordinary_source_directory(path):
+                continue  # Topology changes remain queued for a full reconciliation.
             status, error = qc_status(path)
             if (node["status"], node["error"]) != (status, error):
                 node = dict(node)
@@ -359,13 +399,20 @@ class TaskIndex:
                 staged[relative] = node
                 changed = True
         if changed:
-            # Loaded shards are shallow; re-link their immediate children before aggregation.
             for relative in sorted(staged, key=lambda name: name.count("/") + bool(name), reverse=True):
                 node = staged[relative]
                 if not node["session"]:
                     node = dict(node, children=[staged[child["relativePath"]] for child in node["children"]])
                     self.aggregate(node)
                     staged[relative] = node
+        return staged, changed
+
+    def update(self, paths):
+        if self.rebuild_dirty is not None:
+            self.rebuild_dirty.update(paths)
+        previous = self.nodes
+        staged, changed = self.updated_nodes(previous, paths)
+        if changed:
             self.nodes = staged
             try:
                 self.publish()
@@ -401,19 +448,32 @@ class TaskIndex:
                     if not isinstance(relative, str) or relative not in self.nodes or not relative or any(
                             part in ("", ".", "..") for part in relative.split("/")) or "\\" in relative:
                         raise ValueError("刷新目录不在服务器索引中")
+                    if "/" not in relative and "".join(c for c in relative.lower() if c.isalnum()) in (
+                            "d1daily", "d1yiqi", "d1validation", "d1motioncaption"):
+                        raise ValueError("请选择具体批次核对，分组目录由后台完整校准")
                     parent = self.source / relative
                     if not self.ordinary_source_directory(parent):
                         raise ValueError("刷新目录已移动，请等待服务器校准")
                     selected.update(self.source / name for name, node in self.nodes.items()
                                     if node["session"] and (name == relative or name.startswith(relative + "/")))
-                if any(not self.ordinary_source_directory(path) for path in selected):
+                job = self.refresh_jobs.get(request_id)
+                if job is None:
+                    job = {"paths": paths, "remaining": sorted(selected), "cursor": 0}
+                    self.refresh_jobs[request_id] = job
+                elif job["paths"] != paths:
+                    raise ValueError("刷新请求内容发生变化，请重新请求")
+                # Large batches must not block live QC or a concurrent full scan.
+                # A restart can safely recheck this read-only request from the start.
+                chunk = job["remaining"][job["cursor"]:job["cursor"] + 64]
+                if any(not self.ordinary_source_directory(path) for path in chunk):
                     raise ValueError("批次子目录已移动，请等待服务器校准")
-                self.update(selected)
-                # Repair watches as well as QC. New/removed folders still use topology reconciliation.
+                self.update(chunk)
                 if self.watcher:
-                    for path in selected:
-                        if path.is_dir() and not path.is_symlink():
-                            self.watcher.add(path)
+                    for path in chunk:
+                        self.watcher.add(path)
+                job["cursor"] += len(chunk)
+                if job["cursor"] < len(job["remaining"]):
+                    continue  # Keep the durable request until its unique receipt commits.
             except Exception as error:
                 result["error"] = "批次核对失败: " + str(error)
             result["completedAtMs"] = now_ms()
@@ -427,8 +487,10 @@ class TaskIndex:
                                       "result": result, "manifest": self.manifest,
                                       "status": self.status})
             request.unlink()
+            self.refresh_jobs.pop(request_id, None)
 
     def run(self):
+        self.publish_status(running=True, startedAtMs=now_ms(), sessions=0)
         try:
             self.load()
         except (ValueError, OSError, KeyError):
@@ -447,11 +509,10 @@ class TaskIndex:
             pass
         self.refresh_requests()
         retry_needed = not self.rebuild()
-        pending, last_flush, last_heartbeat = set(), time.monotonic(), time.monotonic()
+        last_flush, last_heartbeat = time.monotonic(), time.monotonic()
         while True:
             select.select([self.watcher.fd], [], [], 1)
-            dirty, overflow = self.watcher.drain()
-            pending.update(dirty)
+            self.service_live()
             try:
                 stamp = request.stat().st_mtime_ns
             except FileNotFoundError:
@@ -459,27 +520,17 @@ class TaskIndex:
             requested = stamp is not None and stamp != self.request_stamp
             self.request_stamp = stamp
             nightly = (retry_needed or self.manifest["completedAtMs"] < scheduled_cutoff(time.time())) and now_ms() - self.last_attempt > 300000
-            topology = any(not self.nodes.get("" if path == self.source else path.relative_to(self.source).as_posix(), {}).get("session") or not path.is_dir() or path.is_symlink() for path in pending)
-            if overflow or requested or nightly or (topology and time.monotonic() - last_flush >= 10):
-                pending.clear()
+            topology = any(not self.nodes.get(
+                "" if path == self.source else path.relative_to(self.source).as_posix(), {}).get("session")
+                or not self.ordinary_source_directory(path) for path in self.pending)
+            if self.rescan_requested or requested or nightly or (topology and time.monotonic() - last_flush >= 10):
+                self.pending.clear()
+                self.rescan_requested = False
                 retry_needed = not self.rebuild()
-                last_flush = time.monotonic()
-            elif pending and not topology and time.monotonic() - last_flush >= 2:
-                # Keep directory changes queued for the 10-second rebuild above.
-                # update() only handles known sessions and would otherwise discard them.
-                try:
-                    self.update(pending)
-                except Exception as error:
-                    self.publish_status(error="增量统计失败: " + str(error))
-                else:
-                    pending.clear()
-                    if self.status["error"].startswith("增量统计失败: "):
-                        self.publish_status(error="")
                 last_flush = time.monotonic()
             if time.monotonic() - last_heartbeat > 10:
                 self.publish_status()
                 last_heartbeat = time.monotonic()
-            self.refresh_requests()
 
 
 def main():

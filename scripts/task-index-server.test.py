@@ -298,6 +298,89 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(self.index.nodes["batch"]["reviewed"], 1)
         self.assertEqual(self.index.status["error"], "")
 
+    def test_live_qc_and_receipts_are_published_before_full_scan_finishes_and_replayed(self):
+        one = self.session("batch/one", "待审核")
+        two = self.session("batch/two", "待审核")
+        self.assertTrue(self.index.rebuild())
+        watcher = module.Watcher()
+        self.index.watcher = watcher
+        watcher.add(one)
+        visit = self.index.visit
+        observed = []
+
+        def edit_after_first_was_scanned(path, nodes, depth=0):
+            if path == two:
+                self.assertEqual(nodes["batch/one"]["status"], "pending")
+                self.session("batch/one", "通过")
+                module.atomic_json(self.index.requests / (("e" * 64) + ".json"), {"paths": ["batch"]})
+                self.index.service_live(force=True)
+                self.assertTrue(self.index.status["running"])
+                self.assertTrue((self.index.results / (("e" * 64) + ".json")).is_file())
+                manifest = module.read_json(self.out / "index.json")
+                published = module.read_json(self.index.objects / (manifest["nodes"]["batch"] + ".json"))
+                self.assertEqual(published["reviewed"], 1)
+                observed.append(True)
+            return visit(path, nodes, depth)
+        try:
+            with patch.object(self.index, "visit", side_effect=edit_after_first_was_scanned):
+                self.assertTrue(self.index.rebuild())
+            self.assertEqual(observed, [True])
+            self.assertEqual(self.index.nodes["batch/one"]["status"], "approved")
+            self.assertEqual(self.index.nodes[""]["reviewed"], 1)
+            self.assertEqual(self.index.status["error"], "")
+        finally:
+            watcher.close()
+
+    def test_failed_scan_keeps_live_success_and_failed_publish_retries_without_new_event(self):
+        one = self.session("batch/one", "待审核")
+        self.assertTrue(self.index.rebuild())
+        def fail_after_live(*args):
+            self.session("batch/one", "通过")
+            self.index.update({one})
+            raise PermissionError("full scan interrupted")
+        with patch.object(self.index, "visit", side_effect=fail_after_live):
+            self.assertFalse(self.index.rebuild())
+        self.assertEqual(self.index.nodes["batch/one"]["status"], "approved")
+        restarted = module.TaskIndex(self.root, self.out)
+        restarted.load()
+        self.assertEqual(restarted.nodes["batch/one"]["status"], "approved")
+        self.session("batch/one", "不通过")
+        self.index.pending.add(one)
+        with patch.object(self.index, "publish", side_effect=OSError("disk full")):
+            self.index.service_live(force=True)
+        self.assertIn(one, self.index.pending)
+        self.assertIn("disk full", self.index.status["error"])
+        self.index.service_live(force=True)
+        self.assertEqual(self.index.nodes["batch/one"]["status"], "rejected")
+        self.assertNotIn(one, self.index.pending)
+        self.assertEqual(self.index.status["error"], "")
+
+    def test_large_refresh_yields_between_chunks_and_group_requests_fail_explicitly(self):
+        for i in range(65):
+            self.session("batch/{:03}".format(i), "待审核")
+        other = self.session("other/one", "待审核")
+        self.session("D1-Daily/2026-10-22-Test/one", "待审核")
+        self.assertTrue(self.index.rebuild())
+        for i in range(65):
+            self.session("batch/{:03}".format(i), "通过")
+        request = self.index.requests / (("f" * 64) + ".json")
+        module.atomic_json(request, {"paths": ["batch"]})
+        self.index.refresh_requests()
+        self.assertTrue(request.exists())
+        self.assertFalse((self.index.results / (("f" * 64) + ".json")).exists())
+        self.assertEqual(self.index.nodes["batch"]["reviewed"], 64)
+        self.session("other/one", "不通过")
+        self.index.pending.add(other)
+        self.index.service_live(force=True)
+        self.assertEqual(self.index.nodes["other/one"]["status"], "rejected")
+        self.assertEqual(self.index.nodes["batch"]["reviewed"], 65)
+        self.assertFalse(request.exists())
+        receipt = module.read_json(self.index.results / (("f" * 64) + ".json"))
+        self.assertEqual(receipt["result"]["error"], "")
+        module.atomic_json(self.index.requests / (("1" * 64) + ".json"), {"paths": ["D1-Daily"]})
+        self.index.refresh_requests()
+        self.assertIn("具体批次", self.index.status["refreshResults"][-1]["error"])
+
     def test_schedule_uses_china_time_and_does_not_run_before_2300(self):
         for hour, expected in [(22, "2026-09-19T23:00:00+08:00"), (23, "2026-09-20T23:00:00+08:00")]:
             now = dt.datetime(2026, 9, 20, hour, 0, tzinfo=module.ZONE).timestamp()
