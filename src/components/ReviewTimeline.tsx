@@ -1,5 +1,6 @@
-import { useRef, useState, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
 import type { ReviewSegment } from "../types";
+import { adjustReviewBoundary } from "../lib/machine-annotation";
 
 const COLORS = ["#087e79", "#5489a3", "#b3914b", "#797895", "#628969"];
 function segmentColor(position: number): string {
@@ -18,6 +19,14 @@ export function ReviewTimeline({ frame, frameCount, start, end, editable, segmen
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef<"startFrame" | "endFrame" | null>(null);
   const origin = useRef({ x: 0, moved: false });
+  const animation = useRef<number | null>(null);
+  const pendingEdge = useRef<number | null>(null);
+  const [preview, setPreview] = useState<{ kind: "startFrame" | "endFrame"; value: number } | null>(null);
+  const cancelPreview = () => {
+    if (animation.current !== null) cancelAnimationFrame(animation.current);
+    animation.current = null; pendingEdge.current = null; drag.current = null; setPreview(null);
+  };
+  useEffect(() => () => { if (animation.current !== null) cancelAnimationFrame(animation.current); }, []);
   const [selectedControl, setSelectedControl] = useState("endFrame");
   const selectControl = (kind: "startFrame" | "endFrame" | "playhead") => {
     setSelectedControl(kind);
@@ -29,11 +38,21 @@ export function ReviewTimeline({ frame, frameCount, start, end, editable, segmen
     origin.current.moved = true;
     const bounds = track.current.getBoundingClientRect();
     const edge = Math.round(Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * frameCount);
-    onBoundary(drag.current, drag.current === "endFrame" ? edge - 1 : edge);
+    pendingEdge.current = drag.current === "endFrame" ? edge - 1 : edge;
+    if (animation.current === null) animation.current = requestAnimationFrame(() => {
+      animation.current = null;
+      if (drag.current && pendingEdge.current !== null) setPreview({ kind: drag.current, value: pendingEdge.current });
+    });
   };
+  // Preview from the unchanged drag-start rows so reversing a drag restores all
+  // crossed rows. Only pointer-up performs disk saves, audit edits and seeking.
+  const shown = preview && selected !== undefined ? adjustReviewBoundary(segments, selected, preview.kind, preview.value, frameCount) : segments;
+  const activePreview = shown.find(segment => segment.sourceIndex === selected && !segment.deleted);
+  const shownStart = activePreview?.startFrame ?? start;
+  const shownEnd = activePreview?.endFrame ?? end;
   return <div className="review-timeline">
     <div className="review-track" ref={track} aria-label="动作分段条">
-      {segments.map((segment, index) => <button type="button" className="review-span" key={segment.sourceIndex}
+      {shown.filter(segment => !segment.deleted).map((segment, index) => <button type="button" className="review-span" key={segment.sourceIndex}
         title={`${segment.description || "暂无中文描述"} [${segment.startFrame}, ${segment.endFrame + 1})`}
         aria-label={`选择机标片段 ${index + 1}`} aria-pressed={segment.sourceIndex === selected}
         onClick={() => onChoose(segment.sourceIndex)} style={{ left: `${segment.startFrame / frameCount * 100}%`, width: `${(segment.endFrame + 1 - segment.startFrame) / frameCount * 100}%`, background: segmentColor(index) }} />)}
@@ -41,15 +60,21 @@ export function ReviewTimeline({ frame, frameCount, start, end, editable, segmen
       <i className="review-playhead" style={{ left: `${frame / frameCount * 100}%` }} />
       {editable && (["startFrame", "endFrame"] as const).map((kind) => {
         const isStart = kind === "startFrame";
-        const value = isStart ? start : end + 1;
+        const value = isStart ? shownStart : shownEnd + 1;
         return <button key={kind} type="button" role="slider" className={`review-edge ${isStart ? "start" : "end"}${selectedControl === kind ? " selected-control" : ""}`}
           aria-label={isStart ? "微调起始帧" : "微调结束帧"} title={isStart ? "拖动起始帧" : "拖动结束帧"}
           aria-valuemin={isStart ? 0 : start + 1} aria-valuemax={isStart ? end : frameCount} aria-valuenow={value}
           style={{ left: `${value / frameCount * 100}%` }}
           onFocus={() => selectControl(kind)} onClick={() => selectControl(kind)}
           onPointerDown={(event) => { event.preventDefault(); event.currentTarget.focus(); selectControl(kind); origin.current = { x: event.clientX, moved: false }; drag.current = kind; event.currentTarget.setPointerCapture(event.pointerId); }}
-          onPointerMove={update} onPointerUp={(event) => { update(event); drag.current = null; event.currentTarget.releasePointerCapture(event.pointerId); }}
-          onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }}
+          onPointerMove={update} onPointerUp={(event) => {
+            update(event);
+            const value = pendingEdge.current;
+            cancelPreview();
+            if (value !== null) onBoundary(kind, value);
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          }}
+          onPointerCancel={cancelPreview} onLostPointerCapture={cancelPreview}
           onKeyDown={(event) => {
             const delta = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
             if (!delta) return;
@@ -58,8 +83,8 @@ export function ReviewTimeline({ frame, frameCount, start, end, editable, segmen
       })}
     </div>
     <div className="review-frame-fields">
-      <label>起始帧<input aria-label="复核起始帧" type="number" min={0} max={end} value={start} disabled={!editable} onChange={(event) => onBoundary("startFrame", event.currentTarget.valueAsNumber)} /></label>
-      <label>结束帧（不含）<input aria-label="复核结束帧" type="number" min={start + 1} max={frameCount} value={end + 1} disabled={!editable} onChange={(event) => onBoundary("endFrame", event.currentTarget.valueAsNumber - 1)} /></label>
+      <label>起始帧<input aria-label="复核起始帧" type="number" min={0} max={shownEnd} value={shownStart} disabled={!editable} onChange={(event) => onBoundary("startFrame", event.currentTarget.valueAsNumber)} /></label>
+      <label>结束帧（不含）<input aria-label="复核结束帧" type="number" min={shownStart + 1} max={frameCount} value={shownEnd + 1} disabled={!editable} onChange={(event) => onBoundary("endFrame", event.currentTarget.valueAsNumber - 1)} /></label>
     </div>
   </div>;
 }

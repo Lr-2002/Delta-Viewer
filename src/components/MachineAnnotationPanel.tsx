@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
-import { deferMachineReview, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview } from "../lib/backend";
-import { createDeferredReviewEvent, persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
+import { deferMachineReview, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
+import { createDeferredReviewEvent, enqueueCommittedReviewEvent, reviewReceiptValue, persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { addReviewSegment, recoverReviewSegments, reviewVideoIntersection, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
@@ -109,6 +109,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const boundaryFocus = useRef<"startFrame" | "endFrame" | "playhead">("endFrame");
   const mounted = useRef(true);
   const stateRef = useRef<MachineReview | null>(null);
+  const originalDurationMs = useRef<number | null>(null);
   const pending = useRef<Snapshot | null>(null);
   const running = useRef<Promise<boolean> | null>(null);
   const editsRef = useRef(edits);
@@ -190,6 +191,10 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
           const audit = reviewAuditRecorder(root);
           try {
             const deferredAudit = await createDeferredReviewEvent(root, data.summary.name, next.status === "pending" ? "saved" : next.status, next.rejectionReason ?? "");
+            deferredAudit.details.sourceName = loadedSource.current ?? "auto";
+            deferredAudit.details.revision = deferredAudit.eventId.replaceAll("-", "");
+            deferredAudit.details.target = "审核结果";
+            if (originalDurationMs.current !== null) deferredAudit.details.durationMs = originalDurationMs.current;
             let saved: MachineReview;
             try {
               saved = await saveMachineReview(root, state.sourceHash, state.revision, next.segments, loadedSource.current, next.status, next.rejectionReason, [deferredAudit.eventId, deferredAudit.occurredAtMs]);
@@ -198,7 +203,11 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
               if (!/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|SOURCE_REVIEW_DEFERRED|I\/O 错误/.test(message)) throw cause;
               saved = await deferMachineReview({ sourcePath: root, sourceName: loadedSource.current, sourceHash: state.sourceHash, expectedRevision: state.revision, segments: next.segments, status: next.status, rejectionReason: next.rejectionReason }, state, message, deferredAudit);
             }
-            if (!saved.pendingSourceWrite) audit(saved.status === "approved" ? "approved" : saved.status === "rejected" ? "rejected" : "saved", { revision: saved.revisionLabel ?? String(saved.revision), reason: saved.rejectionReason ?? "" });
+            if (!saved.pendingSourceWrite) {
+              deferredAudit.details.revision = saved.revisionLabel ?? String(saved.revision);
+              deferredAudit.details.value = await reviewReceiptValue(root, deferredAudit, "nas", loadedSource.current);
+              enqueueCommittedReviewEvent(deferredAudit);
+            }
             stateRef.current = saved;
             if (mounted.current) { setReview(saved); if (!skeletonMode) onReviewSaved?.(saved); }
             if (!pending.current) {
@@ -227,6 +236,10 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   useEffect(() => {
     mounted.current = true;
     let active = true;
+    void videoSource(root, "cam0").then(video => {
+      const camera = data.summary.streams.find(stream => stream.name === "cam0");
+      if (active && camera?.frameCount && video?.mediaFps && video.mediaFps > 0) originalDurationMs.current = camera.frameCount / video.mediaFps * 1000;
+    }).catch(() => { /* Unavailable source duration remains unknown. */ });
     setLoading(true); setReview(null); stateRef.current = null; setError(""); setRecoveryMessages([]); setPlaying(false); setBoundariesConfirmed(false); setTimelineAdapted(false); setRangeRepairOpen(false); setRangeRepairConfirmed(false);
     void (async () => {
       await saves.get(root);

@@ -622,6 +622,7 @@ export function SupervisionDashboard({
                     </td>
                     <td>
                       {user.approved} / {user.rejected}
+                      {user.completed !== undefined && <small>当前完成 {user.completed} · 待写 NAS {user.pendingNas ?? 0}</small>}
                     </td>
                     <td>{duration(user.averageMs)}</td>
                     <td>{user.seeks}</td>

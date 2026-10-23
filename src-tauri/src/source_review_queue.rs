@@ -57,7 +57,8 @@ fn failure(error: impl std::fmt::Display) -> AppError {
 fn open(root: &Path) -> AppResult<rusqlite::Connection> {
     let db = review_outbox::open(root)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS source_reviews(service TEXT NOT NULL, username TEXT NOT NULL, source_path TEXT NOT NULL, source_name TEXT NOT NULL, payload TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY(service, username, source_path, source_name));
-    CREATE TABLE IF NOT EXISTS source_review_history(service TEXT NOT NULL, username TEXT NOT NULL, event_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(service,username,event_id));").map_err(failure)?;
+    CREATE TABLE IF NOT EXISTS source_review_history(service TEXT NOT NULL, username TEXT NOT NULL, event_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(service,username,event_id));
+    CREATE TABLE IF NOT EXISTS source_review_receipts(service TEXT NOT NULL, username TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY(service,username,event_id));").map_err(failure)?;
     Ok(db)
 }
 fn owner_lock(root: &Path, service: &str, username: &str) -> AppResult<std::fs::File> {
@@ -254,8 +255,115 @@ pub fn store(
     let tx = db.transaction().map_err(failure)?;
     tx.execute("INSERT OR IGNORE INTO source_review_history SELECT service,username,event_id,payload FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=?",params![service,username,entry.request.source_path,entry.request.source_name.as_deref().unwrap_or("")]).map_err(failure)?;
     tx.execute("INSERT INTO source_reviews VALUES(?,?,?,?,?,?) ON CONFLICT(service,username,source_path,source_name) DO UPDATE SET payload=excluded.payload,event_id=excluded.event_id", params![service,username,entry.request.source_path,entry.request.source_name.as_deref().unwrap_or(""),raw,id]).map_err(failure)?;
+    enqueue_receipt(&tx, service, username, &entry, "local", None)?;
     tx.commit().map_err(failure)?;
     Ok(entry)
+}
+
+/// Only dataset-relative identity and duration enter the fixed user-center
+/// audit protocol. No absolute workstation/share path or annotation text.
+pub fn receipt_metadata(path: &str, event: &Value, source: Option<&str>, storage: &str) -> Value {
+    use sha2::{Digest, Sha256};
+    let path = plain_path(path).replace('\\', "/");
+    let parts: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let relative = parts
+        .iter()
+        .position(|p| p.eq_ignore_ascii_case("Delta-D1") || *p == "一汽data")
+        .map(|i| (parts[i], parts[i + 1..].join("/")));
+    json!({"schema":"delta.review-receipt.v1", "storage":storage,
+        "submissionId":event["eventId"],
+        "identityKey":relative.as_ref().map(|(dataset, relative)|format!("{:x}",Sha256::digest(format!("{dataset}/{relative}").to_lowercase().as_bytes()))),
+        "dataset":relative.map(|(dataset, _)|dataset.to_lowercase()),
+        "channel":if source == Some(crate::machine_annotation::SKELETON_SOURCE) {"skeleton"} else {"action"},
+        "originalDurationMs":event["details"]["durationMs"],
+        "batch":event["details"]["target"].as_str().is_some_and(|s|s.starts_with("批量不通过"))})
+}
+
+fn enqueue_receipt(
+    db: &rusqlite::Connection,
+    service: &str,
+    username: &str,
+    entry: &DeferredReview,
+    storage: &str,
+    revision: Option<&str>,
+) -> AppResult<()> {
+    let mut audit = entry.audit.clone();
+    let metadata = receipt_metadata(
+        &entry.request.source_path,
+        &audit,
+        entry.request.source_name.as_deref(),
+        storage,
+    );
+    if storage == "nas" {
+        use sha2::{Digest, Sha256};
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(format!("nas:{}", audit["eventId"].as_str().unwrap_or("")).as_bytes())
+        );
+        audit["eventId"] = json!(format!(
+            "{}-{}-4{}-8{}-{}",
+            &digest[..8],
+            &digest[8..12],
+            &digest[13..16],
+            &digest[17..20],
+            &digest[20..32]
+        ));
+        audit["action"] = json!("source_written");
+        audit["occurredAtMs"] = json!(SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64);
+        audit["elapsedMs"] = json!(0);
+        audit["details"]["target"] = json!("审核结果写回NAS");
+    } else {
+        audit["details"]["target"] = json!(if entry.only_pending {
+            "批量不通过 · 本机待写回"
+        } else {
+            "本机待写回审核结果"
+        });
+    }
+    audit["details"]["revision"] = json!(revision.map(str::to_owned).unwrap_or_else(|| entry
+        .audit["eventId"]
+        .as_str()
+        .unwrap_or("")
+        .replace('-', "")));
+    audit["details"]["value"] = json!(serde_json::to_string(&metadata)?);
+    let id = audit["eventId"].as_str().unwrap_or("");
+    let inserted = db
+        .execute(
+            "INSERT OR IGNORE INTO source_review_receipts VALUES(?,?,?)",
+            params![service, username, id],
+        )
+        .map_err(failure)?;
+    if inserted > 0 {
+        review_outbox::enqueue_with(db, service, username, &[audit])?;
+    }
+    Ok(())
+}
+
+/// Upgrade existing durable queues without reading NAS or rewriting results.
+/// Receipt IDs/times come from the saved event, never from the upgrade clock.
+fn migrate_receipts(root: &Path, service: &str, username: &str) -> AppResult<()> {
+    let mut db = open(root)?;
+    loop {
+        let entries = {
+            let mut q=db.prepare("SELECT payload FROM source_reviews s WHERE service=? AND username=? AND NOT EXISTS(SELECT 1 FROM source_review_receipts r WHERE r.service=s.service AND r.username=s.username AND r.event_id=s.event_id) LIMIT 20").map_err(failure)?;
+            let rows = q
+                .query_map(params![service, username], |r| r.get::<_, String>(0))
+                .map_err(failure)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(failure)?
+        };
+        if entries.is_empty() {
+            break;
+        }
+        let tx = db.transaction().map_err(failure)?;
+        for raw in entries {
+            let entry: DeferredReview = serde_json::from_str(&raw)?;
+            enqueue_receipt(&tx, service, username, &entry, "local", None)?;
+        }
+        tx.commit().map_err(failure)?;
+    }
+    Ok(())
 }
 #[cfg(test)]
 pub fn list(root: &Path, service: &str, username: &str) -> AppResult<Vec<DeferredReview>> {
@@ -329,6 +437,7 @@ pub fn status(
     username: &str,
     check_storage: bool,
 ) -> AppResult<PendingStatus> {
+    migrate_receipts(root, service, username)?;
     let db = open(root)?;
     let pending = db
         .query_row(
@@ -544,12 +653,19 @@ pub(crate) fn publish_with_probe(
                     ),
                 )?
             };
-            let mut audit = entry.audit.clone();
-            audit["details"]["revision"] = json!(state.revision_label);
-            // Commit the stable original event BEFORE removing the local result.
-            review_outbox::enqueue(root, service, &user.username, &[audit])?;
-            let db = open(root)?;
-            db.execute("DELETE FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=? AND event_id=?",params![service,user.username,entry.request.source_path,entry.request.source_name.as_deref().unwrap_or(""),entry.audit["eventId"].as_str().unwrap_or("")]).map_err(failure)?;
+            let mut db = open(root)?;
+            let tx = db.transaction().map_err(failure)?;
+            enqueue_receipt(&tx, service, &user.username, &entry, "local", None)?;
+            enqueue_receipt(
+                &tx,
+                service,
+                &user.username,
+                &entry,
+                "nas",
+                Some(&state.revision_label),
+            )?;
+            tx.execute("DELETE FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=? AND event_id=?",params![service,user.username,entry.request.source_path,entry.request.source_name.as_deref().unwrap_or(""),entry.audit["eventId"].as_str().unwrap_or("")]).map_err(failure)?;
+            tx.commit().map_err(failure)?;
             Ok(())
         })();
         match result {

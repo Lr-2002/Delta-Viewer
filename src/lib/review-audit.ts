@@ -161,6 +161,28 @@ export async function createDeferredReviewEvent(root: string, name: string, acti
     occurredAtMs: Date.now(), elapsedMs: Math.max(0, Math.round(performance.now() - current.clock)), details: { reason, target: "本机待写回审核结果" } };
 }
 
+// The exact submission ID/time is shared with the durable result and NAS QC.
+// Replays reuse it, rather than inventing another successful review operation.
+export function enqueueCommittedReviewEvent(event: ReviewAuditEvent): void {
+  if (!queue) throw Error("审核记录队列尚未就绪，请保持当前数据打开并重试");
+  queue.push(event);
+}
+export async function recordCommittedReviewEvent(event: ReviewAuditEvent): Promise<void> {
+  enqueueCommittedReviewEvent(event);
+  await persistPendingReviewAudit();
+}
+
+export async function reviewReceiptValue(root: string, event: ReviewAuditEvent, storage: "local" | "nas", sourceName?: string): Promise<string> {
+  const path = root.replaceAll("\\", "/").split("/").filter(Boolean);
+  const index = path.findIndex(part => part.toLowerCase() === "delta-d1" || part === "一汽data");
+  const relative = index < 0 ? null : path.slice(index).join("/").toLowerCase();
+  const identityKey = relative ? Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(relative))), byte => byte.toString(16).padStart(2, "0")).join("") : null;
+  return JSON.stringify({ schema: "delta.review-receipt.v1", storage, submissionId: event.eventId, identityKey,
+    dataset: index < 0 ? null : path[index].toLowerCase(),
+    channel: sourceName === "skeleton.description.json" ? "skeleton" : "action", originalDurationMs: event.details.durationMs ?? null,
+    batch: event.details.target?.toString().startsWith("批量不通过") ?? false });
+}
+
 export function beginReviewAudit(root: string, name: string) {
   endReviewAudit();
   if (!queue) {

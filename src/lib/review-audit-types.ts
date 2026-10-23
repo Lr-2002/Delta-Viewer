@@ -22,6 +22,7 @@ export const reviewActionLabels = {
   approved: "审核通过",
   rejected: "审核不通过",
   save_failed: "保存失败",
+  source_written: "审核结果已写回 NAS",
 } as const;
 export type ReviewAction = keyof typeof reviewActionLabels;
 export type ReviewDetails = Partial<
@@ -73,6 +74,11 @@ export interface ReviewUserSummary {
   labelsDeleted: number;
   averageMs: number | null;
   lastActivityAtMs: number | null;
+  completed?: number;
+  completedApproved?: number;
+  completedRejected?: number;
+  pendingNas?: number;
+  nasConfirmed?: number;
 }
 export interface ReviewSessionSummary {
   username: string;

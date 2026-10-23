@@ -62,19 +62,28 @@ export function machineSegmentRange(segment: MachineSegment, offset: number, ste
 export function adjustReviewBoundary(segments: ReviewSegment[], sourceIndex: number, kind: "startFrame" | "endFrame", value: number, frameCount: number) {
   const active = segments.find((segment) => segment.sourceIndex === sourceIndex && !segment.deleted);
   if (!active || !Number.isSafeInteger(value)) return segments;
-  const neighbours = segments.filter((segment) => !segment.deleted && segment.sourceIndex !== sourceIndex &&
-    (kind === "startFrame" ? segment.endFrame + 1 === active.startFrame : segment.startFrame === active.endFrame + 1));
-  const separated = segments.filter((segment) => !segment.deleted && segment.sourceIndex !== sourceIndex && !neighbours.includes(segment));
-  const min = kind === "startFrame" ? Math.max(0, ...neighbours.map((item) => item.startFrame + 1),
-    ...separated.filter((item) => item.endFrame < active.startFrame).map((item) => item.endFrame + 1)) : active.startFrame;
-  const max = kind === "endFrame" ? Math.min(frameCount - 1, ...neighbours.map((item) => item.endFrame - 1),
-    ...separated.filter((item) => item.startFrame > active.endFrame).map((item) => item.startFrame - 1)) : active.endFrame;
+  if (!Number.isSafeInteger(frameCount) || frameCount < 1) return segments;
+  const min = kind === "startFrame" ? 0 : active.startFrame;
+  const max = kind === "endFrame" ? frameCount - 1 : active.endFrame;
   const next = Math.max(min, Math.min(max, value));
   if (next === active[kind]) return segments;
   return segments.map((segment) => {
     if (segment.sourceIndex === sourceIndex) return { ...segment, [kind]: next, decision: "pending" as const };
-    // Move a shared boundary as one edge, preserving at least one frame per segment.
-    if (neighbours.includes(segment)) return { ...segment, [kind === "startFrame" ? "endFrame" : "startFrame"]: next + (kind === "startFrame" ? -1 : 1), decision: "pending" as const };
+    if (segment.deleted) return segment;
+    const start = kind === "startFrame" ? next : active.startFrame;
+    const end = kind === "endFrame" ? next : active.endFrame;
+    // Fully covered rows keep their exact original range/text in recoverable history.
+    if (segment.startFrame >= start && segment.endFrame <= end)
+      return { ...segment, deleted: true, decision: "pending" as const };
+    if (segment.startFrame < start && segment.endFrame >= start)
+      return { ...segment, endFrame: start - 1, decision: "pending" as const };
+    if (segment.endFrame > end && segment.startFrame <= end)
+      return { ...segment, startFrame: end + 1, decision: "pending" as const };
+    // Shrinking still moves the previously shared edge, without creating a gap.
+    if (kind === "startFrame" && segment.endFrame + 1 === active.startFrame)
+      return { ...segment, endFrame: next - 1, decision: "pending" as const };
+    if (kind === "endFrame" && segment.startFrame === active.endFrame + 1)
+      return { ...segment, startFrame: next + 1, decision: "pending" as const };
     return segment;
   });
 }
@@ -101,18 +110,22 @@ export function deleteReviewSegment(segments: ReviewSegment[], sourceIndex: numb
 }
 
 export function restoreReviewSegments(segments: ReviewSegment[]): ReviewSegment[] {
-  let next = segments.map((item) => ({ ...item }));
-  const removed = segments.filter((item) => item.deleted).sort((a, b) => b.startFrame - a.startFrame);
-  for (const item of removed) {
-    next = next.map((current) => {
-      if (current.sourceIndex === item.sourceIndex) return { ...current, deleted: false, decision: "pending" };
-      if (!current.deleted && current.startFrame <= item.endFrame && current.endFrame > item.endFrame) {
-        return { ...current, startFrame: item.endFrame + 1, decision: "pending" };
-      }
-      return current;
+  const removed = segments.filter(item => item.deleted).sort((a,b) => a.startFrame - b.startFrame);
+  let nextIndex = Math.max(-1, ...segments.map(item => item.sourceIndex)) + 1;
+  return segments.flatMap((item): ReviewSegment[] => {
+    if (item.deleted) return [{ ...item, deleted: false, decision: "pending" }];
+    let ranges = [[item.startFrame, item.endFrame]];
+    for (const restored of removed) ranges = ranges.flatMap(([start,end]) => {
+      if (end < restored.startFrame || start > restored.endFrame) return [[start,end]];
+      const pieces: number[][] = [];
+      if (start < restored.startFrame) pieces.push([start,restored.startFrame-1]);
+      if (end > restored.endFrame) pieces.push([restored.endFrame+1,end]);
+      return pieces;
     });
-  }
-  return next;
+    if (!ranges.length) return [{ ...item, deleted: true, decision: "pending" }];
+    if (ranges.length === 1 && ranges[0][0] === item.startFrame && ranges[0][1] === item.endFrame) return [item];
+    return ranges.map(([startFrame,endFrame],i) => ({ ...item, sourceIndex:i ? nextIndex++ : item.sourceIndex, startFrame,endFrame,decision:"pending" }));
+  });
 }
 
 export function addReviewSegment(segments: ReviewSegment[], frame: number, frameCount: number): ReviewSegment[] {

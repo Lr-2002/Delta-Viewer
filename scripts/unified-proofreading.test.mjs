@@ -1233,3 +1233,44 @@ test("current QC badge stays pending despite approved historical metadata and un
     assert.doesNotMatch(await page.locator(".quality-footer").innerText(), /审核通过|已通过/);
   } finally { await page.close(); }
 });
+
+test("drag crosses multiple segments smoothly and commits only when released; cancel preserves edits", async () => {
+  const page=await browser.newPage({viewport:{width:1440,height:920}});
+  try {
+    await page.addInitScript(()=>{window.timelineSaveCount=0;});
+    await page.route('**/src/lib/backend.ts',async route=>{
+      const response=await route.fetch(), original=await response.text();
+      const body=original.replace(/(export async function saveMachineReview\([^]*?\) \{)/,'$1\nwindow.timelineSaveCount++;');
+      assert.notEqual(body,original);await route.fulfill({response,body});
+    });
+    await open(page,'machineAnnotation=present');
+    await page.waitForFunction(()=>document.querySelector('[aria-label="复核动作描述"]')?.disabled===false);
+    const edge=page.getByRole('slider',{name:'微调结束帧'}),track=page.locator('.review-track');
+    const e=await edge.boundingBox(),t=await track.boundingBox();
+    const before=await page.evaluate(()=>window.timelineSaveCount);
+    await page.mouse.move(e.x+e.width/2,e.y+e.height/2);await page.mouse.down();
+    await page.mouse.move(t.x+t.width,e.y+e.height/2,{steps:40});
+    await page.waitForFunction(()=>document.querySelector('[aria-label="复核结束帧"]').value==='196');
+    assert.equal(await page.locator('.review-span').count(),1);
+    assert.equal(await page.evaluate(()=>window.timelineSaveCount),before,'drag preview performs no disk writes');
+    await page.mouse.move(t.x+t.width*80/196,e.y+e.height/2,{steps:20});
+    assert.equal(await page.locator('.review-span').count(),3,'reversing restores crossed preview rows');
+    await page.mouse.move(t.x+t.width,e.y+e.height/2,{steps:20});await page.mouse.up();
+    await page.waitForFunction(()=>!document.querySelector('.quality-save-state').textContent.includes('正在保存'));
+    assert.equal(await page.evaluate(()=>window.timelineSaveCount),before+1);
+    const backend=await page.evaluate(async()=>{const b=await import('/src/lib/backend.ts');return b.loadMachineReview('/demo/2026-07-13_07-34-12');});
+    assert.equal(backend.segments.filter(s=>!s.deleted).length,1);
+    assert.equal(backend.segments.find(s=>!s.deleted).endFrame,195);
+    assert.equal(backend.segments.filter(s=>s.deleted).length,2);
+    const e2=await edge.boundingBox();await page.mouse.move(e2.x+e2.width/2,e2.y+e2.height/2);await page.mouse.down();
+    await page.mouse.move(t.x+t.width/2,e2.y+e2.height/2,{steps:10});
+    await edge.dispatchEvent('pointercancel');await page.mouse.up();
+    assert.equal(await page.getByLabel('复核结束帧',{exact:true}).inputValue(),'196');
+    assert.equal(await page.evaluate(()=>window.timelineSaveCount),before+1);
+    for(const [width,height] of [[1440,920],[960,680],[390,844]]){
+      await page.setViewportSize({width,height});await edge.scrollIntoViewIfNeeded();
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      await page.screenshot({path:`artifacts/unified-proofreading/full-video-drag-${width}.png`,fullPage:true});
+    }
+  } finally {await page.close();}
+});

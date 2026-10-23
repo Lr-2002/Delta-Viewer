@@ -26,6 +26,7 @@ export const REVIEW_ACTIONS = new Set([
   "approved",
   "rejected",
   "save_failed",
+  "source_written",
 ]);
 const uuid =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -56,6 +57,44 @@ const detailFields = new Set([
   "labelId",
   "sourceName",
 ]);
+
+function reviewReceipt(event) {
+  try {
+    const value = JSON.parse(event.details.value);
+    if (value.schema === "delta.review-receipt.v1" && ["local", "nas"].includes(value.storage)
+      && /^[a-f0-9]{64}$/.test(value.identityKey) && uuid.test(value.submissionId)
+      && value.channel === "action" && (event.action === "source_written" || value.submissionId === event.eventId)) return value;
+  } catch { /* Plain historical details stay historical operations. */ }
+  return null;
+}
+
+const completionCaches = new WeakMap();
+function completionSummaries(db, input) {
+  let cache = completionCaches.get(db);
+  if (!cache) { cache = {latest:new Map(),confirmed:new Set(),cursor:0}; completionCaches.set(db,cache); }
+  const {latest,confirmed} = cache;
+  const high = db.prepare('SELECT coalesce(max(id),0) high FROM events').get().high;
+  const query = db.prepare("SELECT * FROM events WHERE id>? AND id<=? AND action IN ('saved','approved','rejected','source_written') ORDER BY id");
+  for (const row of query.iterate(cache.cursor,high)) {
+    const event = eventValue(row), value = reviewReceipt(event);
+    if (!value) continue;
+    if (event.action === "source_written") { confirmed.add(`${event.username}:${value.submissionId}`); continue; }
+    const key = value.identityKey, old = latest.get(key)?.event;
+    if (!old || event.occurredAtMs > old.occurredAtMs || (event.occurredAtMs === old.occurredAtMs && event.id > old.id)) latest.set(key, { event, value });
+  }
+  cache.cursor = high;
+  const result = new Map();
+  for (const {event,value} of latest.values()) {
+    if ((input.username && input.username !== event.username) || !["approved","rejected"].includes(event.action)
+      || (input.fromMs && event.occurredAtMs < Number(input.fromMs))
+      || (input.toMs && event.occurredAtMs > Number(input.toMs))) continue;
+    const summary = result.get(event.username) ?? { completed:0, completedApproved:0, completedRejected:0, pendingNas:0, nasConfirmed:0 };
+    summary.completed++; summary[event.action === "approved" ? "completedApproved" : "completedRejected"]++;
+    summary[value.storage === "nas" || confirmed.has(`${event.username}:${value.submissionId}`) ? "nasConfirmed" : "pendingNas"]++;
+    result.set(event.username,summary);
+  }
+  return result;
+}
 
 export function validateReviewEvent(raw, now = Date.now()) {
   if (
@@ -197,7 +236,7 @@ export function openReviewAuditStore(dataRoot) {
       sum(action='seek') seeks, sum(action='label_add') labelsAdded, sum(action='label_delete') labelsDeleted,
       avg(CASE WHEN action IN ('approved','rejected') THEN elapsed_ms END) averageMs,
       max(occurred_ms) lastActivityAtMs, max(CASE WHEN action IN ('heartbeat','loaded','focus') AND received_ms-occurred_ms<30000 THEN received_ms END) presenceAtMs
-      FROM events WHERE ${where} AND action NOT IN ('heartbeat','focus','blur') GROUP BY username`,
+      FROM events WHERE ${where} AND action NOT IN ('heartbeat','focus','blur','source_written') GROUP BY username`,
       )
       .all(...args);
     const presence = new Map(
@@ -225,6 +264,8 @@ export function openReviewAuditStore(dataRoot) {
         ...stats.find((row) => row.username === user.username),
         online: (user.accountStatus ?? "active") === "active" && Date.now() - (presence.get(user.username) ?? 0) < 45_000,
       }));
+    const completions = completionSummaries(db, input);
+    for (const user of users) Object.assign(user, { completed:0, completedApproved:0, completedRejected:0, pendingNas:0, nasConfirmed:0 }, completions.get(user.username));
     const sessionBefore =
       Number(input.sessionBefore) || Number.MAX_SAFE_INTEGER;
     if (!Number.isSafeInteger(sessionBefore) || sessionBefore < 1)
@@ -232,7 +273,7 @@ export function openReviewAuditStore(dataRoot) {
     const sessionRows = db
       .prepare(
         `SELECT username,session_id sessionId,episode_key episodeKey,episode_name episodeName,max(id) cursor,
-      min(occurred_ms-elapsed_ms) loadedAtMs,max(occurred_ms) lastActivityAtMs,sum(action NOT IN ('heartbeat','focus','blur')) operations,
+      min(occurred_ms-elapsed_ms) loadedAtMs,max(occurred_ms) lastActivityAtMs,sum(action NOT IN ('heartbeat','focus','blur','source_written')) operations,
       max(CASE WHEN action IN ('approved','rejected') THEN elapsed_ms END) durationMs
       FROM events WHERE ${where} GROUP BY username,session_id HAVING max(id)<? ORDER BY cursor DESC LIMIT ?`,
       )

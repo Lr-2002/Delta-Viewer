@@ -19,6 +19,40 @@ class Storage {
   removeItem(key) { this.data.delete(key); }
 }
 
+test("local completions are deduplicated separately from operations and NAS receipts", () => {
+  const root=mkdtempSync(path.join(os.tmpdir(),'review-completions-'));
+  let store=openReviewAuditStore(root);
+  try {
+    const first=event({action:'approved'});
+    first.details={revision:first.eventId.replaceAll('-',''),value:JSON.stringify({schema:'delta.review-receipt.v1',storage:'local',submissionId:first.eventId,identityKey:'b'.repeat(64),channel:'action'})};
+    store.append(user,[first]);store.append(user,[first]);
+    let data=store.query({},[user]);
+    assert.equal(data.users[0].completed,1);assert.equal(data.users[0].pendingNas,1);
+    const ack=event({action:'source_written',occurredAtMs:first.occurredAtMs+1,details:{value:first.details.value}});
+    store.append(user,[ack]);
+    data=store.query({},[user]);
+    assert.equal(data.users[0].approved,1);assert.equal(data.users[0].completed,1);assert.equal(data.users[0].pendingNas,0);
+    assert.equal(data.users[0].operations,1,'background writeback is not human work');
+    const draft=event({action:'saved',occurredAtMs:first.occurredAtMs+2});
+    draft.details={value:JSON.stringify({...JSON.parse(first.details.value),submissionId:draft.eventId})};
+    store.append(user,[draft]);
+    assert.equal(store.query({},[user]).users[0].completed,0,'editing revokes current completion');
+    store.close();store=openReviewAuditStore(root);
+    assert.equal(store.query({},[user]).users[0].completed,0);
+    assert.equal(store.query({},[user]).users[0].approved,1,'historical operation count stays explicit');
+    assert.equal(store.query({username:'bob'},[{...user,username:'bob'}]).users[0].completed,0);
+    const other=event({action:'rejected',occurredAtMs:first.occurredAtMs+3});
+    other.details={value:JSON.stringify({...JSON.parse(first.details.value),submissionId:other.eventId})};
+    const bob={...user,username:'bob'};store.append(bob,[other]);
+    assert.equal(store.query({},[user,bob]).users.reduce((sum,row)=>sum+row.completed,0),1);
+    const late=event({action:'approved',occurredAtMs:first.occurredAtMs-1});
+    late.details={value:JSON.stringify({...JSON.parse(first.details.value),submissionId:late.eventId})};
+    store.append(user,[late]);
+    assert.equal(store.query({username:'bob'},[bob]).users[0].completed,1,'late other-account upload cannot replace latest conclusion');
+    assert.equal(store.query({username:'alice'},[user]).users[0].completed,0);
+  } finally {store.close();rmSync(root,{recursive:true});}
+});
+
 test("durable review history is idempotent, paginated past 500 and survives restart", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "review-audit-"));
   let store = openReviewAuditStore(root);

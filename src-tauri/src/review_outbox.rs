@@ -111,6 +111,18 @@ pub fn enqueue(
     }
     let mut db = open(root)?;
     let tx = db.transaction().map_err(database_error)?;
+    enqueue_with(&tx, service, username, events)?;
+    tx.commit().map_err(database_error)?;
+    status_with(&db, service, username)
+}
+
+/// Shares the result transaction: no completion event can precede durable data.
+pub(crate) fn enqueue_with(
+    db: &Connection,
+    service: &str,
+    username: &str,
+    events: &[Value],
+) -> AppResult<()> {
     for event in events {
         let id = event
             .get("eventId")
@@ -121,7 +133,7 @@ pub fn enqueue(
         if payload.len() > 64 * 1024 {
             return Err(database_error("单条记录超过 64 KiB"));
         }
-        let existing: Option<String> = tx
+        let existing: Option<String> = db
             .query_row(
                 "SELECT payload FROM pending WHERE service=? AND username=? AND event_id=?",
                 params![service, username, id],
@@ -132,14 +144,13 @@ pub fn enqueue(
         if existing.as_ref().is_some_and(|value| value != &payload) {
             return Err(database_error("同一事件标识存在不同内容"));
         }
-        tx.execute(
+        db.execute(
             "INSERT OR IGNORE INTO pending(service,username,event_id,payload) VALUES(?,?,?,?)",
             params![service, username, id, payload],
         )
         .map_err(database_error)?;
     }
-    tx.commit().map_err(database_error)?;
-    status_with(&db, service, username)
+    Ok(())
 }
 
 fn status_with(db: &Connection, service: &str, username: &str) -> AppResult<OutboxStatus> {

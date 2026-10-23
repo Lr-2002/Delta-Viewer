@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { rejectPendingMachineReview } from "../lib/backend";
 import { AlertTriangle, LoaderCircle, Square, X } from "lucide-react";
 import { cancelTaskCenterScan, scanTaskCenter, type TaskNode } from "../lib/task-center";
-import { recordBatchRejection } from "../lib/review-audit";
+import { RejectionReasons } from "./RejectionReasons";
 
 export interface RejectionTarget { path: string; name: string }
 interface Props {
+  username: string;
   folder?: string;
   selected?: RejectionTarget[];
   onSaved: (path: string) => void;
@@ -13,12 +14,14 @@ interface Props {
 }
 type Result = RejectionTarget & { status: "rejected" | "local" | "skipped" | "failed"; message: string };
 
-export function BatchRejectionDialog({ folder, selected, onSaved, onClose }: Props) {
+export function BatchRejectionDialog({ username, folder, selected, onSaved, onClose }: Props) {
   const [targets, setTargets] = useState<RejectionTarget[]>(selected ?? []);
   const [preparing, setPreparing] = useState(Boolean(folder));
   const [running, setRunning] = useState(false);
   const [finished, setFinished] = useState(false);
   const [reason, setReason] = useState("");
+  const [reasonChoice, setReasonChoice] = useState("");
+  const resolvedReason = reasonChoice === "其他原因" ? (reason.trim() ? `其他原因：${reason.trim()}` : "") : reasonChoice;
   const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState("");
   const [progress, setProgress] = useState("");
@@ -55,9 +58,9 @@ export function BatchRejectionDialog({ folder, selected, onSaved, onClose }: Pro
     if (preparing && folder) await cancelTaskCenterScan(folder).catch(cause => setError(String(cause)));
   }
   async function submit() {
-    if (active.current || busy || finished || error || !confirmed || !reason.trim() || !targets.length) return;
+    if (active.current || busy || finished || error || !confirmed || !resolvedReason || !targets.length) return;
     active.current = true; stop.current = false; setRunning(true);
-    const savedReason = `其他原因：${reason.trim()}`;
+    const savedReason = resolvedReason;
     const completed: Result[] = [];
     for (const target of targets) {
       if (stop.current) break;
@@ -66,14 +69,15 @@ export function BatchRejectionDialog({ folder, selected, onSaved, onClose }: Pro
       try {
         const result = await rejectPendingMachineReview(target.path, target.name, savedReason, Math.max(0, Math.round(performance.now() - started)));
         if (!result) completed.push({...target, status:"skipped", message:"已审核，未修改"});
-        else if (result.pendingSourceWrite) completed.push({...target, status:"local", message:"已保存本机，待确认写回 NAS；任务进度暂不增加"});
+        else if (result.pendingSourceWrite) completed.push({...target, status:"local", message:"已保存本机，待写回 NAS；用户中心接收后计入审核统计"});
         else {
           completed.push({...target, status:"rejected", message:"已保存不通过"});
           onSaved(target.path);
-          try { await recordBatchRejection(target.path, target.name, result.revisionLabel ?? String(result.revision), savedReason, performance.now() - started); }
-          catch (cause) { setError(String(cause)); stop.current = true; }
         }
-      } catch (cause) { completed.push({...target, status:"failed", message:String(cause)}); }
+      } catch (cause) {
+        completed.push({...target, status:"failed", message:String(cause)});
+        if (String(cause).includes("REVIEW_AUDIT_BARRIER")) { setError(String(cause)); stop.current = true; }
+      }
       setResults([...completed]);
     }
     setRunning(false); setFinished(true); active.current = false;
@@ -89,13 +93,14 @@ export function BatchRejectionDialog({ folder, selected, onSaved, onClose }: Pro
       <p className="batch-rejection-warning"><AlertTriangle size={18} />此操作会将待处理数据标记为不通过，并记录审核人和原因。已有审核结果保持不变。</p>
       {folder && <p className="batch-rejection-path">{folder}</p>}
       <p role="status">{preparing ? `正在检查目录 QC · ${progress}` : `待处理 ${targets.length} 条${excluded ? ` · 已排除已审核或异常数据 ${excluded} 条` : ""}`}</p>
-      <label className="rejection-detail">不通过原因<textarea aria-label="批量不通过原因" required maxLength={1000} value={reason} disabled={busy || finished} onChange={event => setReason(event.target.value)} /></label>
+      <RejectionReasons key={username} username={username} value={reasonChoice} onChange={setReasonChoice} disabled={busy || finished} />
+      {reasonChoice === "其他原因" && <label className="rejection-detail">其他原因<textarea autoFocus aria-label="批量不通过原因" required maxLength={1000} value={reason} disabled={busy || finished} onChange={event => setReason(event.target.value)} /></label>}
       <label className="batch-rejection-confirm"><input type="checkbox" checked={confirmed} disabled={busy || finished} onChange={event => setConfirmed(event.target.checked)} />我已确认这些未审核数据应判为不通过</label>
       {error && <p role="alert" className="task-center-error">{error}</p>}
       {(running || finished) && <p role="status">成功 {success} · 本机待写 {local} · 跳过 {skipped} · 失败 {failed} · 未执行 {targets.length - results.length}{running ? ` · ${progress}` : ""}</p>}
       {results.length > 0 && <ul className="batch-rejection-results">{results.map(item => <li key={item.path} className={item.status === "failed" ? "task-qc-error" : ""}><span>{item.name}</span><span>{item.message}</span></li>)}</ul>}
       <footer>{busy ? <button type="button" className="button button-secondary" onClick={() => void cancel()}><Square size={14} />停止</button> : <button type="button" className="button button-secondary" onClick={onClose}>{finished ? "完成" : "取消"}</button>}
-        {!finished && <button type="submit" className="button button-primary" disabled={busy || Boolean(error) || !targets.length || !confirmed || !reason.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <X size={16} />}确认不通过</button>}</footer>
+        {!finished && <button type="submit" className="button button-primary" disabled={busy || Boolean(error) || !targets.length || !confirmed || !resolvedReason}>{busy ? <LoaderCircle className="spin" size={16} /> : <X size={16} />}确认不通过</button>}</footer>
     </form>
   </dialog>;
 }

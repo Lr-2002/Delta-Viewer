@@ -2376,8 +2376,18 @@ mod tests {
         );
         assert_eq!(fs::read(f.root.join("session.json")).unwrap(), qc_changed);
         let events = crate::review_outbox::batch(&f.local, "s", "alice", false).unwrap();
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|e| e["occurredAtMs"] == 1792548000000u64));
+        assert_eq!(events.len(), 4);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["action"] == "source_written")
+                .count(),
+            2
+        );
+        assert!(events
+            .iter()
+            .filter(|e| e["action"] != "source_written")
+            .all(|e| e["occurredAtMs"] == 1792548000000u64));
     }
 
     #[test]
@@ -3210,7 +3220,35 @@ mod tests {
             error: "REVIEW_STORAGE_FULL".into(),
             created_at_ms: 0,
         };
+        // Simulate an outbox disk failure after the result INSERT. Both must
+        // roll back together; a failed transaction cannot count completion.
+        let db = crate::review_outbox::open(&f.local).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_receipt BEFORE INSERT ON pending BEGIN SELECT RAISE(ABORT,'isolated disk full'); END;").unwrap();
+        assert!(queue::store(&f.local, "service", &user.username, entry.clone()).is_err());
+        assert!(queue::list(&f.local, "service", "alice")
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM source_review_receipts", [], |r| r
+                .get::<_, u64>(0))
+                .unwrap(),
+            0
+        );
+        db.execute_batch("DROP TRIGGER fail_receipt").unwrap();
+        drop(db);
         queue::store(&f.local, "service", &user.username, entry.clone()).unwrap();
+        let local_events =
+            crate::review_outbox::batch(&f.local, "service", "alice", false).unwrap();
+        assert_eq!(
+            local_events.len(),
+            1,
+            "durable local completion uploads before NAS recovery"
+        );
+        assert_eq!(local_events[0]["eventId"], event["eventId"]);
+        let metadata: Value =
+            serde_json::from_str(local_events[0]["details"]["value"].as_str().unwrap()).unwrap();
+        assert_eq!(metadata["storage"], "local");
+        assert!(metadata.get("sourcePath").is_none());
         assert!(!f.root.join(OUTPUT).exists());
         assert_eq!(queue::list(&f.local, "service", "bob").unwrap().len(), 0);
         assert_eq!(
@@ -3265,9 +3303,30 @@ mod tests {
         assert_eq!(saved.updated_at_ms, 1792548000000u64);
         assert_eq!(saved.version_id, "11111111111141118111111111111111");
         let events = crate::review_outbox::batch(&f.local, "service", "alice", false).unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events.iter().filter(|e| e["action"] == "approved").count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["action"] == "source_written")
+                .count(),
+            1
+        );
         assert_eq!(events[0]["eventId"], event["eventId"]);
         assert_eq!(events[0]["occurredAtMs"], event["occurredAtMs"]);
+        crate::review_outbox::acknowledge(
+            &f.local,
+            "service",
+            "alice",
+            &events
+                .iter()
+                .map(|e| e["eventId"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
         // Emulate source success before queue removal: same event must not save again.
         queue::store(&f.local, "service", "alice", entry).unwrap();
         let retried =
@@ -3282,7 +3341,7 @@ mod tests {
             crate::review_outbox::batch(&f.local, "service", "alice", false)
                 .unwrap()
                 .len(),
-            1
+            0
         );
         assert_eq!(
             fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),

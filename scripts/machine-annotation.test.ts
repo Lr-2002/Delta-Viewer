@@ -43,7 +43,7 @@ test("deletion aligns actual frames, preserves the following end, and restores c
   assert.equal(deleteReviewSegment(deleted, 1), deleted);
 });
 
-test("shared boundaries stay continuous and never collapse their neighbours", () => {
+test("boundaries span the whole video and preserve covered rows as recoverable history", () => {
   const segments: ReviewSegment[] = [[0,44],[45,112],[113,194],[210,220]].map(([startFrame,endFrame], sourceIndex) => ({ startFrame,endFrame,sourceIndex,description:"",deleted:false,decision:"approved" }));
   const moved = adjustReviewBoundary(segments, 1, "startFrame", 48, 221);
   assert.equal(moved[0].endFrame, 47);
@@ -51,21 +51,27 @@ test("shared boundaries stay continuous and never collapse their neighbours", ()
   assert.equal(moved[0].decision, "pending");
   assert.equal(moved[2].decision, "approved");
   const limited = adjustReviewBoundary(segments, 1, "startFrame", 0, 221);
-  assert.equal(limited[0].endFrame, 0);
-  assert.equal(limited[1].startFrame, 1);
+  assert.equal(limited[0].deleted, true);
+  assert.equal(limited[0].endFrame, 44);
+  assert.equal(limited[1].startFrame, 0);
   const end = adjustReviewBoundary(segments, 1, "endFrame", 220, 221);
-  assert.equal(end[1].endFrame, 193);
-  assert.equal(end[2].startFrame, 194);
+  assert.equal(end[1].endFrame, 220);
+  assert.equal(end[2].deleted, true);
+  assert.equal(end[3].deleted, true);
+  const restored = restoreReviewSegments(end).filter(s => !s.deleted).sort((a,b) => a.startFrame-b.startFrame);
+  for (let i=1;i<restored.length;i++) assert.ok(restored[i-1].endFrame < restored[i].startFrame, "restoring crossed rows cannot produce overlaps");
   const gap = adjustReviewBoundary(segments, 3, "startFrame", 209, 221);
   assert.equal(gap[2].endFrame, 194);
   assert.equal(gap[3].startFrame, 209);
   const acrossGap = adjustReviewBoundary(segments, 3, "startFrame", 150, 221);
-  assert.equal(acrossGap[3].startFrame, 195);
-  assert.equal(acrossGap[2].endFrame, 194);
+  assert.equal(acrossGap[3].startFrame, 150);
+  assert.equal(acrossGap[2].endFrame, 149);
   const afterDeletion = segments.map((item) => item.sourceIndex === 1 ? { ...item, deleted: true } : item);
   const expanded = adjustReviewBoundary(afterDeletion, 0, "endFrame", 219, 221);
-  assert.equal(expanded[0].endFrame, 112);
-  assert.equal(expanded[2].startFrame, 113);
+  assert.equal(expanded[0].endFrame, 219);
+  assert.equal(expanded[2].deleted, true);
+  assert.equal(expanded[3].startFrame, 220);
+  assert.deepEqual(segments.map(s => [s.startFrame,s.endFrame,s.deleted]), [[0,44,false],[45,112,false],[113,194,false],[210,220,false]]);
 });
 import type { MachineAnnotation, StreamSummary } from "../src/types.ts";
 

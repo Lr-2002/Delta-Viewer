@@ -682,11 +682,26 @@ export const getPendingSourceReviews = (checkStorage = false, sourcePaths?: stri
 export const publishPendingSourceReviews = () => invoke<import("../types").SourceReviewPublishResult>("publish_pending_source_reviews", { operationId: Date.now() });
 export async function rejectPendingMachineReview(sourcePath: string, name: string, reason: string, elapsedMs: number): Promise<import("../types").MachineReview | null> {
   const event = { eventId: crypto.randomUUID(), sessionId: crypto.randomUUID(), episodeKey: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sourcePath))), byte => byte.toString(16).padStart(2, "0")).join(""), episodeName: name.slice(0, 256), action: "rejected" as const, occurredAtMs: Date.now(), elapsedMs, details: { reason, target: "批量不通过 · 本机待写回" } };
-  try { return await invoke("reject_pending_machine_review", { sourcePath, reason, operationId: Date.now(), commitEvent: [event.eventId, event.occurredAtMs] }); }
+  let result: import("../types").MachineReview | null;
+  try {
+    result = await invoke<import("../types").MachineReview | null>("reject_pending_machine_review", { sourcePath, reason, operationId: Date.now(), commitEvent: [event.eventId, event.occurredAtMs] });
+  }
   catch (cause) {
     if (!/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|I\/O 错误/.test(String(cause))) throw cause;
     return deferMachineReview({ sourcePath, sourceHash: "", expectedRevision: 0, segments: [], status: "rejected", rejectionReason: reason }, { outputHash: null } as import("../types").MachineReview, String(cause), event, true);
   }
+  if (result) {
+    try {
+      const { recordCommittedReviewEvent, reviewReceiptValue } = await import("./review-audit");
+      event.details.target = "批量不通过";
+      const audit: import("./review-audit-types").ReviewAuditEvent = { ...event, details: { ...event.details, revision: result.revisionLabel ?? String(result.revision) } };
+      audit.details.value = await reviewReceiptValue(sourcePath, audit, "nas");
+      await recordCommittedReviewEvent(audit);
+    } catch (cause) {
+      throw Error(`REVIEW_AUDIT_BARRIER: 结果已写入 NAS，操作记录尚未确认保存；已停止后续批量处理，请保持应用打开并在同步提示中重试。${String(cause)}`);
+    }
+  }
+  return result;
 }
 export async function deferMachineReview(request: {
   sourcePath: string; sourceName?: string; sourceHash: string; expectedRevision: number;

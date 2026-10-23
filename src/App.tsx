@@ -201,6 +201,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.2.7": "片段边界支持跨多个片段拖动，拖动预览按屏幕刷新、松手后保存；本机可靠暂存的审核结论在用户中心接收后计入审核统计，NAS 写回不重复计数；批量不通过共用单条原因标签与账号排序。",
   "1.2.6": "任务中心仅在具体批次行显示审核领取人；根目录和上级分组移除领取人、人数及已领取批次数汇总。",
   "1.2.5": "修复目录迁移映射缺失时历史领取人显示错误：使用已核实备份并在无法确认时阻止误领；分组行汇总子批次领取人。服务器全量校准期间继续更新已知数据 QC 并处理刷新请求，避免进度长时间停在旧结果。",
   "1.2.4": "修复机标片段超出当前视频时无法继续审核的问题：新增越界片段核对及人工确认处理入口，保留原始机标和本机恢复备份，保存为待审核草稿；回放核对后方可通过。不按比例缩放或虚构缺失帧。",
@@ -1917,7 +1918,7 @@ function App() {
         </div>
       ) : null}
 
-      {batchRejection && <BatchRejectionDialog {...batchRejection} onSaved={handleBatchRejectionSaved} onClose={() => {
+      {batchRejection && <BatchRejectionDialog username={currentUser?.username ?? ""} {...batchRejection} onSaved={handleBatchRejectionSaved} onClose={() => {
         setBatchRejection(null);
         setBatchReviewRevision(value => value + 1);
       }} />}
