@@ -640,7 +640,7 @@ try {
   const rejectDialog = page.locator('.batch-rejection-dialog');
   await rejectDialog.getByText('待处理 1 条', {exact:true}).waitFor();
   assert.equal(await page.getByRole('button', {name:'选择数据目录', exact:true}).isDisabled(), true);
-  await rejectDialog.getByRole('textbox', {name:'批量不通过原因'}).fill('无效数据');
+  await rejectDialog.getByRole('button', {name:'无效数据', exact:true}).click();
   await rejectDialog.getByRole('checkbox').check();
   await rejectDialog.getByRole('button', {name:'确认不通过', exact:true}).click();
   await rejectDialog.getByText('成功 1 · 本机待写 0 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
@@ -658,7 +658,7 @@ try {
   assert.equal(await page.getByRole('checkbox', {name:'选择 episode-2', exact:true}).isChecked(), false);
   await toolbar.getByRole('button', {name:'整文件夹不通过', exact:true}).click();
   await rejectDialog.getByText('待处理 1 条 · 已排除已审核或异常数据 1 条', {exact:true}).waitFor();
-  await rejectDialog.getByRole('textbox', {name:'批量不通过原因'}).fill('任务不符');
+  await rejectDialog.getByRole('button', {name:'任务不符', exact:true}).click();
   await rejectDialog.getByRole('checkbox').check();
   await rejectDialog.getByRole('button', {name:'确认不通过', exact:true}).click();
   await rejectDialog.getByText('成功 1 · 本机待写 0 · 跳过 0 · 失败 0 · 未执行 0', {exact:true}).waitFor();
@@ -674,6 +674,7 @@ try {
   await failedRejection.waitFor();
   await page.screenshot({path:'artifacts/batch-rejection/failed-session.png',fullPage:true});
   await failedRejection.click();
+  await rejectDialog.getByRole('button', {name:'其他原因', exact:true}).click();
   await rejectDialog.getByRole('textbox', {name:'批量不通过原因'}).fill('视频无法读取，无效数据');
   await rejectDialog.getByRole('checkbox').check();
   await rejectDialog.getByRole('button', {name:'确认不通过', exact:true}).click();
