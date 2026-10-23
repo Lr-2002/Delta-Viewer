@@ -142,3 +142,38 @@ export function addReviewSegment(segments: ReviewSegment[], frame: number, frame
   const nextIndex = Math.max(-1, ...segments.map((item) => item.sourceIndex)) + 1;
   return [...segments, { sourceIndex: nextIndex, startFrame: frame, endFrame: frame, description: "", deleted: false, decision: "pending" }];
 }
+
+type Boundary = "startFrame" | "endFrame";
+
+// Keep the pre-adjustment geometry across pointer releases and autosaves. A new
+// boundary or another edit starts a fresh adjustment, so stale rows cannot replace
+// newer text, splits, deletions or a different episode/account/channel.
+export function createReviewBoundaryEditor() {
+  let history: { baseline: ReviewSegment[]; current: ReviewSegment[]; sourceIndex: number; kind: Boundary; frameCount: number } | null = null;
+  function preview(segments: ReviewSegment[], sourceIndex: number, kind: Boundary, value: number, frameCount: number) {
+    const active = segments.find(item => item.sourceIndex === sourceIndex && !item.deleted);
+    if (!active || !Number.isSafeInteger(value) || !Number.isSafeInteger(frameCount) || frameCount < 1) return segments;
+    const bounded = Math.max(kind === "startFrame" ? 0 : active.startFrame, Math.min(kind === "endFrame" ? frameCount - 1 : active.endFrame, value));
+    if (bounded === active[kind]) return segments;
+    const baseline = history?.current === segments && history.sourceIndex === sourceIndex && history.kind === kind && history.frameCount === frameCount ? history.baseline : segments;
+    const current = new Map(segments.map(item => [item.sourceIndex, item]));
+    return adjustReviewBoundary(baseline, sourceIndex, kind, bounded, frameCount).map(item => {
+      const old = current.get(item.sourceIndex)!;
+      const changed = old.startFrame !== item.startFrame || old.endFrame !== item.endFrame || old.deleted !== item.deleted;
+      // Restoring geometry never restores an approval invalidated by an edit.
+      return changed ? { ...item, decision: "pending" as const } : old;
+    });
+  }
+  return {
+    preview,
+    commit(segments: ReviewSegment[], sourceIndex: number, kind: Boundary, value: number, frameCount: number) {
+      const next = preview(segments, sourceIndex, kind, value, frameCount);
+      if (next !== segments) {
+        const baseline = history?.current === segments && history.sourceIndex === sourceIndex && history.kind === kind && history.frameCount === frameCount ? history.baseline : segments;
+        history = { baseline, current: next, sourceIndex, kind, frameCount };
+      }
+      return next;
+    },
+    reset() { history = null; },
+  };
+}

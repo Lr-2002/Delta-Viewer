@@ -525,3 +525,5 @@ documented in the
 Wiki source is reviewed under `docs/wiki/` and synchronized by
 `.github/workflows/wiki.yml`; do not maintain divergent instructions directly
 in the GitHub web editor.
+
+`1.2.9`：连续调整同一片段边界可反向复原覆盖的范围和描述，松手保存后仍有效；其他编辑或重新加载后开始新调整，恢复内容保持待审核。详见 [回放与裁剪](docs/wiki/Playback-and-Clipping.md)。

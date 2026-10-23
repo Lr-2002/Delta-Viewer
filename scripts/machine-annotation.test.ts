@@ -142,3 +142,58 @@ test("old emergency invalid ranges and formats never overwrite the loaded source
     assert.equal(recoverReviewSegments(value,30).segments,null);
   }
 });
+
+
+import { createReviewBoundaryEditor } from "../src/lib/machine-annotation.ts";
+for (const kind of ["startFrame", "endFrame"] as const) test(`${kind}: saved expansion reverses progressively across multiple rows without losing descriptions`, () => {
+  const editor = createReviewBoundaryEditor();
+  const original: ReviewSegment[] = [[0,9],[10,19],[20,29],[30,39]].map(([startFrame,endFrame],sourceIndex) => ({sourceIndex,startFrame,endFrame,description:`人工动作 ${sourceIndex}`,deleted:false,decision:"approved"}));
+  const selected = kind === "endFrame" ? 0 : 3;
+  let rows = original;
+  for (const value of kind === "endFrame" ? [39,24,14,9,4,34,9] : [0,15,25,30,35,5,30]) {
+    const preview = editor.preview(rows,selected,kind,value,40);
+    const before = structuredClone(rows);
+    const committed = editor.commit(rows,selected,kind,value,40);
+    assert.deepEqual(committed,preview,"release must save exactly the visible preview");
+    assert.deepEqual(rows,before,"the prior saved snapshot remains immutable");
+    rows = committed;
+    const retained = rows.filter(s=>!s.deleted).sort((a,b)=>a.startFrame-b.startFrame);
+    assert.equal(retained[0].startFrame,0);
+    assert.equal(retained.at(-1)!.endFrame,39);
+    for(let i=1;i<retained.length;i++) assert.equal(retained[i-1].endFrame+1,retained[i].startFrame,"no overlap or gap during reversal");
+    assert.deepEqual(rows.map(s=>s.description),original.map(s=>s.description));
+  }
+  assert.deepEqual(rows.map(s=>[s.startFrame,s.endFrame,s.deleted]),original.map(s=>[s.startFrame,s.endFrame,s.deleted]));
+  assert.ok(rows.every(s=>s.decision==="pending"),"restoration cannot resurrect invalid approvals");
+  assert.deepEqual(original.map(s=>s.decision),["approved","approved","approved","approved"]);
+});
+
+test("boundary preview cancellation and no-op preserve the last saved adjustment", () => {
+  const editor=createReviewBoundaryEditor();
+  const original: ReviewSegment[] = [[0,9],[10,19],[20,29]].map(([startFrame,endFrame],sourceIndex)=>({sourceIndex,startFrame,endFrame,description:String(sourceIndex),deleted:sourceIndex===2,decision:"pending"}));
+  const expanded=editor.commit(original,0,"endFrame",29,30);
+  const preview=editor.preview(expanded,0,"endFrame",9,30);
+  assert.equal(preview[1].deleted,false);
+  assert.equal(preview[2].deleted,true,"explicitly deleted rows stay deleted");
+  assert.equal(expanded[1].deleted,true,"cancelled preview does not change committed rows");
+  assert.equal(editor.commit(expanded,0,"endFrame",29,30),expanded);
+  for(const value of [NaN,Infinity,1.5]) assert.equal(editor.commit(expanded,0,"endFrame",value,30),expanded);
+  assert.deepEqual(editor.commit(expanded,0,"endFrame",9,30),preview);
+});
+
+test("other edits, reloads, different handles and separate editors never restore stale snapshots", () => {
+  const original: ReviewSegment[] = [[0,9],[10,19],[20,29]].map(([startFrame,endFrame],sourceIndex)=>({sourceIndex,startFrame,endFrame,description:String(sourceIndex),deleted:false,decision:"pending"}));
+  const editor=createReviewBoundaryEditor();
+  const expanded=editor.commit(original,0,"endFrame",29,30);
+  const edited=expanded.map(s=>s.sourceIndex===0?{...s,description:"新描述"}:s);
+  const changed=editor.commit(edited,0,"endFrame",9,30);
+  assert.equal(changed[0].description,"新描述");
+  assert.ok(changed.slice(1).every(s=>s.deleted),"another edit establishes a new baseline");
+  const isolated=createReviewBoundaryEditor().commit(expanded,0,"endFrame",9,30);
+  assert.ok(isolated.slice(1).every(s=>s.deleted),"another account/channel has no prior adjustment");
+  const opposite=editor.commit(expanded,0,"startFrame",3,30);
+  assert.equal(opposite[0].startFrame,3);
+  assert.ok(opposite.slice(1).every(s=>s.deleted));
+  editor.reset();
+  assert.ok(editor.commit(expanded,0,"endFrame",9,30).slice(1).every(s=>s.deleted));
+});

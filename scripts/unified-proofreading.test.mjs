@@ -1267,10 +1267,58 @@ test("drag crosses multiple segments smoothly and commits only when released; ca
     await edge.dispatchEvent('pointercancel');await page.mouse.up();
     assert.equal(await page.getByLabel('复核结束帧',{exact:true}).inputValue(),'196');
     assert.equal(await page.evaluate(()=>window.timelineSaveCount),before+1);
+    // A second gesture must reverse the first *saved* expansion, not only its preview.
+    const original = await page.evaluate(async()=> (await import('/src/lib/backend.ts')).loadMachineAnnotation('/demo/2026-07-13_07-34-12'));
+    const originalEnd = original.segments[0].endFrame;
+    const restoredEdge = await edge.boundingBox();
+    await page.mouse.move(restoredEdge.x+restoredEdge.width/2,restoredEdge.y+restoredEdge.height/2);await page.mouse.down();
+    await page.mouse.move(t.x+t.width*(originalEnd+1)/196,restoredEdge.y+restoredEdge.height/2,{steps:30});
+    await page.waitForFunction(()=>document.querySelectorAll('.review-span').length===3);
+    assert.equal(await page.evaluate(()=>window.timelineSaveCount),before+1,'reverse preview also performs no writes');
+    await page.mouse.up();
+    await page.waitForFunction(()=>!document.querySelector('.quality-save-state').textContent.includes('正在保存'));
+    const restored=await page.evaluate(async()=> (await import('/src/lib/backend.ts')).loadMachineReview('/demo/2026-07-13_07-34-12'));
+    assert.deepEqual(restored.segments.map(s=>[s.startFrame,s.endFrame,s.description,s.deleted]),original.segments.map(s=>[s.startFrame,s.endFrame,s.description,false]));
+    assert.equal(restored.status,'pending');
+    assert.equal(await page.evaluate(()=>window.timelineSaveCount),before+2);
     for(const [width,height] of [[1440,920],[960,680],[390,844]]){
       await page.setViewportSize({width,height});await edge.scrollIntoViewIfNeeded();
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
       await page.screenshot({path:`artifacts/unified-proofreading/full-video-drag-${width}.png`,fullPage:true});
     }
   } finally {await page.close();}
+});
+
+test("saved start-boundary expansion reverses with mouse and keyboard; later text edits survive", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  try {
+    await open(page, 'machineAnnotation=present');
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    const saved = () => page.evaluate(async () => (await import('/src/lib/backend.ts')).loadMachineReview('/demo/2026-07-13_07-34-12'));
+    const original = await saved();
+    const target = original.segments.filter(s=>!s.deleted).at(-1);
+    await page.getByRole('button',{name:'定位机标片段 3',exact:true}).click();
+    const edge=page.getByRole('slider',{name:'微调起始帧',exact:true}),track=await page.locator('.review-track').boundingBox();
+    const dragTo = async value => {
+      const box=await edge.boundingBox();
+      await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();
+      await page.mouse.move(track.x+track.width*value/196,box.y+box.height/2,{steps:20});await page.mouse.up();
+      await page.waitForFunction(()=>!document.querySelector('.quality-save-state').textContent.includes('正在保存'));
+    };
+    await dragTo(0);
+    assert.equal((await saved()).segments.filter(s=>!s.deleted).length,1);
+    await page.keyboard.press('ArrowRight');
+    await page.waitForFunction(()=>document.querySelectorAll('.review-span').length===2);
+    let rows=(await saved()).segments;
+    assert.equal(rows.find(s=>s.sourceIndex===target.sourceIndex).startFrame,1);
+    assert.equal(rows.find(s=>s.sourceIndex===0).deleted,false,'one-frame keyboard reversal restores a covered row');
+    await dragTo(target.startFrame);
+    rows=(await saved()).segments;
+    assert.deepEqual(rows.map(s=>[s.startFrame,s.endFrame,s.description,s.deleted]),original.segments.map(s=>[s.startFrame,s.endFrame,s.description,s.deleted]));
+    await page.getByLabel('复核动作描述').fill('保留后续人工文字');
+    await page.getByLabel('复核起始帧',{exact:true}).fill(String(target.startFrame-1));
+    assert.equal((await saved()).segments.find(s=>s.sourceIndex===target.sourceIndex).description,'保留后续人工文字');
+    assert.deepEqual(errors,[]);
+  } finally { await page.close(); }
 });

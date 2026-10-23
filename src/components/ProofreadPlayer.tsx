@@ -23,11 +23,12 @@ interface Props {
   selected?: number;
   editable: boolean;
   onBoundary: (kind: "startFrame" | "endFrame", value: number) => void;
+  previewBoundary?: (kind: "startFrame" | "endFrame", value: number) => ReviewSegment[];
   onChoose: (sourceIndex: number) => void;
   onBoundaryFocus?: (kind: "startFrame" | "endFrame" | "playhead") => void;
 }
 
-export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame, start, end, playing, onFrame, onPlaying, skeleton, skeletonError, segments, selected, editable, onBoundary, onChoose, onBoundaryFocus }: Props) {
+export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame, start, end, playing, onFrame, onPlaying, skeleton, skeletonError, segments, selected, editable, onBoundary, previewBoundary, onChoose, onBoundaryFocus }: Props) {
   const [fps, setFps] = useState(30);
   const nativeClock = useRef(false);
   const settled = useRef(-1);
@@ -93,7 +94,7 @@ export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame,
       <span>/ {frameCount - 1}</span>
     </div>
     <ReviewTimeline frame={frame} frameCount={frameCount} start={start} end={end} editable={editable}
-      segments={segments} selected={selected} onSeek={seek} onBoundary={onBoundary} onChoose={onChoose} onBoundaryFocus={onBoundaryFocus} />
+      segments={segments} selected={selected} onSeek={seek} onBoundary={onBoundary} previewBoundary={previewBoundary} onChoose={onChoose} onBoundaryFocus={onBoundaryFocus} />
     {(skeleton || skeletonError) && <div className="skeleton-side-panel">
       {skeleton ? <SkeletonViewer skeleton={skeleton} frameId={offset + frame * step}
         timelineStartFrame={offset} timelineEndFrame={offset + (frameCount - 1) * step} playing={playing} />

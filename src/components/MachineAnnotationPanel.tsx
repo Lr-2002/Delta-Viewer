@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
 import { deferMachineReview, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
 import { createDeferredReviewEvent, enqueueCommittedReviewEvent, reviewReceiptValue, persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
-import { addReviewSegment, recoverReviewSegments, reviewVideoIntersection, adjustReviewBoundary, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
+import { createReviewBoundaryEditor, addReviewSegment, recoverReviewSegments, reviewVideoIntersection, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
 import { RejectionReasons } from "./RejectionReasons";
@@ -107,6 +107,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const [textCheckOpen, setTextCheckOpen] = useState(false);
   const rejectButton = useRef<HTMLButtonElement>(null);
   const boundaryFocus = useRef<"startFrame" | "endFrame" | "playhead">("endFrame");
+  const boundaryEditor = useRef(createReviewBoundaryEditor());
   const mounted = useRef(true);
   const stateRef = useRef<MachineReview | null>(null);
   const originalDurationMs = useRef<number | null>(null);
@@ -241,6 +242,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       if (active && camera?.frameCount && video?.mediaFps && video.mediaFps > 0) originalDurationMs.current = camera.frameCount / video.mediaFps * 1000;
     }).catch(() => { /* Unavailable source duration remains unknown. */ });
     setLoading(true); setReview(null); stateRef.current = null; setError(""); setRecoveryMessages([]); setPlaying(false); setBoundariesConfirmed(false); setTimelineAdapted(false); setRangeRepairOpen(false); setRangeRepairConfirmed(false);
+    boundaryEditor.current.reset();
     void (async () => {
       await saves.get(root);
       const loaded = await loadMachineAnnotation(root, sourceName);
@@ -362,8 +364,9 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   const visibleFrame = playback && result && mapping && !mapping.error
     ? Math.max(0, Math.min(editFrameCount - 1, Math.floor((playback.frame - mapping.offset) / mapping.step))) : frame;
 
-  function change(next: ReviewSegment[]) {
+  function change(next: ReviewSegment[], boundaryEdit = false) {
     if (!canEdit || finishLock.current) return;
+    if (!boundaryEdit) boundaryEditor.current.reset();
     if (timelineAdapted && sourceOverflow) setBoundariesConfirmed(false);
     for (const item of next) {
       const old = editsRef.current.find((row) => row.sourceIndex === item.sourceIndex);
@@ -431,10 +434,13 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
     if (saveLabelLibrary(next)) recordReviewInteraction("control", { target: "label_library_order", labelId: moved.id, value: moved.text, before: String(from + 1), after: String(to + 1) }, root);
   }
   function boundary(kind: "startFrame" | "endFrame", value: number) {
-    if (!active || !result || !canEdit) return;
-    const updated = adjustReviewBoundary(editsRef.current, active.sourceIndex, kind, value, editFrameCount);
+    if (!active || !result || !canEdit || finishLock.current) return;
+    const updated = boundaryEditor.current.commit(editsRef.current, active.sourceIndex, kind, value, editFrameCount);
     if (updated === editsRef.current) return;
-    change(updated); seek(updated.find((item) => item.sourceIndex === active.sourceIndex)![kind]);
+    change(updated, true); seek(updated.find((item) => item.sourceIndex === active.sourceIndex)![kind]);
+  }
+  function previewBoundary(kind: "startFrame" | "endFrame", value: number) {
+    return active ? boundaryEditor.current.preview(editsRef.current, active.sourceIndex, kind, value, editFrameCount) : editsRef.current;
   }
   const choose = useCallback((sourceIndex: number) => {
     const segment = rows.find((item) => item.sourceIndex === sourceIndex);
@@ -510,6 +516,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   function confirmVideoRange() {
     if (!rangeRepair || !rangeRepairConfirmed || !primary || !review || loading || error || saving || busy || finishLock.current || running.current) return;
     const next = rangeRepair.segments;
+    boundaryEditor.current.reset();
     setTimelineAdapted(true); setBoundariesConfirmed(false); setRangeRepairOpen(false);
     setEdits(next); editsRef.current = next;
     const first = next.find(item => !item.deleted);
@@ -582,7 +589,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       <div className="proofreading-transport">{playback.controls}<button className="icon-button" type="button" aria-label="剪切片段" aria-keyshortcuts="X" title="剪切片段：在当前帧分割 (X)" disabled={!canEdit || !active || active.endFrame <= active.startFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
       {valid && <ReviewTimeline frame={visibleFrame} frameCount={editFrameCount} start={active?.startFrame ?? 0}
         end={active?.endFrame ?? editFrameCount - 1} editable={canEdit && Boolean(active)} segments={rows}
-        selected={active?.sourceIndex} onSeek={seek} onBoundary={boundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }} />}
+        selected={active?.sourceIndex} onSeek={seek} onBoundary={boundary} previewBoundary={previewBoundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }} />}
       {!valid && primary?.firstFrame !== null && primary?.lastFrame !== null && primary && <input
         className="machine-boundary-slider" type="range" aria-label="校对播放帧" min={primary.firstFrame} max={primary.lastFrame}
         value={playback.frame} onChange={(event) => playback.onSeek(event.currentTarget.valueAsNumber)} />}
@@ -590,7 +597,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       <header className="quality-heading"><h2>机标校对</h2><span className="frame-counter">帧 {frame} / {result ? editFrameCount - 1 : "--"}</span></header>
       {valid && <ProofreadPlayer root={root} stream={primary} offset={mapping.offset} step={mapping.step} frameCount={editFrameCount}
         skeleton={data.skeleton} skeletonError={data.skeletonError} segments={rows} selected={active?.sourceIndex}
-        editable={canEdit && Boolean(active)} onBoundary={boundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }}
+        editable={canEdit && Boolean(active)} onBoundary={boundary} previewBoundary={previewBoundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }}
         frame={frame} start={active?.startFrame ?? 0} end={active?.endFrame ?? editFrameCount - 1} playing={playing} onFrame={setFrame} onPlaying={setPlaying} />}
     </section>}
     <section className="quality-inspector" aria-label="机标结果">

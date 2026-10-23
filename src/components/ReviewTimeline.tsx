@@ -11,11 +11,12 @@ interface Props {
   segments: ReviewSegment[]; selected?: number;
   onSeek: (frame: number) => void;
   onBoundary: (kind: "startFrame" | "endFrame", value: number) => void;
+  previewBoundary?: (kind: "startFrame" | "endFrame", value: number) => ReviewSegment[];
   onChoose: (sourceIndex: number) => void;
   onBoundaryFocus?: (kind: "startFrame" | "endFrame" | "playhead") => void;
 }
 
-export function ReviewTimeline({ frame, frameCount, start, end, editable, segments, selected, onSeek, onBoundary, onChoose, onBoundaryFocus }: Props) {
+export function ReviewTimeline({ frame, frameCount, start, end, editable, segments, selected, onSeek, onBoundary, previewBoundary, onChoose, onBoundaryFocus }: Props) {
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef<"startFrame" | "endFrame" | null>(null);
   const origin = useRef({ x: 0, moved: false });
@@ -44,9 +45,9 @@ export function ReviewTimeline({ frame, frameCount, start, end, editable, segmen
       if (drag.current && pendingEdge.current !== null) setPreview({ kind: drag.current, value: pendingEdge.current });
     });
   };
-  // Preview from the unchanged drag-start rows so reversing a drag restores all
-  // crossed rows. Only pointer-up performs disk saves, audit edits and seeking.
-  const shown = preview && selected !== undefined ? adjustReviewBoundary(segments, selected, preview.kind, preview.value, frameCount) : segments;
+  // Use the editor's retained baseline even after a previous drag was saved.
+  // Only pointer-up performs disk saves, audit edits and seeking.
+  const shown = preview && selected !== undefined ? (previewBoundary?.(preview.kind, preview.value) ?? adjustReviewBoundary(segments, selected, preview.kind, preview.value, frameCount)) : segments;
   const activePreview = shown.find(segment => segment.sourceIndex === selected && !segment.deleted);
   const shownStart = activePreview?.startFrame ?? start;
   const shownEnd = activePreview?.endFrame ?? end;
