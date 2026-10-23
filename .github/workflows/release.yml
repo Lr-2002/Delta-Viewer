@@ -684,6 +684,7 @@ jobs:
 
       - name: Install Linux build and smoke-test dependencies
         run: |
+          sudo python3 scripts/configure-ubuntu-archive.py
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             build-essential \

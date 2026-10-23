@@ -22,3 +22,7 @@
 已完成本地检查：`pnpm check:full` 通过（含 production build、Rust Clippy/tests 和 Tauri debug no-bundle）；`pnpm test:proofreading` 的 15 项纯逻辑、38 项浏览器回归通过；`pnpm test:concurrency:browser` 通过；发布 workflow 回归 6 项通过；Wiki 15 页链接检查通过。新增左右两端跨多段、松手后反向、多次往返、原有删除保留、不同编辑器隔离和新文字保护断言均通过。
 
 检查报告：`artifacts/release-check/2026-10-23T10-05-01-464Z-linux-x64.json`。既有 frontend chunk-size 与 binrw future-compatibility 提示仍存在，未进行无关依赖升级。本地结果不替代三平台原生安装包与 Windows 目标机验收。
+
+## 1.3.0 发布环境恢复
+
+1.2.9 两次云端运行均在 Ubuntu 系统依赖下载时异常缓慢，在应用测试前取消，未生成 tag/安装包。日志中首次需要 119 MB，实际下载约数十 KiB/s；上一版同一步约 39 秒。本次使用新版本 1.3.0 恢复，只在临时 Linux CI/CD runner 将 Azure Ubuntu archive 精确更换为官方 HTTPS 主镜像，保留安全源、suite、组件和软件包签名。新增隔离来源配置回归，覆盖 Ubuntu 22.04 sources.list 与 24.04 Deb822、第三方来源不改、幂等及完整门禁仍在。不修改用户机器或业务服务器配置。

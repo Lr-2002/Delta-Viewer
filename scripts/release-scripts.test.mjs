@@ -817,3 +817,23 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
   assert.notEqual(tampered.status, 0);
   assert.match(tampered.stderr, /updater signature does not verify/);
 });
+
+test("ephemeral Ubuntu runners use the primary archive without weakening package trust", async () => {
+  const fixture = await mkdtemp(path.join(tmpdir(), "delta-apt-archive-"));
+  await mkdir(path.join(fixture, "sources.list.d"));
+  const legacy = "deb http://azure.archive.ubuntu.com/ubuntu jammy main\ndeb http://security.ubuntu.com/ubuntu jammy-security main\n";
+  const deb822 = "Types: deb\nURIs: https://azure.archive.ubuntu.com/ubuntu/\nSuites: noble noble-updates\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n";
+  const custom = "deb https://example.invalid/ubuntu noble main\n";
+  const files = [["sources.list", legacy], ["sources.list.d/ubuntu.sources", deb822], ["sources.list.d/custom.list", custom]];
+  for (const [name,contents] of files) await writeFile(path.join(fixture,name),contents);
+  const script = path.join(root,"scripts/configure-ubuntu-archive.py");
+  const run = () => execFileSync("python3",[script,"--apt-root",fixture],{encoding:"utf8"});
+  run();
+  for (const [name,contents] of files) assert.equal(await readFile(path.join(fixture,name),"utf8"),contents.replaceAll(/https?:\/\/azure\.archive\.ubuntu\.com/g,"https://archive.ubuntu.com"));
+  assert.equal(run(),"","already configured sources are untouched");
+  for (const name of ["ci.yml","release.yml"]) {
+    const workflow=await readFile(path.join(root,".github/workflows",name),"utf8");
+    assert.match(workflow,/sudo python3 scripts\/configure-ubuntu-archive\.py\n\s+sudo apt-get update/);
+    assert.doesNotMatch(workflow,/--allow-unauthenticated|trusted=yes/);
+  }
+});
