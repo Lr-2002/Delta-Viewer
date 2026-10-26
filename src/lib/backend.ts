@@ -608,6 +608,8 @@ export async function undoCorrection(id: string, operationId: number): Promise<v
 }
 
 const demoMachineReviews = new Map<string, import("../types").MachineReview>();
+const demoCommittedReviews = new Map<string, import("../types").MachineReview>();
+const demoReviewKey = (path: string, source?: string) => `${demoActor().username}:${path}:${source ?? "bailian_annotation.json"}`;
 export async function listMyMachineReviews(sourcePaths: string[]): Promise<import("../types").AccountReview[]> {
   if (isTauriRuntime()) return invoke("list_my_machine_reviews", { sourcePaths });
   const user = demoActor();
@@ -618,7 +620,7 @@ export async function listMyMachineReviews(sourcePaths: string[]): Promise<impor
 export async function loadMachineReview(sourcePath: string, sourceName?: string): Promise<import("../types").MachineReview> {
   if (isTauriRuntime()) return invoke("load_machine_review", { sourcePath, sourceName });
   demoActor();
-  const saved = demoMachineReviews.get(`${sourcePath}:${sourceName ?? "bailian_annotation.json"}`);
+  const saved = demoMachineReviews.get(demoReviewKey(sourcePath, sourceName));
   if (saved) return structuredClone(saved);
   const annotation = await loadMachineAnnotation(sourcePath, sourceName);
   if (!annotation) throw new Error("未找到机标");
@@ -629,11 +631,19 @@ export async function loadMachineReview(sourcePath: string, sourceName?: string)
     })) };
 }
 
-export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending", rejectionReason?: string, commitEvent?: [string, number]): Promise<import("../types").MachineReview> {
-  if (isTauriRuntime()) return invoke("save_machine_review", { request: { sourcePath, sourceHash, expectedRevision, segments, sourceName, status, rejectionReason }, commitEvent });
+export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending", rejectionReason?: string, commitEvent?: [string, number], durable?: { base: import("../types").MachineReview; audit: import("./review-audit-types").ReviewAuditEvent }): Promise<import("../types").MachineReview> {
+  if (isTauriRuntime()) {
+    const request = { sourcePath, sourceHash, expectedRevision, segments, sourceName, status, rejectionReason };
+    const localEntry = durable && sourceName !== "skeleton.description.json" ? { request, outputHash: durable.base.outputHash ?? null, qcContentHash: durable.base.qcContentHash ?? null, audit: durable.audit, error: "", onlyPending: false } : null;
+    const result = await invoke<import("../types").MachineReview>("save_machine_review", { request, commitEvent, localEntry });
+    if (localEntry) window.dispatchEvent(new Event("source-review-pending"));
+    return result;
+  }
   demoActor();
   const state = await loadMachineReview(sourcePath, sourceName);
   // The latest explicit human snapshot wins, with a new revision of the stored result.
+  const draft = sourceName !== "skeleton.description.json" && status === "pending";
+  const keyForReview = demoReviewKey(sourcePath, sourceName);
   const retained = segments.filter((segment) => !segment.deleted);
   const reason = status === "rejected" ? rejectionReason?.trim() ?? "" : "";
   if (status === "rejected" && !REJECTION_REASONS.filter(item => item !== "其他原因").includes(reason)
@@ -658,11 +668,16 @@ export async function saveMachineReview(sourcePath: string, sourceHash: string, 
   else if (state.status && state.status !== status) changes.push("改为待审核");
   if (!changes.length) changes.push("保存待审核记录");
   const changeSummary = changes.join("；");
-  const next = { ...state, workflowVersion: 4, status, qcStatus: sourceName === "skeleton.description.json" ? state.qcStatus : status, qcRejectionReason: reason, qcStatusError: "", versionId, previousVersionId: state.versionId ?? "", revision: state.revision + 1,
+  if (status === "rejected") {
+    const committed = demoCommittedReviews.get(keyForReview);
+    const original = await loadMachineAnnotation(sourcePath, sourceName);
+    segments = committed?.segments ?? original!.segments.map((s, sourceIndex) => ({ sourceIndex, startFrame: s.startFrame, endFrame: s.endFrame, description: s.description, deleted: false, decision: "pending" as const }));
+  }
+  const next = { ...state, workflowVersion: 4, status, qcStatus: sourceName === "skeleton.description.json" ? state.qcStatus : status, qcRejectionReason: reason, qcStatusError: "", versionId, previousVersionId: state.versionId ?? "", revision: draft ? state.revision : state.revision + 1,
     rejectionReason: reason, changeSummary, revisionLabel: `${versionId} · ${changeSummary}`, appVersion: APP_VERSION,
-    segments: segments.map((item) => ({ ...item, decision: item.deleted ? "pending" as const : status })), published: true, updatedAtMs: Date.now(), reviewer: "demo" };
+    segments: segments.map((item) => ({ ...item, decision: item.deleted ? "pending" as const : status })), localDraft: draft, pendingSourceWrite: false, published: !draft, updatedAtMs: Date.now(), reviewer: "demo" };
   const user = demoActor();
-  if (sourceName === "skeleton.description.json") { demoMachineReviews.set(`${sourcePath}:${sourceName}`, next); return structuredClone(next); }
+  if (sourceName === "skeleton.description.json") { demoMachineReviews.set(keyForReview, next); return structuredClone(next); }
   const key = `dohc.demo.account-reviews:${user.username}`;
   const records = JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, import("../types").AccountReview>;
   if (status !== "pending" || records[sourcePath]) {
@@ -672,7 +687,8 @@ export async function saveMachineReview(sourcePath: string, sourceHash: string, 
   }
   next.reviewer = user.displayName;
   const saved = { ...next, reviewerUsername: user.username };
-  demoMachineReviews.set(`${sourcePath}:${sourceName ?? "bailian_annotation.json"}`, saved);
+  demoMachineReviews.set(keyForReview, saved);
+  if (!draft) demoCommittedReviews.set(keyForReview, structuredClone(saved));
   return structuredClone(saved);
 }
 

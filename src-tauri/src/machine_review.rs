@@ -64,6 +64,7 @@ pub struct ReviewState {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewView {
+    pub local_draft: bool,
     #[serde(flatten)]
     pub review: ReviewState,
     pub output_name: String,
@@ -78,6 +79,7 @@ pub struct ReviewView {
 pub fn view_for_source(root: &Path, source: Option<&str>, review: ReviewState) -> ReviewView {
     if source == Some(machine_annotation::SKELETON_SOURCE) {
         return ReviewView {
+            local_draft: false,
             review,
             output_name: machine_annotation::SKELETON_SOURCE.into(),
             qc_status: String::new(),
@@ -135,6 +137,7 @@ pub fn view_for_root(root: &Path, review: ReviewState) -> ReviewView {
         OUTPUT
     };
     ReviewView {
+        local_draft: false,
         output_name: output_name.into(),
         review,
         qc_status,
@@ -400,10 +403,23 @@ fn load_inner_checked(
     root: &Path,
     annotation: &MachineAnnotation,
 ) -> AppResult<ReviewState> {
+    load_inner_checked_mode(data_root, root, annotation, true)
+}
+
+fn load_inner_checked_mode(
+    data_root: &Path,
+    root: &Path,
+    annotation: &MachineAnnotation,
+    include_local: bool,
+) -> AppResult<ReviewState> {
     let draft_path = selected_draft_path(data_root, root, annotation);
-    let draft = machine_annotation::read_bytes(&draft_path)?
-        .map(|bytes| serde_json::from_slice::<ReviewState>(&bytes))
-        .transpose()?;
+    let draft = if include_local {
+        machine_annotation::read_bytes(&draft_path)?
+    } else {
+        None
+    }
+    .map(|bytes| serde_json::from_slice::<ReviewState>(&bytes))
+    .transpose()?;
     let had_draft = draft.is_some();
     let local_revision = draft.as_ref().map_or(0, |state| state.revision);
     let output = match machine_annotation::read_bytes(&root.join(output_name(annotation, root)))? {
@@ -421,8 +437,11 @@ fn load_inner_checked(
         .as_ref()
         .map(|bytes| blake3::hash(bytes).to_hex().to_string());
     // A committed NAS write can outlive a failed local draft update.
-    if let Some(bytes) = machine_annotation::read_bytes(&draft_path.with_extension("pending.json"))?
-    {
+    if let Some(bytes) = if include_local {
+        machine_annotation::read_bytes(&draft_path.with_extension("pending.json"))?
+    } else {
+        None
+    } {
         let pending: ReviewState = serde_json::from_slice(&bytes)?;
         if pending.output_hash.is_some()
             && pending.output_hash == output_hash
@@ -1260,6 +1279,7 @@ pub fn save(
     save_for_user(data_root, request, reviewer, reviewer)
 }
 
+#[cfg(test)]
 pub fn save_for_user(
     data_root: &Path,
     request: SaveReviewRequest,
@@ -1276,13 +1296,17 @@ pub fn save_with_event_for_user(
     username: &str,
     event: Option<(String, u64)>,
 ) -> AppResult<ReviewState> {
+    if request.source_name.as_deref() != Some(machine_annotation::SKELETON_SOURCE)
+        && request.status.as_deref().unwrap_or("pending") == "pending"
+    {
+        return Err(failure(
+            "动作草稿不能写入共享目录；请先保存本机并点击审核通过",
+        ));
+    }
     if let Some((id, time)) = &event {
         if id.len() != 36 || !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') || *time == 0 {
             return Err(failure("审核提交标识或时间无效"));
         }
-    }
-    if event.is_none() {
-        return save_for_user(data_root, request, reviewer, username);
     }
     save_for_user_mode(data_root, request, reviewer, username, None, event)
 }
@@ -1533,6 +1557,11 @@ pub fn publish_deferred_for_user(
     username: &str,
     deferred: (String, u64),
 ) -> AppResult<ReviewState> {
+    if request.source_name.as_deref() != Some(machine_annotation::SKELETON_SOURCE)
+        && request.status.as_deref().unwrap_or("pending") == "pending"
+    {
+        return Err(failure("动作草稿未审核通过，不能写入共享目录"));
+    }
     // If the source commit succeeded but local queue acknowledgement failed,
     // acknowledge that same result without changing its revision or time again.
     let current = load_selected(
@@ -1541,6 +1570,19 @@ pub fn publish_deferred_for_user(
         request.source_name.as_deref(),
     )?;
     let status = request.status.as_deref().unwrap_or("pending");
+    if status == "rejected" {
+        let root =
+            crate::dataset_layout::resolve(Path::new(&request.source_path))?.canonicalize()?;
+        let annotation = machine_annotation::load_for_review(
+            &root,
+            request
+                .source_name
+                .as_deref()
+                .or(Some(machine_annotation::DEFAULT_SOURCE)),
+        )?
+        .ok_or_else(|| failure("未找到机标文件"))?;
+        request.segments = load_inner_checked_mode(data_root, &root, &annotation, false)?.segments;
+    }
     if current.output_hash.is_some()
         && current.version_id == deferred.0.replace('-', "")
         && current.source_hash == request.source_hash
@@ -1702,7 +1744,16 @@ fn save_for_user_mode(
             )?;
         }
     }
-    validate(&annotation, &request.segments)?;
+    if request.status.as_deref() == Some("rejected")
+        && annotation.source_name != machine_annotation::SKELETON_SOURCE
+    {
+        // Only approval publishes edits. A rejection changes metadata/QC while
+        // preserving the last shared annotations (or the original machine result).
+        request.segments = load_inner_checked_mode(data_root, &root, &annotation, false)?.segments;
+    }
+    if request.status.as_deref() != Some("rejected") {
+        validate(&annotation, &request.segments)?;
+    }
     if annotation.video_frame_count.is_some_and(|count| {
         annotation
             .segments
@@ -1716,10 +1767,12 @@ fn save_for_user_mode(
             preserve_recovery_bytes(data_root, &bytes)?;
         }
     }
-    if !rebased {
+    if !rebased && request.status.as_deref() != Some("rejected") {
         align_deleted_segments(&current.segments, &mut request.segments);
     }
-    validate(&annotation, &request.segments)?;
+    if request.status.as_deref() != Some("rejected") {
+        validate(&annotation, &request.segments)?;
+    }
     let status = request.status.unwrap_or_else(pending_status);
     if annotation.source_name == machine_annotation::SKELETON_SOURCE && status != "pending" {
         return Err(failure("骨架片段仅支持描述，不设置审核结论"));
@@ -1811,7 +1864,18 @@ fn save_for_user_mode(
             if actual != expected_output_hash {
                 return Err(failure("复核结果已改变，拒绝覆盖"));
             }
-            let mut document = if human_source(&annotation)
+            let mut document = if state.status == "rejected" {
+                if let Some(bytes) = machine_annotation::read_bytes(&write_root.join(output))? {
+                    let mut shared: Value = serde_json::from_slice(&bytes)?;
+                    if !shared.is_object() {
+                        return Err(failure("人工结果必须是对象，未覆盖"));
+                    }
+                    shared["_human_review"] = public_review(&state)?;
+                    shared
+                } else {
+                    reviewed_document(&annotation, &state)?
+                }
+            } else if human_source(&annotation)
                 || state.source_hash != annotation.source_hash
                 || request.source_hash != annotation.source_hash
                 || annotation.segments.iter().any(|original| {
@@ -1819,7 +1883,8 @@ fn save_for_user_mode(
                         .segments
                         .iter()
                         .any(|item| item.source_index == original.source_index)
-                }) {
+                })
+            {
                 human_document(&annotation, &state, &write_root)?
             } else {
                 reviewed_document(&annotation, &state)?
@@ -2305,7 +2370,14 @@ mod tests {
                     source_hash: state.source_hash,
                     expected_revision: state.revision,
                     segments,
-                    status: Some("pending".into()),
+                    status: Some(
+                        if name == machine_annotation::SKELETON_SOURCE {
+                            "pending"
+                        } else {
+                            "approved"
+                        }
+                        .into(),
+                    ),
                     rejection_reason: None,
                 },
                 output_hash: state.output_hash,
@@ -2313,7 +2385,7 @@ mod tests {
                 only_pending: false,
                 error: "REVIEW_STORAGE_FULL".into(),
                 created_at_ms: 0,
-                audit: json!({"eventId":id,"action":"saved","occurredAtMs":1792548000000u64,"details":{}}),
+                audit: json!({"eventId":id,"action":if name == machine_annotation::SKELETON_SOURCE { "saved" } else { "approved" },"occurredAtMs":1792548000000u64,"details":{}}),
             };
             originals.push(queue::store(&f.local, "s", "alice", entry).unwrap());
         }
@@ -3704,6 +3776,386 @@ mod tests {
         );
     }
 
+    fn action_entry(
+        f: &Fixture,
+        state: &ReviewState,
+        status: &str,
+    ) -> crate::source_review_queue::DeferredReview {
+        let view = view_for_root(&f.root, state.clone());
+        crate::source_review_queue::DeferredReview {
+            request: SaveReviewRequest {
+                source_path: f.root.to_string_lossy().into(),
+                source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+                source_hash: state.source_hash.clone(),
+                expected_revision: state.revision,
+                segments: state.segments.clone(),
+                status: Some(status.into()),
+                rejection_reason: if status == "rejected" {
+                    Some("无效数据".into())
+                } else {
+                    None
+                },
+            },
+            output_hash: state.output_hash.clone(),
+            qc_content_hash: view.qc_content_hash,
+            only_pending: false,
+            error: String::new(),
+            created_at_ms: 0,
+            audit: json!({"eventId": format!("{:08x}-0000-4000-8000-000000000000", getrandom::u32().unwrap()), "action":if status == "pending" { "saved" } else { status }, "occurredAtMs":1792980000000u64,"details":{}}),
+        }
+    }
+    fn action_user() -> crate::model::UserIdentity {
+        crate::model::UserIdentity {
+            username: "alice".into(),
+            display_name: "审核甲".into(),
+            role: Some("operator".into()),
+        }
+    }
+    fn shared_bytes(f: &Fixture) -> Vec<(String, Vec<u8>)> {
+        let mut files = fs::read_dir(&f.root)
+            .unwrap()
+            .filter_map(|r| {
+                let r = r.unwrap();
+                if r.file_type().unwrap().is_file() && r.file_name() != ".description.lock" {
+                    Some((
+                        r.file_name().to_string_lossy().into_owned(),
+                        fs::read(r.path()).unwrap(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files
+    }
+
+    #[test]
+    fn action_drafts_never_touch_shared_files_and_approval_publishes_exact_edits() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        fs::write(
+            f.root.join("session.json"),
+            r#"{"qc":"待审核","capture":"keep"}"#,
+        )
+        .unwrap();
+        let original = shared_bytes(&f);
+        let mut state = load(&f.local, &f.root).unwrap();
+        let user = action_user();
+        // Text, boundary, deletion and addition all use the same durable draft path.
+        state.segments[0].description = "尚未批准的文字".into();
+        state.segments[0].end_frame = 4;
+        state.segments[1].deleted = true;
+        state.segments.push(ReviewSegment {
+            source_index: 3,
+            start_frame: 5,
+            end_frame: 9,
+            description: "新增片段".into(),
+            deleted: false,
+            decision: "pending".into(),
+        });
+        let saved = queue::submit_action_with_probe(
+            &f.local,
+            "s",
+            &user,
+            action_entry(&f, &state, "pending"),
+            &|_| panic!("draft cannot probe NAS"),
+        )
+        .unwrap();
+        assert!(saved.local_draft && !saved.pending_source_write && !saved.review.published);
+        assert_eq!(shared_bytes(&f), original);
+        assert_eq!(
+            queue::status(&f.local, "s", "alice", true).unwrap().pending,
+            0
+        );
+        assert!(
+            !queue::contains_submitted(&f.local, "s", "alice", f.root.to_str().unwrap()).unwrap(),
+            "drafts cannot block bulk rejection as if awaiting writeback"
+        );
+        let reloaded = queue::get(
+            &f.local,
+            "s",
+            "alice",
+            f.root.to_str().unwrap(),
+            Some(machine_annotation::DEFAULT_SOURCE),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(reloaded.request.segments, state.segments);
+        assert!(queue::get(
+            &f.local,
+            "s",
+            "bob",
+            f.root.to_str().unwrap(),
+            Some(machine_annotation::DEFAULT_SOURCE)
+        )
+        .unwrap()
+        .is_none());
+        assert!(queue::get(
+            &f.local,
+            "other",
+            "alice",
+            f.root.to_str().unwrap(),
+            Some(machine_annotation::DEFAULT_SOURCE)
+        )
+        .unwrap()
+        .is_none());
+        let result =
+            queue::publish_with_probe(&f.local, "s", &user, &AtomicBool::new(false), &|_| {
+                panic!("generic writeback cannot publish a draft")
+            })
+            .unwrap();
+        assert_eq!((result.written, result.remaining), (0, 0));
+        assert_eq!(shared_bytes(&f), original);
+        let committed = queue::submit_action_with_probe(
+            &f.local,
+            "s",
+            &user,
+            action_entry(&f, &saved.review, "approved"),
+            &|_| Ok(()),
+        )
+        .unwrap();
+        assert!(committed.review.published && !committed.local_draft);
+        let read = load(&f.temp.join("another-host"), &f.root).unwrap();
+        assert_eq!(read.segments.iter().filter(|s| !s.deleted).count(), 3);
+        assert_eq!(read.segments[0].description, "尚未批准的文字");
+        assert_eq!(read.segments[0].end_frame, 4);
+        assert_eq!(f.output()["_human_review"]["status"], "approved");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(f.root.join("session.json")).unwrap())
+                .unwrap()["qc"],
+            "通过"
+        );
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            f.original
+        );
+        let approved = shared_bytes(&f);
+        let mut again = committed.review.clone();
+        again.segments[0].description = "第二次未批准".into();
+        queue::submit_action_with_probe(
+            &f.local,
+            "s",
+            &user,
+            action_entry(&f, &again, "pending"),
+            &|_| panic!("no NAS IO"),
+        )
+        .unwrap();
+        assert_eq!(
+            shared_bytes(&f),
+            approved,
+            "editing an approved result cannot reset shared metadata or annotations"
+        );
+    }
+
+    #[test]
+    fn rejection_publishes_only_conclusion_and_preserves_unapproved_edits_in_local_history() {
+        use crate::source_review_queue as queue;
+        for previously_approved in [false, true] {
+            let f = Fixture::new(0, true);
+            let user = action_user();
+            let mut state = load(&f.local, &f.root).unwrap();
+            if previously_approved {
+                state = queue::submit_action_with_probe(
+                    &f.local,
+                    "s",
+                    &user,
+                    action_entry(&f, &state, "approved"),
+                    &|_| Ok(()),
+                )
+                .unwrap()
+                .review;
+            }
+            let expected = state.segments.clone();
+            state.segments[0].description = "不应发布的文字".into();
+            state.segments[1].deleted = true;
+            queue::submit_action_with_probe(
+                &f.local,
+                "s",
+                &user,
+                action_entry(&f, &state, "pending"),
+                &|_| panic!("no NAS IO"),
+            )
+            .unwrap();
+            let saved = queue::submit_action_with_probe(
+                &f.local,
+                "s",
+                &user,
+                action_entry(&f, &state, "rejected"),
+                &|_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(saved.review.status, "rejected");
+            for (actual, before) in saved.review.segments.iter().zip(&expected) {
+                assert_eq!(
+                    (
+                        &actual.description,
+                        actual.start_frame,
+                        actual.end_frame,
+                        actual.deleted
+                    ),
+                    (
+                        &before.description,
+                        before.start_frame,
+                        before.end_frame,
+                        before.deleted
+                    )
+                );
+            }
+            assert!(!String::from_utf8(fs::read(f.root.join(OUTPUT)).unwrap())
+                .unwrap()
+                .contains("不应发布"));
+            assert_eq!(f.output()["_human_review"]["status"], "rejected");
+            let db = crate::review_outbox::open(&f.local).unwrap();
+            let history: String = db
+                .query_row(
+                    "SELECT payload FROM source_review_history LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(history.contains("不应发布的文字"));
+        }
+    }
+
+    #[test]
+    fn approved_action_survives_nas_failure_and_writeback_remains_idempotent() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        let user = action_user();
+        let mut state = load(&f.local, &f.root).unwrap();
+        state.segments[0].description = "断网后通过".into();
+        queue::submit_action_with_probe(
+            &f.local,
+            "s",
+            &user,
+            action_entry(&f, &state, "pending"),
+            &|_| panic!("no NAS IO"),
+        )
+        .unwrap();
+        let entry = action_entry(&f, &state, "approved");
+        let id = entry.audit["eventId"].clone();
+        let saved = queue::submit_action_with_probe(&f.local, "s", &user, entry, &|_| {
+            Err(failure("REVIEW_STORAGE_FULL: full"))
+        })
+        .unwrap();
+        assert!(saved.pending_source_write && !saved.local_draft && !f.root.join(OUTPUT).exists());
+        assert_eq!(
+            queue::status(&f.local, "s", "alice", false)
+                .unwrap()
+                .pending,
+            1
+        );
+        queue::submit_action_with_probe(
+            &f.local,
+            "s",
+            &user,
+            action_entry(&f, &state, "approved"),
+            &|_| Err(failure("REVIEW_STORAGE_FULL: full")),
+        )
+        .unwrap();
+        assert_eq!(
+            queue::get(
+                &f.local,
+                "s",
+                "alice",
+                f.root.to_str().unwrap(),
+                Some(machine_annotation::DEFAULT_SOURCE)
+            )
+            .unwrap()
+            .unwrap()
+            .audit["eventId"],
+            id
+        );
+        let result =
+            queue::publish_with_probe(&f.local, "s", &user, &AtomicBool::new(false), &|_| Ok(()))
+                .unwrap();
+        assert_eq!((result.written, result.remaining), (1, 0));
+        let first = shared_bytes(&f);
+        let result =
+            queue::publish_with_probe(&f.local, "s", &user, &AtomicBool::new(false), &|_| Ok(()))
+                .unwrap();
+        assert_eq!(result.written, 0);
+        assert_eq!(shared_bytes(&f), first);
+        let events = crate::review_outbox::batch(&f.local, "s", "alice", false).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["action"] == "approved" && e["eventId"] == id)
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["action"] == "source_written")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn draft_local_disk_failure_and_shared_conflict_never_publish_or_lose_draft() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        let user = action_user();
+        let state = load(&f.local, &f.root).unwrap();
+        let original = shared_bytes(&f);
+        let blocked = f.temp.join("not-a-directory");
+        fs::write(&blocked, b"disk unavailable").unwrap();
+        assert!(queue::submit_action_with_probe(
+            &blocked,
+            "s",
+            &user,
+            action_entry(&f, &state, "pending"),
+            &|_| panic!("no NAS IO")
+        )
+        .is_err());
+        assert_eq!(shared_bytes(&f), original);
+        queue::submit_action_with_probe(
+            &f.local,
+            "s",
+            &user,
+            action_entry(&f, &state, "pending"),
+            &|_| panic!("no NAS IO"),
+        )
+        .unwrap();
+        fs::write(
+            f.root.join("session.json"),
+            r#"{"qc":"通过","external":"keep"}"#,
+        )
+        .unwrap();
+        let changed = shared_bytes(&f);
+        assert!(queue::submit_action_with_probe(
+            &f.local,
+            "s",
+            &user,
+            action_entry(&f, &state, "approved"),
+            &|_| Ok(())
+        )
+        .is_err());
+        assert_eq!(shared_bytes(&f), changed);
+        assert!(queue::get(
+            &f.local,
+            "s",
+            "alice",
+            f.root.to_str().unwrap(),
+            Some(machine_annotation::DEFAULT_SOURCE)
+        )
+        .unwrap()
+        .is_some());
+        assert!(publish_deferred_for_user(
+            &f.local,
+            action_entry(&f, &state, "pending").request,
+            None,
+            None,
+            "甲",
+            "alice",
+            ("00000000-0000-4000-8000-000000000000".into(), 1)
+        )
+        .is_err());
+    }
+
     struct Fixture {
         temp: PathBuf,
         root: PathBuf,
@@ -4830,8 +5282,13 @@ mod tests {
             item.deleted = true;
         }
         assert!(save_status(&state, "approved").is_err());
+        let committed = f.output()["episode_results"][0]["annotations"].clone();
         state = save_status(&state, "rejected").unwrap();
-        assert_eq!(f.output()["episode_results"][0]["annotations"], json!([]));
+        assert_eq!(
+            f.output()["episode_results"][0]["annotations"],
+            committed,
+            "rejection must not publish unapproved deletions"
+        );
         assert_eq!(
             load(&f.temp.join("other-host"), &f.root)
                 .unwrap()

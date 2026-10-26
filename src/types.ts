@@ -501,6 +501,7 @@ export interface AccountReview {
 }
 
 export interface MachineReview {
+  localDraft?: boolean;
   outputName?: string;
   pendingSourceWrite?: boolean;
   sourceWriteError?: string;

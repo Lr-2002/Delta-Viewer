@@ -1167,6 +1167,7 @@ async fn save_machine_review(
     auth: State<'_, AuthState>,
     request: machine_review::SaveReviewRequest,
     commit_event: Option<(String, u64)>,
+    local_entry: Option<source_review_queue::DeferredReview>,
 ) -> Result<machine_review::ReviewView, String> {
     let user = auth
         .require_managed_user()
@@ -1174,6 +1175,18 @@ async fn save_machine_review(
     let data_root = app_data_root(&app)?;
     let (_, service) =
         user_center::source_review_owner(&data_root, auth.inner()).map_err(|e| e.to_string())?;
+    if request.source_name.as_deref() != Some(machine_annotation::SKELETON_SOURCE) {
+        let mut entry = local_entry.ok_or_else(|| {
+            "ACTION_DRAFT_REQUIRED: 动作修改必须先保存本机草稿，请使用新版客户端".to_string()
+        })?;
+        entry.request = request;
+        return tauri::async_runtime::spawn_blocking(move || {
+            source_review_queue::submit_action(&data_root, &service, &user, entry)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string());
+    }
     let existing = {
         let (root, name, data, username) = (
             request.source_path.clone(),
@@ -1444,7 +1457,7 @@ async fn reject_pending_machine_review(
         user.username.clone(),
     );
     tauri::async_runtime::spawn_blocking(move || {
-        if source_review_queue::contains_path(&data, &service, &username, &path)? {
+        if source_review_queue::contains_submitted(&data, &service, &username, &path)? {
             return Err(error::AppError::Message("SOURCE_REVIEW_EXISTS: 本机已有该数据的待写结果，请在待写回提示中确认处理，未重复不通过".into()));
         }
         Ok::<_, error::AppError>(())

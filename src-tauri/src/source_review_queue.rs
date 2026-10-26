@@ -24,6 +24,15 @@ pub struct DeferredReview {
     #[serde(default)]
     pub created_at_ms: u64,
 }
+impl DeferredReview {
+    pub fn is_action_draft(&self) -> bool {
+        self.request.source_name.as_deref() != Some(crate::machine_annotation::SKELETON_SOURCE)
+            && self.request.status.as_deref().unwrap_or("pending") == "pending"
+    }
+}
+// Drafts remain durable/recoverable, but are never eligible for NAS writeback,
+// including pending action entries made by an older client.
+const PUBLISHABLE: &str = "(source_name='skeleton.description.json' OR coalesce(json_extract(payload,'$.request.status'),'pending')!='pending')";
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingItem {
@@ -135,8 +144,22 @@ pub fn get(
     raw.map(|s| serde_json::from_str(&s).map_err(failure))
         .transpose()
 }
+#[cfg(test)]
 pub fn contains_path(root: &Path, service: &str, username: &str, path: &str) -> AppResult<bool> {
     contains_related(root, service, username, path, None)
+}
+pub fn contains_submitted(
+    root: &Path,
+    service: &str,
+    username: &str,
+    path: &str,
+) -> AppResult<bool> {
+    let paths = path_aliases(root, path)?;
+    let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
+    open(root)?.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND source_name!='skeleton.description.json' AND {PUBLISHABLE})"),
+        params![service, username, serde_json::to_string(&paths)?], |r|r.get(0),
+    ).map_err(failure)
 }
 pub fn contains_related(
     root: &Path,
@@ -318,6 +341,8 @@ fn enqueue_receipt(
     } else {
         audit["details"]["target"] = json!(if entry.only_pending {
             "批量不通过 · 本机待写回"
+        } else if entry.is_action_draft() {
+            "本机动作草稿 · 待审核"
         } else {
             "本机待写回审核结果"
         });
@@ -383,6 +408,7 @@ pub fn local_view(
     base: Option<ReviewView>,
 ) -> ReviewView {
     let mut view = base.unwrap_or_else(|| ReviewView {
+        local_draft: false,
         review: ReviewState {
             reviewer_username: user.username.clone(),
             recovery_warnings: vec![],
@@ -416,6 +442,16 @@ pub fn local_view(
         view.qc_status_error.clear();
         view.qc_rejection_reason.clear();
     }
+    if view.output_name.is_empty() {
+        view.output_name = match entry.request.source_name.as_deref() {
+            Some(crate::machine_annotation::SKELETON_SOURCE) => {
+                crate::machine_annotation::SKELETON_SOURCE
+            }
+            Some(crate::machine_annotation::FLASH_SOURCE | "desorption.json") => "desorption.json",
+            _ => "description.json",
+        }
+        .into();
+    }
     view.review.segments = entry.request.segments.clone();
     view.review.status = entry
         .request
@@ -427,7 +463,13 @@ pub fn local_view(
     view.review.revision = entry.request.expected_revision;
     view.review.output_hash = entry.output_hash.clone();
     view.review.published = false;
-    view.pending_source_write = true;
+    view.local_draft = entry.is_action_draft();
+    view.pending_source_write = !view.local_draft;
+    if view.local_draft {
+        view.qc_status = "pending".into();
+        view.qc_rejection_reason.clear();
+        view.qc_status_error.clear();
+    }
     view.source_write_error = entry.error.clone();
     view
 }
@@ -441,12 +483,12 @@ pub fn status(
     let db = open(root)?;
     let pending = db
         .query_row(
-            "SELECT count(*) FROM source_reviews WHERE service=? AND username=?",
+            &format!("SELECT count(*) FROM source_reviews WHERE service=? AND username=? AND {PUBLISHABLE}"),
             params![service, username],
             |row| row.get::<_, usize>(0),
         )
         .map_err(failure)?;
-    let mut query=db.prepare("SELECT source_path,json_extract(payload,'$.request.status'),json_extract(payload,'$.error'),json_extract(payload,'$.createdAtMs'),source_name FROM source_reviews WHERE service=? AND username=? ORDER BY rowid LIMIT 200").map_err(failure)?;
+    let mut query=db.prepare(&format!("SELECT source_path,json_extract(payload,'$.request.status'),json_extract(payload,'$.error'),json_extract(payload,'$.createdAtMs'),source_name FROM source_reviews WHERE service=? AND username=? AND {PUBLISHABLE} ORDER BY rowid LIMIT 200")).map_err(failure)?;
     let rows = query
         .query_map(params![service, username], |row| {
             Ok((
@@ -569,6 +611,149 @@ pub fn status_for_paths(
     })
 }
 
+fn publish_entry(
+    root: &Path,
+    service: &str,
+    user: &UserIdentity,
+    entry: &DeferredReview,
+    probe: &impl Fn(&Path) -> AppResult<()>,
+) -> AppResult<ReviewState> {
+    probe(Path::new(&entry.request.source_path))?;
+    let state = if entry.only_pending {
+        machine_review::reject_pending_deferred(
+            root,
+            Path::new(&entry.request.source_path),
+            entry.request.rejection_reason.as_deref().unwrap_or(""),
+            &user.display_name,
+            &user.username,
+            (
+                entry.audit["eventId"].as_str().unwrap_or("").into(),
+                entry.audit["occurredAtMs"]
+                    .as_u64()
+                    .unwrap_or(entry.created_at_ms),
+            ),
+        )?
+        .ok_or_else(|| {
+            AppError::Message(
+                "共享数据已有审核结论，未覆盖；本机待写结果已保留，请打开对应数据核对".into(),
+            )
+        })?
+    } else {
+        machine_review::publish_deferred_for_user(
+            root,
+            entry.request.clone(),
+            entry.output_hash.clone(),
+            entry.qc_content_hash.clone(),
+            &user.display_name,
+            &user.username,
+            (
+                entry.audit["eventId"].as_str().unwrap_or("").into(),
+                entry.audit["occurredAtMs"]
+                    .as_u64()
+                    .unwrap_or(entry.created_at_ms),
+            ),
+        )?
+    };
+    let mut db = open(root)?;
+    let tx = db.transaction().map_err(failure)?;
+    enqueue_receipt(&tx, service, &user.username, entry, "local", None)?;
+    enqueue_receipt(
+        &tx,
+        service,
+        &user.username,
+        entry,
+        "nas",
+        Some(&state.revision_label),
+    )?;
+    tx.execute("DELETE FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=? AND event_id=?",params![service,user.username,entry.request.source_path,entry.request.source_name.as_deref().unwrap_or(""),entry.audit["eventId"].as_str().unwrap_or("")]).map_err(failure)?;
+    tx.commit().map_err(failure)?;
+    Ok(state)
+}
+
+pub fn submit_action(
+    root: &Path,
+    service: &str,
+    user: &UserIdentity,
+    entry: DeferredReview,
+) -> AppResult<ReviewView> {
+    submit_action_with_probe(
+        root,
+        service,
+        user,
+        entry,
+        &crate::source_path_probe::ensure_review_storage_responsive,
+    )
+}
+
+pub(crate) fn submit_action_with_probe(
+    root: &Path,
+    service: &str,
+    user: &UserIdentity,
+    entry: DeferredReview,
+    probe: &impl Fn(&Path) -> AppResult<()>,
+) -> AppResult<ReviewView> {
+    if entry.request.source_name.as_deref() == Some(crate::machine_annotation::SKELETON_SOURCE)
+        || entry.only_pending
+    {
+        return Err(failure("动作本机草稿入口不接受骨架或批量请求"));
+    }
+    let mut entry = entry;
+    if !entry.is_action_draft() {
+        if let Some(previous) = get(
+            root,
+            service,
+            &user.username,
+            &entry.request.source_path,
+            entry.request.source_name.as_deref(),
+        )? {
+            if previous.request.status == entry.request.status
+                && previous.request.rejection_reason == entry.request.rejection_reason
+                && previous.request.segments == entry.request.segments
+            {
+                // Retry an unacknowledged conclusion with its original identity
+                // and occurrence time, including a source commit/local-ACK failure.
+                entry.audit = previous.audit;
+            }
+        }
+    }
+    let mut saved = store(root, service, &user.username, entry)?;
+    if saved.is_action_draft() {
+        return Ok(local_view(&saved, user, None));
+    }
+    let _lock = owner_lock(root, service, &user.username)?;
+    let current = get(
+        root,
+        service,
+        &user.username,
+        &saved.request.source_path,
+        saved.request.source_name.as_deref(),
+    )?
+    .ok_or_else(|| failure("本机结果发生变化，请重新读取"))?;
+    if current.audit["eventId"] != saved.audit["eventId"] {
+        return Err(failure("本机结果已有新修改，未写入共享目录"));
+    }
+    match publish_entry(root, service, user, &saved, probe) {
+        Ok(state) => Ok(machine_review::view_for_source(
+            Path::new(&saved.request.source_path),
+            saved.request.source_name.as_deref(),
+            state,
+        )),
+        Err(error) => {
+            let message = error.to_string();
+            saved.error = message.clone();
+            open(root)?.execute("UPDATE source_reviews SET payload=? WHERE service=? AND username=? AND source_path=? AND source_name=? AND event_id=?",params![serde_json::to_string(&saved)?,service,user.username,saved.request.source_path,saved.request.source_name.as_deref().unwrap_or(""),saved.audit["eventId"].as_str().unwrap_or("")]).map_err(failure)?;
+            if message.contains("REVIEW_STORAGE_")
+                || message.contains("SOURCE_UNAVAILABLE")
+                || message.contains("I/O 错误")
+            {
+                Ok(local_view(&saved, user, None))
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 pub fn publish(
     root: &Path,
     service: &str,
@@ -615,61 +800,12 @@ pub(crate) fn publish_with_probe(
         let Some(mut entry) = get(root, service, &user.username, &path, Some(&source))? else {
             continue;
         };
-        let result = (|| -> AppResult<()> {
-            probe(Path::new(&entry.request.source_path))?;
-            let state = if entry.only_pending {
-                machine_review::reject_pending_deferred(
-                    root,
-                    Path::new(&entry.request.source_path),
-                    entry.request.rejection_reason.as_deref().unwrap_or(""),
-                    &user.display_name,
-                    &user.username,
-                    (
-                        entry.audit["eventId"].as_str().unwrap_or("").into(),
-                        entry.audit["occurredAtMs"]
-                            .as_u64()
-                            .unwrap_or(entry.created_at_ms),
-                    ),
-                )?
-                .ok_or_else(|| {
-                    AppError::Message(
-                        "共享数据已有审核结论，未覆盖；本机待写结果已保留，请打开对应数据核对"
-                            .into(),
-                    )
-                })?
-            } else {
-                machine_review::publish_deferred_for_user(
-                    root,
-                    entry.request.clone(),
-                    entry.output_hash.clone(),
-                    entry.qc_content_hash.clone(),
-                    &user.display_name,
-                    &user.username,
-                    (
-                        entry.audit["eventId"].as_str().unwrap_or("").into(),
-                        entry.audit["occurredAtMs"]
-                            .as_u64()
-                            .unwrap_or(entry.created_at_ms),
-                    ),
-                )?
-            };
-            let mut db = open(root)?;
-            let tx = db.transaction().map_err(failure)?;
-            enqueue_receipt(&tx, service, &user.username, &entry, "local", None)?;
-            enqueue_receipt(
-                &tx,
-                service,
-                &user.username,
-                &entry,
-                "nas",
-                Some(&state.revision_label),
-            )?;
-            tx.execute("DELETE FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=? AND event_id=?",params![service,user.username,entry.request.source_path,entry.request.source_name.as_deref().unwrap_or(""),entry.audit["eventId"].as_str().unwrap_or("")]).map_err(failure)?;
-            tx.commit().map_err(failure)?;
-            Ok(())
-        })();
+        if entry.is_action_draft() {
+            continue;
+        }
+        let result = publish_entry(root, service, user, &entry, probe);
         match result {
-            Ok(()) => written += 1,
+            Ok(_) => written += 1,
             Err(error) => {
                 let message = error.to_string();
                 entry.error = message.clone();

@@ -61,7 +61,9 @@ for (const callback of [true, false]) test(`proofreading uses actual video frame
         await new Promise((resolve) => setTimeout(resolve, 80));
         if (window.__proofFailSave) throw Error("TEST_SAVE_FAILED");
         if (args.request.expectedRevision !== window.__proofReview.revision) throw Error("Stale revision");
-        window.__proofReview = { ...window.__proofReview, segments: args.request.segments, status: args.request.status, revision: window.__proofReview.revision + 1, published: true, versionId: crypto.randomUUID() };
+        if (!args.localEntry) throw Error("missing atomic local draft");
+        const draft = args.request.status === "pending";
+        window.__proofReview = { ...window.__proofReview, segments: args.request.segments, status: args.request.status, localDraft:draft, revision: window.__proofReview.revision + (draft?0:1), published: !draft, versionId: draft?"":crypto.randomUUID() };
         return structuredClone(window.__proofReview);
       }
       window.__proofStats.fallbacks++;

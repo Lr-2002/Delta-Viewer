@@ -60,7 +60,7 @@ export function SourceReviewNotice({ disabled, onBusy, onWritten }: { disabled: 
     {issue && !open && <p role="alert" className="machine-message">{issue}</p>}
     {open && <dialog className="rejection-dialog source-review-dialog" aria-label="本机审核结果待写回" ref={node => { if (node && !node.open) node.showModal(); }} onCancel={event => { event.preventDefault(); if (!busy) { dismissed.current = true; setOpen(false); } }}>
       <header><h2>本机审核结果待写回</h2><button className="icon-button" title="稍后写回" aria-label="关闭待写回提示" disabled={busy} onClick={() => { dismissed.current = true; setOpen(false); }}><X size={18} /></button></header>
-      <p>{status?.ready ? "数据目录容量和连接检查已通过。" : "数据目录尚未确认恢复。"}共有 {status?.pending ?? "未知"} 条本机结果，包含动作编辑、审核结论或骨架描述。</p>
+      <p>{status?.ready ? "数据目录容量和连接检查已通过。" : "数据目录尚未确认恢复。"}共有 {status?.pending ?? "未知"} 条本机结果，包含已提交的审核结论或骨架描述；未通过审核的动作草稿不在写回范围。</p>
       <p>点击写回后才会更新共享目录；审核结论写回后更新任务进度，骨架描述不计审核进度。若其他人已修改结果，会保留本机记录并提示冲突。请勿卸载软件或清理应用数据。</p>
       {status?.storageError && <p className="machine-message">{status.storageError}</p>}
       {status && status.pending > status.items.length && <p>以下显示前 {status.items.length} 条；确认写回会依次处理全部 {status.pending} 条。</p>}

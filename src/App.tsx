@@ -201,6 +201,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.3.1": "动作片段的描述、边界、增删和切割只保存本机草稿，点击审核通过后才写入正式 JSON；不通过仅提交结论及原因，不发布未批准的片段修改。草稿按账号恢复，未审核草稿不能通过待写回入口发布。",
   "1.3.0": "片段边界反向拖动支持在松手保存后逐段复原原范围和描述，恢复后保持待审核；修正云端 Ubuntu 软件源下载过慢导致发布阻塞的问题。1.2.9 未生成安装包。",
   "1.2.9": "片段边界反向拖动可逐段复原被覆盖的范围和描述，松手保存后继续调整同一边界也能恢复；预览与保存一致，恢复后保持待审核。",
   "1.2.8": "包含全视频边界拖动、本机暂存审核统计、批量原因标签及账号排序；修复新增标签后旧批量交互回归入口遗漏，恢复完整三平台发布。",
@@ -2198,7 +2199,7 @@ function App() {
                         </>
                       ) }}
                       onReviewSaved={(saved) => {
-                        if (saved.pendingSourceWrite) return;
+                        if (saved.pendingSourceWrite || saved.localDraft) return;
                         setReviewedEpisodes((current) => saved.status === "approved" || saved.status === "rejected" || current[data.summary.root]
                           ? { ...current, [data.summary.root]: saved.status ?? "pending" } : current);
                       }}
@@ -2391,7 +2392,7 @@ const EpisodeListRow = memo(function EpisodeListRow({
         {reviewStatus && !pendingReviewStatus ? <span className="episode-annotation-tag" aria-label="已审核">我已审·{reviewStatus === "pending" ? "待复审" : reviewStatus === "approved" ? "通过" : "不通过"}</span> : null}
         <EpisodeSourceMark state={sourceState} /><ChevronRight size={15} />
       </span>
-      {pendingReviewStatus && <span className="episode-annotation-tag episode-local-pending" aria-label="本机待写回">本机{pendingReviewStatus === "approved" ? "通过" : pendingReviewStatus === "rejected" ? "不通过" : "草稿"} · 待写回 NAS</span>}
+      {pendingReviewStatus && <span className="episode-annotation-tag episode-local-pending" aria-label={pendingReviewStatus === "pending" ? "本机草稿" : "本机待写回"}>{pendingReviewStatus === "pending" ? "本机草稿 · 待审核" : `本机${pendingReviewStatus === "approved" ? "通过" : "不通过"} · 待写回 NAS`}</span>}
       <span className="episode-item-meta">{episode.indexed
         ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
         : episode.stateCount ? `${episode.stateCount} states · 快速预览` : "待读取"}</span>

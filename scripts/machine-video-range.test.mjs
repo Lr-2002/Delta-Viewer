@@ -47,7 +47,9 @@ async function fixture(t, { failSave = false, staleCount = false } = {}) {
           window.__rangeCalls.push(structuredClone(args.request));
           if (window.__rangeFail) throw Error("模拟保存失败");
           assertRanges(args.request.segments);
-          state = {...state,segments:args.request.segments,status:args.request.status,qcStatus:args.request.status,published:true,revision:state.revision+1,versionId:"isolated-revision"};
+          const draft = args.request.status === "pending";
+          if (!args.localEntry || args.localEntry.audit.action !== (draft ? "saved" : args.request.status)) throw Error("missing atomic draft/audit payload");
+          state = {...state,segments:args.request.segments,status:args.request.status,qcStatus:args.request.status,localDraft:draft,published:!draft,revision:state.revision+(draft?0:1),versionId:draft?"":"isolated-revision"};
           localStorage.setItem("range-saved",JSON.stringify(state));
           return structuredClone(state);
         }
@@ -77,6 +79,7 @@ test("range recovery is explicit, responsive, durable and still requires playbac
   assert.equal(await dialog.getByRole("listitem").count(),2);
   for (const [width,height] of [[1440,920],[960,680],[390,844]]) {
     await page.setViewportSize({width,height});
+    await dialog.waitFor({state:"visible"});
     const apply = dialog.getByRole("button",{name:"应用处理并保存待审核草稿"});
     await apply.scrollIntoViewIfNeeded();
     const bounds = await apply.boundingBox();
@@ -89,7 +92,7 @@ test("range recovery is explicit, responsive, durable and still requires playbac
   await open();
   await dialog.getByRole("checkbox").check();
   await dialog.getByRole("button",{name:"应用处理并保存待审核草稿"}).click();
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem("range-saved")??"null")?.revision===1);
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("range-saved")??"null")?.localDraft===true);
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("range-saved")));
   assert.deepEqual(saved.segments.map(s=>[s.startFrame,s.endFrame,s.deleted]),[[0,9,false],[10,14,false],[20,29,true]]);
   assert.equal(saved.status,"pending");
@@ -102,7 +105,7 @@ test("range recovery is explicit, responsive, durable and still requires playbac
   assert.equal(await approve.isEnabled(),true);
   await page.getByLabel("复核动作描述").fill("整理物品，放回桌面");
   assert.equal(await verify.isChecked(),false,"any edit invalidates the prior boundary confirmation");
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem("range-saved"))?.revision===2);
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("range-saved"))?.segments[0].description==="整理物品，放回桌面");
   await page.reload();
   await verify.waitFor();
   assert.equal(await page.getByLabel("复核动作描述").inputValue(),"整理物品，放回桌面");
@@ -132,7 +135,7 @@ test("failed repair save retains the confirmed edits through restart and retries
   await page.getByRole("button",{name:"重试保存复核"}).waitFor();
   await page.evaluate(() => {window.__rangeFail=false;});
   await page.getByRole("button",{name:"重试保存复核"}).click();
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem("range-saved")??"null")?.revision===1);
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("range-saved")??"null")?.localDraft===true);
   assert.equal(await page.getByRole("button",{name:"通过",exact:true}).isDisabled(),true);
   assert.deepEqual(errors,[]);
 });

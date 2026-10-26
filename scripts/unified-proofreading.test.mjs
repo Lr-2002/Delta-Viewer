@@ -106,7 +106,7 @@ test("storage failure retains edits; slow writes stay single-flight and never cl
     await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
     await page.evaluate(() => { window.holdStorageSave = true; window.storageFull = true; });
     await page.getByLabel("复核动作描述").fill("空间不足时保留人工文字");
-    await page.getByText(/保存耗时较长，正在等待数据目录/).waitFor({ timeout: 15000 });
+    await page.getByText(/保存耗时较长，正在等待本机保存或审核结论/).waitFor({ timeout: 15000 });
     assert.equal(await page.getByRole("button", { name: "通过", exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "重试保存复核" }).count(), 0);
     assert.equal(await page.evaluate(() => window.storageSaveAttempts), 1);
@@ -115,7 +115,7 @@ test("storage failure retains edits; slow writes stay single-flight and never cl
     const retry = page.getByRole("button", { name: "重试保存复核" });
     await retry.waitFor();
     assert.match(await page.locator(".review-save-error").textContent(), /本机应急草稿已保留/);
-    assert.equal(await page.getByText(/保存耗时较长，正在等待数据目录/).count(), 0);
+    assert.equal(await page.getByText(/保存耗时较长，正在等待本机保存或审核结论/).count(), 0);
     for (const width of [1440, 960, 390]) {
       await page.setViewportSize({ width, height: 920 });
       await retry.scrollIntoViewIfNeeded();
@@ -140,7 +140,10 @@ test("NAS storage failures save a local conclusion and advance without claiming 
   await context.route("**/src/lib/backend.ts", async route => {
     const response = await route.fetch();
     let body = await response.text();
-    body = body.replace(/(export async function saveMachineReview\([^]*?\) \{)/, '$1\n throw Error("REVIEW_STORAGE_FULL: NAS 磁盘已满");');
+    body = body.replace(/(export async function saveMachineReview\([^]*?\) \{)/, `$1
+      const request={sourcePath,sourceHash,expectedRevision,segments,sourceName,status,rejectionReason};
+      return deferMachineReview(request,durable.base,"REVIEW_STORAGE_FULL: NAS 磁盘已满",durable.audit);
+    `);
     body = body.replace(/(export async function deferMachineReview\([^]*?\) \{)/, `$1
       if(window.localQueueFails) throw Error("SOURCE_REVIEW_LOCAL_STORAGE: 本机磁盘写入失败");
       window.localReviewRows ??= []; window.localReviewRows.push({request,base,audit});
@@ -707,7 +710,7 @@ test("deleting a segment moves the next real boundary and saved review, with wor
     const before = await saved();
     await page.getByRole("button", { name: "删除机标片段 2", exact: true }).focus();
     await page.getByRole("button", { name: "删除机标片段 2", exact: true }).click();
-    await page.waitForFunction(() => document.querySelectorAll(".machine-segment").length === 2 && document.querySelector(".quality-save-state").textContent.includes("人工结果已保存"));
+    await page.waitForFunction(() => document.querySelectorAll(".machine-segment").length === 2 && document.querySelector(".quality-save-state").textContent.includes("本机草稿已保存"));
     assert.equal(await page.getByLabel("复核起始帧", { exact: true }).inputValue(), String(before.segments[0].endFrame + 1));
     const after = await saved();
     assert.equal(after.segments[1].deleted, true);
@@ -715,7 +718,7 @@ test("deleting a segment moves the next real boundary and saved review, with wor
     assert.equal(after.segments[2].endFrame, before.segments[2].endFrame);
     await page.screenshot({ path: "artifacts/unified-proofreading/delete-aligned.png", fullPage: true });
     await page.getByRole("button", { name: "恢复删除的片段", exact: true }).click();
-    await page.waitForFunction(() => document.querySelectorAll(".machine-segment").length === 3 && document.querySelector(".quality-save-state").textContent.includes("人工结果已保存"));
+    await page.waitForFunction(() => document.querySelectorAll(".machine-segment").length === 3 && document.querySelector(".quality-save-state").textContent.includes("本机草稿已保存"));
     assert.deepEqual((await saved()).segments.map((s) => [s.startFrame,s.endFrame,s.deleted]), before.segments.map((s) => [s.startFrame,s.endFrame,s.deleted]));
   } finally { await page.close(); }
 });

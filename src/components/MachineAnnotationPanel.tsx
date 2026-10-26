@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
-import { deferMachineReview, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
+import { deferMachineReview, isTauriRuntime, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
 import { createDeferredReviewEvent, enqueueCommittedReviewEvent, reviewReceiptValue, persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { createReviewBoundaryEditor, addReviewSegment, recoverReviewSegments, reviewVideoIntersection, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
@@ -198,13 +198,13 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
             if (originalDurationMs.current !== null) deferredAudit.details.durationMs = originalDurationMs.current;
             let saved: MachineReview;
             try {
-              saved = await saveMachineReview(root, state.sourceHash, state.revision, next.segments, loadedSource.current, next.status, next.rejectionReason, [deferredAudit.eventId, deferredAudit.occurredAtMs]);
+              saved = await saveMachineReview(root, state.sourceHash, state.revision, next.segments, loadedSource.current, next.status, next.rejectionReason, [deferredAudit.eventId, deferredAudit.occurredAtMs], { base: state, audit: deferredAudit });
             } catch (cause) {
               const message = String(cause);
-              if (!/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|SOURCE_REVIEW_DEFERRED|I\/O 错误/.test(message)) throw cause;
+              if (!skeletonMode || !/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|SOURCE_REVIEW_DEFERRED|I\/O 错误/.test(message)) throw cause;
               saved = await deferMachineReview({ sourcePath: root, sourceName: loadedSource.current, sourceHash: state.sourceHash, expectedRevision: state.revision, segments: next.segments, status: next.status, rejectionReason: next.rejectionReason }, state, message, deferredAudit);
             }
-            if (!saved.pendingSourceWrite) {
+            if (!saved.pendingSourceWrite && (skeletonMode || !isTauriRuntime())) {
               deferredAudit.details.revision = saved.revisionLabel ?? String(saved.revision);
               deferredAudit.details.value = await reviewReceiptValue(root, deferredAudit, "nas", loadedSource.current);
               enqueueCommittedReviewEvent(deferredAudit);
@@ -255,7 +255,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       stateRef.current = state;
       const segments = state.segments;
       const videoCount = data.summary.streams.find(stream => stream.name === "cam0")?.frameCount;
-      if (videoCount && (!loaded.videoFrameCount || loaded.videoFrameCount === videoCount) && loaded.frameCount !== videoCount && (state.published || state.pendingSourceWrite || state.revision > 0)
+      if (videoCount && (!loaded.videoFrameCount || loaded.videoFrameCount === videoCount) && loaded.frameCount !== videoCount && (state.localDraft || state.published || state.pendingSourceWrite || state.revision > 0)
         && segments.every(item => item.deleted || item.endFrame < videoCount)) setTimelineAdapted(true);
       setReview(state); setEdits(segments); editsRef.current = segments;
       setSelected(segments.find((item) => !item.deleted)?.sourceIndex ?? 0);
@@ -679,13 +679,13 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
         </div>
       </div>
       <footer className="quality-footer">
-        <div className="quality-save-state" role="status">{saving ? "正在保存到数据目录…" : saveError ? "数据目录保存失败" : review?.pendingSourceWrite ? "结果已保存本机 · 待写回数据目录" : review?.published ? "人工结果已保存" : review?.revision ? "仅有本机历史草稿" : "尚无人工修改"}
+        <div className="quality-save-state" role="status">{saving ? (skeletonMode ? "正在保存骨架描述…" : "正在保存本机草稿或审核结论…") : saveError ? "保存失败" : review?.localDraft ? "本机草稿已保存 · 审核通过后写入 JSON" : review?.pendingSourceWrite ? "结果已保存本机 · 待写回数据目录" : review?.published ? "人工结果已保存" : review?.revision ? "仅有本机历史草稿" : "尚无人工修改"}
           {review?.versionId && <span className="review-revision" title={review.revisionLabel ?? review.versionId}>{`${review.versionId} · 历史修订（非当前结论）`}</span>}
         </div>
         {recoveryError && <p role="alert" className="machine-message">{recoveryError}</p>}
         {auditPreparationError && <p role="alert" className="machine-message">{auditPreparationError}</p>}
         {auditCompletionError && <div role="alert" className="machine-message audit-completion-error"><span>{auditCompletionError}</span><button type="button" className="button button-secondary" disabled={finishing} onClick={() => void finishAuditCompletion()}>重试保存操作记录</button></div>}
-        {saveSlow && saving && <div role="status" className="machine-message">保存耗时较长，正在等待数据目录的检查或写入确认，尚未确认提交成功。{!recoveryError && "本机应急草稿已保留。"}请保持应用打开，等待结果后再重试；用户中心的操作记录上传独立进行。</div>}
+        {saveSlow && saving && <div role="status" className="machine-message">保存耗时较长，正在等待本机保存或审核结论写入确认，尚未确认提交成功。{!recoveryError && "本机应急草稿已保留。"}请保持应用打开，等待结果后再重试；用户中心的操作记录上传独立进行。</div>}
         {saveError && <div role="alert" className="machine-message review-save-error"><span>{saveError}{!recoveryError && " 本机应急草稿已保留，恢复后请重试保存。"}</span><button type="button" className="button button-secondary" aria-label="重试保存复核" onClick={() => void persist(pending.current ?? { segments: editsRef.current, status: "pending" })}><RefreshCw size={15} />重试保存</button></div>}
         <div className="quality-output" title={`${root}/${outputName}`}>{outputName}{!skeletonMode && <span>{review?.qcStatus === "approved" ? "已通过" : review?.qcStatus === "rejected" ? "未通过" : review?.qcStatus === "pending" ? "待审核" : "审核状态未知"}</span>}</div>
         {!skeletonMode && review?.qcStatusError && <p role="alert" className="machine-message">当前目录审核状态读取失败，请重新读取：{review.qcStatusError}</p>}
