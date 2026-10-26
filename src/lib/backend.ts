@@ -1575,3 +1575,17 @@ function delay(milliseconds: number): Promise<void> {
 export async function resolveSourcePath(path: string, batchRoot = false): Promise<string> {
   return isTauriRuntime() ? invoke<string>("resolve_source_path", { path, batchRoot }) : batchRoot ? "" : path;
 }
+
+// Version reporting is independent of review audit and never contributes active time.
+export async function pollClientVersions(clientId: string, acknowledgedIds: string[]): Promise<import("../types").ClientPoll> {
+  if (isTauriRuntime()) return invoke("client_management", {request:{kind:"poll",clientId,acknowledgedIds}});
+  return {generatedAtMs:Date.now(),reminder:null};
+}
+export async function getClientVersions(): Promise<import("../types").ClientVersions> {
+  if (isTauriRuntime()) return invoke("client_management", {request:{kind:"versions"}});
+  return {generatedAtMs:Date.now(),users:[]};
+}
+export async function pushUpdateReminders(usernames: string[], all = false): Promise<{queued:{username:string;id:string;reused:boolean}[]}> {
+  if (isTauriRuntime()) return invoke("client_management", {request:{kind:"remind",all,usernames}});
+  return {queued:usernames.map(username=>({username,id:crypto.randomUUID(),reused:false}))};
+}

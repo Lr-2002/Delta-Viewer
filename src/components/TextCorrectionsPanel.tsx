@@ -5,7 +5,7 @@ import { defaultTextPolicy, inspectDescription, replaceDescription, type TextPol
 import "./text-quality.css";
 
 const keyOf = (row: DescriptionRow) => `${row.filePath}:${row.segmentIndex}`;
-export function TextCorrectionsPanel() {
+export function TextCorrectionsPanel({onBusyChange}: {onBusyChange?: (busy: boolean) => void} = {}) {
   const [root, setRoot] = useState("");
   const [tab, setTab] = useState("scan");
   const [scan, setScan] = useState<DescriptionScan | null>(null);
@@ -28,6 +28,7 @@ export function TextCorrectionsPanel() {
     void onTaskProgress(value => { if (value.operationId === operation.current) setProgress(value.currentPath); }).then(fn => { if (disposed) fn(); else unlisten = fn; });
     return () => { disposed = true; unlisten?.(); if (operation.current) void cancelTask(operation.current); };
   }, []);
+  useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
   async function run(job: () => Promise<void>) {
     if (operation.current) return;
     operation.current = Date.now(); setBusy(true); setError(""); setNotice("");

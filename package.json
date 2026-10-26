@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.3.2",
+  "version": "1.3.3",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -23,7 +23,7 @@
     "test:playback": "node --test --experimental-strip-types scripts/frame-cache.test.mjs scripts/playback-clock.test.mjs scripts/playback-rendering.test.mjs scripts/skeleton-frame.test.ts scripts/skeleton-orientation.test.ts",
     "test:issue-locate": "node --test --experimental-strip-types scripts/issue-locate.test.mjs",
     "test:update-mirror": "node --test scripts/update-mirror-server.test.mjs",
-    "test:user-center": "node --test scripts/user-center-server.test.mjs && node --test --experimental-strip-types scripts/review-audit.test.mjs",
+    "test:user-center": "node --test scripts/user-center-server.test.mjs scripts/client-presence-store.test.mjs scripts/client-management.test.mjs && node --test --experimental-strip-types scripts/review-audit.test.mjs",
     "test:supervision-assignment": "node --test --experimental-strip-types scripts/supervision-assignment.test.ts",
     "test:task-center": "node --test --experimental-strip-types --test-concurrency=1 scripts/task-index-read.test.ts scripts/task-center-filter.test.ts scripts/task-center.test.mjs scripts/batch-rejection.test.mjs",
     "test:review-audit:browser": "node --test --test-concurrency=1 scripts/review-audit-browser.test.mjs scripts/review-audit-durability-browser.test.mjs scripts/review-audit-notice-browser.test.mjs",
@@ -36,6 +36,7 @@
     "update-mirror": "node scripts/update-mirror-server.mjs --config update-service.config.json",
     "update-mirror:install": "bash scripts/install-update-mirror-macos.sh",
     "user-center:install": "bash scripts/install-user-center-macos.sh",
+    "test:client-management:browser": "node --test scripts/client-management-browser.test.mjs",
     "test:app-updates": "node --test scripts/app-updates.test.mjs"
   },
   "dependencies": {

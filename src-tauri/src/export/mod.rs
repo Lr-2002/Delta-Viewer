@@ -535,6 +535,7 @@ mod tests {
             task_id: "close_oven".into(),
             task_description: "关闭烤箱门并确认完全闭合".into(),
             processed_by: UserIdentity {
+                can_manage: false,
                 username: "operator".into(),
                 display_name: "测试操作员".into(),
                 role: None,
@@ -549,6 +550,7 @@ mod tests {
             segments: Vec::new(),
         };
         let exported_by = UserIdentity {
+            can_manage: false,
             username: "exporter".into(),
             display_name: "导出操作员".into(),
             role: None,
@@ -725,6 +727,7 @@ mod tests {
             validation_report: &report,
             annotation: None,
             exported_by: &UserIdentity {
+                can_manage: false,
                 username: "exporter".into(),
                 display_name: "Exporter".into(),
                 role: None,

@@ -220,6 +220,7 @@ mod tests {
     fn persists_and_lists_error_records() {
         let root = test_output("operation-history");
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: None,

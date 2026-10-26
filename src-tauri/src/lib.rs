@@ -405,6 +405,17 @@ async fn persist_review_audit(
 }
 
 #[tauri::command]
+async fn client_management(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    request: user_center::ClientManagementRequest,
+) -> Result<serde_json::Value, String> {
+    user_center::client_management(&app_data_root(&app)?, auth.inner(), request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn get_review_audit_queue_status(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -512,7 +523,7 @@ async fn export_supervision_report(
     let user = auth
         .require_managed_user()
         .map_err(|error| error.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账号".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -540,7 +551,7 @@ async fn scan_reviewed_sessions(
     operation_id: u64,
 ) -> Result<review_catalog::ReviewCatalog, String> {
     let user = auth.require_managed_user().map_err(|e| e.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("SUPERVISOR_REQUIRED".into());
     }
     *cache.0.lock().map_err(|e| e.to_string())? = None;
@@ -577,7 +588,7 @@ async fn export_reviewed_sessions(
     operation_id: u64,
 ) -> Result<review_catalog::ReviewExport, String> {
     let user = auth.require_managed_user().map_err(|e| e.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账号".into());
     }
     let catalog = cache
@@ -692,7 +703,7 @@ async fn scan_supervision_tasks(
     let user = auth
         .require_managed_user()
         .map_err(|error| error.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账户".into());
     }
     emit_task_start(&app, operation_id, "scan", "检查任务目录响应", &source_path);
@@ -743,7 +754,7 @@ async fn import_supervision_annotations(
     let user = auth
         .require_managed_user()
         .map_err(|error| error.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("SUPERVISOR_REQUIRED: 当前账号不是监管账户".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -918,7 +929,7 @@ async fn rebuild_task_index(auth: State<'_, AuthState>, source_root: String) -> 
     let user = auth
         .require_managed_user()
         .map_err(|error| error.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("ADMIN_REQUIRED: 仅管理员可启动服务器统计".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -1296,7 +1307,7 @@ async fn scan_description_issues(
     operation_id: u64,
 ) -> Result<text_quality::ScanResult, String> {
     let user = auth.require_managed_user().map_err(|e| e.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("SUPERVISOR_REQUIRED".into());
     }
     let task = control.start(operation_id)?;
@@ -1330,7 +1341,7 @@ async fn apply_description_corrections(
     operation_id: u64,
 ) -> Result<Vec<text_quality::ApplyResult>, String> {
     let user = auth.require_managed_user().map_err(|e| e.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("SUPERVISOR_REQUIRED".into());
     }
     let data = app_data_root(&app)?;
@@ -1377,7 +1388,7 @@ async fn save_text_policy(
     revision: String,
 ) -> Result<text_quality::PolicyResult, String> {
     let user = auth.require_managed_user().map_err(|e| e.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("SUPERVISOR_REQUIRED".into());
     }
     let data = app_data_root(&app)?;
@@ -1399,7 +1410,7 @@ async fn description_correction_history(
     auth: State<'_, AuthState>,
 ) -> Result<Vec<text_quality::History>, String> {
     let user = auth.require_managed_user().map_err(|e| e.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("SUPERVISOR_REQUIRED".into());
     }
     let data = app_data_root(&app)?;
@@ -1417,7 +1428,7 @@ async fn undo_description_correction(
     operation_id: u64,
 ) -> Result<(), String> {
     let user = auth.require_managed_user().map_err(|e| e.to_string())?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err("SUPERVISOR_REQUIRED".into());
     }
     let data = app_data_root(&app)?;
@@ -2199,6 +2210,7 @@ pub fn run() {
             persist_review_audit,
             flush_review_audit_queue,
             get_review_audit_queue_status,
+            client_management,
             get_review_dashboard,
             get_supervision_dashboard,
             batch_create_supervision_accounts,

@@ -1215,6 +1215,7 @@ mod tests {
         let root = test_output("assigned-task-prefix-collision");
         fs::create_dir_all(&root).unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: Some("operator".into()),
@@ -1237,11 +1238,13 @@ mod tests {
         let episode_one = Path::new("/local/episode-one");
         let episode_two = Path::new("/local/episode-two");
         let alice = UserIdentity {
+            can_manage: false,
             username: "alice".into(),
             display_name: "Alice".into(),
             role: None,
         };
         let bob = UserIdentity {
+            can_manage: false,
             username: "bob".into(),
             display_name: "Bob".into(),
             role: None,
@@ -1305,6 +1308,7 @@ mod tests {
         let root = test_output("custom-task");
         fs::create_dir_all(&root).unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: None,
@@ -1392,6 +1396,7 @@ mod tests {
         )
         .unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: None,
@@ -1418,6 +1423,7 @@ mod tests {
         let root = test_output("delete-task");
         fs::create_dir_all(&root).unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: None,
@@ -1472,6 +1478,7 @@ mod tests {
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let fingerprint = crate::source::episode_fingerprint(&episode, &cancelled).unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: None,
@@ -1512,6 +1519,7 @@ mod tests {
         let episode = root.join("episode");
         fs::create_dir_all(&episode).unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: None,
@@ -1536,6 +1544,7 @@ mod tests {
         let episode = root.join("episode");
         fs::create_dir_all(episode.join("description.json")).unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: None,
@@ -1564,6 +1573,7 @@ mod tests {
         fs::create_dir_all(&first_root).unwrap();
         fs::create_dir_all(&second_root).unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: None,
@@ -1646,6 +1656,7 @@ mod tests {
         let root = test_output("invalid-annotation");
         fs::create_dir_all(&root).unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: None,
@@ -1659,6 +1670,7 @@ mod tests {
         )
         .is_err());
         let invalid_user = UserIdentity {
+            can_manage: false,
             username: "../operator".into(),
             display_name: "Operator".into(),
             role: None,

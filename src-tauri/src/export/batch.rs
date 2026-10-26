@@ -325,6 +325,7 @@ mod tests {
         let missing_fingerprint = source::episode_fingerprint(&missing_root, &cancelled).unwrap();
         let invalid_fingerprint = source::episode_fingerprint(&invalid_root, &cancelled).unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator".into(),
             display_name: "Operator".into(),
             role: None,

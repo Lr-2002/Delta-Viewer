@@ -2410,6 +2410,7 @@ mod tests {
         .unwrap();
         assert_eq!(skeleton.request.segments[0].description, "蹲下");
         let user = crate::model::UserIdentity {
+            can_manage: false,
             username: "alice".into(),
             display_name: "甲".into(),
             role: Some("operator".into()),
@@ -2696,6 +2697,7 @@ mod tests {
         assert!(queue::contains_path(&f.local, "s", "alice", &moved.to_string_lossy()).unwrap());
         atomic_json(&registry, &config).unwrap();
         let user = crate::model::UserIdentity {
+            can_manage: false,
             username: "alice".into(),
             display_name: "Alice".into(),
             role: Some("operator".into()),
@@ -3270,6 +3272,7 @@ mod tests {
         let state = load(&f.local, &f.root).unwrap();
         let view = view_for_root(&f.root, state.clone());
         let user = crate::model::UserIdentity {
+            can_manage: false,
             username: "alice".into(),
             display_name: "审核甲".into(),
             role: Some("operator".into()),
@@ -3471,6 +3474,7 @@ mod tests {
         )
         .unwrap();
         let user = crate::model::UserIdentity {
+            can_manage: false,
             username: "alice".into(),
             display_name: "甲".into(),
             role: Some("operator".into()),
@@ -3596,6 +3600,7 @@ mod tests {
         )
         .unwrap();
         let user = crate::model::UserIdentity {
+            can_manage: false,
             username: "alice".into(),
             display_name: "甲".into(),
             role: Some("operator".into()),
@@ -3806,6 +3811,7 @@ mod tests {
     }
     fn action_user() -> crate::model::UserIdentity {
         crate::model::UserIdentity {
+            can_manage: false,
             username: "alice".into(),
             display_name: "审核甲".into(),
             role: Some("operator".into()),

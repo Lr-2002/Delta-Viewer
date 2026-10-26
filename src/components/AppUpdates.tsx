@@ -55,6 +55,12 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
     return () => { mounted.current = false; window.clearInterval(timer); };
   }, []);
 
+  useEffect(() => {
+    const open = () => { setPanel(true); void inspect(); };
+    window.addEventListener("delta-open-update-panel", open);
+    return () => window.removeEventListener("delta-open-update-panel", open);
+  }, []);
+
   function dismissNotice() {
     if (notice === "installed") { write(seenKey, version); installedAcknowledged.current = true; }
     setNotice(notice === "installed" ? deferredNotice.current : null);

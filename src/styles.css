@@ -1642,3 +1642,5 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .segment-channel-tabs button:disabled { cursor: wait; opacity: .55; }
 
 .episode-local-pending { display: block; width: fit-content; max-width: 100%; white-space: normal; overflow-wrap: anywhere; color: #854d0e; background: #fff7ed; }
+
+.admin-update-reminder { top:auto; bottom:20px; }

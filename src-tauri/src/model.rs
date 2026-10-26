@@ -13,6 +13,14 @@ pub struct UserIdentity {
     pub display_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_manage: bool,
+}
+
+impl UserIdentity {
+    pub fn is_manager(&self) -> bool {
+        self.role.as_deref() == Some("admin") || self.can_manage
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

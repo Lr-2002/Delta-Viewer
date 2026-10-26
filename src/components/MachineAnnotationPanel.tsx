@@ -15,6 +15,7 @@ interface Props {
   data: EpisodeData;
   username: string;
   busy: boolean;
+  suspended?: boolean;
   onReviewSaved?: (review: MachineReview) => void;
   onComplete?: (status: "approved" | "rejected", local?: boolean) => void;
   onUnsavedChange?: (unsaved: boolean) => void;
@@ -70,7 +71,7 @@ export function MachineAnnotationPanel(props: Props) {
   </div>;
 }
 
-function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBusy, onComplete, onReviewSaved, onUnsavedChange, playback, channel, onChannelChange }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void; channel: "action" | "skeleton"; onChannelChange: (channel: "action" | "skeleton") => void }) {
+function MachineAnnotationEditor({ data, username, busy, suspended = false, sourceName, onSourceBusy, onComplete, onReviewSaved, onUnsavedChange, playback, channel, onChannelChange }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void; channel: "action" | "skeleton"; onChannelChange: (channel: "action" | "skeleton") => void }) {
   const root = data.summary.root;
   const skeletonMode = channel === "skeleton";
   const [result, setResult] = useState<MachineAnnotation | null>(null);
@@ -332,6 +333,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       applyLabelRef.current(item.text);
     };
     const handler = (event: KeyboardEvent) => {
+      if (suspended) return;
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing || event.keyCode === 229 || !/^[0-9]$/.test(event.key) || !available(event.target as HTMLElement | null)) { cancel(); return; }
       if (event.repeat) { event.preventDefault(); return; }
       const next = digits + event.key;
@@ -355,7 +357,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
       window.removeEventListener("blur", cancel);
       document.removeEventListener("focusin", cancel);
     };
-  }, [canEdit, active?.sourceIndex, labelLibrary, labelLibraryOpen, draggedLabelId, root]);
+  }, [canEdit, suspended, active?.sourceIndex, labelLibrary, labelLibraryOpen, draggedLabelId, root]);
   const outputName = skeletonMode ? SKELETON_SOURCE : loadedSource.current?.endsWith("desorption.json") ? "desorption.json" : review?.outputName || "description.json";
   const seek = useCallback((next: number) => {
     setFrame(next); setPlaying(false);
@@ -451,6 +453,7 @@ function MachineAnnotationEditor({ data, username, busy, sourceName, onSourceBus
   }, [rows, seek, playback?.onPlay, mapping]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (suspended) return;
       if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing || document.querySelector("dialog[open], [role='dialog']")) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest("textarea, select, [contenteditable='true'], .sidebar, .view-tabs, .label-library") || target?.matches("input:not([type='range'])")) return;

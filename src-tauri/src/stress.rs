@@ -353,6 +353,7 @@ fn run_inner(
                 validation_report: &validation_report,
                 annotation: None,
                 exported_by: &UserIdentity {
+                    can_manage: false,
                     username: "stress-check".into(),
                     display_name: "Stress Check".into(),
                     role: None,

@@ -106,6 +106,13 @@ jobs:
           PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
         run: pnpm test:app-updates
 
+      - name: Run admin mode and client reminder regressions
+        env:
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
+        run: |
+          pnpm test:user-center
+          pnpm test:client-management:browser
+
       - name: Verify native installer reuses validated metadata without HTTP
         run: cargo test --manifest-path src-tauri/Cargo.toml -p tauri-plugin-updater delta_metadata_tests
 

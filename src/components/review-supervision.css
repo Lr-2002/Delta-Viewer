@@ -297,3 +297,19 @@
 .review-delete-dialog footer { display: flex; justify-content: end; gap: 12px; margin-top: 24px; }
 .review-delete-dialog .button { font-size: 13px; width: auto; min-width: 80px; padding-inline: 14px; }
 .review-delete-confirm { background: #b42318; color: white; border-color: #b42318; }
+
+.app-shell[hidden] { display: none; }
+.version-push-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:12px 0; }
+.version-push-toolbar span, .version-help { color:#56636b; font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.version-error { border:1px solid #9a7272; padding:10px; overflow-wrap:anywhere; }
+.account-version-cell { min-width:210px; }
+.account-version-cell > div + div { border-top:1px solid #d8e0e3; margin-top:6px; padding-top:6px; }
+@media(max-width:700px) { .review-supervision {padding:16px;} .review-supervision-header {align-items:flex-start;flex-wrap:wrap;} .review-supervision-header > div {flex-wrap:wrap;justify-content:flex-start;min-width:0;} }
+/* Global compact playback styles hide secondary-button text on narrow screens.
+   Management and reminder actions must retain readable labels. */
+.review-supervision .button-secondary { width:auto; padding:0 10px; font-size:13px; }
+.management-mode-button.button-secondary { width:auto; padding:0 10px; font-size:12px; }
+@media(max-width:760px) {
+  .topbar:has(.management-mode-button) {flex-wrap:wrap; height:auto; padding-block:8px;}
+  .topbar:has(.management-mode-button) .topbar-actions {flex:1 1 100%;flex-wrap:wrap;justify-content:flex-start;}
+}

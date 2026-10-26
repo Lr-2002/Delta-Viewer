@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Bell, X } from "lucide-react";
 
-export function UpdateToast({ title, message, primaryLabel, secondaryLabel, onPrimary, onDismiss }: {
+export function UpdateToast({ title, message, primaryLabel, secondaryLabel, onPrimary, onDismiss, autoDismiss = true, className = "", ariaLabel = "版本更新提示" }: {
   title: string; message: string; primaryLabel: string; secondaryLabel: string;
-  onPrimary: () => void; onDismiss: () => void;
+  onPrimary: () => void; onDismiss: () => void; autoDismiss?: boolean; className?: string; ariaLabel?: string;
 }) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -19,14 +19,14 @@ export function UpdateToast({ title, message, primaryLabel, secondaryLabel, onPr
     return () => document.removeEventListener("visibilitychange", visibility);
   }, []);
   useEffect(() => {
-    if (hovered || focused || hidden || closing) return;
+    if (!autoDismiss || hovered || focused || hidden || closing) return;
     const started = performance.now();
     const timer = window.setTimeout(() => setClosing(true), remaining.current);
     return () => {
       window.clearTimeout(timer);
       remaining.current = Math.max(0, remaining.current - (performance.now() - started));
     };
-  }, [hovered, focused, hidden, closing]);
+  }, [autoDismiss, hovered, focused, hidden, closing]);
   useEffect(() => {
     if (!closing) return;
     // Keep exit completion reliable even when animations are reduced or disabled.
@@ -38,7 +38,7 @@ export function UpdateToast({ title, message, primaryLabel, secondaryLabel, onPr
     afterClose.current = action ?? null;
     setClosing(true);
   }
-  return <aside className={`update-notice${closing ? " update-notice-closing" : ""}`} aria-label="版本更新提示" role="status" aria-live="polite" aria-atomic="true"
+  return <aside className={`update-notice ${className}${closing ? " update-notice-closing" : ""}`} aria-label={ariaLabel} role="status" aria-live="polite" aria-atomic="true"
     onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
     onFocusCapture={() => setFocused(true)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}>
     <header><span className="update-notice-icon" aria-hidden="true"><Bell size={17} /></span><strong>{title}</strong>

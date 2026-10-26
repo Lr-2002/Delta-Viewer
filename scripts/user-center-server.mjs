@@ -16,6 +16,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { openClientPresence, CLIENT_PRESENCE_CAPABILITY } from "./client-presence-store.mjs";
 import { openReviewAuditStore } from "./review-audit-store.mjs";
 import { openTaskClaims, validateBatchKey } from "./task-claims-store.mjs";
 
@@ -337,7 +338,8 @@ function validateStoredUser(user) {
   requirePlainObject(user, "user");
   normalizeUsername(user.username);
   normalizeDisplayName(user.displayName);
-  if (!["admin", "operator"].includes(user.role)
+  if ((user.managementAccess !== undefined && typeof user.managementAccess !== "boolean")
+    || !["admin", "operator"].includes(user.role)
     || (user.accountStatus !== undefined && !["active", "paused"].includes(user.accountStatus))
     || (user.assignedTasks !== undefined
       && (!Number.isSafeInteger(user.assignedTasks) || user.assignedTasks < 0 || user.assignedTasks > 1_000_000))
@@ -578,12 +580,15 @@ function sessionIdentity(sessions, request) {
   return session;
 }
 
+function canManage(user) { return user.role === "admin" || user.managementAccess === true || user.canManage === true; }
+
 function publicUser(user) {
   const assignmentPlans = assignmentPlansFor(user);
   return {
     username: user.username,
     displayName: user.displayName,
     role: user.role,
+    canManage: canManage(user),
     assignedTasks: user.assignedTasks ?? 0,
     assignedTaskNames: user.assignedTaskNames ?? [],
     assignedTaskQuantities: user.assignedTaskQuantities ?? {},
@@ -1011,6 +1016,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
   const auditEventIds = new Set((await readAuditEvents(dataRoot)).map((event) => event.eventId));
   const reviewAudit = openReviewAuditStore(dataRoot);
   const taskClaims = openTaskClaims(dataRoot);
+  const clientPresence = openClientPresence(dataRoot);
   let stateMutationTail = Promise.resolve();
 
   async function writeState(state) {
@@ -1025,7 +1031,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
 
   function authorize(request, requireAdmin = false) {
     const session = sessionIdentity(sessions, request);
-    if (!session || (requireAdmin && session.user.role !== "admin")) return null;
+    if (!session || (requireAdmin && !canManage(session.user))) return null;
     return session;
   }
 
@@ -1068,6 +1074,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             OPERATIONS_COCKPIT_CAPABILITY,
             "reviewSupervisionV1",
             "reviewTaskClaimsV1",
+            CLIENT_PRESENCE_CAPABILITY,
           ],
         });
       }
@@ -1131,7 +1138,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           return sendJson(response, 429, { error: "REGISTRATION_RATE_LIMITED: 注册操作过于频繁，请稍后再试" });
         }
         const body = await parseJsonBody(request);
-        if (body.role !== undefined) {
+        if (body.role !== undefined || body.canManage !== undefined || body.managementAccess !== undefined) {
           return sendJson(response, 400, { error: "REGISTRATION_ROLE_FORBIDDEN: 自助注册只能创建标注员账号" });
         }
         const username = normalizeUsername(body.username);
@@ -1295,6 +1302,32 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           generatedAtMs: nowMs(),
         });
       }
+      if (request.method === "POST" && url.pathname === "/api/v1/client/poll") {
+        const session = authorize(request);
+        if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        return sendJson(response, 200, clientPresence.poll(session.user.username, await parseJsonBody(request), bearerToken(request)));
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/admin/client-versions") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        const state = await readState(dataRoot);
+        const activeTokens = new Set([...sessions].filter(([,s])=>s.expiresAtMs>nowMs()).map(([token])=>token));
+        return sendJson(response, 200, clientPresence.overview(state.users, activeTokens));
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/admin/update-reminders") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
+        const body = await parseJsonBody(request, 256 * 1024);
+        const state = await readState(dataRoot);
+        const targets = body.all === true
+          ? state.users.filter(user=>user.username!==session.user.username && user.accountStatus!=="paused").map(user=>user.username)
+          : body.usernames;
+        if (!Array.isArray(targets) || !targets.length || targets.length>MAX_USERS
+          || targets.some(name=>typeof name!=="string" || !state.users.some(user=>user.username===name && user.accountStatus!=="paused"))) {
+          return sendJson(response, 400, {error:"REMINDER_TARGET_INVALID: 请选择启用中的有效账号"});
+        }
+        return sendJson(response, 200, clientPresence.push(session.user.username,[...new Set(targets)]));
+      }
       if (request.method === "GET" && url.pathname === "/api/v1/admin/users") {
         const session = authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
@@ -1315,7 +1348,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             }
             return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND: 审核账号不存在" });
           }
-          if (user.role !== "operator") return sendJson(response, 403, { error: "ACCOUNT_DELETE_FORBIDDEN: 只能删除审核账号，不能删除管理员" });
+          if (user.role !== "operator" || canManage(user)) return sendJson(response, 403, { error: "ACCOUNT_DELETE_FORBIDDEN: 只能删除审核账号，不能删除管理员" });
           // Keep only the identity needed by history; never retain login credentials.
           state.deletedUsers ??= [];
           state.deletedUsers.push({ username, displayName: user.displayName, role: user.role,
@@ -1377,7 +1410,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         }
         return await serializeStateMutation(async () => {
           const state = await readState(dataRoot);
-          const selected = state.users.filter((user) => usernames.includes(user.username) && user.role === "operator");
+          const selected = state.users.filter((user) => usernames.includes(user.username) && user.role === "operator" && !canManage(user));
           if (selected.length !== new Set(usernames).size) {
             return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND: 部分标注账号不存在" });
           }
@@ -1698,6 +1731,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       server = undefined;
       reviewAudit.close();
       taskClaims.close();
+      clientPresence.close();
     },
     configuration,
     clientConfigPath: initialized.clientConfigPath,

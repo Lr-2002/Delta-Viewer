@@ -29,6 +29,8 @@ import {
   setSupervisionAccountStatus,
   deleteSupervisionAccount,
   openCaptureWorkbench,
+  getClientVersions,
+  pushUpdateReminders,
 } from "../lib/backend";
 import { TextCorrectionsPanel } from "./TextCorrectionsPanel";
 import {
@@ -36,7 +38,7 @@ import {
   type ReviewDashboardData,
   type ReviewEvent,
 } from "../lib/review-audit-types";
-import type { UserIdentity } from "../types";
+import type { UserIdentity, ClientVersions } from "../types";
 import "./review-supervision.css";
 import { TaskCenter } from "./TaskCenter";
 
@@ -84,13 +86,32 @@ export function SupervisionDashboard({
   onLogout,
   updateControls,
   updateBusy = false,
+  onTestMode,
 }: {
   currentUser: UserIdentity;
   onLogout: () => Promise<void>;
   updateControls?: (busy: boolean) => ReactNode;
   updateBusy?: boolean;
+  onTestMode?: () => void;
 }) {
   const [view, setView] = useState<View>("overview");
+  const [versions, setVersions] = useState<ClientVersions | null>(null);
+  const [versionError, setVersionError] = useState("");
+  const [checkedAccounts, setCheckedAccounts] = useState<string[]>([]);
+  useEffect(() => {
+    if (view !== "accounts") return;
+    let active = true, inFlight = false;
+    async function refreshVersions() {
+      if (inFlight) return;
+      inFlight = true;
+      try { const next = await getClientVersions(); if(active) {setVersions(next);setVersionError("");} }
+      catch(reason) {if(active)setVersionError(String(reason));}
+      finally {inFlight=false;}
+    }
+    void refreshVersions();
+    const timer=window.setInterval(()=>void refreshVersions(),15_000);
+    return()=>{active=false;window.clearInterval(timer);};
+  },[view]);
   const [data, setData] = useState<ReviewDashboardData | null>(null);
   const [username, setUsername] = useState("");
   const [includeDeleted, setIncludeDeleted] = useState(false);
@@ -104,7 +125,8 @@ export function SupervisionDashboard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [actionBusy, setBusy] = useState("");
-  const busy = actionBusy || (updateBusy ? "update" : "");
+  const [correctionsBusy, setCorrectionsBusy] = useState(false);
+  const busy = actionBusy || (updateBusy ? "update" : correctionsBusy ? "corrections" : "");
   const [notice, setNotice] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<{ username: string; displayName: string } | null>(null);
   const [deleteError, setDeleteError] = useState("");
@@ -381,6 +403,19 @@ export function SupervisionDashboard({
       setDeleteError(String(reason));
     } finally { setBusy(""); }
   }
+  async function remind(usernames: string[], all = false) {
+    if (busy) return;
+    setBusy("reminder");setNotice("");
+    try {
+      const result=await pushUpdateReminders(usernames,all);
+      setNotice(`已为 ${result.queued.length} 个账号安排更新提醒；在线且支持此功能的客户端将在约 15 秒内收到弹窗，离线账号重新连接后接收。重复待处理提醒会合并。旧版客户端需先手动更新。`);
+      setCheckedAccounts([]);
+      try {setVersions(await getClientVersions());setVersionError("");} catch(reason) {setVersionError(String(reason));}
+    } catch(reason) {setNotice(`推送失败：${String(reason)}`);}
+    finally {setBusy("");}
+  }
+  const eligibleAccounts=users.filter(user=>user.accountStatus==="active" && user.username!==currentUser.username);
+  const checkedEligible=checkedAccounts.filter(name=>eligibleAccounts.some(user=>user.username===name));
   return (
     <main className="review-supervision">
       <header className="review-supervision-header">
@@ -392,6 +427,7 @@ export function SupervisionDashboard({
           <span>
             {currentUser.displayName} · @{currentUser.username}
           </span>
+          {onTestMode && <button className="button button-secondary" type="button" disabled={Boolean(busy) || Boolean(catalogOperation.current)} onClick={onTestMode}>测试模式</button>}
           {updateControls?.(Boolean(busy))}
           <button
             className="icon-button"
@@ -417,13 +453,13 @@ export function SupervisionDashboard({
           <button
             key={id}
             className={view === id ? "active" : ""}
-            onClick={() => setView(id)}
+            disabled={correctionsBusy || Boolean(actionBusy)} onClick={() => setView(id)}
           >
             {label}
           </button>
         ))}
       </nav>
-      {view === "tasks" && <TaskCenter currentUser={currentUser} />}
+      {view === "tasks" && <TaskCenter currentUser={{...currentUser, role:"admin"}} />}
       <div className="review-supervision-filters" hidden={view === "tasks" || view === "corrections"}>
         <label>
           审核账号
@@ -536,7 +572,7 @@ export function SupervisionDashboard({
         </p>
       )}
       {notice && <p role="status">{notice}</p>}
-      {view === "corrections" && <TextCorrectionsPanel />}
+      {view === "corrections" && <TextCorrectionsPanel onBusyChange={setCorrectionsBusy} />}
       {view === "overview" && (
         <>
           <section className="review-kpis">
@@ -795,26 +831,44 @@ export function SupervisionDashboard({
       {view === "accounts" && (
         <>
           <h2>审核账号</h2>
+          <div className="version-push-toolbar">
+            <button className="button button-secondary" disabled={Boolean(busy) || !(data?.users ?? []).some(user=>user.accountStatus==="active" && user.username!==currentUser.username)} onClick={()=>void remind([],true)}>一键推送更新提醒</button>
+            <button className="button button-secondary" disabled={Boolean(busy) || !checkedEligible.length} onClick={()=>void remind(checkedEligible)}>推送选中（{checkedEligible.length}）</button>
+            <span>每 15 秒刷新 · 超过 90 秒未上报显示离线 · 提醒保留 7 天</span>
+          </div>
+          <p className="version-help">显示实际运行版本；同一账号的多台设备分别列出。未上报可能是旧版或尚未登录，不能据此判断正在使用的版本。推送仅提醒，由审核员主动下载并确认安装。</p>
+          {versionError && <p role="alert" className="version-error">版本状态暂不可刷新，下面保留最近记录，当前在线状态未知：{versionError}</p>}
           <div className="review-table-wrap">
             <table>
               <thead>
                 <tr>
+                  <th><input type="checkbox" aria-label="全选当前账号" checked={eligibleAccounts.length>0 && checkedEligible.length===eligibleAccounts.length} onChange={event=>setCheckedAccounts(event.target.checked?eligibleAccounts.map(user=>user.username):[])} /></th>
                   <th>账号</th>
                   <th>姓名</th>
                   <th>状态</th>
+                  <th>软件版本 / 最近上报</th>
+                  <th>更新提醒</th>
                   <th>账号管理</th>
                 </tr>
               </thead>
               <tbody>
                 {users.filter((user) => user.accountStatus !== "deleted").map((user) => (
                   <tr key={user.username}>
+                    <td><input type="checkbox" aria-label={`选择账号 @${user.username}`} disabled={!eligibleAccounts.some(item=>item.username===user.username)} checked={checkedEligible.includes(user.username)} onChange={event=>setCheckedAccounts(previous=>event.target.checked?[...new Set([...previous,user.username])]:previous.filter(name=>name!==user.username))} /></td>
                     <td>@{user.username}</td>
                     <td>{user.displayName}</td>
                     <td>{user.accountStatus === "active" ? "启用" : "暂停"}</td>
+                    <td className="account-version-cell">{versions?.users.find(item=>item.username===user.username)?.clients.length
+                      ? versions.users.find(item=>item.username===user.username)!.clients.map(client=><div key={client.clientId}>
+                        <strong>v{client.version}</strong> · {client.platform} · {versionError ? "状态未知" : client.online ? "在线" : "离线 / 历史上报"}
+                        <small>{time(client.lastSeenAtMs)}</small>
+                      </div>) : <span>{versions ? "未上报（旧版或未登录）" : "正在查询…"}</span>}</td>
+                    <td><button className="button button-secondary" disabled={Boolean(busy) || user.accountStatus!=="active" || user.username===currentUser.username} onClick={()=>void remind([user.username])}>推送更新提醒</button>
+                      {versions?.users.find(item=>item.username===user.username)?.pendingReminder && <small>提醒待处理 / 等待客户端确认</small>}</td>
                     <td><div className="review-account-actions">
                       <button
                         className="button button-secondary"
-                        disabled={Boolean(busy)}
+                        disabled={Boolean(busy) || user.username===currentUser.username}
                         onClick={() =>
                           void setAccountStatus(
                             user.username,
@@ -834,7 +888,7 @@ export function SupervisionDashboard({
                           : "启用账号"}
                       </button>
                       <button className="icon-button review-delete-account" title="删除账号"
-                        aria-label={`删除账号 @${user.username}`} disabled={Boolean(busy)}
+                        aria-label={`删除账号 @${user.username}`} disabled={Boolean(busy) || user.username===currentUser.username}
                         onClick={() => { setDeleteError(""); setDeleteTarget(user); }}>
                         <Trash2 size={17} />
                       </button>

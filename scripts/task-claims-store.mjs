@@ -27,7 +27,7 @@ export function openTaskClaims(dataRoot) {
     try {
       const previous = read.get(key);
       if (action === "release") {
-        if (actor.role !== "admin" && (actor.role !== "operator" || (previous && previous.username !== actor.username))) {
+        if (actor.role !== "admin" && !actor.canManage && (actor.role !== "operator" || (previous && previous.username !== actor.username))) {
           db.exec("COMMIT");
           return { forbidden: true, claim: previous ?? null };
         }

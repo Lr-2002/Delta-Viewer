@@ -91,6 +91,7 @@ test("user center supports operator self-registration and administrator account 
       "operationsCockpitV1",
       "reviewSupervisionV1",
       "reviewTaskClaimsV1",
+      "clientVersionRemindersV1",
     ]);
     const pageHeaders = await requestHeaders(port, ca, "/");
     assert.match(pageHeaders["content-security-policy"], /(?:^|;)\s*connect-src 'self'(?:;|$)/);

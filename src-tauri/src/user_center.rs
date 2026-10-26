@@ -523,7 +523,7 @@ pub async fn review_dashboard(
     query: std::collections::BTreeMap<String, String>,
 ) -> AppResult<serde_json::Value> {
     let (user, token) = state.managed_session()?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err(AppError::Message("ADMIN_REQUIRED".into()));
     }
     let config = load_config(data_root)?;
@@ -646,7 +646,7 @@ pub async fn supervision_dashboard(
     state: &AuthState,
 ) -> AppResult<SupervisionDashboardData> {
     let user = state.require_managed_user()?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err(AppError::Message(
             "SUPERVISOR_REQUIRED: 当前账号不是监管账户".into(),
         ));
@@ -880,7 +880,7 @@ pub async fn import_task_details(
 
 fn require_supervisor(state: &AuthState) -> AppResult<()> {
     let user = state.require_managed_user()?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err(AppError::Message(
             "SUPERVISOR_REQUIRED: 当前账号不是监管账户".into(),
         ));
@@ -930,7 +930,7 @@ pub async fn set_assigned_tasks(
     assignment_plans: Option<Vec<AssignmentPlan>>,
 ) -> AppResult<SupervisionAccount> {
     let user = state.require_managed_user()?;
-    if user.role.as_deref() != Some("admin") {
+    if !user.is_manager() {
         return Err(AppError::Message(
             "SUPERVISOR_REQUIRED: 当前账号不是监管账户".into(),
         ));
@@ -1027,7 +1027,7 @@ pub async fn update_operations_alert(
     note: &str,
 ) -> AppResult<()> {
     let user = state.require_managed_user()?;
-    if user.role.as_deref() != Some("admin")
+    if !user.is_manager()
         || alert_id.is_empty()
         || alert_id.chars().count() > 200
         || !matches!(status, "open" | "acknowledged" | "closed")
@@ -1065,7 +1065,7 @@ pub async fn transfer_assignment(
     task: &str,
 ) -> AppResult<(SupervisionAccount, SupervisionAccount)> {
     let user = state.require_managed_user()?;
-    if user.role.as_deref() != Some("admin")
+    if !user.is_manager()
         || from_username == to_username
         || task.trim().is_empty()
         || task.chars().count() > 100
@@ -1110,7 +1110,7 @@ pub async fn create_quality_review(
     request: QualityReviewRequest,
 ) -> AppResult<QualityReview> {
     let user = state.require_managed_user()?;
-    if user.role.as_deref() != Some("admin")
+    if !user.is_manager()
         || request.task_id.trim().is_empty()
         || request.task_id.chars().count() > 100
         || request.trajectory_code.trim().is_empty()
@@ -1476,4 +1476,105 @@ mod tests {
         };
         assert!(validate_assignment_response(&requested, &current_response).is_ok());
     }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ClientManagementRequest {
+    Poll {
+        #[serde(rename = "clientId")]
+        client_id: String,
+        #[serde(rename = "acknowledgedIds")]
+        acknowledged_ids: Vec<String>,
+    },
+    Versions,
+    Remind {
+        all: bool,
+        usernames: Vec<String>,
+    },
+}
+
+pub async fn client_management(
+    data_root: &Path,
+    state: &AuthState,
+    request: ClientManagementRequest,
+) -> AppResult<serde_json::Value> {
+    let (user, token) = state.managed_session()?;
+    let config = load_config(data_root)?;
+    let client = client_for(&config)?;
+    let builder = match request {
+        ClientManagementRequest::Poll {
+            client_id,
+            acknowledged_ids,
+        } => {
+            if !valid_client_identifier(&client_id)
+                || acknowledged_ids.len() > 20
+                || acknowledged_ids
+                    .iter()
+                    .any(|id| !valid_client_identifier(id))
+            {
+                return Err(AppError::Message("CLIENT_REPORT_INVALID".into()));
+            }
+            let platform = if cfg!(target_os = "windows") {
+                "windows"
+            } else if cfg!(target_os = "macos") {
+                "macos"
+            } else {
+                "linux"
+            };
+            client
+                .post(endpoint(&config, "api/v1/client/poll")?)
+                .json(&serde_json::json!({
+                    "clientId":client_id,"acknowledgedIds":acknowledged_ids,
+                    "version":env!("CARGO_PKG_VERSION"),"platform":platform,
+                }))
+        }
+        ClientManagementRequest::Versions => {
+            if !user.is_manager() {
+                return Err(AppError::Message("ADMIN_REQUIRED".into()));
+            }
+            client.get(endpoint(&config, "api/v1/admin/client-versions")?)
+        }
+        ClientManagementRequest::Remind { all, usernames } => {
+            if !user.is_manager() {
+                return Err(AppError::Message("ADMIN_REQUIRED".into()));
+            }
+            if usernames.len() > 10_000
+                || usernames
+                    .iter()
+                    .any(|name| crate::identity::normalize_username(name).is_err())
+            {
+                return Err(AppError::Message("REMINDER_TARGET_INVALID".into()));
+            }
+            client
+                .post(endpoint(&config, "api/v1/admin/update-reminders")?)
+                .json(&serde_json::json!({"all":all,"usernames":usernames}))
+        }
+    };
+    let response = builder
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(error.to_string()))
+}
+
+fn valid_client_identifier(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)
+            }
+        })
+        && (b'1'..=b'5').contains(&bytes[14])
+        && b"89ab".contains(&bytes[19])
 }

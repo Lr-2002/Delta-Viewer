@@ -135,7 +135,7 @@ pub fn validate_user_identity(user: &UserIdentity) -> AppResult<()> {
     Ok(())
 }
 
-fn normalize_username(value: &str) -> AppResult<String> {
+pub(crate) fn normalize_username(value: &str) -> AppResult<String> {
     let username = value.trim().to_ascii_lowercase();
     let valid_length = (3..=32).contains(&username.len());
     let valid_characters = username.chars().all(|character| {
@@ -172,6 +172,29 @@ mod tests {
     use crate::model::{UserIdentity, WorkspaceMode};
 
     #[test]
+    fn delegated_management_retains_operator_identity_and_legacy_defaults() {
+        let mut user: UserIdentity =
+            serde_json::from_str(r#"{"username":"admin","displayName":"Test","role":"operator"}"#)
+                .unwrap();
+        assert!(!user.is_manager());
+        user.can_manage = true;
+        assert!(user.is_manager());
+        assert_eq!(user.role.as_deref(), Some("operator"));
+        let state = AuthState::default();
+        assert!(state.require_managed_user().is_err());
+        state
+            .set_workspace_mode(Some(WorkspaceMode::Managed))
+            .unwrap();
+        state
+            .set_managed_session(user.clone(), "test-token".into())
+            .unwrap();
+        assert!(state.require_managed_user().unwrap().is_manager());
+        assert_eq!(state.require_managed_user().unwrap().username, "admin");
+        logout_account(&state).unwrap();
+        assert!(state.require_managed_user().is_err());
+    }
+
+    #[test]
     fn session_requires_login_and_clears_on_logout() {
         let state = AuthState::default();
         assert!(state.require_user().is_err());
@@ -179,6 +202,7 @@ mod tests {
             .set_workspace_mode(Some(WorkspaceMode::Managed))
             .unwrap();
         let user = UserIdentity {
+            can_manage: false,
             username: "operator.one".into(),
             display_name: "操作员一".into(),
             role: None,
@@ -198,6 +222,7 @@ mod tests {
             .unwrap();
         state
             .set_user(Some(UserIdentity {
+                can_manage: false,
                 username: "operator.one".into(),
                 display_name: "操作员一".into(),
                 role: None,
@@ -214,6 +239,7 @@ mod tests {
     #[test]
     fn rejects_invalid_identity() {
         assert!(validate_user_identity(&UserIdentity {
+            can_manage: false,
             username: "../operator".into(),
             display_name: "Operator".into(),
             role: None,
@@ -234,6 +260,7 @@ mod tests {
                 writer
                     .set_managed_session(
                         UserIdentity {
+                            can_manage: false,
                             username: username.clone(),
                             display_name: username.clone(),
                             role: Some("operator".into()),

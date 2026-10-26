@@ -765,6 +765,7 @@ mod tests {
             task_id: task_id.into(),
             task_description: task_id.into(),
             processed_by: UserIdentity {
+                can_manage: false,
                 username: username.into(),
                 display_name: username.into(),
                 role: Some("operator".into()),

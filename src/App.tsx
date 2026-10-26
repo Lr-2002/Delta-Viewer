@@ -45,6 +45,7 @@ import { PreviewSettings } from "./components/PreviewSettings";
 import { ProgressStrip } from "./components/ProgressStrip";
 import { TaskCenter } from "./components/TaskCenter";
 import { SkeletonViewer } from "./components/SkeletonViewer";
+import { ClientPresence } from "./components/ClientPresence";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
 import { beginReviewAudit, getReviewSyncStatus, configureReviewAudit, endReviewAudit, observeReviewInteractions, pauseAndPersistReviewAudit, recordReviewInteraction, recordReviewSeek, retryReviewAudit, updateReviewFrame } from "./lib/review-audit";
 import { TelemetryChart } from "./components/TelemetryChart";
@@ -201,6 +202,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.3.3": "admin 内测账号整合管理权限，顶部切换管理／测试模式；账号管理展示各设备运行版本、在线状态及最近上报，支持全部、多选和单个账号推送更新弹窗，离线提醒重新连接后补送。",
   "1.3.2": "动作片段只存本机草稿，通过后才写正式 JSON；补全多机标来源切换兼容，各来源草稿独立保存，只有已提交但尚未写回的结论才阻止跨来源重复提交。",
   "1.3.1": "动作片段的描述、边界、增删和切割只保存本机草稿，点击审核通过后才写入正式 JSON；不通过仅提交结论及原因，不发布未批准的片段修改。草稿按账号恢复，未审核草稿不能通过待写回入口发布。",
   "1.3.0": "片段边界反向拖动支持在松手保存后逐段复原原范围和描述，恢复后保持待审核；修正云端 Ubuntu 软件源下载过慢导致发布阻塞的问题。1.2.9 未生成安装包。",
@@ -327,6 +329,8 @@ function parseReleaseHistory(markdown: string): ReleaseHistoryEntry[] {
 
 function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const [managementMode, setManagementMode] = useState(false);
+  useEffect(() => setManagementMode(false), [authStatus?.currentUser?.username]);
   const [authStartupError, setAuthStartupError] = useState("");
   const [tasks, setTasks] = useState<TaskDefinition[]>([]);
   const [assignedTasks, setAssignedTasks] = useState<AssignedTask[]>([]);
@@ -1283,7 +1287,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (!data) return;
+    if (!data || managementMode) return;
     const handleShortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
@@ -1307,7 +1311,7 @@ function App() {
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [data, clipStartFrame, clipEndFrame, machinePreviewRange, playing, view]);
+  }, [data, clipStartFrame, clipEndFrame, machinePreviewRange, playing, view, managementMode]);
 
   function exitMachinePreview() {
     setMachinePreviewRange(null);
@@ -1756,9 +1760,9 @@ function App() {
     return configureReviewAudit(user.username, authStatus?.userCenter.serviceId ?? "demo");
   }, [authStatus?.currentUser?.username, authStatus?.userCenter.serviceId]);
   useEffect(() => {
-    if (!data || !authStatus?.currentUser || authStatus.currentUser.role === "admin") return;
+    if (managementMode || !data || !authStatus?.currentUser || authStatus.currentUser.role === "admin") return;
     return beginReviewAudit(data.summary.root, data.summary.name);
-  }, [data?.summary.root, authStatus?.currentUser?.username]);
+  }, [data?.summary.root, authStatus?.currentUser?.username, managementMode]);
   useEffect(() => observeReviewInteractions(), []);
   useEffect(() => { updateReviewFrame(currentFrame); }, [currentFrame]);
   useEffect(() => { recordReviewInteraction(playing ? "play" : "pause", { frameTo: currentFrame }); }, [playing]);
@@ -1819,13 +1823,28 @@ function App() {
     currentSummary={RELEASE_SUMMARIES_ZH[APP_VERSION] ?? "查看本次版本的改进与修复。"}
     currentNotes={releaseHistory.find(item => item.version === APP_VERSION)?.notes ?? []} busy={taskBusy}
     onDownload={downloadAvailableUpdate} onInstall={installAvailableUpdate} onViewHistory={() => setReleaseHistoryOpen(true)} /> : null;
-  if (isManagedWorkspace && currentUser?.role === "admin") {
-    return <><SupervisionDashboard currentUser={currentUser} onLogout={logout} updateBusy={busy} updateControls={updateControls} />
-      {releaseHistoryOpen && <ReleaseHistoryDialog currentVersion={APP_VERSION} releases={releaseHistory} onClose={() => setReleaseHistoryOpen(false)} />}</>;
+  const canManage = currentUser?.canManage || currentUser?.role === "admin";
+  const showManagement = Boolean(canManage && (managementMode || currentUser?.role === "admin"));
+  function openManagement() {
+    if (busy || reviewHasUnsaved) { setNotice("请等待当前操作和本机草稿保存完成，再切换管理模式。"); return; }
+    setPlaying(false);
+    setPersonalTaskOpen(false);
+    setProfileEditorOpen(false);
+    setManagementMode(true);
   }
-
   return (
-    <div className="app-shell">
+    <>
+      {isManagedWorkspace && currentUser && <ClientPresence key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={`${authStatus.userCenter.serviceId}:${currentUser.username}`} />}
+      {showManagement && currentUser && <SupervisionDashboard currentUser={currentUser} onLogout={logout} updateBusy={busy} updateControls={updateControls}
+        onTestMode={currentUser.role === "operator" ? () => setManagementMode(false) : undefined} />}
+      {releaseHistoryOpen ? (
+        <ReleaseHistoryDialog
+          currentVersion={APP_VERSION}
+          releases={releaseHistory}
+          onClose={() => setReleaseHistoryOpen(false)}
+        />
+      ) : null}
+      <div className="app-shell" hidden={showManagement} inert={showManagement}>
       <header className="topbar">
         <div className="brand-lockup">
           <span className="brand-mark">D</span>
@@ -1850,8 +1869,9 @@ function App() {
           {sourcePath ? <span className="source-dot" /> : null}
         </div>
         <div className="topbar-actions">
+          {canManage && <button className="button button-secondary management-mode-button" disabled={busy || reviewHasUnsaved} onClick={openManagement}>管理模式</button>}
           <StatusBadge status={status} />
-          {isManagedWorkspace && currentUser ? updateControls(busy) : null}
+          {isManagedWorkspace && currentUser && !showManagement ? updateControls(busy) : null}
           <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy}>
             <FolderOpen size={16} />
             {isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}
@@ -1908,7 +1928,7 @@ function App() {
           </button>
         </div>
       </header>
-      <div id="app-update-notices" />
+      <div id={showManagement ? undefined : "app-update-notices"} />
 
       {isManagedWorkspace && currentUser?.role === "operator" && personalTaskOpen ? (
         <div className="personal-task-overlay" role="presentation" onClick={() => setPersonalTaskOpen(false)}>
@@ -1936,13 +1956,6 @@ function App() {
         />
       ) : null}
 
-      {releaseHistoryOpen ? (
-        <ReleaseHistoryDialog
-          currentVersion={APP_VERSION}
-          releases={releaseHistory}
-          onClose={() => setReleaseHistoryOpen(false)}
-        />
-      ) : null}
 
       {historyOpen ? (
         <OperationHistoryPanel
@@ -2043,7 +2056,7 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} disabled={busy || reviewHasUnsaved} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录，操作记录将在后台补传；任务中心等待服务器读取 QC 更新。"); }} />}
+          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} disabled={busy || reviewHasUnsaved || showManagement} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录，操作记录将在后台补传；任务中心等待服务器读取 QC 更新。"); }} />}
           {currentUser && (reviewSyncStatus || reviewAuditError) && <AuditSyncNotice key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} status={reviewSyncStatus?.owner === `${authStatus.userCenter.serviceId ?? "demo"}:${currentUser.username}` ? reviewSyncStatus : undefined} username={currentUser.username} error={reviewAuditError} onError={setReviewAuditError} onPendingChange={() => {}} flush={retryReviewAudit} autoRetry={false} message="监管记录同步状态" />}
           {data || view === "batch" ? (
             <>
@@ -2175,7 +2188,7 @@ function App() {
                       />
                     ) : null}
                   </section>
-                    <MachineAnnotationPanel username={authStatus.currentUser?.username ?? ""} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} busy={busy || annotationReadyRoot !== data.summary.root}
+                    <MachineAnnotationPanel username={authStatus.currentUser?.username ?? ""} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement} busy={busy || showManagement || annotationReadyRoot !== data.summary.root}
                       playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onPlay: playSegment, onToggle: togglePlayback, controls: (
 <>
                           <div className="transport-buttons">
@@ -2275,6 +2288,7 @@ function App() {
         </main>
       </div>
     </div>
+    </>
   );
 }
 

@@ -4,6 +4,7 @@ export interface UserIdentity {
   username: string;
   displayName: string;
   role?: "admin" | "operator";
+  canManage?: boolean;
 }
 
 export interface SupervisionUserSummary {
@@ -673,3 +674,9 @@ export interface BatchExportResult {
 }
 
 export type MetricKey = "position" | "velocity" | "euler" | "omega";
+
+export interface UpdateReminder { id: string; sender: string; createdAtMs: number; }
+export interface ClientVersionReport { clientId: string; version: string; platform: string; lastSeenAtMs: number; online: boolean; }
+export interface AccountClientVersions { username: string; clients: ClientVersionReport[]; pendingReminder: UpdateReminder | null; }
+export interface ClientVersions { generatedAtMs: number; users: AccountClientVersions[]; }
+export interface ClientPoll { generatedAtMs: number; reminder: UpdateReminder | null; }

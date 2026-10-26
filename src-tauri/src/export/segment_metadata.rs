@@ -272,6 +272,7 @@ mod tests {
 
     fn user(username: &str) -> UserIdentity {
         UserIdentity {
+            can_manage: false,
             username: username.into(),
             display_name: username.into(),
             role: None,
