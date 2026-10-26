@@ -94,7 +94,9 @@ export function SupervisionDashboard({
   updateBusy?: boolean;
   onTestMode?: () => void;
 }) {
-  const [view, setView] = useState<View>("overview");
+  const [view, setView] = useState<View>(currentUser.canManage ? "accounts" : "overview");
+  const [refreshId, setRefreshId] = useState(0);
+  const [versionsLoading, setVersionsLoading] = useState(false);
   const [versions, setVersions] = useState<ClientVersions | null>(null);
   const [versionError, setVersionError] = useState("");
   const [checkedAccounts, setCheckedAccounts] = useState<string[]>([]);
@@ -103,15 +105,15 @@ export function SupervisionDashboard({
     let active = true, inFlight = false;
     async function refreshVersions() {
       if (inFlight) return;
-      inFlight = true;
+      inFlight = true;setVersionsLoading(true);
       try { const next = await getClientVersions(); if(active) {setVersions(next);setVersionError("");} }
       catch(reason) {if(active)setVersionError(String(reason));}
-      finally {inFlight=false;}
+      finally {inFlight=false;if(active)setVersionsLoading(false);}
     }
     void refreshVersions();
     const timer=window.setInterval(()=>void refreshVersions(),15_000);
     return()=>{active=false;window.clearInterval(timer);};
-  },[view]);
+  },[view,refreshId]);
   const [data, setData] = useState<ReviewDashboardData | null>(null);
   const [username, setUsername] = useState("");
   const [includeDeleted, setIncludeDeleted] = useState(false);
@@ -121,7 +123,6 @@ export function SupervisionDashboard({
   const [before, setBefore] = useState("");
   const [previous, setPrevious] = useState<string[]>([]);
   const [live, setLive] = useState(true);
-  const [refreshId, setRefreshId] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [actionBusy, setBusy] = useState("");
@@ -174,6 +175,7 @@ export function SupervisionDashboard({
   );
   const requestGeneration = useRef(0);
   useEffect(() => {
+    if (view === "accounts" || view === "tasks" || view === "corrections") return;
     const generation = ++requestGeneration.current;
     let active = true,
       inFlight = false;
@@ -205,7 +207,7 @@ export function SupervisionDashboard({
       active = false;
       clearInterval(timer);
     };
-  }, [query, live, refreshId, before]);
+  }, [query, live, refreshId, before, view]);
   useEffect(() => {
     setBefore("");
     setPrevious([]);
@@ -363,14 +365,14 @@ export function SupervisionDashboard({
   async function createAccount(event: React.FormEvent) {
     event.preventDefault();
     setBusy("account");
-    setError("");
+    setNotice("");
     try {
       await batchCreateSupervisionAccounts([account]);
       setAccount({ username: "", displayName: "", password: "" });
       setNotice("审核账号已创建");
       setRefreshId((id) => id + 1);
     } catch (reason) {
-      setError(String(reason));
+      setNotice(`账号操作失败：${String(reason)}`);
     } finally {
       setBusy("");
     }
@@ -381,7 +383,7 @@ export function SupervisionDashboard({
       await setSupervisionAccountStatus([name], status);
       setRefreshId((id) => id + 1);
     } catch (reason) {
-      setError(String(reason));
+      setNotice(`账号操作失败：${String(reason)}`);
     } finally {
       setBusy("");
     }
@@ -394,6 +396,8 @@ export function SupervisionDashboard({
     try {
       await deleteSupervisionAccount(target.username);
       requestGeneration.current++;
+      setVersions(previous=>previous?{...previous,users:previous.users.filter(user=>user.username!==target.username)}:previous);
+      setCheckedAccounts(previous=>previous.filter(name=>name!==target.username));
       setData((previous) => previous ? { ...previous, users: previous.users.map((user) =>
         user.username === target.username ? { ...user, accountStatus: "deleted", online: false } : user) } : previous);
       setNotice(`已删除 @${target.username}，历史审核记录已保留`);
@@ -414,7 +418,8 @@ export function SupervisionDashboard({
     } catch(reason) {setNotice(`推送失败：${String(reason)}`);}
     finally {setBusy("");}
   }
-  const eligibleAccounts=users.filter(user=>user.accountStatus==="active" && user.username!==currentUser.username);
+  const accountUsers=(versions?.users ?? []).filter(user=>!username || user.username===username);
+  const eligibleAccounts=accountUsers.filter(user=>user.accountStatus==="active" && user.username!==currentUser.username);
   const checkedEligible=checkedAccounts.filter(name=>eligibleAccounts.some(user=>user.username===name));
   return (
     <main className="review-supervision">
@@ -460,7 +465,7 @@ export function SupervisionDashboard({
         ))}
       </nav>
       {view === "tasks" && <TaskCenter currentUser={{...currentUser, role:"admin"}} />}
-      <div className="review-supervision-filters" hidden={view === "tasks" || view === "corrections"}>
+      <div className="review-supervision-filters" hidden={view === "tasks" || view === "corrections" || view === "accounts"}>
         <label>
           审核账号
           <select
@@ -566,7 +571,7 @@ export function SupervisionDashboard({
           导出审核事件
         </button>
       </div>
-      {error && (
+      {view !== "accounts" && error && (
         <p role="alert" className="review-audit-error">
           {error}
         </p>
@@ -832,7 +837,12 @@ export function SupervisionDashboard({
         <>
           <h2>审核账号</h2>
           <div className="version-push-toolbar">
-            <button className="button button-secondary" disabled={Boolean(busy) || !(data?.users ?? []).some(user=>user.accountStatus==="active" && user.username!==currentUser.username)} onClick={()=>void remind([],true)}>一键推送更新提醒</button>
+            <label>账号筛选<select aria-label="账号筛选" value={username} onChange={event=>setUsername(event.target.value)}><option value="">全部账号</option>{versions?.users.map(user=><option key={user.username} value={user.username}>{user.displayName} (@{user.username})</option>)}</select></label>
+            <button className="button button-secondary" disabled={versionsLoading} onClick={()=>setRefreshId(value=>value+1)}>{versionsLoading?"刷新中…":"刷新账号与版本"}</button>
+            <span>{versions ? `版本信息更新于 ${time(versions.generatedAtMs)}` : versionsLoading ? "正在读取账号与版本…" : "账号与版本尚未读取"}</span>
+          </div>
+          <div className="version-push-toolbar">
+            <button className="button button-secondary" disabled={Boolean(busy) || !(versions?.users ?? []).some(user=>user.accountStatus==="active" && user.username!==currentUser.username)} onClick={()=>void remind([],true)}>一键推送更新提醒</button>
             <button className="button button-secondary" disabled={Boolean(busy) || !checkedEligible.length} onClick={()=>void remind(checkedEligible)}>推送选中（{checkedEligible.length}）</button>
             <span>每 15 秒刷新 · 超过 90 秒未上报显示离线 · 提醒保留 7 天</span>
           </div>
@@ -852,7 +862,7 @@ export function SupervisionDashboard({
                 </tr>
               </thead>
               <tbody>
-                {users.filter((user) => user.accountStatus !== "deleted").map((user) => (
+                {accountUsers.map((user) => (
                   <tr key={user.username}>
                     <td><input type="checkbox" aria-label={`选择账号 @${user.username}`} disabled={!eligibleAccounts.some(item=>item.username===user.username)} checked={checkedEligible.includes(user.username)} onChange={event=>setCheckedAccounts(previous=>event.target.checked?[...new Set([...previous,user.username])]:previous.filter(name=>name!==user.username))} /></td>
                     <td>@{user.username}</td>
@@ -868,7 +878,7 @@ export function SupervisionDashboard({
                     <td><div className="review-account-actions">
                       <button
                         className="button button-secondary"
-                        disabled={Boolean(busy) || user.username===currentUser.username}
+                        disabled={Boolean(busy) || user.canManage}
                         onClick={() =>
                           void setAccountStatus(
                             user.username,
@@ -888,7 +898,7 @@ export function SupervisionDashboard({
                           : "启用账号"}
                       </button>
                       <button className="icon-button review-delete-account" title="删除账号"
-                        aria-label={`删除账号 @${user.username}`} disabled={Boolean(busy) || user.username===currentUser.username}
+                        aria-label={`删除账号 @${user.username}`} disabled={Boolean(busy) || user.canManage}
                         onClick={() => { setDeleteError(""); setDeleteTarget(user); }}>
                         <Trash2 size={17} />
                       </button>

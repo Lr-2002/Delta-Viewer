@@ -12,7 +12,7 @@ test('admin switches modes in one session, account versions stay truthful, singl
  page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
  await page.addInitScript(({version})=>{
   localStorage.setItem('delta.updates.release-notes.seen',version);
-  window.calls=[];window.versionFail=false;
+  window.calls=[];window.versionFail=false;window.dashboardCalls=0;
   window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
   const users=['admin','alice','bob','legacy'].map(username=>({username,displayName:username,accountStatus:'active',operations:0,approved:0,rejected:0,seeks:0,labelsAdded:0,labelsDeleted:0,averageMs:null,lastActivityAtMs:null,online:false}));
   window.__TAURI_INTERNALS__={transformCallback:()=>1,unregisterCallback(){},invoke:async(cmd,args={})=>{
@@ -24,13 +24,13 @@ test('admin switches modes in one session, account versions stay truthful, singl
    if(cmd==='flush_pending_annotation_audits')return 0;
    if(cmd==='get_pending_source_reviews')return {pending:0,items:[],ready:false,storageError:''};
    if(['persist_review_audit','flush_review_audit_queue','get_review_audit_queue_status'].includes(cmd))return {pending:0,blocked:0,error:''};
-   if(cmd==='get_review_dashboard')return {users,events:[],sessions:[],nextBefore:null,nextSessionBefore:null,total:0,generatedAtMs:Date.now()};
+   if(cmd==='get_review_dashboard'){window.dashboardCalls++;throw Error('REVIEW_STATISTICS_TIMEOUT');}
    if(cmd==='client_management') {
     const req=args.request;
     if(req.kind==='poll')return {generatedAtMs:Date.now(),reminder:null};
     if(req.kind==='versions') {
      if(window.versionFail)throw Error('SERVICE_UNAVAILABLE: 统计连接超时');
-     return {generatedAtMs:Date.now(),users:users.map(u=>({username:u.username,pendingReminder:null,clients:u.username==='alice'?[{clientId:'one',version:'1.3.2',platform:'windows',online:true,lastSeenAtMs:1700000000000},{clientId:'two',version,platform:'linux',online:false,lastSeenAtMs:1699999999000}]:[]}))};
+     return {generatedAtMs:Date.now(),users:users.map(u=>({username:u.username,displayName:u.displayName,role:"operator",accountStatus:u.accountStatus,canManage:u.username==="admin",pendingReminder:null,clients:u.username==='alice'?[{clientId:'one',version:'1.3.2',platform:'windows',online:true,lastSeenAtMs:1700000000000},{clientId:'two',version,platform:'linux',online:false,lastSeenAtMs:1699999999000}]:[]}))};
     }
     window.calls.push(req);return {queued:(req.all?['alice','bob','legacy']:req.usernames).map(username=>({username,id:crypto.randomUUID(),reused:false}))};
    }
@@ -42,6 +42,7 @@ test('admin switches modes in one session, account versions stay truthful, singl
  await page.getByRole('button',{name:'测试模式',exact:true}).waitFor();
  assert.equal(await page.locator('.app-shell').isVisible(),false);
  await page.getByRole('button',{name:'审核账号',exact:true}).click();
+ assert.equal(await page.evaluate(()=>window.dashboardCalls),0,'default management account list must not query millions of review events');
  await page.locator('.account-version-cell').getByText('v1.3.2',{exact:true}).waitFor();
  const row=page.getByRole('row').filter({hasText:'@alice'});
  assert.match(await row.textContent(),/windows · 在线/);
@@ -70,6 +71,7 @@ test('admin switches modes in one session, account versions stay truthful, singl
  assert.equal(await page.getByRole('button',{name:'管理模式',exact:true}).isVisible(),true);
  assert.ok(await page.getByRole('button',{name:'管理模式',exact:true}).evaluate(e=>parseFloat(getComputedStyle(e).fontSize)>=12));
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+ assert.equal(await page.evaluate(()=>window.dashboardCalls),0);
  assert.deepEqual(errors,[]);
 });
 

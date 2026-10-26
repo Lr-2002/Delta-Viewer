@@ -1502,6 +1502,7 @@ pub async fn client_management(
     let (user, token) = state.managed_session()?;
     let config = load_config(data_root)?;
     let client = client_for(&config)?;
+    let include_accounts = matches!(&request, ClientManagementRequest::Versions);
     let builder = match request {
         ClientManagementRequest::Poll {
             client_id,
@@ -1552,6 +1553,23 @@ pub async fn client_management(
         }
     };
     let response = builder
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    let versions: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(error.to_string()))?;
+    if !include_accounts {
+        return Ok(versions);
+    }
+    // Account administration must not wait for a full review-event aggregate.
+    let response = client
+        .get(endpoint(&config, "api/v1/admin/users")?)
         .bearer_auth(token)
         .send()
         .await
@@ -1559,10 +1577,61 @@ pub async fn client_management(
     if !response.status().is_success() {
         return Err(AppError::Message(remote_error(response).await));
     }
-    response
+    let accounts: serde_json::Value = response
         .json()
         .await
-        .map_err(|error| AppError::Message(error.to_string()))
+        .map_err(|error| AppError::Message(error.to_string()))?;
+    merge_account_versions(versions, accounts)
+}
+
+fn merge_account_versions(
+    mut versions: serde_json::Value,
+    accounts: serde_json::Value,
+) -> AppResult<serde_json::Value> {
+    let invalid =
+        || AppError::Message("CLIENT_ACCOUNTS_INVALID: 账号版本响应不完整，请刷新重试".into());
+    let reports = versions
+        .get("users")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(invalid)?;
+    let accounts = accounts
+        .get("users")
+        .and_then(serde_json::Value::as_array)
+        .filter(|rows| rows.len() <= 10_000)
+        .ok_or_else(invalid)?;
+    let by_name: std::collections::BTreeMap<&str, &serde_json::Value> = reports
+        .iter()
+        .filter_map(|row| Some((row.get("username")?.as_str()?, row)))
+        .collect();
+    let mut users = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        let name = account
+            .get("username")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let display_name = account
+            .get("displayName")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let role = account
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .filter(|role| ["admin", "operator"].contains(role))
+            .ok_or_else(invalid)?;
+        let status = account
+            .get("accountStatus")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| ["active", "paused"].contains(value))
+            .ok_or_else(invalid)?;
+        // Account metadata is authoritative; deleted accounts never reappear through old reports.
+        let report = by_name.get(name).copied();
+        users.push(serde_json::json!({"username": name, "displayName":display_name,"role":role,
+            "accountStatus":status,"canManage":role=="admin" || account.get("canManage").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            "clients":report.and_then(|row|row.get("clients")).cloned().unwrap_or_else(||serde_json::json!([])),
+            "pendingReminder":report.and_then(|row|row.get("pendingReminder")).cloned().unwrap_or(serde_json::Value::Null)}));
+    }
+    versions["users"] = serde_json::Value::Array(users);
+    Ok(versions)
 }
 
 fn valid_client_identifier(id: &str) -> bool {
@@ -1577,4 +1646,32 @@ fn valid_client_identifier(id: &str) -> bool {
         })
         && (b'1'..=b'5').contains(&bytes[14])
         && b"89ab".contains(&bytes[19])
+}
+
+#[cfg(test)]
+mod client_version_tests {
+    use super::merge_account_versions;
+    use serde_json::json;
+    #[test]
+    fn versions_merge_uses_real_account_metadata_and_excludes_deleted_accounts() {
+        let result = merge_account_versions(json!({"generatedAtMs":1700000000000_u64,"users":[
+            {"username":"admin","clients":[{"version":"1.3.4"}],"pendingReminder":null},
+            {"username":"deleted","clients":[{"version":"1.3.3"}],"pendingReminder":{"id":"old"}}
+        ]}), json!({"users":[
+            {"username":"admin","displayName":"Test","role":"operator","accountStatus":"active","canManage":true},
+            {"username":"legacy","displayName":"Legacy","role":"operator","accountStatus":"paused"}
+        ]})).unwrap();
+        assert_eq!(result["users"].as_array().unwrap().len(), 2);
+        assert_eq!(result["users"][0]["canManage"], true);
+        assert_eq!(result["users"][0]["clients"][0]["version"], "1.3.4");
+        assert_eq!(result["users"][1]["clients"], json!([]));
+        assert_eq!(result["users"][1]["accountStatus"], "paused");
+        assert!(result["users"][1]["pendingReminder"].is_null());
+        assert_eq!(result["generatedAtMs"], 1700000000000_u64);
+        assert!(merge_account_versions(
+            json!({"users":[]}),
+            json!({"users":[{"username":"partial"}]})
+        )
+        .is_err());
+    }
 }
