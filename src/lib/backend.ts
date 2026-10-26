@@ -1583,6 +1583,23 @@ export async function pollClientVersions(clientId: string, acknowledgedIds: stri
 }
 export async function getClientVersions(): Promise<import("../types").ClientVersions> {
   if (isTauriRuntime()) return invoke("client_management", {request:{kind:"versions"}});
+  if (isOperationsCockpitDemoScenario()) {
+    // Demo account metadata follows the same independent path as native account APIs.
+    // Audit fixture actors are included without invoking the aggregate dashboard.
+    const dashboard = demoOperationsData ??= createDemoOperationsDashboard();
+    const accounts = new Map(dashboard.accounts.map(user => [user.username, {
+      username: user.username, displayName: user.displayName, role: user.role,
+      accountStatus: user.accountStatus, canManage: user.role === "admin",
+      clients: [], pendingReminder: null,
+    }]));
+    const events = JSON.parse(localStorage.getItem("dohc.demo.review-events") ?? "[]") as import("./review-audit-types").ReviewEvent[];
+    for (const event of events) if (!accounts.has(event.username)) accounts.set(event.username, {
+      username: event.username, displayName: event.displayName, role: "operator",
+      accountStatus: "active", canManage: false, clients: [], pendingReminder: null,
+    });
+    const deleted = JSON.parse(localStorage.getItem("dohc.demo.deleted-review-users") ?? "[]") as string[];
+    return {generatedAtMs: Date.now(), users: [...accounts.values()].filter(user => !deleted.includes(user.username))};
+  }
   return {generatedAtMs:Date.now(),users:[]};
 }
 export async function pushUpdateReminders(usernames: string[], all = false): Promise<{queued:{username:string;id:string;reused:boolean}[]}> {
