@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.3.2 - 2026-10-26
+
+- 包含 1.3.1 的动作草稿审核通过后发布逻辑。补全多机标来源兼容：不同来源可独立保存未审核草稿，切换来源不再被旧“待写回结论”保护误拦；已提交且待写回的审核结论仍阻止跨来源重复提交，各草稿原共享基线和并发防覆盖保持独立。
+
 ## 1.3.1 - 2026-10-26
 
 - 动作片段修改（描述、边界、增删、切割、恢复及越界处理）自动持久保存为按用户中心和账号隔离的本机草稿。点击审核通过后，才原子更新对应的 description.json / desorption.json、技术记录和 session.json QC；再次编辑已通过结果也不提前改写共享文件。

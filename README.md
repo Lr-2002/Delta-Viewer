@@ -526,6 +526,8 @@ Wiki source is reviewed under `docs/wiki/` and synchronized by
 `.github/workflows/wiki.yml`; do not maintain divergent instructions directly
 in the GitHub web editor.
 
+`1.3.2`：多机标来源的未审核草稿独立保留，可切换来源继续编辑；动作仍只在审核通过后写入正式 JSON。
+
 `1.3.1`：动作修改只保存本机草稿，审核通过后才发布正式 JSON；不通过保存结论但不发布未批准的片段修改。骨架保持独立保存。
 
 `1.3.0`：连续调整同一片段边界可反向复原覆盖的范围和描述，松手保存后仍有效；其他编辑或重新加载后开始新调整，恢复内容保持待审核。详见 [回放与裁剪](docs/wiki/Playback-and-Clipping.md)。

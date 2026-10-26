@@ -240,16 +240,11 @@ pub fn store(
         entry.request.source_name.as_deref(),
     )?;
     if old.is_none()
-        && contains_related(
-            root,
-            service,
-            username,
-            &entry.request.source_path,
-            entry.request.source_name.as_deref(),
-        )?
+        && entry.request.source_name.as_deref() != Some(crate::machine_annotation::SKELETON_SOURCE)
+        && contains_submitted(root, service, username, &entry.request.source_path)?
     {
         return Err(failure(
-            "该数据已有另一来源或批量待写结果，请先确认写回，原结果保留",
+            "该数据已有另一来源的审核结论待写回，请先确认写回；未审核草稿仍保留",
         ));
     }
     if let Some(old) = old {

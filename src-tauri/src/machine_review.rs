@@ -3907,6 +3907,14 @@ mod tests {
             .unwrap();
         assert_eq!((result.written, result.remaining), (0, 0));
         assert_eq!(shared_bytes(&f), original);
+        let mut second = action_entry(&f, &state, "pending");
+        second.request.source_name = Some(machine_annotation::FLASH_SOURCE.into());
+        queue::submit_action_with_probe(&f.local, "s", &user, second, &|_| {
+            panic!("switching a source cannot publish drafts")
+        })
+        .unwrap();
+        assert_eq!(queue::list(&f.local, "s", "alice").unwrap().len(), 2);
+        assert_eq!(shared_bytes(&f), original);
         let committed = queue::submit_action_with_probe(
             &f.local,
             "s",
