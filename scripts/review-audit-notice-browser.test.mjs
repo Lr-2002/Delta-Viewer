@@ -75,6 +75,7 @@ test('persistent audit notice shows real outbox facts, recovery and account isol
   });
   await page.goto(server.resolvedUrls.local[0]+'__audit-status');
   const notice=page.getByLabel('操作记录同步状态');
+  await notice.getByRole('button',{name:'同步详情',exact:true}).click();
   await notice.getByText('待传操作事件：2 条（含未落盘及异常）',{exact:true}).waitFor();
   await page.waitForFunction(()=>document.querySelector('[data-audit-severity="warning"]'));
   const oldest=await notice.locator('.audit-sync-facts').innerText();
@@ -90,6 +91,7 @@ test('persistent audit notice shows real outbox facts, recovery and account isol
   assert.match(await notice.innerText(),/2023/);
   await page.reload();
   await notice.getByText(/异常操作事件：服务端拒绝 1 条/).waitFor();
+  await notice.getByRole('button',{name:'同步详情',exact:true}).click();
   assert.match(await notice.locator('.audit-sync-facts').innerText(),/最近成功同步.*2023/);
   await page.evaluate(async()=>{window.failDisk=true;window.audit.beginReviewAudit('/fixture/a','a');try{await window.audit.persistPendingReviewAudit();}catch{}});
   await page.waitForFunction(()=>document.querySelector('[data-audit-severity="danger"]'));
@@ -108,6 +110,7 @@ test('persistent audit notice shows real outbox facts, recovery and account isol
   assert.equal(await notice.getAttribute('data-audit-severity'),'danger');
   assert.match(await notice.innerText(),/服务端拒绝 1 条/);
   await page.evaluate(async()=>{window.failDisk=false;window.mode='AUTH_REQUIRED';await window.audit.retryReviewAudit();});
+  await notice.getByRole('button',{name:'收起详情',exact:true}).click();
   await notice.getByRole('button',{name:'重新登录并补传',exact:true}).click();
   await notice.getByLabel('当前账号密码').fill('bad');
   await notice.getByRole('button',{name:'登录并补传',exact:true}).click();
@@ -117,7 +120,8 @@ test('persistent audit notice shows real outbox facts, recovery and account isol
     await page.setViewportSize({width,height:width===960?680:844});
     await page.locator('main').evaluate(e=>{e.scrollTop=600;});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
-    for(const control of await notice.locator('button,input').all()) {
+    await page.locator('main').evaluate(e=>{e.scrollTop=0;});
+    for(const control of await notice.locator('button,input:visible').all()) {
       assert.ok(await control.evaluate(e=>parseFloat(getComputedStyle(e).fontSize)>=12),'control text remains readable');
       const box=await control.boundingBox(); assert.ok(box&&box.x>=0&&box.x+box.width<=width+1&&box.y>=0&&box.y+box.height<=844,'all controls visible');
     }
@@ -140,6 +144,7 @@ test('persistent audit notice shows real outbox facts, recovery and account isol
   await page.clock.fastForward(31000);
   await page.waitForFunction(()=>document.querySelector('[data-audit-severity="warning"]'));
   assert.match(await notice.innerText(),/尚未全部上传用户中心/);
+  await notice.getByRole('button',{name:'同步详情',exact:true}).click();
   assert.match(await notice.innerText(),/最近成功同步.*未知/);
   await page.evaluate(async()=>{window.mode='success';await window.audit.retryReviewAudit();});
   await notice.waitFor({state:'hidden'});

@@ -87,12 +87,14 @@ export function SupervisionDashboard({
   updateControls,
   updateBusy = false,
   onTestMode,
+  syncNotice,
 }: {
   currentUser: UserIdentity;
   onLogout: () => Promise<void>;
   updateControls?: (busy: boolean) => ReactNode;
   updateBusy?: boolean;
   onTestMode?: () => void;
+  syncNotice?: ReactNode;
 }) {
   const [view, setView] = useState<View>(currentUser.canManage ? "accounts" : "overview");
   const [refreshId, setRefreshId] = useState(0);
@@ -453,6 +455,7 @@ export function SupervisionDashboard({
         </div>
       </header>
       <div id="app-update-notices" />
+      {syncNotice}
       <nav aria-label="审核监管视图">
         {tabs.map(([id, label]) => (
           <button

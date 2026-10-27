@@ -34,6 +34,7 @@ import {
 import { AppUpdates } from "./components/AppUpdates";
 import { MachineAnnotationPanel, flushMachineReviewSaves } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
+import { auditNeedsLogin } from "./lib/review-audit-status";
 import { AuditSyncNotice } from "./components/AuditSyncNotice";
 import { SourceReviewNotice } from "./components/SourceReviewNotice";
 import { BatchExportPanel } from "./components/BatchExportPanel";
@@ -202,6 +203,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.3.6": "同步异常合并为紧凑状态栏，数量和补传入口持续可见，时间与错误按需展开；历史版本使用原生模态层，修复同步警告穿透弹窗、重复登录提示及更新消息遮挡。",
   "1.3.5": "保留 admin 管理／测试模式与独立版本查询，修复浏览器演示账号列表为空及删除账号回归；重新通过完整门禁后发布三平台安装包。",
   "1.3.4": "管理模式默认进入账号页，账号与设备版本独立读取，不再等待数百万条审核事件汇总；提供独立刷新、版本时间及筛选，统计暂不可用也能查询版本和推送更新提醒。",
   "1.3.3": "admin 内测账号整合管理权限，顶部切换管理／测试模式；账号管理展示各设备运行版本、在线状态及最近上报，支持全部、多选和单个账号推送更新弹窗，离线提醒重新连接后补送。",
@@ -592,13 +594,16 @@ function App() {
       return;
     }
     if (isManagedWorkspace && authStatus?.currentUser?.role === "operator") {
+      let active = true;
+      setAuditUploadPending(false);
+      setAuditUploadError("");
       void flushPendingAnnotationAudits()
-        .then((remaining) => setAuditUploadPending(remaining > 0))
+        .then((remaining) => { if (active) setAuditUploadPending(remaining > 0); })
         .catch((reason) => {
+          if (!active) return;
           setAuditUploadPending(true);
           setAuditUploadError(toMessage(reason));
         });
-      let active = true;
       const failed = (reason: unknown) => { if (active) setError(`无法加载已分配任务：${toMessage(reason)}`); };
       void listAssignedTaskDefinitions().then((value) => { if (active) setTasks(value); }).catch(failed);
       void getAssignedTasks().then((value) => { if (active) setAssignedTasks(value); }).catch(failed);
@@ -1827,6 +1832,25 @@ function App() {
     onDownload={downloadAvailableUpdate} onInstall={installAvailableUpdate} onViewHistory={() => setReleaseHistoryOpen(true)} /> : null;
   const canManage = currentUser?.canManage || currentUser?.role === "admin";
   const showManagement = Boolean(canManage && (managementMode || currentUser?.role === "admin"));
+  const ownedSyncStatus = reviewSyncStatus?.owner === `${authStatus.userCenter.serviceId ?? "demo"}:${currentUser?.username}` ? reviewSyncStatus : undefined;
+  const workspaceAuthError = /^(?:Error:\s*)?(?:(?:无法加载已分配任务|无法恢复数据目录|无法加载任务目录)：\s*)?(?:AUTH_REQUIRED|AUTH_EXPIRED|TOKEN_EXPIRED|REVIEWER_REQUIRED)(?::|\s|$)/i.test(error) ? error : "";
+  const syncNotice = currentUser && (ownedSyncStatus || reviewAuditError || auditUploadPending || workspaceAuthError) ? <AuditSyncNotice
+    key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} username={currentUser.username}
+    status={ownedSyncStatus} error={reviewAuditError || auditUploadError}
+    additionalError={[auditUploadPending ? auditUploadError : "", workspaceAuthError].filter(Boolean).join("；")} additionalPending={auditUploadPending}
+    onError={setReviewAuditError} onPendingChange={() => {}} autoRetry={auditUploadPending}
+    flush={async () => {
+      const results = await Promise.allSettled([
+        retryReviewAudit(),
+        auditUploadPending ? flushPendingAnnotationAudits().then(remaining => { setAuditUploadPending(remaining > 0); setAuditUploadError(""); return remaining; })
+          .catch(reason => { setAuditUploadPending(true); setAuditUploadError(toMessage(reason)); throw reason; }) : Promise.resolve(0),
+      ]);
+      const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failures.length) throw new Error(failures.map(result => toMessage(result.reason)).join("；"));
+      const latest = getReviewSyncStatus();
+      if (!auditNeedsLogin(latest?.uploadError ?? "")) setError(previous => previous === workspaceAuthError ? "" : previous);
+      return results.reduce((count, result) => count + (result.status === "fulfilled" ? result.value : 0), 0);
+    }} /> : null;
   function openManagement() {
     if (busy || reviewHasUnsaved) { setNotice("请等待当前操作和本机草稿保存完成，再切换管理模式。"); return; }
     setPlaying(false);
@@ -1838,7 +1862,7 @@ function App() {
     <>
       {isManagedWorkspace && currentUser && <ClientPresence key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={`${authStatus.userCenter.serviceId}:${currentUser.username}`} />}
       {showManagement && currentUser && <SupervisionDashboard currentUser={currentUser} onLogout={logout} updateBusy={busy} updateControls={updateControls}
-        onTestMode={currentUser.role === "operator" ? () => setManagementMode(false) : undefined} />}
+        onTestMode={currentUser.role === "operator" ? () => setManagementMode(false) : undefined} syncNotice={syncNotice} />}
       {releaseHistoryOpen ? (
         <ReleaseHistoryDialog
           currentVersion={APP_VERSION}
@@ -1966,11 +1990,8 @@ function App() {
         />
       ) : null}
 
-      {auditUploadPending && authStatus?.currentUser ? (
-        <AuditSyncNotice key={authStatus.currentUser.username} username={authStatus.currentUser.username}
-          error={auditUploadError} onError={setAuditUploadError} onPendingChange={setAuditUploadPending} />
-      ) : null}
-      {error ? (
+      {!showManagement && syncNotice}
+      {error && !workspaceAuthError ? (
         <div className="alert-banner alert-error" role="alert">
           <CircleAlert size={17} />
           <span>{error}</span>
@@ -2059,7 +2080,7 @@ function App() {
 
         <main className="main-content">
           {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} disabled={busy || reviewHasUnsaved || showManagement} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录，操作记录将在后台补传；任务中心等待服务器读取 QC 更新。"); }} />}
-          {currentUser && (reviewSyncStatus || reviewAuditError) && <AuditSyncNotice key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} status={reviewSyncStatus?.owner === `${authStatus.userCenter.serviceId ?? "demo"}:${currentUser.username}` ? reviewSyncStatus : undefined} username={currentUser.username} error={reviewAuditError} onError={setReviewAuditError} onPendingChange={() => {}} flush={retryReviewAudit} autoRetry={false} message="监管记录同步状态" />}
+
           {data || view === "batch" ? (
             <>
               <nav className="view-tabs" aria-label="工作区视图">
@@ -2668,19 +2689,20 @@ function ReleaseHistoryDialog({
   releases: ReleaseHistoryEntry[];
   onClose: () => void;
 }) {
+  const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
-
+    const node = dialog.current;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    node?.showModal();
+    return () => { node?.close(); if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true }); };
+  }, []);
   return (
-    <div className="version-history-overlay" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose();
-    }}>
-      <section className="version-history-dialog" role="dialog" aria-modal="true" aria-labelledby="version-history-title">
+    <dialog ref={dialog} className="version-history-dialog" aria-labelledby="version-history-title"
+      onCancel={onClose} onClick={event => {
+        if (event.target !== event.currentTarget) return;
+        const box = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) onClose();
+      }}>
         <header>
           <div>
             <span className="section-kicker">发布记录</span>
@@ -2713,8 +2735,7 @@ function ReleaseHistoryDialog({
             </article>
           ))}
         </div>
-      </section>
-    </div>
+    </dialog>
   );
 }
 

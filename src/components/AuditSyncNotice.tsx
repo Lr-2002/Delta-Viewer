@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { CircleAlert, LogIn, RefreshCw } from "lucide-react";
+import { ChevronDown, CircleAlert, LogIn, RefreshCw } from "lucide-react";
 import { flushPendingAnnotationAudits, loginLocalAccount } from "../lib/backend";
 
 import { auditFailureReason, auditNeedsLogin, type ReviewSyncStatus } from "../lib/review-audit-status";
 
 interface AuditSyncNoticeProps {
   status?: ReviewSyncStatus | null;
+  additionalError?: string;
+  additionalPending?: boolean;
   username: string;
   error: string;
   onError: (message: string) => void;
@@ -15,14 +17,15 @@ interface AuditSyncNoticeProps {
   autoRetry?: boolean;
 }
 
-export function AuditSyncNotice({ username, error, onError, onPendingChange, flush = flushPendingAnnotationAudits, message, autoRetry = true, status }: AuditSyncNoticeProps) {
+export function AuditSyncNotice({ username, error, onError, onPendingChange, flush = flushPendingAnnotationAudits, message, autoRetry = true, status, additionalError = "", additionalPending = false }: AuditSyncNoticeProps) {
+  const [expanded, setExpanded] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
   const [actionError, setActionError] = useState("");
   const [now, setNow] = useState(Date.now);
-  const issue = status ? [status.localError, status.uploadError, status.blockedError, actionError].filter(Boolean).join("；") : error;
+  const issue = [status?.localError, status?.uploadError, status?.blockedError, actionError, additionalError, ...(status ? [] : [error])].filter(Boolean).join("；");
   const needsLogin = auditNeedsLogin(issue) || loginOpen;
   useEffect(() => {
     if (!status?.pending && !status?.volatile) return;
@@ -40,7 +43,10 @@ export function AuditSyncNotice({ username, error, onError, onPendingChange, flu
   const time = (value: number | null) => value && Number.isFinite(value)
     ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "未知";
 
+  const retryInputs = useRef({ flush, status, onError, onPendingChange });
+  retryInputs.current = { flush, status, onError, onPendingChange };
   const retry = useCallback(async () => {
+    const { flush, status, onError, onPendingChange } = retryInputs.current;
     if (running.current) return;
     running.current = true;
     setBusy(true);
@@ -56,7 +62,7 @@ export function AuditSyncNotice({ username, error, onError, onPendingChange, flu
       running.current = false;
       setBusy(false);
     }
-  }, [onError, onPendingChange, flush, status]);
+  }, []);
 
   useEffect(() => {
     if (needsLogin || !autoRetry) return;
@@ -95,36 +101,52 @@ export function AuditSyncNotice({ username, error, onError, onPendingChange, flu
 
   // Keep queue monitoring/retry effects active without occupying the workspace
   // while idle or briefly queued. An open recovery form stays usable.
-  if (status && severity === "normal" && !loginOpen) return null;
+  if (status && severity === "normal" && !loginOpen && !additionalPending) return null;
 
+  const title = atRisk ? "操作记录未保存到本机，有丢失风险"
+    : needsLogin ? "登录已失效，操作记录等待补传"
+    : status?.blocked || status?.legacyInvalid ? "部分操作记录异常，需要处理"
+    : status?.volatile ? "操作记录正在保存到本机"
+    : status?.pending === null ? "操作记录同步状态待核实"
+    : "操作记录已保存到本机，但尚未全部上传用户中心";
   return (
-    <div data-audit-severity={status ? severity : undefined} className={`alert-banner alert-notice audit-sync-notice${status ? ` audit-sync-${severity}` : ""}`}
+    <section data-audit-severity={status && severity !== "normal" ? severity : "warning"} className={`audit-sync-notice audit-sync-${status && severity !== "normal" ? severity : "warning"}`}
       role={atRisk ? "alert" : "status"} aria-label="操作记录同步状态">
-      <CircleAlert size={17} aria-hidden="true" />
-      {status ? <div className="audit-sync-summary">
-        <strong>{atRisk ? "操作记录未保存到本机，有丢失风险"
-          : status.volatile ? "操作记录正在保存到本机"
-          : status.pending === null ? "正在核实本机操作记录，待传数量未知"
-          : status.pending ? warning ? "操作记录已保存到本机，但尚未全部上传用户中心" : "操作记录已保存到本机，正常排队上传"
-          : "当前账号暂无待传操作记录"}</strong>
-        <div>{atRisk ? "请保持应用打开并重试；保存恢复前请勿关闭、更新或退出登录。"
-          : status.pending ? "工作台统计可能不完整，连接及登录恢复后会自动补传。"
-          : "用户中心接收确认不代表工作台已完成统计。"}</div>
-        <div className="audit-sync-facts">
+      <div className="audit-sync-heading">
+        <CircleAlert size={18} aria-hidden="true" />
+        <div className="audit-sync-summary">
+          <strong>{status ? title : needsLogin ? "登录已失效，记录等待补传" : message ?? "操作记录等待补传"}</strong>
+          <p>{atRisk ? "请保持应用打开并重试，保存恢复前请勿关闭、更新或退出。"
+            : status?.pending === null ? "尚未确认本机队列状态，请保持应用打开并重试。"
+            : status?.volatile ? "请保持应用打开，正在等待本机保存完成。"
+            : "当前审核内容保留；工作台统计可能不完整，恢复连接及登录后自动补传。"}</p>
+        </div>
+        <div className="audit-sync-actions">
+          {status && <span className="audit-sync-count">待传 <b>{status.pending ?? "未知"}</b> 条操作事件</span>}
+          <button type="button" className="text-button audit-sync-toggle" aria-expanded={expanded}
+            onClick={() => setExpanded(value => !value)}>{expanded ? "收起详情" : "同步详情"}<ChevronDown size={14} /></button>
+          {!loginOpen && <button type="button" className="button button-secondary" disabled={busy}
+            onClick={() => needsLogin ? setLoginOpen(true) : void retry()}>
+            {needsLogin ? <LogIn size={14} /> : <RefreshCw size={14} className={busy ? "spin" : undefined} />}
+            {busy ? "正在重试…" : needsLogin ? (status ? "重新登录并补传" : "重新登录") : "重试上传"}
+          </button>}
+        </div>
+      </div>
+      {(status?.blocked || status?.legacyInvalid) ? <p className="audit-sync-blocked">
+        异常操作事件：服务端拒绝 {status.blocked} 条；旧缓存无法解析 {status.legacyInvalid} 条。已单独保留，不计为上传成功。
+      </p> : null}
+      {issue && <p className="audit-sync-reason" hidden={!expanded && !actionError}>失败原因：{auditFailureReason(actionError || status?.localError || status?.uploadError || status?.blockedError || additionalError || error)}</p>}
+      <div className="audit-sync-detail" hidden={!expanded}>
+        {status && <div className="audit-sync-facts">
           <span>待传操作事件：{status.pending ?? "未知"} 条（含未落盘及异常）</span>
           <span>未落盘：{status.volatile} 条</span>
           <span>最早待传时间：{status.pending === 0 ? "无" : time(status.oldestPendingAtMs)}</span>
           <span>最近成功同步（收到用户中心确认）：{time(status.lastSuccessAtMs)}</span>
-        </div>
-        {(status.blocked > 0 || status.legacyInvalid > 0) && <div className="audit-sync-blocked">
-          异常操作事件：服务端拒绝 {status.blocked} 条；旧缓存无法解析 {status.legacyInvalid} 条。已单独保留，不计为上传成功。
-          {status.blocked > 0 && <span> {auditFailureReason(status.blockedError)}</span>}
         </div>}
-        {issue && <div className="audit-sync-reason">失败原因：{auditFailureReason(actionError || status.localError || status.uploadError || status.blockedError)}</div>}
+        {additionalPending && <p>另有标注操作记录等待用户中心确认，未计入上方操作事件数量。</p>}
+        <p>用户中心接收确认不代表工作台已完成统计。</p>
         {issue && <details><summary>查看错误详情</summary><div>{issue}</div></details>}
-      </div> : <span>{needsLogin
-        ? "监管登录已失效，记录待上传。当前工作仍保留。"
-        : message ?? "监管记录待上传，正在等待重试。"}</span>}
+      </div>
       {loginOpen ? (
         <form onSubmit={(event) => void renewSession(event)} className="audit-sync-login">
           <span>@{username}</span>
@@ -133,15 +155,7 @@ export function AuditSyncNotice({ username, error, onError, onPendingChange, flu
           <button type="submit" className="button button-secondary" disabled={busy}><LogIn size={14} />登录并补传</button>
           <button type="button" className="text-button" disabled={busy} onClick={() => { setPassword(""); setLoginOpen(false); }}>取消</button>
         </form>
-      ) : (
-        <button type="button" className="button button-secondary" disabled={busy}
-          onClick={() => needsLogin ? setLoginOpen(true) : void retry()}>
-          {needsLogin ? <LogIn size={14} /> : <RefreshCw size={14} />}{needsLogin ? (status ? "重新登录并补传" : "重新登录") : "重试上传"}
-        </button>
-      )}
-      {!status && error && !error.includes("AUTH_REQUIRED") ? <span>{error.includes("AUDIT_TIME_INVALID")
-        ? "监管时间校验失败：请检查客户端与服务端时钟；跨天待传记录需用户中心升级后重试。原记录已保留。"
-        : error}</span> : null}
-    </div>
+      ) : null}
+    </section>
   );
 }
