@@ -3,6 +3,10 @@
 Application releases use immutable annotated Git tags created automatically
 after `main` CI succeeds for a coordinated version change.
 
+## 1.3.7 - 2026-10-27
+
+- 包含 1.3.6 的紧凑同步状态栏、双队列补传及原生历史版本弹窗；旧磁盘失败回归改为先核对醒目风险摘要，再展开原因。1.3.6 因旧测试等待隐藏详情而未发布，本版递增版本重新执行完整门禁，不跳过审核保护检查。
+
 ## 1.3.6 - 2026-10-27
 
 - 修复同步异常横幅压住历史版本弹窗：历史版本使用原生模态层，键盘焦点限制在弹窗内，关闭后返回原入口，后台状态无法穿透遮挡或接收点击。

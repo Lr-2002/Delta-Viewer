@@ -44,7 +44,12 @@ test("audit disk failure blocks completion; retry preserves the saved conclusion
     // The preflight must not write a conclusion when even operations cannot persist.
     await page.evaluate(() => { window.failAllAudit = true; });
     await page.getByRole("button", { name: "退出登录", exact: true }).click();
-    await page.getByText(/模拟磁盘不可用/).first().waitFor();
+    const syncNotice = page.getByLabel("操作记录同步状态", { exact: true });
+    await syncNotice.getByText("操作记录未保存到本机，有丢失风险", { exact: true }).waitFor();
+    assert.equal(await syncNotice.locator(".audit-sync-detail").isVisible(), false);
+    await syncNotice.getByRole("button", { name: "同步详情", exact: true }).click();
+    await syncNotice.getByText(/失败原因：.*模拟磁盘不可用/).waitFor();
+    await syncNotice.getByRole("button", { name: "收起详情", exact: true }).click();
     assert.equal(await page.getByRole("navigation", { name: "工作区视图" }).isVisible(), true);
     await page.getByRole("button", { name: "通过", exact: true }).click();
     await page.getByText(/尚未提交审核结论/).waitFor();
