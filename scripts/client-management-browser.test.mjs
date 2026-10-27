@@ -30,7 +30,7 @@ test('admin switches modes in one session, account versions stay truthful, singl
     if(req.kind==='poll')return {generatedAtMs:Date.now(),reminder:null};
     if(req.kind==='versions') {
      if(window.versionFail)throw Error('SERVICE_UNAVAILABLE: 统计连接超时');
-     return {generatedAtMs:Date.now(),users:users.map(u=>({username:u.username,displayName:u.displayName,role:"operator",accountStatus:u.accountStatus,canManage:u.username==="admin",pendingReminder:null,clients:u.username==='alice'?[{clientId:'one',version:'1.3.2',platform:'windows',online:true,lastSeenAtMs:1700000000000},{clientId:'two',version,platform:'linux',online:false,lastSeenAtMs:1699999999000}]:[]}))};
+     return {generatedAtMs:Date.now(),users:users.map(u=>({username:u.username,displayName:u.displayName,role:"operator",accountStatus:u.accountStatus,canManage:u.username==="admin",pendingReminder:null,clients:u.username==='alice'?[{clientId:'one',version:'1.3.2',platform:'windows',online:true,lastSeenAtMs:Date.now()},{clientId:'two',version,platform:'linux',online:false,lastSeenAtMs:1699999999000}]:[]}))};
     }
     window.calls.push(req);return {queued:(req.all?['alice','bob','legacy']:req.usernames).map(username=>({username,id:crypto.randomUUID(),reused:false}))};
    }
@@ -45,18 +45,30 @@ test('admin switches modes in one session, account versions stay truthful, singl
  assert.equal(await page.evaluate(()=>window.dashboardCalls),0,'default management account list must not query millions of review events');
  await page.locator('.account-version-cell').getByText('v1.3.2',{exact:true}).waitFor();
  const row=page.getByRole('row').filter({hasText:'@alice'});
- assert.match(await row.textContent(),/windows · 在线/);
- assert.match(await row.textContent(),/linux · 离线/);
- assert.match(await page.getByRole('row').filter({hasText:'@legacy'}).textContent(),/未上报/);
+ assert.match(await row.textContent(),/windows/);
+ assert.doesNotMatch(await row.textContent(),/linux|历史上报|2023/);
+ assert.equal(await row.locator('strong').count(),1);
+ assert.match(await page.getByRole('row').filter({hasText:'@legacy'}).textContent(),/当前版本未确认/);
+ await row.getByRole('button',{name:'版本日志 @alice',exact:true}).click();
+ const log=page.getByRole('dialog',{name:'版本日志',exact:true});await log.waitFor();
+ assert.equal(await log.evaluate(el=>el.matches(':modal')),true);
+ assert.match(await log.textContent(),/linux · 离线/);
+ await page.keyboard.press('Escape');await log.waitFor({state:'detached'});
+ assert.equal(await row.getByRole('button',{name:'版本日志 @alice',exact:true}).evaluate(el=>el===document.activeElement),true);
  await row.getByRole('button',{name:'推送更新提醒',exact:true}).click();
  await page.getByLabel('选择账号 @alice',{exact:true}).check();await page.getByLabel('选择账号 @bob',{exact:true}).check();
  await page.getByRole('button',{name:'推送选中（2）',exact:true}).click();
  await page.getByRole('button',{name:'一键推送更新提醒',exact:true}).click();
  assert.deepEqual(await page.evaluate(()=>window.calls.map(c=>({all:c.all,usernames:c.usernames}))),[
   {all:false,usernames:['alice']},{all:false,usernames:['alice','bob']},{all:true,usernames:[]}]);
+ await page.screenshot({path:'artifacts/client-management/accounts-138-current-1440.png',fullPage:true});
  await page.evaluate(()=>{window.versionFail=true;});await page.clock.install();await page.clock.runFor(15_100);
- await page.getByText(/版本状态暂不可刷新/).waitFor();assert.match(await row.textContent(),/状态未知/);
- assert.equal(await row.getByText('v1.3.2',{exact:true}).count(),1,'failed refresh retains last version');
+ await page.getByText(/版本状态暂不可刷新/).waitFor();assert.match(await row.textContent(),/当前版本未确认/);
+ assert.equal(await row.getByText('v1.3.2',{exact:true}).count(),0,'failed refresh must not claim current version');
+ await row.getByRole('button',{name:'版本日志 @alice',exact:true}).click();
+ await log.getByText('v1.3.2',{exact:true}).waitFor();
+ assert.match(await log.textContent(),/状态未知/);
+ await page.keyboard.press('Escape');
  await mkdir('artifacts/client-management',{recursive:true});
  for(const [width,height]of [[1440,920],[960,680],[390,844]]){
   await page.setViewportSize({width,height});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
@@ -64,7 +76,11 @@ test('admin switches modes in one session, account versions stay truthful, singl
    const button=page.getByRole('button',{name,exact:true}),box=await button.boundingBox();
    assert.ok(box.x>=0&&box.x+box.width<=width);assert.ok(await button.evaluate(e=>parseFloat(getComputedStyle(e).fontSize)>=12),'action labels remain readable');
   }
-  await page.screenshot({path:`artifacts/client-management/accounts-${width}.png`,fullPage:true});
+  await page.screenshot({path:`artifacts/client-management/accounts-138-${width}.png`,fullPage:true});
+  await row.getByRole('button',{name:'版本日志 @alice',exact:true}).click();
+  const box=await log.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=width);
+  await page.screenshot({path:`artifacts/client-management/version-log-138-${width}.png`});
+  await page.keyboard.press('Escape');
  }
  await page.getByRole('button',{name:'测试模式',exact:true}).click();
  assert.equal(await page.locator('.app-shell').isVisible(),true);
@@ -87,7 +103,14 @@ test('reminder persists until action, survives ack failure/reload, isolates acco
  const browser=await chromium.launch({executablePath:process.env.PLAYWRIGHT_CHROMIUM??chromium.executablePath(),headless:true});t.after(()=>browser.close());
  const page=await browser.newPage({viewport:{width:390,height:844}});const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.clock.install();
  await page.goto(server.resolvedUrls.local[0]+'__reminder');const popup=page.getByLabel('管理员更新提醒',{exact:true});await popup.waitFor();
- await page.locator('#draft').fill('未提交的修改');await page.clock.runFor(45_000);assert.equal(await popup.isVisible(),true,'does not auto-disappear');
+ await page.locator('#draft').fill('未提交的修改');
+ const firstId=await page.evaluate(()=>window.received.length);
+ await page.evaluate(()=>{window.fail=true;window.dispatchEvent(new Event('focus'));});
+ await page.waitForFunction(count=>window.received.length>count,firstId);
+ const failedCount=await page.evaluate(()=>window.received.length);
+ await page.evaluate(()=>{window.fail=false;window.dispatchEvent(new Event('focus'));});
+ await page.waitForFunction(count=>window.received.length>count,failedCount);
+ await page.clock.runFor(45_000);assert.equal(await popup.isVisible(),true,'does not auto-disappear');
  for(const button of await popup.getByRole('button').all()){const box=await button.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=390&&box.y>=0&&box.y+box.height<=844);}
  await page.screenshot({path:'artifacts/client-management/reminder-390.png'});
  await page.evaluate(()=>{window.fail=true;});await popup.getByRole('button',{name:'查看更新',exact:true}).click();await page.clock.runFor(200);

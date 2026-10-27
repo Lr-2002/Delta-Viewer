@@ -3,12 +3,11 @@ import { createPortal } from "react-dom";
 import { APP_VERSION, pollClientVersions } from "../lib/backend";
 import type { ClientPoll, UpdateReminder } from "../types";
 import { UpdateToast } from "./UpdateToast";
+import { clientInstallationId } from "../lib/client-versions";
 
 function installationId() {
-  const key=`delta.client-installation.v1:${APP_VERSION}`;
-  try { const id=localStorage.getItem(key); if (id && /^[a-f0-9-]{36}$/.test(id)) return id;
-    const next=crypto.randomUUID(); localStorage.setItem(key,next); return next;
-  } catch { return crypto.randomUUID(); }
+  try { return clientInstallationId(localStorage, APP_VERSION); }
+  catch { return crypto.randomUUID(); }
 }
 export function ClientPresence({ owner, poll = pollClientVersions }: {
   owner: string; poll?: (id: string, ack: string[]) => Promise<ClientPoll>;
@@ -38,7 +37,9 @@ export function ClientPresence({ owner, poll = pollClientVersions }: {
     void refresh();
     const timer=window.setInterval(()=>void refresh(),15_000);
     const online=()=>void refresh();window.addEventListener("online",online);
-    return()=>{active=false;window.clearInterval(timer);window.removeEventListener("online",online);};
+    const visible=()=>{if(document.visibilityState === "visible")void refresh();};
+    window.addEventListener("focus",online);document.addEventListener("visibilitychange",visible);
+    return()=>{active=false;window.clearInterval(timer);window.removeEventListener("online",online);window.removeEventListener("focus",online);document.removeEventListener("visibilitychange",visible);};
   },[owner,id,ack,poll]);
   function dismiss() {
     if(!reminder)return;

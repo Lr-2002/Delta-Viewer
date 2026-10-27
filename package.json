@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.3.7",
+  "version": "1.3.8",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -36,7 +36,7 @@
     "update-mirror": "node scripts/update-mirror-server.mjs --config update-service.config.json",
     "update-mirror:install": "bash scripts/install-update-mirror-macos.sh",
     "user-center:install": "bash scripts/install-user-center-macos.sh",
-    "test:client-management:browser": "node --test scripts/client-management-browser.test.mjs",
+    "test:client-management:browser": "node --test --experimental-strip-types scripts/client-versions.test.ts && node --test scripts/client-management-browser.test.mjs",
     "test:app-updates": "node --test scripts/app-updates.test.mjs"
   },
   "dependencies": {

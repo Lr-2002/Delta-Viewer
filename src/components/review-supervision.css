@@ -313,3 +313,17 @@
   .topbar:has(.management-mode-button) {flex-wrap:wrap; height:auto; padding-block:8px;}
   .topbar:has(.management-mode-button) .topbar-actions {flex:1 1 100%;flex-wrap:wrap;justify-content:flex-start;}
 }
+.account-version-cell { min-width: 170px; }
+.account-version-cell > div { display: flex; align-items: center; gap: 8px; }
+.account-platform { color: #657077; font-size: 12px; }
+.account-version-log { font-size: 12px; padding: 3px 0; margin-top: 4px; }
+.review-supervision input[type="checkbox"] { width: 16px; height: 16px; min-width: 16px; padding: 0; margin: 0; vertical-align: middle; }
+.account-version-dialog { width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); padding: 0; border: 1px solid #cad4d9; border-radius: 8px; color: #243238; }
+.account-version-dialog[open] { display: flex; flex-direction: column; }
+.account-version-dialog::backdrop { background: #152b3566; }
+.account-version-dialog header { display: flex; justify-content: space-between; align-items: start; gap: 16px; padding: 20px; border-bottom: 1px solid #d8e0e3; }
+.account-version-dialog h2 { margin: 0; font-size: 18px; }
+.account-version-dialog header p { margin: 6px 0 0; font-size: 13px; color: #657077; }
+.account-version-log-body { padding: 4px 20px 20px; overflow: auto; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.account-version-log-body article { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; border-top: 1px solid #d8e0e3; padding: 12px 0; }
+.account-version-log-body time { grid-column: 1 / -1; color: #657077; }

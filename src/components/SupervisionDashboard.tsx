@@ -14,6 +14,7 @@ import {
   Trash2,
   UserPlus,
   XCircle,
+  X,
 } from "lucide-react";
 import {
   batchCreateSupervisionAccounts,
@@ -41,6 +42,7 @@ import {
 import type { UserIdentity, ClientVersions } from "../types";
 import "./review-supervision.css";
 import { TaskCenter } from "./TaskCenter";
+import { currentClientVersion } from "../lib/client-versions";
 
 type View = "overview" | "events" | "sessions" | "accounts" | "corrections" | "tasks";
 const tabs: [View, string][] = [
@@ -102,6 +104,15 @@ export function SupervisionDashboard({
   const [versions, setVersions] = useState<ClientVersions | null>(null);
   const [versionError, setVersionError] = useState("");
   const [checkedAccounts, setCheckedAccounts] = useState<string[]>([]);
+  const [versionLogAccount, setVersionLogAccount] = useState<string | null>(null);
+  const versionLogDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (!versionLogAccount) return;
+    const node = versionLogDialog.current;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    node?.showModal();
+    return () => { node?.close(); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
+  }, [versionLogAccount]);
   useEffect(() => {
     if (view !== "accounts") return;
     let active = true, inFlight = false;
@@ -849,7 +860,7 @@ export function SupervisionDashboard({
             <button className="button button-secondary" disabled={Boolean(busy) || !checkedEligible.length} onClick={()=>void remind(checkedEligible)}>推送选中（{checkedEligible.length}）</button>
             <span>每 15 秒刷新 · 超过 90 秒未上报显示离线 · 提醒保留 7 天</span>
           </div>
-          <p className="version-help">显示实际运行版本；同一账号的多台设备分别列出。未上报可能是旧版或尚未登录，不能据此判断正在使用的版本。推送仅提醒，由审核员主动下载并确认安装。</p>
+          <p className="version-help">每人显示一个已确认在线的版本，多设备及上报时间见“版本日志”。版本未确认不代表未工作：审核记录与版本上报独立；1.3.3 之前的客户端需先手动更新。</p>
           {versionError && <p role="alert" className="version-error">版本状态暂不可刷新，下面保留最近记录，当前在线状态未知：{versionError}</p>}
           <div className="review-table-wrap">
             <table>
@@ -859,23 +870,25 @@ export function SupervisionDashboard({
                   <th>账号</th>
                   <th>姓名</th>
                   <th>状态</th>
-                  <th>软件版本 / 最近上报</th>
+                  <th>当前软件版本</th>
                   <th>更新提醒</th>
                   <th>账号管理</th>
                 </tr>
               </thead>
               <tbody>
-                {accountUsers.map((user) => (
+                {accountUsers.map((user) => {
+                  const clientState = currentClientVersion(user.clients, versions?.generatedAtMs ?? 0);
+                  return (
                   <tr key={user.username}>
                     <td><input type="checkbox" aria-label={`选择账号 @${user.username}`} disabled={!eligibleAccounts.some(item=>item.username===user.username)} checked={checkedEligible.includes(user.username)} onChange={event=>setCheckedAccounts(previous=>event.target.checked?[...new Set([...previous,user.username])]:previous.filter(name=>name!==user.username))} /></td>
                     <td>@{user.username}</td>
                     <td>{user.displayName}</td>
                     <td>{user.accountStatus === "active" ? "启用" : "暂停"}</td>
-                    <td className="account-version-cell">{versions?.users.find(item=>item.username===user.username)?.clients.length
-                      ? versions.users.find(item=>item.username===user.username)!.clients.map(client=><div key={client.clientId}>
-                        <strong>v{client.version}</strong> · {client.platform} · {versionError ? "状态未知" : client.online ? "在线" : "离线 / 历史上报"}
-                        <small>{time(client.lastSeenAtMs)}</small>
-                      </div>) : <span>{versions ? "未上报（旧版或未登录）" : "正在查询…"}</span>}</td>
+                    <td className="account-version-cell">
+                      <div>{!versionError && clientState.current ? <><strong>v{clientState.current.version}</strong><span className="account-platform">{clientState.current.platform}</span></> : <span>当前版本未确认</span>}</div>
+                      {!versionError && clientState.otherVersions > 0 && <small>另有 {clientState.otherVersions} 个在线版本</small>}
+                      <button className="text-button account-version-log" onClick={() => setVersionLogAccount(user.username)} aria-label={`版本日志 @${user.username}`}>版本日志</button>
+                    </td>
                     <td><button className="button button-secondary" disabled={Boolean(busy) || user.accountStatus!=="active" || user.username===currentUser.username} onClick={()=>void remind([user.username])}>推送更新提醒</button>
                       {versions?.users.find(item=>item.username===user.username)?.pendingReminder && <small>提醒待处理 / 等待客户端确认</small>}</td>
                     <td><div className="review-account-actions">
@@ -908,7 +921,7 @@ export function SupervisionDashboard({
                     </div>
                     </td>
                   </tr>
-                ))}
+                );})}
               </tbody>
             </table>
           </div>
@@ -965,6 +978,24 @@ export function SupervisionDashboard({
       {!loading && !visibleEvents?.length && ["overview", "events", "sessions"].includes(view) && (
         <p className="review-empty">暂无符合条件的审核操作</p>
       )}
+      {versionLogAccount && <dialog ref={versionLogDialog} className="account-version-dialog" aria-labelledby="account-version-log-title"
+        onCancel={() => setVersionLogAccount(null)} onClick={event => {
+          if (event.target !== event.currentTarget) return;
+          const box = event.currentTarget.getBoundingClientRect();
+          if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) setVersionLogAccount(null);
+        }}>
+        <header><div><h2 id="account-version-log-title">版本日志</h2><p>@{versionLogAccount} · 设备最近上报记录</p></div>
+          <button autoFocus className="icon-button" aria-label="关闭版本日志" onClick={() => setVersionLogAccount(null)}><X size={18} /></button></header>
+        <div className="account-version-log-body">
+          <p>仅展示服务端保留的设备上报，不是完整升级历史。审核活动不包含软件版本，不能用审核统计推测版本或将未上报判为未工作。</p>
+          {versionError && <p role="alert">查询失败，以下为缓存记录，在线状态未知：{versionError}</p>}
+          {(versions?.users.find(user => user.username === versionLogAccount)?.clients ?? []).length ?
+            [...versions!.users.find(user => user.username === versionLogAccount)!.clients].sort((a,b) => b.lastSeenAtMs-a.lastSeenAtMs).map(client => <article key={client.clientId}>
+              <strong>v{client.version}</strong><span>{client.platform} · {versionError ? "状态未知" : currentClientVersion([client], versions!.generatedAtMs).current ? "在线" : "离线 / 历史上报"}</span>
+              <time>{time(client.lastSeenAtMs)}</time>
+            </article>) : <p>暂无版本上报。可能使用早于 1.3.3 的客户端，或版本上报连接尚未成功；具体原因需核对该电脑。旧客户端需先手动安装新版，之后才能接收推送。</p>}
+        </div>
+      </dialog>}
       {deleteTarget && <dialog ref={deleteDialog} className="review-delete-dialog" aria-labelledby="delete-account-title"
         onCancel={(event) => { event.preventDefault(); if (!busy) setDeleteTarget(null); }}>
         <h2 id="delete-account-title">删除审核账号</h2>
