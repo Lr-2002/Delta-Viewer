@@ -131,6 +131,17 @@ pub async fn configure(data_root: &Path, source_path: &Path) -> AppResult<UserCe
 }
 
 pub fn auth_status(data_root: &Path, state: &AuthState) -> AppResult<AuthStatus> {
+    if state.workspace_mode()? == Some(crate::model::WorkspaceMode::Offline) {
+        return Ok(AuthStatus {
+            workspace_mode: Some(crate::model::WorkspaceMode::Offline),
+            user_center: UserCenterStatus {
+                configured: false,
+                endpoint: None,
+                service_id: None,
+            },
+            current_user: Some(crate::identity::offline_identity()),
+        });
+    }
     let path = config_path(data_root);
     let config = match load_config(data_root) {
         Ok(config) => Some(config),
@@ -308,6 +319,9 @@ pub(crate) fn source_review_owner(
     data_root: &Path,
     state: &AuthState,
 ) -> AppResult<(UserIdentity, String)> {
+    if state.workspace_mode()? == Some(crate::model::WorkspaceMode::Offline) {
+        return Ok((state.require_user()?, "offline-local-v1".into()));
+    }
     let user = state.require_managed_user()?;
     if user.role.as_deref() != Some("operator") {
         return Err(AppError::Message("REVIEWER_REQUIRED".into()));

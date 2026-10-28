@@ -68,8 +68,8 @@ export function BatchRejectionDialog({ username, folder, selected, onSaved, onCl
       const started = performance.now();
       try {
         const result = await rejectPendingMachineReview(target.path, target.name, savedReason, Math.max(0, Math.round(performance.now() - started)));
-        if (!result) completed.push({...target, status:"skipped", message:"已审核，未修改"});
-        else if (result.pendingSourceWrite) completed.push({...target, status:"local", message:"已保存本机，待写回 NAS；用户中心接收后计入审核统计"});
+        if (!result) completed.push({...target, status:"skipped", message:"已有审核结论（含本机待写结果），保留原结果"});
+        else if (result.pendingSourceWrite) { completed.push({...target, status:"local", message:"已保存本机，待写回 NAS；用户中心接收后计入审核统计"}); onSaved(target.path); }
         else {
           completed.push({...target, status:"rejected", message:"已保存不通过"});
           onSaved(target.path);

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { ArrowLeft, FolderOpen, KeyRound, LogIn, Network, UserPlus } from "lucide-react";
+import { ArrowLeft, FolderOpen, KeyRound, LogIn, Network, UserPlus, WifiOff } from "lucide-react";
 import {
   configureUserCenter,
   loginLocalAccount,
@@ -120,6 +120,10 @@ export function AuthScreen({
             </div>
           </div>
           <div className="workspace-mode-options">
+            <button className="workspace-mode-option" type="button" onClick={() => void selectMode("offline")} disabled={busy}>
+              <WifiOff size={18} />
+              <span><strong>离线模式</strong><small>无需账号或网络，直接回放、编辑、审核与导出本地数据</small></span>
+            </button>
             <button className="workspace-mode-option" type="button" onClick={() => void selectMode("managed")} disabled={busy}>
               <Network size={18} />
               <span><strong>登录工作区</strong><small>使用局域网用户中心账号，审核操作纳入审计</small></span>
@@ -127,7 +131,7 @@ export function AuthScreen({
           </div>
           {error ? <div className="auth-error" role="alert">{error}</div> : null}
         </section>
-        <footer className="auth-footer">所有用户必须登录；采集数据仍只在本机目录处理</footer>
+        <footer className="auth-footer">离线结果仅在本机处理，不关联公司账号或审核统计</footer>
       </main>
     );
   }
@@ -219,6 +223,7 @@ export function AuthScreen({
           </form>}
         {error ? <div className="auth-error" role="alert">{error}</div> : null}
         <div className="auth-switch">
+          <button type="button" className="text-button" onClick={() => void selectMode("offline")} disabled={busy || configuring}><WifiOff size={14} />离线模式 · 直接进入</button>
           <button type="button" className="text-button" onClick={() => void returnToModeChoice()} disabled={busy || configuring}>
             <ArrowLeft size={14} />
             选择工作模式

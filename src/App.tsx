@@ -212,6 +212,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.4.3": "新增无需账号与网络的离线模式；骨架优先读取同帧原始估计并对齐主相机采集时间，优化多路播放追帧；修复批量本机待写结论漏读、重复提交误报及冲突提示。",
   "1.4.2": "交付批次文件夹实际更名与三维骨架固定地面参照；补齐更新前审核落盘回归的路径接口测试适配，保留审核保护。",
   "1.4.1": "新增整批文件夹实际更名入口，保留领取、审核和本机待写关联；三维骨架使用整段固定地面参照，保留走动、下蹲及跳跃位移。",
   "1.4.0": "发布云端 QC 与本地回放优化：云任务独立领取及持久补传；长记录首屏优先、真实采集时间同步；视频错误具体诊断，不通过原因支持自定义。",
@@ -417,6 +418,7 @@ function App() {
   const workspaceActive = workspaceMode !== null;
   const isManagedWorkspace = workspaceMode === "managed";
   const isOfflineWorkspace = workspaceMode === "offline";
+  const reviewStorageUsername = isOfflineWorkspace ? "offline:local:v1" : authStatus?.currentUser?.username ?? "";
   const [historyOpen, setHistoryOpen] = useState(false);
   const [releaseHistoryOpen, setReleaseHistoryOpen] = useState(false);
   const [releaseHistory, setReleaseHistory] = useState<ReleaseHistoryEntry[]>([]);
@@ -557,7 +559,7 @@ function App() {
     return operation;
   }
 
-  const ReviewPanel = data && cloudWorkspaceNumber(data.summary.root) ? CloudMachineAnnotationPanel : MachineAnnotationPanel;
+  const ReviewPanel = data && !isOfflineWorkspace && cloudWorkspaceNumber(data.summary.root) ? CloudMachineAnnotationPanel : MachineAnnotationPanel;
 
   function beginCloudOperation() {
     if (reviewUnsaved.current) return null;
@@ -857,7 +859,7 @@ function App() {
       setEpisodeSourceStates(Object.fromEntries(
         visibleResult.episodes.map((episode) => [episode.root, "available" as const]),
       ));
-      const username = authStatus?.currentUser?.role === "operator" ? authStatus.currentUser.username : "";
+      const username = authStatus?.currentUser?.role === "operator" ? reviewStorageUsername : "";
       const resume = username ? readReviewResume(username) : null;
       if (resume) {
         // A missing old resume must not block opening a different, valid batch.
@@ -964,7 +966,7 @@ function App() {
       setBatchRenamePath(null);
       setScan(null);
       setSourcePath(result.destinationPath);
-      if (authStatus?.currentUser?.role === "operator") {
+      if (isManagedWorkspace && authStatus?.currentUser?.role === "operator") {
         try { await setAssignedSourceRoot(result.destinationPath); }
         catch (reason) { result.warning += ` 本机目录配置更新失败，旧路径仍可解析：${toMessage(reason)}`; }
       }
@@ -1047,7 +1049,7 @@ function App() {
     if (reviewUnsaved.current) { setNotice("正在保存当前修改，请稍候。"); return; }
     setSelectedEpisode(episode);
     if (authStatus?.currentUser?.role === "operator" && sourcePath) {
-      writeReviewResume(authStatus.currentUser.username, { sourceRoot: sourcePath, episodeRoot: episode.root, active: true });
+      writeReviewResume(reviewStorageUsername, { sourceRoot: sourcePath, episodeRoot: episode.root, active: true });
     }
     if (loadedEpisodeSourceRoot !== episode.root) resetLoadedData();
   }
@@ -1207,7 +1209,7 @@ function App() {
     if (result === "loaded") {
       setEpisodeSourceStates((current) => ({ ...current, [episode.root]: "available" }));
       if (authStatus?.currentUser?.role === "operator") {
-        localStorage.setItem(`dohc-viewer.last-assigned-episode.v1:${authStatus.currentUser.username}`, episode.root);
+        localStorage.setItem(`dohc-viewer.last-assigned-episode.v1:${reviewStorageUsername}`, episode.root);
       }
       auditActivity("episode_opened", assignedEpisodeTasks[episode.root] ?? "", "");
       setNotice(`已从源目录只读载入：${episode.name}`);
@@ -1347,15 +1349,18 @@ function App() {
   }
 
   async function chooseWorkspaceMode() {
-    if (reviewUnsaved.current) return;
-    if (operationScopeRef.current.current()) return;
+    if (reviewUnsaved.current || operationScopeRef.current.current()) return;
+    let resumeAudit: (() => void) | undefined;
     try {
+      setPlaying(false);
+      resumeAudit = await pauseAndPersistReviewAudit();
       const status = await clearWorkspaceMode();
+      endReviewAudit();
       resetWorkspaceData();
       setAuthStatus(status);
     } catch (reason) {
       await reportFailure("clear_workspace_mode", reason, "");
-    }
+    } finally { resumeAudit?.(); }
   }
 
   async function activateWorkspaceMode(mode: WorkspaceMode) {
@@ -1881,8 +1886,8 @@ function App() {
   useEffect(() => {
     const user = authStatus?.currentUser;
     if (!user || user.role === "admin") return;
-    return configureReviewAudit(user.username, authStatus?.userCenter.serviceId ?? "demo");
-  }, [authStatus?.currentUser?.username, authStatus?.userCenter.serviceId]);
+    return configureReviewAudit(user.username, isOfflineWorkspace ? "offline-local-v1" : authStatus?.userCenter.serviceId ?? "demo", isOfflineWorkspace);
+  }, [authStatus?.currentUser?.username, authStatus?.userCenter.serviceId, isOfflineWorkspace]);
   useEffect(() => {
     if (managementMode || !data || !authStatus?.currentUser || authStatus.currentUser.role === "admin") return;
     return beginReviewAudit(data.summary.root, data.summary.name);
@@ -1912,9 +1917,9 @@ function App() {
         <strong>{authStartupError ? "无法载入用户中心状态" : "正在载入用户中心状态"}</strong>
         {authStartupError ? <span>{authStartupError}</span> : null}
         {authStartupError ? (
-          <button className="button button-secondary" type="button" onClick={() => void refreshAuthStatus()}>
+          <><button className="button button-primary" onClick={() => void activateWorkspaceMode("offline")}>离线模式 · 直接进入</button><button className="button button-secondary" type="button" onClick={() => void refreshAuthStatus()}>
             重试
-          </button>
+          </button></>
         ) : null}
       </main>
     );
@@ -1951,7 +1956,7 @@ function App() {
   const showManagement = Boolean(canManage && (managementMode || currentUser?.role === "admin"));
   const ownedSyncStatus = reviewSyncStatus?.owner === `${authStatus.userCenter.serviceId ?? "demo"}:${currentUser?.username}` ? reviewSyncStatus : undefined;
   const workspaceAuthError = /^(?:Error:\s*)?(?:(?:无法加载已分配任务|无法恢复数据目录|无法加载任务目录)：\s*)?(?:AUTH_REQUIRED|AUTH_EXPIRED|TOKEN_EXPIRED|REVIEWER_REQUIRED)(?::|\s|$)/i.test(error) ? error : "";
-  const syncNotice = currentUser && (ownedSyncStatus || reviewAuditError || auditUploadPending || workspaceAuthError) ? <AuditSyncNotice
+  const syncNotice = isManagedWorkspace && currentUser && (ownedSyncStatus || reviewAuditError || auditUploadPending || workspaceAuthError) ? <AuditSyncNotice
     key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} username={currentUser.username}
     status={ownedSyncStatus} error={reviewAuditError || auditUploadError}
     additionalError={[auditUploadPending ? auditUploadError : "", workspaceAuthError].filter(Boolean).join("；")} additionalPending={auditUploadPending}
@@ -2011,7 +2016,7 @@ function App() {
           onClose={() => setReleaseHistoryOpen(false)}
         />
       ) : null}
-      {currentUser && isTauriRuntime() && <CloudQcSyncStatus key={`cloud:${authStatus.userCenter.serviceId}:${currentUser.username}`} username={currentUser.username} />}
+      {isManagedWorkspace && currentUser && isTauriRuntime() && <CloudQcSyncStatus key={`cloud:${authStatus.userCenter.serviceId}:${currentUser.username}`} username={currentUser.username} />}
       <div className="app-shell" hidden={showManagement} inert={showManagement}>
       <header className="topbar">
         <div className="brand-lockup">
@@ -2060,7 +2065,7 @@ function App() {
             <History size={16} />
             {operationErrors.length ? <span>{Math.min(operationErrors.length, 99)}</span> : null}
           </button>
-          {isOfflineWorkspace ? <span className="workspace-mode-indicator">离线模式</span> : null}
+          {isOfflineWorkspace ? <span className="workspace-mode-indicator" title="本地回放、编辑、审核与导出可用；不连接用户中心，不参与公司统计">离线模式 · 仅本机</span> : null}
           {isManagedWorkspace && currentUser ? (
             <>
               {currentUser.role === "operator" ? (
@@ -2117,7 +2122,7 @@ function App() {
         </div>
       ) : null}
 
-      {batchRejection && <BatchRejectionDialog username={currentUser?.username ?? ""} {...batchRejection} onSaved={handleBatchRejectionSaved} onClose={() => {
+      {batchRejection && <BatchRejectionDialog username={reviewStorageUsername} {...batchRejection} onSaved={handleBatchRejectionSaved} onClose={() => {
         setBatchRejection(null);
         setBatchReviewRevision(value => value + 1);
       }} />}
@@ -2189,8 +2194,8 @@ function App() {
           </div>
           {!sidebarCollapsed ? <label className="sidebar-zoom">目录缩放<input aria-label="目录缩放" type="range" min="0.75" max="1.35" step="0.05" value={sidebarScale} onChange={(event) => setSidebarScale(event.currentTarget.valueAsNumber)} /><output>{Math.round(sidebarScale * 100)}%</output></label> : null}
           <div className="sidebar-path" title={sourcePath}>{sourcePath ? shortPath(sourcePath, 38) : "等待 SD 卡"}</div>
-          {!sidebarCollapsed && isManagedWorkspace && scan && !cloudWorkspaceNumber(scan.sourceRoot) && <button type="button" className="button button-secondary sidebar-rename-button" disabled={busy || reviewHasUnsaved} onClick={() => setBatchRenamePath(scan.sourceRoot)}><Pencil size={14} />修改批次名称</button>}
-          {!sidebarCollapsed && isManagedWorkspace && currentUser?.role === "operator" && scan && <div className="sidebar-review-toolbar" aria-label="当前目录批量审核">
+          {!sidebarCollapsed && scan && !cloudWorkspaceNumber(scan.sourceRoot) && <button type="button" className="button button-secondary sidebar-rename-button" disabled={busy || reviewHasUnsaved} onClick={() => setBatchRenamePath(scan.sourceRoot)}><Pencil size={14} />修改批次名称</button>}
+          {!sidebarCollapsed && currentUser?.role === "operator" && scan && <div className="sidebar-review-toolbar" aria-label="当前目录批量审核">
             <div className="sidebar-review-actions">
               <button type="button" className="button button-secondary" disabled={busy || !Object.keys(batchRejectionSelection).length} onClick={() => startBatchRejection()}><X size={14} />批量不通过</button>
               <button type="button" className="button button-secondary" disabled={busy} onClick={() => startBatchRejection(scan.sourceRoot)}><FolderOpen size={14} />整文件夹不通过</button>
@@ -2204,7 +2209,7 @@ function App() {
                 key={episode.root} episode={episode} selected={selectedEpisode?.root === episode.root}
                 sourceState={episodeSourceStates[episode.root] ?? "available"}
                 savedAnnotation={annotationTags[episode.root]} reviewStatus={reviewedEpisodes[episode.root]} pendingReviewStatus={pendingReviewEpisodes[episode.root]} busy={busy}
-                rejectionSelectable={isManagedWorkspace && currentUser?.role === "operator"}
+                rejectionSelectable={currentUser?.role === "operator"}
                 rejectionSelected={Boolean(batchRejectionSelection[episode.root])}
                 actions={episodeActions} buttonRefs={episodeButtonRefs}
               />)
@@ -2230,7 +2235,7 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} disabled={busy || reviewHasUnsaved || showManagement} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录，操作记录将在后台补传；任务中心等待服务器读取 QC 更新。"); }} />}
+          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} disabled={busy || reviewHasUnsaved || showManagement} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录；联网工作区的操作记录后台补传，任务中心等待服务器读取 QC 更新。"); }} />}
 
           {data || view === "batch" ? (
             <>
@@ -2371,7 +2376,7 @@ function App() {
                           onChange={event => seekFrame(event.currentTarget.valueAsNumber)} />
                         <p role="status">视频可预览，完整数据检查中；检查完成后开放片段编辑和审核。</p>
                       </section>
-                    </div> : <ReviewPanel username={authStatus.currentUser?.username ?? ""} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement} busy={busy || showManagement || annotationReadyRoot !== data.summary.root}
+                    </div> : <ReviewPanel username={reviewStorageUsername} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement} busy={busy || showManagement || annotationReadyRoot !== data.summary.root}
                       playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onPlay: playSegment, onToggle: togglePlayback, controls: (
 <>
                           {playbackControls}
@@ -2387,7 +2392,7 @@ function App() {
                         setNotice(`${data.summary.name} ${local ? "审核结果已保存本机，待恢复后确认写回 NAS，任务进度暂不增加。" : `质检${status === "approved" ? "通过" : "不通过"}，review 已保存。`}${nextRoot ? "正在载入下一条。" : "已是最后一条。"}`);
                         if (!local) setReviewedEpisodes((current) => ({ ...current, [data.summary.root]: status }));
                         if (authStatus.currentUser?.role === "operator") {
-                          writeReviewResume(authStatus.currentUser.username, {
+                          writeReviewResume(reviewStorageUsername, {
                             sourceRoot: sourcePath,
                             episodeRoot: nextRoot ?? data.summary.root,
                             active: Boolean(nextRoot),
@@ -2574,7 +2579,7 @@ const EpisodeListRow = memo(function EpisodeListRow({
         {reviewStatus && !pendingReviewStatus ? <span className="episode-annotation-tag" aria-label="已审核">我已审·{reviewStatus === "pending" ? "待复审" : reviewStatus === "approved" ? "通过" : "不通过"}</span> : null}
         <EpisodeSourceMark state={sourceState} /><ChevronRight size={15} />
       </span>
-      {pendingReviewStatus && <span className="episode-annotation-tag episode-local-pending" aria-label={pendingReviewStatus === "pending" ? "本机草稿" : "本机待写回"}>{pendingReviewStatus === "pending" ? "本机草稿 · 待审核" : `本机${pendingReviewStatus === "approved" ? "通过" : "不通过"} · 待写回 NAS`}</span>}
+      {pendingReviewStatus && <span className="episode-annotation-tag episode-local-pending" aria-label={pendingReviewStatus === "pending" ? "本机草稿" : "本机待写回"}>{pendingReviewStatus === "pending" ? "本机草稿 · 待审核" : pendingReviewStatus === "conflict" ? "本机结论冲突 · 待核对" : `本机${pendingReviewStatus === "approved" ? "通过" : "不通过"} · 待写回 NAS`}</span>}
       <span className="episode-item-meta">{episode.indexed
         ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
         : episode.stateCount ? `${episode.stateCount} states · 快速预览` : "待读取"}</span>

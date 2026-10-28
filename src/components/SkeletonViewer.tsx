@@ -138,14 +138,13 @@ export const SkeletonViewer = memo(function SkeletonViewer({
     const render = () => {
       renderer.render(scene, camera);
     };
-    const paintFrame = (requestedFrame: number) => {
-      const sample = skeletonSampleForTimeline(
+    const paintFrame = (requestedFrame: number, sample = skeletonSampleForTimeline(
         skeleton.frames,
         requestedFrame,
         timelineStartFrame,
         timelineEndFrame,
         skeleton.usesTimelineFrameIds,
-      );
+      )) => {
       if (!sample) return { extent: 1, minY: -1, maxY: 1 };
       const bounds = fillJointPositions(sample, jointPositions, bonePositions, edges, reference, skeleton.jointCount);
       const root = skeletonOrigin(sample.before, skeleton.jointCount).lerp(skeletonOrigin(sample.after, skeleton.jointCount), sample.mix);
@@ -191,7 +190,7 @@ export const SkeletonViewer = memo(function SkeletonViewer({
         timelineEndFrame,
         skeleton.usesTimelineFrameIds,
       );
-      if (sample && Math.abs(sample.sourcePosition - displayedSourcePosition) > 1e-4) paintFrame(targetFrame);
+      if (sample && Math.abs(sample.sourcePosition - displayedSourcePosition) > 1e-4) paintFrame(targetFrame, sample);
     };
     const initialBounds = paintFrame(displayedFrame);
     const targetY = floorY + bodyHeight * 0.55;
@@ -260,7 +259,7 @@ export const SkeletonViewer = memo(function SkeletonViewer({
       </header>
       <div ref={mountRef} className="skeleton-canvas" />
       {unavailable ? <p className="skeleton-unavailable">当前设备不支持 3D 渲染</p> : null}
-      <footer>{skeleton.sourceName} · {skeleton.frameCount} 帧 · 估计地面参照</footer>
+      <footer>{skeleton.sourceName} · {skeleton.frameCount} 帧 · {skeleton.jointSource === "raw_smpl_joints" ? "原始同帧估计 · " : skeleton.jointSource === "smpl_joints" ? "滤波估计 · " : ""}估计地面参照</footer>
     </section>
   );
 });

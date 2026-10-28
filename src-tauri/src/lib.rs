@@ -171,6 +171,12 @@ fn emit_task_start(app: &AppHandle, operation_id: u64, task: &str, phase: &str, 
 }
 
 fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
+    app.state::<AuthState>()
+        .data_root(&base_app_data_root(app)?)
+        .map_err(|e| e.to_string())
+}
+
+fn base_app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
         .map_err(|error| format!("无法定位应用本地数据目录: {error}"))
@@ -275,7 +281,7 @@ fn require_stable_update_channel() -> Result<(), String> {
 
 #[tauri::command]
 async fn get_auth_status(app: AppHandle, auth: State<'_, AuthState>) -> Result<AuthStatus, String> {
-    let data_root = app_data_root(&app)?;
+    let data_root = base_app_data_root(&app)?;
     workspace_mode::restore(&data_root, auth.inner()).map_err(|error| error.to_string())?;
     user_center::auth_status(&data_root, auth.inner()).map_err(|error| error.to_string())
 }
@@ -286,7 +292,7 @@ async fn select_workspace_mode(
     auth: State<'_, AuthState>,
     mode: WorkspaceMode,
 ) -> Result<AuthStatus, String> {
-    let data_root = app_data_root(&app)?;
+    let data_root = base_app_data_root(&app)?;
     workspace_mode::select(&data_root, auth.inner(), Some(mode))
         .map_err(|error| error.to_string())?;
     user_center::auth_status(&data_root, auth.inner()).map_err(|error| error.to_string())
@@ -297,7 +303,7 @@ async fn clear_workspace_mode(
     app: AppHandle,
     auth: State<'_, AuthState>,
 ) -> Result<AuthStatus, String> {
-    let data_root = app_data_root(&app)?;
+    let data_root = base_app_data_root(&app)?;
     workspace_mode::select(&data_root, auth.inner(), None).map_err(|error| error.to_string())?;
     user_center::auth_status(&data_root, auth.inner()).map_err(|error| error.to_string())
 }
@@ -957,8 +963,7 @@ async fn scan_task_center(
     force: bool,
     on_update: tauri::ipc::Channel<task_center::ScanUpdate>,
 ) -> Result<task_center::TaskCatalog, String> {
-    auth.require_managed_user()
-        .map_err(|error| error.to_string())?;
+    auth.require_user().map_err(|error| error.to_string())?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let cache = cache.inner().clone();
@@ -1258,6 +1263,16 @@ async fn load_machine_review(
             machine_review::view_for_source(Path::new(&source_path), source_name.as_deref(), state)
         })?;
         if let Some((user, service)) = owner {
+            if source_name.as_deref() != Some(machine_annotation::SKELETON_SOURCE) {
+                if let Some(entry) = source_review_queue::pending_batch_rejection(
+                    &data_root,
+                    &service,
+                    &user.username,
+                    &source_path,
+                )? {
+                    return Ok(source_review_queue::local_view(&entry, &user, Some(view)));
+                }
+            }
             if let Some(entry) = source_review_queue::get(
                 &data_root,
                 &service,
@@ -1299,9 +1314,7 @@ async fn save_machine_review(
     commit_event: Option<(String, u64)>,
     local_entry: Option<source_review_queue::DeferredReview>,
 ) -> Result<machine_review::ReviewView, String> {
-    let user = auth
-        .require_managed_user()
-        .map_err(|error| error.to_string())?;
+    let user = auth.require_user().map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
     let (_, service) =
         user_center::source_review_owner(&data_root, auth.inner()).map_err(|e| e.to_string())?;
@@ -1316,7 +1329,14 @@ async fn save_machine_review(
         return tauri::async_runtime::spawn_blocking(move || {
             let directory = entry.request.source_path.clone();
             let mut view = source_review_queue::submit_action(&data_root, &service, &user, entry)?;
-            cloud_qc::decorate_view(&data_root, &user.username, Path::new(&directory), &mut view)?;
+            if service != "offline-local-v1" {
+                cloud_qc::decorate_view(
+                    &data_root,
+                    &user.username,
+                    Path::new(&directory),
+                    &mut view,
+                )?;
+            }
             Ok::<_, error::AppError>(view)
         })
         .await
@@ -1593,9 +1613,7 @@ async fn reject_pending_machine_review(
     operation_id: u64,
     commit_event: Option<(String, u64)>,
 ) -> Result<Option<machine_review::ReviewState>, String> {
-    let user = auth
-        .require_managed_user()
-        .map_err(|error| error.to_string())?;
+    let user = auth.require_user().map_err(|error| error.to_string())?;
     if user.role.as_deref() != Some("operator") {
         return Err("REVIEWER_REQUIRED".into());
     }
@@ -1611,12 +1629,18 @@ async fn reject_pending_machine_review(
         source_path.clone(),
         user.username.clone(),
     );
-    tauri::async_runtime::spawn_blocking(move || {
+    let already_submitted = tauri::async_runtime::spawn_blocking(move || {
         if source_review_queue::contains_submitted(&data, &service, &username, &path)? {
-            return Err(error::AppError::Message("SOURCE_REVIEW_EXISTS: 本机已有该数据的待写结果，请在待写回提示中确认处理，未重复不通过".into()));
+            return Ok::<_, error::AppError>(true);
         }
-        Ok::<_, error::AppError>(())
-    }).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+        Ok(false)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if already_submitted {
+        return Ok(None);
+    }
     ensure_review_storage_responsive(&source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
@@ -1649,9 +1673,7 @@ async fn list_my_machine_reviews(
     auth: State<'_, AuthState>,
     source_paths: Vec<String>,
 ) -> Result<Vec<machine_review::AccountReview>, String> {
-    let user = auth
-        .require_managed_user()
-        .map_err(|error| error.to_string())?;
+    let user = auth.require_user().map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         machine_review::list_account_reviews(&data_root, &source_paths, &user.username)
@@ -1667,9 +1689,7 @@ async fn save_episode_annotation(
     auth: State<'_, AuthState>,
     request: SaveAnnotationRequest,
 ) -> Result<EpisodeAnnotation, String> {
-    let user = auth
-        .require_managed_user()
-        .map_err(|error| error.to_string())?;
+    let user = auth.require_user().map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
     let saved = tauri::async_runtime::spawn_blocking({
         let data_root = data_root.clone();
@@ -1763,7 +1783,7 @@ async fn rename_batch_folder(
     name: String,
     operation_id: u64,
 ) -> Result<batch_rename::RenameResult, String> {
-    let user = auth.require_managed_user().map_err(|e| e.to_string())?;
+    let user = auth.require_user().map_err(|e| e.to_string())?;
     let task = control.start(operation_id)?;
     let data = app_data_root(&app)?;
     let (source, key) = tauri::async_runtime::spawn_blocking({
@@ -1777,6 +1797,11 @@ async fn rename_batch_folder(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
+    if auth.workspace_mode().map_err(|e| e.to_string())? == Some(WorkspaceMode::Offline)
+        && key.is_some()
+    {
+        return Err("MANAGED_MODE_REQUIRED: 共享审核批次更名需要登录核对领取归属；离线模式可更名普通本地批次".into());
+    }
     if !user.is_manager() {
         if let Some(key) = key {
             let claims = user_center::task_claims(

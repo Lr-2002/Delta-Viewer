@@ -182,7 +182,7 @@ test("NAS storage failures save a local conclusion and advance without claiming 
     await page.evaluate(()=>{window.localQueueFails=false;});
     await page.getByRole("button",{name:"重试保存复核"}).click();
     await page.getByText("结果已保存本机 · 待写回数据目录").waitFor();
-    assert.equal(await page.locator(".quality-output").textContent(),"description.json待审核");
+    assert.equal(await page.locator(".quality-output").textContent(),"description.json本机通过 · 待写回");
     assert.equal(await page.getByRole("button",{name:"通过",exact:true}).isEnabled(),true);
     await page.getByRole("button",{name:"通过",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('.episode-item.selected')?.textContent.includes('session-b'));
@@ -1375,4 +1375,34 @@ test("saved start-boundary expansion reverses with mouse and keyboard; later tex
     assert.equal((await saved()).segments.find(s=>s.sourceIndex===target.sourceIndex).description,'保留后续人工文字');
     assert.deepEqual(errors,[]);
   } finally { await page.close(); }
+});
+
+
+test("a batch conclusion pending writeback stays visible and read-only across the source picker", async () => {
+  const page=await browser.newPage({viewport:{width:960,height:680}});
+  const errors=[]; page.on("pageerror", error=>errors.push(error.message));
+  await page.route("**/src/lib/backend.ts",async route=>{
+    const response=await route.fetch();
+    const original=await response.text();
+    const body=original.replace('  if (saved) return structuredClone(saved);', `
+      if (saved) return structuredClone(saved);
+      const baseline=await loadMachineAnnotation(sourcePath,sourceName);
+      return {sourceHash:baseline.sourceHash,revision:0,status:"rejected",qcStatus:"pending",pendingSourceWrite:true,
+        updatedAtMs:1234,reviewer:"Alice",rejectionReason:"镜头遮挡",segments:baseline.segments.map((s,i)=>({...s,sourceIndex:i,deleted:false,decision:"pending"}))};
+    `);
+    assert.notEqual(body,original);
+    await route.fulfill({response,body});
+  });
+  try {
+    await open(page,"machineAnnotation=present");
+    await page.getByText("本机不通过 · 待写回",{exact:true}).waitFor();
+    assert.equal(await page.getByLabel("复核动作描述").isDisabled(),true);
+    assert.equal(await page.getByRole("button",{name:"通过",exact:true}).isDisabled(),true);
+    assert.equal(await page.getByRole("button",{name:"不通过",exact:true}).isDisabled(),true);
+    assert.ok(await page.getByRole("button",{name:/定位机标片段/}).count()>0);
+    await page.getByLabel("机标来源",{exact:true}).selectOption("bailian_annotation.qwen3.8-flash.json");
+    await page.getByText("本机不通过 · 待写回",{exact:true}).waitFor();
+    assert.equal(await page.getByLabel("复核动作描述").isDisabled(),true);
+    assert.deepEqual(errors,[]);
+  } finally {await page.close();}
 });

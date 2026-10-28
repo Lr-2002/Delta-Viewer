@@ -436,11 +436,13 @@ export interface StateRecord {
 
 export interface SkeletonFrame {
   frameId: number;
+  timelinePosition?: number;
   joints: [number, number, number][];
 }
 
 export interface SkeletonSeries {
   sourceName: string;
+  jointSource?: string;
   frameCount: number;
   jointCount: number;
   usesTimelineFrameIds?: boolean;

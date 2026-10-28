@@ -515,20 +515,34 @@ if (!browserExecutable) {
     await context.close();
   });
 
-  test("offline mode is unavailable and managed login is required", async () => {
-    const context = await browser.newContext({ viewport: cleanViewport });
-    const page = await context.newPage();
-    await page.goto(baseUrl, { waitUntil: "networkidle" });
-    assert.equal(await page.getByRole("button", { name: "离线模式" }).count(), 0);
-    await page.getByRole("button", { name: "登录工作区" }).click();
-    await page.locator('input[autocomplete="username"]').waitFor();
-    const reconfigure = page.getByRole("button", { name: "重新导入用户中心配置" });
-    assert.equal(await reconfigure.count(), 1);
-    await reconfigure.click();
-    await page.locator('input[autocomplete="username"]').waitFor();
-    assert.equal(await page.getByRole("alert").count(), 0);
-    assert.equal(await page.getByText("多路回放", { exact: true }).count(), 0);
-    await context.close();
+  test("offline entry needs no account and keeps managed-only services out of the workspace", async () => {
+    for (const viewport of [{width:1440,height:920}, {width:960,height:680}, {width:390,height:844}]) {
+      const context = await browser.newContext({ viewport });
+      const page = await context.newPage();
+      const errors = [];
+      const remoteRequests = [];
+      page.on("pageerror", error => errors.push(error.message));
+      page.on("request", request => { if (!request.url().startsWith(baseUrl) && !request.url().startsWith("data:")) remoteRequests.push(request.url()); });
+      await page.goto(`${baseUrl}/?machineAnnotation=present`, { waitUntil:"networkidle" });
+      await page.getByRole("button", { name:"离线模式", exact:false }).click();
+      await page.getByText("离线模式 · 仅本机", {exact:true}).waitFor();
+      await page.locator('.quality-workspace textarea[aria-label="复核动作描述"]').waitFor();
+      assert.equal(await page.getByRole("button", { name:"任务中心", exact:true }).count(), 0);
+      assert.equal(await page.getByRole("button", { name:"管理模式", exact:true }).count(), 0);
+      assert.equal(await page.getByRole("button", { name:"审核总览", exact:true }).count(), 0);
+      await page.getByLabel("复核动作描述").fill("离线独立动作");
+      await page.waitForFunction(() => document.querySelector('select[aria-label="机标来源"]')?.disabled === false);
+      await page.getByRole("button", {name:"新增片段",exact:true}).click();
+      await page.waitForFunction(() => document.querySelector('select[aria-label="机标来源"]')?.disabled === false);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await page.getByRole("button", {name:"切换工作模式",exact:true}).click();
+      await page.getByRole("button", {name:"登录工作区"}).waitFor();
+      await page.getByRole("button", {name:"登录工作区"}).click();
+      await page.locator('input[autocomplete="username"]').waitFor();
+      assert.deepEqual(errors, []);
+      assert.deepEqual(remoteRequests, []);
+      await context.close();
+    }
   });
 
   test("trim handles share the segment editing track", { skip: "Covered by the unified proofreading regression suite" }, async () => {

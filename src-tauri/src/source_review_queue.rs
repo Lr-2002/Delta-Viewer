@@ -161,6 +161,35 @@ pub fn contains_submitted(
         params![service, username, serde_json::to_string(&paths)?], |r|r.get(0),
     ).map_err(failure)
 }
+/// A batch rejection has no selected machine source. Recover its conclusion
+/// across source pickers without treating its empty segment list as edits.
+pub fn pending_batch_rejection(
+    root: &Path,
+    service: &str,
+    username: &str,
+    path: &str,
+) -> AppResult<Option<DeferredReview>> {
+    let paths = path_aliases(root, path)?;
+    let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
+    let db = open(root)?;
+    let mut query = db.prepare(&format!("SELECT payload FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND source_name!='skeleton.description.json' AND {PUBLISHABLE} ORDER BY rowid LIMIT 2")).map_err(failure)?;
+    let rows = query
+        .query_map(
+            params![service, username, serde_json::to_string(&paths)?],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(failure)?;
+    let rows = rows.collect::<Result<Vec<_>, _>>().map_err(failure)?;
+    if rows.len() > 1 {
+        return Err(AppError::Message("SOURCE_REVIEW_CONFLICT: 同一数据存在多份本机待写结论，无法确定唯一结果；全部保留，请在待写回入口核对，未自动覆盖".into()));
+    }
+    let entry = rows
+        .into_iter()
+        .next()
+        .map(|raw| serde_json::from_str::<DeferredReview>(&raw).map_err(failure))
+        .transpose()?;
+    Ok(entry.filter(|entry| entry.only_pending))
+}
 pub(crate) fn contains_action_draft(
     root: &Path,
     service: &str,
@@ -244,6 +273,13 @@ pub fn store(
     if entry.only_pending && entry.request.status.as_deref() != Some("rejected") {
         return Err(failure("批量暂存仅支持不通过"));
     }
+    if entry.only_pending
+        && contains_submitted(root, service, username, &entry.request.source_path)?
+    {
+        return Err(AppError::Message(
+            "SOURCE_REVIEW_ALREADY_SUBMITTED: 已有本机审核结论，保留原结果，未重复不通过".into(),
+        ));
+    }
     // Preserve the first shared baseline when an offline result is edited again.
     let old = get(
         root,
@@ -252,15 +288,18 @@ pub fn store(
         &entry.request.source_path,
         entry.request.source_name.as_deref(),
     )?;
-    if old.is_none()
+    if old.as_ref().is_none_or(|old| old.is_action_draft())
         && entry.request.source_name.as_deref() != Some(crate::machine_annotation::SKELETON_SOURCE)
         && contains_submitted(root, service, username, &entry.request.source_path)?
     {
-        return Err(failure(
-            "该数据已有另一来源的审核结论待写回，请先确认写回；未审核草稿仍保留",
+        return Err(AppError::Message(
+            "SOURCE_REVIEW_CONFLICT: 该数据已有审核结论保存在本机、等待写回。原结论及当前应急草稿均保留，请先在待写回入口处理；本次未覆盖原结论".into(),
         ));
     }
     if let Some(old) = old {
+        if old.only_pending && !entry.only_pending {
+            return Err(AppError::Message("SOURCE_REVIEW_CONFLICT: 已有批量审核结论保存在本机，请先处理待写回；本次未覆盖原结论".into()));
+        }
         // Keep the original SQLite key; publication resolves only the filesystem path.
         entry.request.source_path = old.request.source_path;
         entry.output_hash = old.output_hash;
@@ -388,7 +427,7 @@ fn enqueue_receipt(
             params![service, username, id],
         )
         .map_err(failure)?;
-    if inserted > 0 {
+    if inserted > 0 && service != "offline-local-v1" {
         review_outbox::enqueue_with(db, service, username, &[audit])?;
     }
     Ok(())
@@ -480,16 +519,23 @@ pub fn local_view(
         }
         .into();
     }
-    view.review.segments = entry.request.segments.clone();
+    if !entry.only_pending {
+        view.review.segments = entry.request.segments.clone();
+        view.review.source_hash = entry.request.source_hash.clone();
+        view.review.revision = entry.request.expected_revision;
+        view.review.output_hash = entry.output_hash.clone();
+    }
     view.review.status = entry
         .request
         .status
         .clone()
         .unwrap_or_else(|| "pending".into());
     view.review.rejection_reason = entry.request.rejection_reason.clone().unwrap_or_default();
-    view.review.source_hash = entry.request.source_hash.clone();
-    view.review.revision = entry.request.expected_revision;
-    view.review.output_hash = entry.output_hash.clone();
+    view.review.reviewer = user.display_name.clone();
+    view.review.reviewer_username = user.username.clone();
+    view.review.updated_at_ms = entry.audit["occurredAtMs"]
+        .as_u64()
+        .unwrap_or(entry.created_at_ms);
     view.review.published = false;
     view.local_draft = entry.is_action_draft();
     view.pending_source_write = !view.local_draft;
@@ -592,7 +638,7 @@ pub fn status_for_paths(
         }
     }
     let db = open(root)?;
-    let mut query = db.prepare("SELECT source_path,json_extract(payload,'$.request.status'),json_extract(payload,'$.createdAtMs') FROM source_reviews WHERE service=? AND username=? AND source_name!=? ORDER BY json_extract(payload,'$.audit.occurredAtMs')").map_err(failure)?;
+    let mut query = db.prepare("SELECT source_path,json_extract(payload,'$.request.status'),json_extract(payload,'$.createdAtMs') FROM source_reviews WHERE service=? AND username=? AND source_name!=? ORDER BY (coalesce(json_extract(payload,'$.request.status'),'pending')!='pending'),json_extract(payload,'$.audit.occurredAtMs')").map_err(failure)?;
     let rows = query
         .query_map(
             params![
@@ -618,13 +664,23 @@ pub fn status_for_paths(
             path
         };
         if let Some(current) = aliases.get(&key) {
+            let status = status.unwrap_or_else(|| "pending".into());
+            let status = if status != "pending"
+                && items
+                    .get(*current)
+                    .is_some_and(|item: &PendingItem| item.status != "pending")
+            {
+                "conflict".into()
+            } else {
+                status
+            };
             items.insert(
                 (*current).clone(),
                 PendingItem {
                     channel: "action".into(),
                     name: String::new(),
                     source_path: (*current).clone(),
-                    status: status.unwrap_or_else(|| "pending".into()),
+                    status,
                     error: String::new(),
                     created_at_ms,
                 },
@@ -861,6 +917,174 @@ pub(crate) fn publish_with_probe(
 #[cfg(test)]
 mod path_tests {
     use super::*;
+    #[test]
+    fn batch_conclusion_recovers_across_sources_and_keeps_original_event_and_segments() {
+        let root = std::env::temp_dir().join(format!(
+            "viewer-batch-recovery-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let user = crate::model::UserIdentity {
+            username: "alice".into(),
+            display_name: "Alice".into(),
+            role: Some("operator".into()),
+            can_manage: false,
+        };
+        let entry = DeferredReview {
+            request: SaveReviewRequest {
+                source_path: root.join("unavailable-nas/sample").to_string_lossy().into(),
+                source_name: None,
+                source_hash: String::new(),
+                expected_revision: 0,
+                segments: vec![],
+                status: Some("rejected".into()),
+                rejection_reason: Some("镜头遮挡".into()),
+            },
+            output_hash: None,
+            qc_content_hash: None,
+            only_pending: true,
+            audit: json!({"eventId":"11111111-0000-4000-8000-000000000000", "occurredAtMs":1234,"action":"rejected","details":{}}),
+            error: "REVIEW_STORAGE_FULL".into(),
+            created_at_ms: 0,
+        };
+        store(&root, "s", &user.username, entry.clone()).unwrap();
+        assert!(get(
+            &root,
+            "s",
+            &user.username,
+            &entry.request.source_path,
+            Some(crate::machine_annotation::FLASH_SOURCE)
+        )
+        .unwrap()
+        .is_none());
+        let saved = pending_batch_rejection(&root, "s", &user.username, &entry.request.source_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.audit["eventId"], entry.audit["eventId"]);
+        let mut source = entry.clone();
+        source.only_pending = false;
+        source.request.source_hash = "selected-flash".into();
+        source.request.segments = vec![crate::machine_review::ReviewSegment {
+            source_index: 0,
+            start_frame: 0,
+            end_frame: 9,
+            description: "保留原动作".into(),
+            deleted: false,
+            decision: "pending".into(),
+        }];
+        let view = local_view(&saved, &user, Some(local_view(&source, &user, None)));
+        assert_eq!(view.review.segments.len(), 1);
+        assert_eq!(view.review.source_hash, "selected-flash");
+        assert_eq!(view.review.status, "rejected");
+        assert_eq!(view.review.updated_at_ms, 1234);
+        assert!(view.pending_source_write);
+        assert!(store(&root, "s", &user.username, entry.clone())
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("SOURCE_REVIEW_ALREADY_SUBMITTED"));
+        assert!(
+            pending_batch_rejection(&root, "s", "bob", &entry.request.source_path)
+                .unwrap()
+                .is_none()
+        );
+        assert!(pending_batch_rejection(
+            &root,
+            "other",
+            &user.username,
+            &entry.request.source_path
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            status_for_paths(
+                &root,
+                "s",
+                &user.username,
+                std::slice::from_ref(&entry.request.source_path)
+            )
+            .unwrap()
+            .items[0]
+                .status,
+            "rejected"
+        );
+        assert_eq!(
+            get(&root, "s", &user.username, &entry.request.source_path, None)
+                .unwrap()
+                .unwrap()
+                .audit["eventId"],
+            entry.audit["eventId"]
+        );
+        let mut draft = entry.clone();
+        draft.only_pending = false;
+        draft.request.source_name = Some(crate::machine_annotation::FLASH_SOURCE.into());
+        draft.request.status = Some("pending".into());
+        draft.audit["action"] = json!("saved");
+        draft.audit["occurredAtMs"] = json!(9000);
+        let db = open(&root).unwrap();
+        db.execute(
+            "INSERT INTO source_reviews VALUES(?,?,?,?,?,?)",
+            params![
+                "s",
+                user.username,
+                entry.request.source_path,
+                crate::machine_annotation::FLASH_SOURCE,
+                serde_json::to_string(&draft).unwrap(),
+                "old-draft"
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            status_for_paths(
+                &root,
+                "s",
+                &user.username,
+                std::slice::from_ref(&entry.request.source_path)
+            )
+            .unwrap()
+            .items[0]
+                .status,
+            "rejected"
+        );
+        assert!(store(&root, "s", &user.username, draft.clone())
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("SOURCE_REVIEW_CONFLICT"));
+        draft.request.status = Some("rejected".into());
+        db.execute(
+            "UPDATE source_reviews SET payload=? WHERE source_name=?",
+            params![
+                serde_json::to_string(&draft).unwrap(),
+                crate::machine_annotation::FLASH_SOURCE
+            ],
+        )
+        .unwrap();
+        assert!(
+            pending_batch_rejection(&root, "s", &user.username, &entry.request.source_path)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("多份本机待写结论")
+        );
+        assert_eq!(
+            status_for_paths(
+                &root,
+                "s",
+                &user.username,
+                std::slice::from_ref(&entry.request.source_path)
+            )
+            .unwrap()
+            .items[0]
+                .status,
+            "conflict"
+        );
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn durable_lookup_accepts_windows_verbatim_aliases_without_network_io() {
         let root = std::env::temp_dir().join(format!(

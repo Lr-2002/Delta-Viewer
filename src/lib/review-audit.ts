@@ -16,6 +16,7 @@ type Session = {
   clock: number;
 };
 let session: Session | null = null;
+let offlineWorkspace = false;
 type Queue = ReturnType<typeof reviewAuditQueue> | ReturnType<typeof durableReviewAuditQueue>;
 let queue: Queue | null = null;
 const nativeQueues = new Map<string, ReturnType<typeof durableReviewAuditQueue>>();
@@ -72,10 +73,15 @@ const report = () => {
   window.dispatchEvent(new CustomEvent("review-audit-snapshot", { detail: getReviewSyncStatus() }));
 };
 
-export function configureReviewAudit(username: string, serviceId: string) {
+export function configureReviewAudit(username: string, serviceId: string, offline = false) {
   const owner = `${serviceId}:${username}`;
   let next: Queue;
-  if (isTauriRuntime()) {
+  offlineWorkspace = offline;
+  if (offline) {
+    // Offline conclusions live in the isolated native result store. There is
+    // no company operation outbox, network sender or fabricated server ACK.
+    next = { push() {}, volatileCount: () => 0, count: () => 0, flush: async () => 0 };
+  } else if (isTauriRuntime()) {
     let native = nativeQueues.get(owner);
     if (!native) {
       native = durableReviewAuditQueue(localStorage, owner, {
@@ -224,7 +230,7 @@ export function recordReviewInteraction(
 export function reviewAuditRecorder(root?: string) {
   const current = session;
   return (action: ReviewAction, details: ReviewDetails = {}) => {
-    if (paused || !current || (root && current.root !== root)) return;
+    if (offlineWorkspace || paused || !current || (root && current.root !== root)) return;
     const occurredAtMs = Date.now(),
       elapsedMs = Math.max(0, Math.round(performance.now() - current.clock));
     const eventId = crypto.randomUUID();

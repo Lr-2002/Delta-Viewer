@@ -903,6 +903,45 @@ pub(crate) fn is_mp4_episode(root: &Path) -> bool {
     read_mp4_manifest(root).ok().flatten().is_some()
 }
 
+/// Pipeline SMPL IDs index encoded cam0 frames, not acquisition state batches.
+/// Reuse the player's capture clock; no decoding or duration stretching.
+pub(crate) fn skeleton_cam0_positions(root: &Path, ids: &[i64]) -> AppResult<Option<Vec<f64>>> {
+    let Some(manifest) = read_mp4_manifest(root)? else {
+        return Ok(None);
+    };
+    let Some(info) = manifest.streams.get("cam0") else {
+        return Ok(None);
+    };
+    let count = info["frame_count"].as_u64().unwrap_or(0);
+    let fps = info["fps"].as_f64().unwrap_or(60.0);
+    if !fps.is_finite() || fps <= 0.0 || ids.iter().any(|id| *id < 0 || *id as u64 >= count) {
+        return Err(AppError::Message(
+            "骨架 cam0 索引超出当前相机范围，无法可靠同步".into(),
+        ));
+    }
+    let capture = if is_regular_file(&root.join(".session_meta/manifest.json")) {
+        // Same explicit nominal-clock fallback as video_source on invalid times.
+        crate::recording_timing::load(root, "cam0", count, manifest.timeline_fps)
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    Ok(Some(
+        ids.iter()
+            .map(|id| {
+                capture.as_ref().map_or_else(
+                    || {
+                        manifest.stream_start_frame("cam0") as f64
+                            + *id as f64 * manifest.timeline_fps / fps
+                    },
+                    |times| times[*id as usize],
+                )
+            })
+            .collect(),
+    ))
+}
+
 pub(crate) fn is_segment_episode(root: &Path) -> bool {
     segment_folder_for_episode(root).is_some()
 }

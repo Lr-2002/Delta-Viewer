@@ -130,7 +130,7 @@ let demoCurrentUser: UserIdentity | null = null;
 let demoWorkspaceMode: WorkspaceMode | null = null;
 let demoOperationsData: SupervisionDashboardData | null = null;
 let sessionActivationRetryAttempts = 0;
-const DEMO_OFFLINE_IDENTITY: UserIdentity = { username: "offline", displayName: "离线本机" };
+const DEMO_OFFLINE_IDENTITY: UserIdentity = { username: "offline.local", displayName: "离线本机", role: "operator" };
 
 export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
   if (isTauriRuntime()) return invoke<AppUpdateInfo>("check_for_app_update");
@@ -161,8 +161,8 @@ export async function getAuthStatus(): Promise<AuthStatus> {
   }
   return {
     workspaceMode: demoWorkspaceMode,
-    userCenter: { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" },
-    currentUser: demoCurrentUser,
+    userCenter: demoWorkspaceMode === "offline" ? { configured: false, endpoint: null, serviceId: null } : { configured: true, endpoint: "demo://user-center", serviceId: "demo-user-center" },
+    currentUser: demoWorkspaceMode === "offline" ? DEMO_OFFLINE_IDENTITY : demoCurrentUser,
   };
 }
 
@@ -610,7 +610,7 @@ export async function undoCorrection(id: string, operationId: number): Promise<v
 
 const demoMachineReviews = new Map<string, import("../types").MachineReview>();
 const demoCommittedReviews = new Map<string, import("../types").MachineReview>();
-const demoReviewKey = (path: string, source?: string) => `${demoActor().username}:${path}:${source ?? "bailian_annotation.json"}`;
+const demoReviewKey = (path: string, source?: string) => `${demoWorkspaceMode === "offline" ? "offline:" : ""}${demoActor().username}:${path}:${source ?? "bailian_annotation.json"}`;
 export async function listMyMachineReviews(sourcePaths: string[]): Promise<import("../types").AccountReview[]> {
   if (isTauriRuntime()) return invoke("list_my_machine_reviews", { sourcePaths });
   const user = demoActor();
@@ -700,10 +700,16 @@ export const publishPendingSourceReviews = () => invoke<import("../types").Sourc
 export async function rejectPendingMachineReview(sourcePath: string, name: string, reason: string, elapsedMs: number): Promise<import("../types").MachineReview | null> {
   const event = { eventId: crypto.randomUUID(), sessionId: crypto.randomUUID(), episodeKey: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sourcePath))), byte => byte.toString(16).padStart(2, "0")).join(""), episodeName: name.slice(0, 256), action: "rejected" as const, occurredAtMs: Date.now(), elapsedMs, details: { reason, target: "批量不通过 · 本机待写回" } };
   let result: import("../types").MachineReview | null;
+  if (!isTauriRuntime()) {
+    const base = await loadMachineReview(sourcePath);
+    if (["approved", "rejected"].includes(base.status ?? "")) return null;
+    return saveMachineReview(sourcePath, base.sourceHash, base.revision, base.segments, undefined, "rejected", reason, [event.eventId, event.occurredAtMs], { base, audit: event });
+  }
   try {
     result = await invoke<import("../types").MachineReview | null>("reject_pending_machine_review", { sourcePath, reason, operationId: Date.now(), commitEvent: [event.eventId, event.occurredAtMs] });
   }
   catch (cause) {
+    if (String(cause).includes("SOURCE_REVIEW_ALREADY_SUBMITTED")) return null;
     if (!/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|I\/O 错误/.test(String(cause))) throw cause;
     return deferMachineReview({ sourcePath, sourceHash: "", expectedRevision: 0, segments: [], status: "rejected", rejectionReason: reason }, { outputHash: null } as import("../types").MachineReview, String(cause), event, true);
   }

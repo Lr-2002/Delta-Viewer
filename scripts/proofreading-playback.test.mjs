@@ -108,7 +108,14 @@ for (const callback of [true, false]) test(`proofreading uses actual video frame
   await page.getByRole("button", { name: "播放", exact: true }).click();
   await page.waitForFunction(() => Number(document.querySelector(".proofread-frame-input").value) > 2);
   assert.notEqual((await skeletonPixels()).hash, initialSkeleton.hash, "skeleton must move during playback");
-  assert.equal(await page.evaluate(() => Number(document.querySelector(".skeleton-canvas canvas").dataset.frameId) === Number(document.querySelector(".proofread-frame-input").value) * 2), true);
+  // Native presentation drives the skeleton before React commits its integer
+  // input. Compare against the actual camera clock, allowing one camera frame.
+  assert.equal(await page.evaluate(callback => {
+    const video=document.querySelector("video");
+    const clock=callback ? Number(video.dataset.presentedFrame)*2 : video.currentTime*60;
+    const skeleton=Number(document.querySelector(".skeleton-canvas canvas").dataset.frameId);
+    return Math.abs(skeleton-clock)<=2.01;
+  }, callback), true);
   await page.getByRole("button", { name: "定位机标片段 3" }).click();
   await page.getByRole("button", { name: "播放", exact: true }).click();
   await page.waitForFunction(() => { const frame = Number(document.querySelector(".proofread-frame-input").value); return frame > 60 && frame < 89; });

@@ -43,7 +43,7 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
         if(command==='reject_pending_machine_review') {
           window.fixture.calls.push(args);
           if(window.fixture.full) throw Error('REVIEW_STORAGE_FULL: NAS 空间不足');
-          if(window.fixture.existing) throw Error('SOURCE_REVIEW_EXISTS: 已有本机待写结果');
+          if(window.fixture.existing) return null;
           if(window.fixture.delay) await new Promise(resolve=>window.fixture.finish=resolve);
           if(args.sourcePath.endsWith('/2')) return null;
           if(args.sourcePath.endsWith('/3')) throw Error('目录只读，未保存');
@@ -116,12 +116,12 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
     await page.getByRole('button',{name:'其他原因',exact:true}).click();await reason.fill('无效数据');await acknowledge.check();await confirm.click();
     await page.getByText('成功 0 · 本机待写 3 · 跳过 0 · 失败 0 · 未执行 0',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>window.fixture.local.length),3);
-    assert.equal(await page.evaluate(()=>window.fixture.saved.length),0);
+    assert.equal(await page.evaluate(()=>window.fixture.saved.length),3,'local results must refresh sidebar status without claiming NAS success');
     assert.equal(await page.evaluate(()=>window.fixture.audit.filter(e=>e.action==='rejected').length),0);
     await page.getByRole('button',{name:'完成',exact:true}).click();
     await page.evaluate(()=>{window.fixture.full=false;window.fixture.existing=true;window.showBatch();});
     await page.getByRole('button',{name:'其他原因',exact:true}).click();await reason.fill('无效数据');await acknowledge.check();await confirm.click();
-    await page.getByText('成功 0 · 本机待写 0 · 跳过 0 · 失败 3 · 未执行 0',{exact:true}).waitFor();
+    await page.getByText('成功 0 · 本机待写 0 · 跳过 3 · 失败 0 · 未执行 0',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>window.fixture.local.length),3,'existing local results cannot be overwritten by repeat batch');
     await page.getByRole('button',{name:'完成',exact:true}).click();
     await page.evaluate(()=>{window.fixture.scanError=true;window.showBatch(true);});

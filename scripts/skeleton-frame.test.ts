@@ -33,3 +33,17 @@ test("maps an un-timestamped processed skeleton across the complete video durati
   assert.equal(middle?.mix, 0.5);
   assert.equal(skeletonSampleForTimeline(frames, 473, 0, 473)?.index, 633);
 });
+
+
+test("encoded camera ids use fractional acquisition positions without stretching or a constant offset", () => {
+  const frames = [
+    { ...frame(0), timelinePosition: 1.25 },
+    { ...frame(1), timelinePosition: 2.25 },
+    { ...frame(2), timelinePosition: 4.25 },
+  ];
+  const sample = skeletonSampleForTimeline(frames, 3.25, 0, 100, true);
+  assert.equal(sample?.before.frameId, 1);
+  assert.equal(sample?.after.frameId, 2);
+  assert.equal(sample?.mix, 0.5);
+  assert.equal(skeletonSampleForTimeline(frames, 1.25, 0, 100, true)?.index, 0);
+});

@@ -363,6 +363,33 @@ pub async fn access(
 }
 
 pub async fn require_editable(data: &Path, auth: &AuthState, directory: &Path) -> AppResult<()> {
+    if auth.workspace_mode()? == Some(crate::model::WorkspaceMode::Offline) {
+        auth.require_user()?;
+        let managed_cache = data.parent().unwrap_or(data).join("cloud-qc");
+        // Local draft durability must never stat an unavailable NAS. Selected
+        // source paths are absolute; compare the application cache lexically.
+        let key = |path: &Path| {
+            let value = path.to_string_lossy().replace('\\', "/");
+            let value = value
+                .strip_prefix("//?/")
+                .unwrap_or(&value)
+                .trim_end_matches('/')
+                .to_owned();
+            if cfg!(windows) {
+                value.to_lowercase()
+            } else {
+                value
+            }
+        };
+        let directory_key = key(directory);
+        let cache_key = key(&managed_cache);
+        if directory_key == cache_key || directory_key.starts_with(&format!("{cache_key}/")) {
+            return Err(fail(
+                "离线模式不能修改联网账号的云端工作区，请另选本地展示数据",
+            ));
+        }
+        return Ok(());
+    }
     let status = access(data, auth, directory, false).await?;
     if status["canEdit"] != true {
         return Err(fail("QC_TASK_NOT_CLAIMED"));

@@ -690,6 +690,8 @@ pub struct EpisodeData {
 #[serde(rename_all = "camelCase")]
 pub struct SkeletonFrame {
     pub frame_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeline_position: Option<f64>,
     pub joints: Vec<[f32; 3]>,
 }
 
@@ -697,6 +699,7 @@ pub struct SkeletonFrame {
 #[serde(rename_all = "camelCase")]
 pub struct SkeletonSeries {
     pub source_name: String,
+    pub joint_source: String,
     pub frame_count: u64,
     pub joint_count: u64,
     pub uses_timeline_frame_ids: bool,

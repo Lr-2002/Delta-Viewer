@@ -82,6 +82,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
   const [saving, setSaving] = useState(false);
   const [saveSlow, setSaveSlow] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [existingConclusion, setExistingConclusion] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [reload, setReload] = useState(0);
   const [selected, setSelected] = useState(0);
@@ -242,7 +243,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
       const camera = data.summary.streams.find(stream => stream.name === "cam0");
       if (active && camera?.frameCount && video?.mediaFps && video.mediaFps > 0) originalDurationMs.current = camera.frameCount / video.mediaFps * 1000;
     }).catch(() => { /* Unavailable source duration remains unknown. */ });
-    setLoading(true); setReview(null); stateRef.current = null; setError(""); setRecoveryMessages([]); setPlaying(false); setBoundariesConfirmed(false); setTimelineAdapted(false); setRangeRepairOpen(false); setRangeRepairConfirmed(false);
+    setLoading(true); setExistingConclusion(false); setReview(null); stateRef.current = null; setError(""); setRecoveryMessages([]); setPlaying(false); setBoundariesConfirmed(false); setTimelineAdapted(false); setRangeRepairOpen(false); setRangeRepairConfirmed(false);
     boundaryEditor.current.reset();
     void (async () => {
       await saves.get(root);
@@ -261,8 +262,13 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
       setReview(state); setEdits(segments); editsRef.current = segments;
       setSelected(segments.find((item) => !item.deleted)?.sourceIndex ?? 0);
       setFrame(segments.find((item) => !item.deleted)?.startFrame ?? 0);
+      if (!skeletonMode && state.pendingSourceWrite && ["approved", "rejected"].includes(state.status ?? "")) {
+        setExistingConclusion(true);
+        setRecoveryMessages(["已有审核结论保存在本机，等待写回数据目录。片段暂时只读，请先在上方待写回入口处理；应急草稿保留，未覆盖原结论。"]);
+        return;
+      }
       const ownRaw = localStorage.getItem(recoveryKey());
-      const raw = ownRaw ?? localStorage.getItem(legacyRecoveryKey());
+      const raw = ownRaw ?? (username === "offline:local:v1" ? null : localStorage.getItem(legacyRecoveryKey()));
       if (raw) {
         let recovery: Snapshot & { sourceHash: string };
         try { recovery = JSON.parse(raw); } catch { recovery = {} as typeof recovery; }
@@ -311,7 +317,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
   const descriptionIssues = active ? inspectDescription(active.description, textPolicy).filter(issue => !ignoredText.has(issueKey(active.sourceIndex, active.description, issue.original))) : [];
   const allTextIssues = rows.flatMap(row => inspectDescription(row.description, textPolicy).filter(issue => !ignoredText.has(issueKey(row.sourceIndex,row.description,issue.original))).map(issue=>({...issue,row})));
   const valid = result && primary && mapping && !mapping.error && !error;
-  const canEdit = Boolean(valid && review && !busy && !loading && !finishing && !auditCompletionError);
+  const canEdit = Boolean(valid && review && !existingConclusion && !busy && !loading && !finishing && !auditCompletionError);
   applyLabelRef.current = applyLibraryLabel;
   useEffect(() => {
     if (!canEdit || !active || !labelLibrary.length) return;
@@ -690,9 +696,9 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
         {auditCompletionError && <div role="alert" className="machine-message audit-completion-error"><span>{auditCompletionError}</span><button type="button" className="button button-secondary" disabled={finishing} onClick={() => void finishAuditCompletion()}>重试保存操作记录</button></div>}
         {saveSlow && saving && <div role="status" className="machine-message">保存耗时较长，正在等待本机保存或审核结论写入确认，尚未确认提交成功。{!recoveryError && "本机应急草稿已保留。"}请保持应用打开，等待结果后再重试；用户中心的操作记录上传独立进行。</div>}
         {saveError && <div role="alert" className="machine-message review-save-error"><span>{saveError}{!recoveryError && " 本机应急草稿已保留，恢复后请重试保存。"}</span><button type="button" className="button button-secondary" aria-label="重试保存复核" onClick={() => void persist(pending.current ?? { segments: editsRef.current, status: "pending" })}><RefreshCw size={15} />重试保存</button></div>}
-        <div className="quality-output" title={`${root}/${outputName}`}>{outputName}{!skeletonMode && <span>{review?.qcStatus === "approved" ? "已通过" : review?.qcStatus === "rejected" ? "未通过" : review?.qcStatus === "pending" ? "待审核" : "审核状态未知"}</span>}</div>
+        <div className="quality-output" title={`${root}/${outputName}`}>{outputName}{!skeletonMode && <span>{review?.pendingSourceWrite && review.status === "approved" ? "本机通过 · 待写回" : review?.pendingSourceWrite && review.status === "rejected" ? "本机不通过 · 待写回" : review?.qcStatus === "approved" ? "已通过" : review?.qcStatus === "rejected" ? "未通过" : review?.qcStatus === "pending" ? "待审核" : "审核状态未知"}</span>}</div>
         {!skeletonMode && review?.qcStatusError && <p role="alert" className="machine-message">当前目录审核状态读取失败，请重新读取：{review.qcStatusError}</p>}
-        {!skeletonMode && review?.qcStatus === "rejected" && review.qcRejectionReason && <p className="review-rejection-reason" title={review.qcRejectionReason}>不通过：{review.qcRejectionReason}</p>}
+        {!skeletonMode && ((review?.pendingSourceWrite && review.status === "rejected" && review.rejectionReason) || (review?.qcStatus === "rejected" && review.qcRejectionReason)) && <p className="review-rejection-reason">{review?.pendingSourceWrite ? "本机不通过（待写回）" : "不通过"}：{review?.pendingSourceWrite ? review.rejectionReason : review?.qcRejectionReason}</p>}
         {!skeletonMode && <div className="quality-decisions">
           <button ref={rejectButton} className="button button-secondary" disabled={!canEdit || saving} onClick={openRejection}><X size={16} />不通过</button>
           <button className="button button-primary" disabled={!canEdit || saving || !rows.length || (requiresBoundaryCheck && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>

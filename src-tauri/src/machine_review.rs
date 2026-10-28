@@ -3945,6 +3945,68 @@ mod tests {
     }
 
     #[test]
+    fn offline_mode_conclusion_is_durable_without_any_company_event_outbox() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, false);
+        fs::write(f.root.join("session.json"), br#"{"qc":""}"#).unwrap();
+        let auth = crate::identity::AuthState::default();
+        auth.set_workspace_mode(Some(crate::model::WorkspaceMode::Offline))
+            .unwrap();
+        let data = auth.data_root(&f.local).unwrap();
+        let user = auth.require_user().unwrap();
+        let state = load(&data, &f.root).unwrap();
+        let entry = action_entry(&f, &state, "approved");
+        let original_id = entry.audit["eventId"].clone();
+        let saved =
+            queue::submit_action_with_probe(&data, "offline-local-v1", &user, entry, &|_| {
+                Err(failure("REVIEW_STORAGE_FULL: isolated test"))
+            })
+            .unwrap();
+        assert!(saved.pending_source_write);
+        assert_eq!(
+            queue::status(&data, "offline-local-v1", &user.username, false)
+                .unwrap()
+                .pending,
+            1
+        );
+        assert_eq!(
+            crate::review_outbox::status(&data, "offline-local-v1", &user.username)
+                .unwrap()
+                .pending,
+            0
+        );
+        assert!(queue::get(
+            &f.local,
+            "s",
+            &user.username,
+            &f.root.to_string_lossy(),
+            None
+        )
+        .unwrap()
+        .is_none());
+        let original = queue::list(&data, "offline-local-v1", &user.username).unwrap();
+        assert_eq!(original[0].audit["eventId"], original_id);
+        let published = queue::publish_with_probe(
+            &data,
+            "offline-local-v1",
+            &user,
+            &AtomicBool::new(false),
+            &|_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(published.written, 1);
+        assert_eq!(published.remaining, 0);
+        assert_eq!(f.output()["_human_review"]["reviewer"], "离线本机");
+        assert_eq!(
+            crate::review_outbox::status(&data, "offline-local-v1", &user.username)
+                .unwrap()
+                .pending,
+            0
+        );
+        assert!(auth.require_managed_user().is_err());
+    }
+
+    #[test]
     fn action_drafts_never_touch_shared_files_and_approval_publishes_exact_edits() {
         use crate::source_review_queue as queue;
         let f = Fixture::new(0, true);

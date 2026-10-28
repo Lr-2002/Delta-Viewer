@@ -340,16 +340,23 @@ export const FramePanel = memo(function FramePanel({
     if (playing) {
       if (isPrimary || video.seeking || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return;
       const now = performance.now();
-      if (now - lastNativeCorrectionRef.current < 1000) return;
+      if (now - lastNativeCorrectionRef.current < 250) return;
       const drift = videoLocalSeconds - video.currentTime;
       // Correct a recovered secondary stream only inside buffered media. This
       // avoids turning small decoder jitter into repeated NAS Range requests.
       const targetBuffered = Array.from({ length: video.buffered.length }, (_, index) => index)
         .some((index) => video.buffered.start(index) <= videoLocalSeconds
           && video.buffered.end(index) >= videoLocalSeconds + 0.1);
-      if (Math.abs(drift) > 0.35 && targetBuffered) {
-        lastNativeCorrectionRef.current = now;
+      lastNativeCorrectionRef.current = now;
+      const nominalRate = speed * mediaClockRatio;
+      // Small decoder drift converges through a bounded rate adjustment. Keep
+      // decoding continuously instead of throwing away frames on every seek.
+      if (Math.abs(drift) > 0.75 && targetBuffered) {
+        video.playbackRate = nominalRate;
         video.currentTime = Math.max(0, videoLocalSeconds);
+      } else {
+        const correction = Math.abs(drift) <= 0.025 || !targetBuffered ? 0 : Math.max(-0.08, Math.min(0.08, drift * 0.3));
+        video.playbackRate = nominalRate * (1 + correction);
       }
       return;
     }
@@ -367,7 +374,7 @@ export const FramePanel = memo(function FramePanel({
     if (Math.abs(video.currentTime - videoLocalSeconds) > 0.001) {
       video.currentTime = Math.max(0, videoLocalSeconds);
     }
-  }, [exactFrameSeek, frameId, isPrimary, nativeVideoActive, playing, videoLocalSeconds, videoSegmentIndex, videoUrl]);
+  }, [exactFrameSeek, frameId, isPrimary, mediaClockRatio, speed, nativeVideoActive, playing, videoLocalSeconds, videoSegmentIndex, videoUrl]);
 
   useEffect(() => {
     if (!nativeVideoActive) return;

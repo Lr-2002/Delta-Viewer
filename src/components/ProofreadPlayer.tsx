@@ -31,6 +31,8 @@ interface Props {
 export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame, start, end, playing, onFrame, onPlaying, skeleton, skeletonError, segments, selected, editable, onBoundary, previewBoundary, onChoose, onBoundaryFocus }: Props) {
   const [fps, setFps] = useState(30);
   const nativeClock = useRef(false);
+  const skeletonPresenter = useRef<((frame: number) => void) | null>(null);
+  const presenterChanged = useCallback((presenter: ((frame: number) => void) | null) => { skeletonPresenter.current = presenter; }, []);
   const settled = useRef(-1);
   const latest = useRef({ frame, start, end, playing, onFrame, onPlaying });
   latest.current = { frame, start, end, playing, onFrame, onPlaying };
@@ -41,6 +43,7 @@ export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame,
     const current = latest.current;
     if (!current.playing) return;
     const next = Math.min(current.end, Math.max(current.start, Math.floor((position - offset) / step + 1e-4)));
+    skeletonPresenter.current?.(Math.min(offset + current.end * step, Math.max(offset + current.start * step, position)));
     current.onFrame(next);
     if (next >= current.end) current.onPlaying(false);
   }, [offset, step]);
@@ -97,7 +100,8 @@ export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame,
       segments={segments} selected={selected} onSeek={seek} onBoundary={onBoundary} previewBoundary={previewBoundary} onChoose={onChoose} onBoundaryFocus={onBoundaryFocus} />
     {(skeleton || skeletonError) && <div className="skeleton-side-panel">
       {skeleton ? <SkeletonViewer skeleton={skeleton} frameId={offset + frame * step}
-        timelineStartFrame={offset} timelineEndFrame={offset + (frameCount - 1) * step} playing={playing} />
+        timelineStartFrame={offset} timelineEndFrame={offset + (frameCount - 1) * step} playing={playing}
+        nativePlayback={nativeClock.current} onFramePresenterChange={presenterChanged} />
         : <section className="skeleton-load-error" aria-label="骨架数据"><strong>骨架数据不可用</strong><span>{skeletonError}</span></section>}
     </div>}
   </div>;

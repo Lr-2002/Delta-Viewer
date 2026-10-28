@@ -29,11 +29,17 @@ impl AuthState {
             .map_err(|_| AppError::Message("工作模式会话不可用".into()))
     }
 
+    pub fn data_root(&self, base: &std::path::Path) -> AppResult<std::path::PathBuf> {
+        Ok(if self.workspace_mode()? == Some(WorkspaceMode::Offline) {
+            base.join("offline-local")
+        } else {
+            base.to_path_buf()
+        })
+    }
+
     pub fn require_user(&self) -> AppResult<UserIdentity> {
         match self.workspace_mode()? {
-            Some(WorkspaceMode::Offline) => Err(AppError::Message(
-                "AUTH_REQUIRED: 离线模式已停用，请登录用户中心账号".into(),
-            )),
+            Some(WorkspaceMode::Offline) => Ok(offline_identity()),
             Some(WorkspaceMode::Managed) => self
                 .current_user()?
                 .ok_or_else(|| AppError::Message("AUTH_REQUIRED: 请先登录用户中心账号".into())),
@@ -115,9 +121,19 @@ impl AuthState {
             .lock()
             .map_err(|_| AppError::Message("工作模式会话不可用".into()))?;
         session.workspace_mode = mode;
-        session.current_user = None;
+        session.current_user = (mode == Some(WorkspaceMode::Offline)).then(offline_identity);
         session.user_center_token = None;
         Ok(())
+    }
+}
+
+/// Local provenance only; never a user-center account or management grant.
+pub fn offline_identity() -> UserIdentity {
+    UserIdentity {
+        username: "offline.local".into(),
+        display_name: "离线本机".into(),
+        role: Some("operator".into()),
+        can_manage: false,
     }
 }
 
@@ -215,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn offline_mode_cannot_bypass_login() {
+    fn offline_identity_has_local_access_but_never_managed_authority() {
         let state = AuthState::default();
         state
             .set_workspace_mode(Some(WorkspaceMode::Managed))
@@ -231,9 +247,46 @@ mod tests {
         state
             .set_workspace_mode(Some(WorkspaceMode::Offline))
             .unwrap();
-        assert_eq!(state.current_user().unwrap(), None);
-        assert!(state.require_user().is_err());
+        assert_eq!(
+            state.current_user().unwrap().unwrap().username,
+            "offline.local"
+        );
+        assert_eq!(state.require_user().unwrap(), super::offline_identity());
         assert!(state.require_managed_user().is_err());
+        assert!(state.managed_token().is_err());
+        state
+            .set_workspace_mode(Some(WorkspaceMode::Managed))
+            .unwrap();
+        assert!(state.require_user().is_err());
+    }
+
+    #[test]
+    fn offline_status_ignores_missing_or_broken_config_and_uses_a_separate_store() {
+        let root =
+            std::env::temp_dir().join(format!("viewer-offline-auth-{}", getrandom::u32().unwrap()));
+        std::fs::create_dir_all(&root).unwrap();
+        let state = AuthState::default();
+        state
+            .set_workspace_mode(Some(WorkspaceMode::Offline))
+            .unwrap();
+        for config in [None, Some("not valid JSON")] {
+            if let Some(config) = config {
+                std::fs::write(root.join("user-center.json"), config).unwrap();
+            }
+            let status = crate::user_center::auth_status(&root, &state).unwrap();
+            assert!(!status.user_center.configured);
+            assert!(status.user_center.endpoint.is_none());
+            assert_eq!(status.current_user.unwrap(), super::offline_identity());
+        }
+        assert_eq!(state.data_root(&root).unwrap(), root.join("offline-local"));
+        assert!(state.require_managed_user().is_err());
+        state
+            .set_workspace_mode(Some(WorkspaceMode::Managed))
+            .unwrap();
+        assert_eq!(state.data_root(&root).unwrap(), root);
+        assert!(state.current_user().unwrap().is_none());
+        assert!(crate::user_center::auth_status(&root, &state).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

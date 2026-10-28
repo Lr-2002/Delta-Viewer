@@ -50,20 +50,22 @@ export function skeletonSampleForTimeline(
   while (lower <= upper) {
     const middle = Math.floor((lower + upper) / 2);
     const candidate = frames[middle];
-    if (candidate.frameId === timelineFrame) {
+    const candidatePosition = candidate.timelinePosition ?? candidate.frameId;
+    if (candidatePosition === timelineFrame) {
       return sampleAtPosition(frames, middle);
     }
-    if (candidate.frameId < timelineFrame) lower = middle + 1;
+    if (candidatePosition < timelineFrame) lower = middle + 1;
     else upper = middle - 1;
   }
   const beforeIndex = Math.max(0, upper);
   const afterIndex = Math.min(frames.length - 1, lower);
   const before = frames[beforeIndex];
   const after = frames[afterIndex];
-  const frameSpan = after.frameId - before.frameId;
+  const beforePosition = before.timelinePosition ?? before.frameId;
+  const frameSpan = (after.timelinePosition ?? after.frameId) - beforePosition;
   const mix = frameSpan <= 0
     ? 0
-    : Math.max(0, Math.min(1, (timelineFrame - before.frameId) / frameSpan));
+    : Math.max(0, Math.min(1, (timelineFrame - beforePosition) / frameSpan));
   return sampleAtPosition(frames, beforeIndex + (afterIndex - beforeIndex) * mix);
 }
 

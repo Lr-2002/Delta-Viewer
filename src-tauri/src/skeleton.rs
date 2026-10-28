@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_COORDINATES: usize = 12_000_000;
-const JOINT_ARRAY_NAMES: [&str; 8] = [
+const JOINT_ARRAY_NAMES: [&str; 9] = [
+    "raw_smpl_joints",
     "joints",
     "joint_positions",
     "smpl_joints",
@@ -109,11 +110,11 @@ fn load_skeleton_archive(
     for name in joint_array_candidates(&names) {
         check_cancelled(cancelled)?;
         if let Some(value) = read_joint_frames(&mut archive, &name, cancelled)? {
-            joints = Some(value);
+            joints = Some((name, value));
             break;
         }
     }
-    let Some(joints) = joints else {
+    let Some((joint_source, joints)) = joints else {
         return Err(AppError::Message(format!(
             "未找到形状为 (帧, 关节, XYZ) 的浮点关节数组（字段: {}）",
             names.join(", ")
@@ -126,16 +127,36 @@ fn load_skeleton_archive(
     }
 
     let (frame_ids, uses_timeline_frame_ids) =
-        match read_frame_ids(&mut archive, &names, frame_count) {
+        match read_frame_ids(&mut archive, &names, &joint_source, frame_count) {
             Some(frame_ids) => (frame_ids, true),
             None => (fallback_frame_ids(states, frame_count), false),
         };
+    let camera_indices = matches!(joint_source.as_str(), "raw_smpl_joints" | "smpl_joints")
+        && names
+            .iter()
+            .any(|name| name == &format!("{joint_source}_frame_ids"));
+    if camera_indices && !uses_timeline_frame_ids {
+        return Err(AppError::Message(
+            "骨架专属帧索引无效，不能猜测相机时间对应关系".into(),
+        ));
+    }
+    let positions = if camera_indices {
+        crate::source::skeleton_cam0_positions(path.parent().unwrap_or(Path::new(".")), &frame_ids)?
+    } else {
+        None
+    };
     let frames = joints
         .into_iter()
         .zip(frame_ids)
-        .map(|(joints, frame_id)| SkeletonFrame { frame_id, joints })
+        .enumerate()
+        .map(|(index, (joints, frame_id))| SkeletonFrame {
+            frame_id,
+            joints,
+            timeline_position: positions.as_ref().map(|values| values[index]),
+        })
         .collect::<Vec<_>>();
     Ok(SkeletonSeries {
+        joint_source,
         source_name: path
             .file_name()
             .and_then(|name| name.to_str())
@@ -260,9 +281,11 @@ fn coordinates_from_array<T: Copy>(
 fn read_frame_ids(
     archive: &mut NpzReader<File>,
     names: &[String],
+    joint_source: &str,
     expected_len: usize,
 ) -> Option<Vec<i64>> {
-    for preferred in FRAME_ID_ARRAY_NAMES {
+    let specific = format!("{joint_source}_frame_ids");
+    for preferred in std::iter::once(specific.as_str()).chain(FRAME_ID_ARRAY_NAMES) {
         let Some(name) = names
             .iter()
             .find(|name| name.eq_ignore_ascii_case(preferred))
@@ -270,9 +293,15 @@ fn read_frame_ids(
             continue;
         };
         if let Some(ids) = read_integer_array(archive, name) {
-            if ids.len() == expected_len && ids.iter().all(|id| *id >= 0) {
+            if ids.len() == expected_len
+                && ids.iter().all(|id| *id >= 0)
+                && ids.windows(2).all(|pair| pair[0] < pair[1])
+            {
                 return Some(ids);
             }
+        }
+        if preferred == specific {
+            return None;
         }
     }
     None
@@ -384,6 +413,51 @@ mod tests {
         assert!(!skeleton.uses_timeline_frame_ids);
         assert_eq!(skeleton.frames[0].frame_id, 0);
         assert_eq!(skeleton.frames[2].frame_id, 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn raw_same_frame_joints_win_and_cam0_ids_follow_acquisition_clock() {
+        let root = test_root("raw-cam0");
+        fs::create_dir_all(root.join(".session_meta")).unwrap();
+        fs::write(root.join(".session_meta/manifest.json"), r#"{"storage_format":"h264-split-mp4-v1","streams":{"cam0":{"fps":30,"frame_count":3}}}"#).unwrap();
+        fs::write(root.join("states.jsonl"), concat!(
+            "{\"batch_id\":0,\"capture_time_ns\":0,\"capture_boottime_ns\":1000000000,\"availability\":{\"cam0\":false}}\n",
+            "{\"batch_id\":1,\"capture_time_ns\":33333333,\"availability\":{\"cam0\":true}}\n"
+        )).unwrap();
+        let path = root.join("smpl_skeleton.npz");
+        let raw = Array3::from_elem((3, 24, 3), 9.0_f32);
+        let filtered = Array3::from_elem((3, 24, 3), 1.0_f32);
+        let mut archive = NpzWriter::new(File::create(&path).unwrap());
+        archive.add_array("raw_smpl_joints", &raw).unwrap();
+        archive.add_array("smpl_joints", &filtered).unwrap();
+        archive
+            .add_array(
+                "raw_smpl_joints_frame_ids",
+                &Array1::from_vec(vec![0_i64, 1, 2]),
+            )
+            .unwrap();
+        archive
+            .add_array("frame_ids", &Array1::from_vec(vec![42_i64, 43, 44]))
+            .unwrap();
+        archive.finish().unwrap();
+        let (skeleton, error) =
+            load_optional_skeleton(&root, &[], &AtomicBool::new(false)).unwrap();
+        assert!(error.is_none(), "{error:?}");
+        let skeleton = skeleton.unwrap();
+        assert_eq!(skeleton.joint_source, "raw_smpl_joints");
+        assert_eq!(skeleton.frames[0].joints[0], [9.0; 3]);
+        assert_eq!(skeleton.frames[0].frame_id, 0);
+        assert_eq!(skeleton.frames[0].timeline_position, Some(1.0));
+        assert_eq!(skeleton.frames[2].timeline_position, Some(3.0));
+        fs::create_dir(root.join("times")).unwrap();
+        fs::write(root.join("times/cam0.json"),r#"{"schema":"dohc.recording.stream-times.v1","clock":"CLOCK_BOOTTIME","unit":"ns","stream":"cam0","timestamps_ns":[1030000000,1060000000,1120000000]}"#).unwrap();
+        let (skeleton, error) =
+            load_optional_skeleton(&root, &[], &AtomicBool::new(false)).unwrap();
+        assert!(error.is_none());
+        let frames = skeleton.unwrap().frames;
+        assert!((frames[0].timeline_position.unwrap() - 0.9).abs() < 1e-7);
+        assert!((frames[2].timeline_position.unwrap() - 3.6).abs() < 1e-7);
         fs::remove_dir_all(root).unwrap();
     }
 
