@@ -201,7 +201,12 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
         paused.mediaTimes, "buffering must freeze the media clocks");
       assert.ok(await page.evaluate(() => [...document.querySelectorAll("video")].every((video) => video.paused)));
       await page.evaluate(() => { delete document.querySelectorAll("video")[1].buffered; });
-      await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => !v.paused));
+      await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => !v.paused && !v.seeking));
+      const resumedAt = await page.evaluate(() => document.querySelector("video").currentTime);
+      // Recovery may legitimately align a paused camera. Measure the speed
+      // change only after that seek has finished and playback has progressed.
+      await page.waitForFunction(time => [...document.querySelectorAll("video")]
+        .every(v => !v.paused && !v.seeking && v.currentTime > time + .15), resumedAt);
       const before = await page.evaluate(() => window.__nativeStats.events.filter((e) => e.event === "seeking" && e.stream === "cam0").length);
       await page.evaluate(() => window.__nativePlayback.speed(1.25));
       await page.waitForTimeout(250);

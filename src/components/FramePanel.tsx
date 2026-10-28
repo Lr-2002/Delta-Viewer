@@ -316,10 +316,9 @@ export const FramePanel = memo(function FramePanel({
     video.addEventListener("canplay", resume);
     video.addEventListener("seeked", resume);
     const timer = window.setInterval(resume, 100);
-    if (video.readyState >= HTMLMediaElement.HAVE_METADATA
-      && Math.abs(video.currentTime - requestedVideoTimeRef.current) > 0.03) {
-      video.currentTime = requestedVideoTimeRef.current;
-    }
+    // resume() already aligns a paused camera when needed. Seeking again on
+    // every shared-hold transition can rewind a running primary to a stale
+    // presentation callback and trigger another disk read.
     resume();
     return () => {
       active = false;
