@@ -1,4 +1,4 @@
-import { flushReviewAuditQueue, getReviewAuditQueueStatus, isTauriRuntime, persistReviewAudit, sendReviewAudit } from "./backend";
+import { reviewIdentityPath, flushReviewAuditQueue, getReviewAuditQueueStatus, isTauriRuntime, persistReviewAudit, sendReviewAudit } from "./backend";
 import { reviewAuditQueue } from "./review-audit-queue";
 import { durableReviewAuditQueue } from "./durable-review-audit-queue";
 import type { ReviewAction, ReviewDetails, ReviewAuditEvent } from "./review-audit-types";
@@ -35,7 +35,7 @@ function materializePendingReviewAudit(): Promise<void> {
     for (const [id, pending] of pendingWrites) {
       const current = pending.session;
       if (!current.resolvedKey) {
-        const buffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(current.root));
+        const buffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(await reviewIdentityPath(current.root)));
         current.resolvedKey = Array.from(new Uint8Array(buffer), byte => byte.toString(16).padStart(2, "0")).join("");
       }
       current.queue.push({ ...pending.event, episodeKey: current.resolvedKey });
@@ -156,7 +156,7 @@ export function requireReviewAuditSession(root: string): void {
 export async function createDeferredReviewEvent(root: string, name: string, action: "saved" | "approved" | "rejected", reason: string): Promise<ReviewAuditEvent> {
   requireReviewAuditSession(root);
   const current = session!;
-  const episodeKey = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(root))), byte => byte.toString(16).padStart(2, "0")).join("");
+  const episodeKey = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(await reviewIdentityPath(root)))), byte => byte.toString(16).padStart(2, "0")).join("");
   return { eventId: crypto.randomUUID(), sessionId: current.id, episodeKey, episodeName: name.slice(0, 256), action,
     occurredAtMs: Date.now(), elapsedMs: Math.max(0, Math.round(performance.now() - current.clock)), details: { reason, target: "本机待写回审核结果" } };
 }
@@ -173,7 +173,7 @@ export async function recordCommittedReviewEvent(event: ReviewAuditEvent): Promi
 }
 
 export async function reviewReceiptValue(root: string, event: ReviewAuditEvent, storage: "local" | "nas", sourceName?: string): Promise<string> {
-  const path = root.replaceAll("\\", "/").split("/").filter(Boolean);
+  const path = (await reviewIdentityPath(root)).replaceAll("\\", "/").split("/").filter(Boolean);
   const index = path.findIndex(part => part.toLowerCase() === "delta-d1" || part === "一汽data");
   const relative = index < 0 ? null : path.slice(index).join("/").toLowerCase();
   const identityKey = relative ? Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(relative))), byte => byte.toString(16).padStart(2, "0")).join("") : null;
@@ -257,7 +257,7 @@ export function updateReviewFrame(frame: number) {
 export async function recordBatchRejection(root: string, name: string, revision: string, reason: string, elapsedMs: number) {
   const targetQueue = queue;
   if (!targetQueue) throw Error("审核结果已保存，但监管队列未就绪，请勿关闭应用");
-  const episodeKey = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(root))), byte => byte.toString(16).padStart(2, "0")).join("");
+  const episodeKey = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(await reviewIdentityPath(root)))), byte => byte.toString(16).padStart(2, "0")).join("");
   targetQueue.push({ eventId: crypto.randomUUID(), sessionId: crypto.randomUUID(), episodeKey,
     episodeName: name.slice(0, 256), action: "rejected", occurredAtMs: Date.now(), elapsedMs: Math.max(0, Math.round(elapsedMs)),
     details: { target: "批量不通过", revision, reason } });

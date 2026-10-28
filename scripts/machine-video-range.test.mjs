@@ -38,6 +38,7 @@ async function fixture(t, { failSave = false, staleCount = false } = {}) {
     window.__TAURI_INTERNALS__ = {
       convertFileSrc: p => p,
       invoke: async (command,args) => {
+        if (command === "review_identity_path") return args.path;
         if (["get_review_audit_queue_status","persist_review_audit","flush_review_audit_queue"].includes(command)) return {pending:0,blocked:0,error:""};
         if (command === "list_machine_annotation_sources") return ["bailian_annotation.json"];
         if (command === "load_machine_annotation") return structuredClone(annotation);

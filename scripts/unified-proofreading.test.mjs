@@ -20,6 +20,7 @@ test("audit disk failure blocks completion; retry preserves the saved conclusion
   });
   await context.route("**/__native-audit", route => route.fulfill({ contentType: "application/javascript", body: `
     export const isTauriRuntime = () => true;
+    export const reviewIdentityPath = async path => path;
     export async function persistReviewAudit(username, serviceId, events) {
       if (window.failAllAudit || (window.failDecisionAudit && events.some(e => ["approved", "rejected"].includes(e.action)))) throw Error("模拟磁盘不可用");
       for (const event of events) window.auditDisk.set(event.eventId, event);
@@ -343,7 +344,9 @@ test("restart restores the batch and current selection despite an older configur
     await open(page, "demoScenario=session-activation&machineAnnotation=present", "resume-alice");
     await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
     await page.locator(".episode-item").filter({ hasText: "session-b" }).dblclick();
-    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    await page.waitForFunction(() => document.querySelector('.episode-item.selected')?.textContent?.includes('session-b')
+      && document.querySelector('[aria-label="复核动作描述"]')?.disabled === false
+      && JSON.parse(localStorage.getItem('dohc-viewer.review-resume.v1:resume-alice')??'null')?.episodeRoot === 'demo://session-activation/session-b');
     await page.close();
     page = await context.newPage();
     await open(page, "demoScenario=session-activation&machineAnnotation=present", "resume-alice");

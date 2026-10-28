@@ -561,6 +561,28 @@ if (!browserExecutable) {
     }
   });
 
+  test("batch rename entry opens a usable confirmation and never edits files in browser demo", async () => {
+    for (const viewport of [{width:1440,height:920}, {width:390,height:844}]) {
+      const context = await browser.newContext({viewport});
+      const page = await context.newPage();
+      await registerDemoAccount(page, baseUrl, `rename-${viewport.width}`);
+      await page.getByRole("button", {name:"修改批次名称", exact:true}).click();
+      const dialog = page.getByRole("dialog", {name:"修改批次文件夹名称"});
+      await dialog.waitFor();
+      await page.getByLabel("新文件夹名称").fill("2026-07-13-Renamed");
+      await page.getByRole("button", {name:"确认更名", exact:true}).click();
+      await dialog.getByRole("alert").filter({hasText:"批次文件夹更名需要桌面端"}).waitFor();
+      assert.equal(await page.locator(".sidebar-path").textContent(), "/demo/2026-07-13_07-34-12");
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      if (skeletonScreenshotDirectory) {
+        mkdirSync(resolve(root, skeletonScreenshotDirectory), {recursive:true});
+        await page.screenshot({path:resolve(root, skeletonScreenshotDirectory, `rename-${viewport.width}.png`),fullPage:true});
+      }
+      await page.getByRole("button", {name:"关闭更名窗口"}).click();
+      await context.close();
+    }
+  });
+
   test("SMPL skeleton renders beside synchronized frames and stacks on a narrow viewport", async () => {
     for (const viewport of [{ width: 1440, height: 920 }, { width: 960, height: 680 }, { width: 390, height: 844 }]) {
       const context = await browser.newContext({ viewport });
@@ -639,10 +661,12 @@ if (!browserExecutable) {
           return hash >>> 0;
         });
         const initialChecksum = await checksum();
+        const floorY = await canvas.getAttribute("data-floor-y");
         for (let step = 0; step < 15; step += 1) await page.getByRole("button", { name: "下一帧" }).click();
         await page.waitForFunction(() => document.querySelector(".segment-frame-readout")?.textContent?.includes("帧 15 / 195"));
         await page.waitForTimeout(100);
         const animatedChecksum = await checksum();
+        assert.equal(await canvas.getAttribute("data-floor-y"), floorY, "floor moved during playback");
         assert.notEqual(animatedChecksum, initialChecksum, "skeleton canvas did not update with playback frame");
 
         await canvas.scrollIntoViewIfNeeded();

@@ -379,8 +379,12 @@ jobs:
       - name: Build unsigned offline NSIS installer
         run: pnpm tauri build --ci --bundles nsis --no-sign --config "$env:RUNNER_TEMP\tauri-release-installer.json"
 
-      - name: Verify native Windows QC catalog and export behavior
-        run: cargo test --release --manifest-path src-tauri/Cargo.toml review_catalog::tests
+      - name: Verify native Windows QC catalog, batch rename and pending writeback
+        run: |
+          cargo test --release --manifest-path src-tauri/Cargo.toml review_catalog::tests
+          cargo test --release --manifest-path src-tauri/Cargo.toml batch_rename::tests
+          cargo test --release --manifest-path src-tauri/Cargo.toml explicit_batch_rename
+          cargo test --release --manifest-path src-tauri/Cargo.toml task_index::tests
 
       - name: Verify native Windows updater network regressions
         shell: pwsh
@@ -591,6 +595,12 @@ jobs:
           bash scripts/make-dmg.sh \
             --app "$app" \
             --output "$bundle_root/dmg/Delta-Viewer_${{ needs.controller.outputs.version }}_arm64.dmg"
+
+      - name: Verify native macOS batch rename and pending writeback
+        run: |
+          cargo test --release --manifest-path src-tauri/Cargo.toml batch_rename::tests
+          cargo test --release --manifest-path src-tauri/Cargo.toml explicit_batch_rename
+          cargo test --release --manifest-path src-tauri/Cargo.toml task_index::tests
 
       - name: Verify ad-hoc seal, Gatekeeper state, DMG, resources, and startup
         shell: bash

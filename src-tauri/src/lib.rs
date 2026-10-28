@@ -3,6 +3,7 @@
 mod adaptive_preview;
 mod annotations;
 mod assigned_source;
+mod batch_rename;
 mod cloud_qc;
 mod dataset_layout;
 mod episode_metadata;
@@ -1711,7 +1712,9 @@ async fn resolve_source_path(
     batch_root: Option<bool>,
 ) -> Result<String, String> {
     auth.require_user().map_err(|e| e.to_string())?;
-    let probe_root = dataset_layout::share_root(Path::new(&path)).unwrap_or(Path::new(&path));
+    let probe_root = dataset_layout::share_root(Path::new(&path))
+        .or_else(|| Path::new(&path).parent())
+        .unwrap_or(Path::new(&path));
     ensure_source_directory_responsive(&probe_root.to_string_lossy()).await?;
     let data_root = app_data_root(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -1724,6 +1727,90 @@ async fn resolve_source_path(
         } else {
             resolved.to_string_lossy().into_owned()
         })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn review_identity_path(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    path: String,
+) -> Result<String, String> {
+    auth.require_user().map_err(|e| e.to_string())?;
+    let data = app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<String> {
+        let old = dataset_layout::historical_paths_cached(&data, Path::new(&path))?;
+        Ok(old
+            .last()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or(path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn rename_batch_folder(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    index_cache: State<'_, SourceIndexCache>,
+    source_path: String,
+    name: String,
+    operation_id: u64,
+) -> Result<batch_rename::RenameResult, String> {
+    let user = auth.require_managed_user().map_err(|e| e.to_string())?;
+    let task = control.start(operation_id)?;
+    let data = app_data_root(&app)?;
+    let (source, key) = tauri::async_runtime::spawn_blocking({
+        let data = data.clone();
+        move || -> error::AppResult<_> {
+            let source = batch_rename::source(Path::new(&source_path), &data)?;
+            let key = batch_rename::claim_key(&source)?;
+            Ok((source, key))
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if !user.is_manager() {
+        if let Some(key) = key {
+            let claims = user_center::task_claims(
+                &data,
+                auth.inner(),
+                "lookup",
+                serde_json::json!({"keys":[key]}),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let values = claims["claims"]
+                .as_array()
+                .ok_or("无法核对批次领取归属，请重试")?;
+            if values
+                .iter()
+                .any(|claim| claim["username"].as_str() != Some(user.username.as_str()))
+            {
+                return Err("BATCH_RENAME_FAILED: 该批次由其他审核员领取，请联系管理员更名".into());
+            }
+        }
+    }
+    let index_cache = index_cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> error::AppResult<_> {
+        let _task = task;
+        if _task.cancelled.load(Ordering::Acquire) {
+            return Err(error::AppError::Cancelled);
+        }
+        let mut renamed = batch_rename::rename(&data, &source, &name)?;
+        if let Err(error) = index_cache.clear() {
+            renamed
+                .warning
+                .push_str(&format!(" 本机读取缓存清理失败，请重新加载：{error}"));
+        }
+        Ok(renamed)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2434,6 +2521,8 @@ pub fn run() {
             list_annotated_episodes,
             scan_source,
             resolve_source_path,
+            rename_batch_folder,
+            review_identity_path,
             load_episode,
             validate_episode,
             prepare_import_workspace,

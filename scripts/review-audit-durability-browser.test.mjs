@@ -26,6 +26,10 @@ test("audit events survive delayed materialization, disk failures, and update ba
     await page.addInitScript(() => {
       window.disk = new Map(); window.messages = []; window.failDisk = false;
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === "review_identity_path") {
+          if (window.failIdentity) throw Error("local aliases unavailable");
+          return args.path.replace("/fixture/new/", "/fixture/old/");
+        }
         if (command === "persist_review_audit") {
           if (window.failDisk) throw Error("disk unavailable");
           if (window.diskGate) await window.diskGate;
@@ -96,6 +100,24 @@ test("audit events survive delayed materialization, disk failures, and update ba
     assert.ok(retryResult.messages.some(message => message.includes("尚未落盘")));
     assert.ok(!retryResult.messages.at(-1).includes("key unavailable"), "recovery clears materialization error");
     await retry.close();
+
+    const renamed = await page();
+    const identity = await renamed.evaluate(async () => {
+      const a = window.audit; a.configureReviewAudit("alice", "service");
+      a.observeReviewInteractions(); window.failIdentity = true;
+      a.beginReviewAudit("/fixture/new/sample", "sample");
+      let failed = false;
+      try { await a.persistPendingReviewAudit(); } catch { failed = window.closeBlocked(); }
+      window.failIdentity = false;
+      await a.persistPendingReviewAudit();
+      const expected = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode("/fixture/old/sample"))), v=>v.toString(16).padStart(2,"0")).join("");
+      const event = await a.createDeferredReviewEvent("/fixture/new/sample", "sample", "rejected", "无效数据");
+      return {failed,expected,key:[...window.disk.values()][0].episodeKey,eventKey:event.episodeKey};
+    });
+    assert.equal(identity.failed,true);
+    assert.equal(identity.key,identity.expected);
+    assert.equal(identity.eventKey,identity.expected);
+    await renamed.close();
 
     const update = await page();
     const updateResult = await update.evaluate(async () => {

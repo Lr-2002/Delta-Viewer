@@ -204,10 +204,25 @@ pub fn list_account_reviews(
     for path in paths {
         let root = Path::new(path);
         let local_path = account_review_path(data_root, username, root);
-        let local = read_account_review(&local_path)
+        let mut local = read_account_review(&local_path)
             .ok()
             .flatten()
             .filter(|item| item.username == username);
+        // A renamed batch retains account-specific history; do not invent or
+        // copy conclusions into the shared source when following old paths.
+        for old in crate::dataset_layout::historical_paths_cached(data_root, root)? {
+            if let Some(record) =
+                read_account_review(&account_review_path(data_root, username, &old))?
+                    .filter(|item| item.username == username)
+            {
+                if local
+                    .as_ref()
+                    .is_none_or(|current| current.updated_at_ms < record.updated_at_ms)
+                {
+                    local = Some(record);
+                }
+            }
+        }
         let shared = machine_annotation::read_bytes(&root.join("session.json"))
             .ok()
             .flatten()
@@ -3780,6 +3795,98 @@ mod tests {
             loaded.segments.iter().filter(|s| !s.deleted).count(),
             saved.segments.iter().filter(|s| !s.deleted).count()
         );
+    }
+
+    #[test]
+    fn explicit_batch_rename_preserves_offline_draft_conclusion_event_and_postrename_publication() {
+        use crate::source_review_queue as queue;
+        for status in ["pending", "approved", "rejected"] {
+            let mut f = Fixture::new(0, true);
+            let root = f
+                .temp
+                .canonicalize()
+                .unwrap()
+                .join("Delta-D1/D1-Daily/2026-10-28-Batch/sample");
+            fs::create_dir_all(root.parent().unwrap()).unwrap();
+            fs::rename(&f.root, &root).unwrap();
+            f.root = root;
+            fs::create_dir_all(&f.local).unwrap();
+            let mut state = load(&f.local, &f.root).unwrap();
+            state.segments[0].description = "更名之前的人工草稿".into();
+            state.segments[1].deleted = true;
+            let entry = action_entry(&f, &state, status);
+            let event = entry.audit.clone();
+            queue::store(&f.local, "service", "alice", entry).unwrap();
+            let original_root = f.root.clone();
+            let result = crate::batch_rename::rename(
+                &f.local,
+                f.root.parent().unwrap(),
+                "2026-10-28-Renamed",
+            )
+            .unwrap();
+            f.root = PathBuf::from(result.destination_path).join("sample");
+            let stored = queue::get(
+                &f.local,
+                "service",
+                "alice",
+                &f.root.to_string_lossy(),
+                Some(machine_annotation::DEFAULT_SOURCE),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(stored.request.source_path, original_root.to_string_lossy());
+            assert_eq!(stored.audit, event);
+            assert_eq!(stored.request.segments[0].description, "更名之前的人工草稿");
+            assert!(stored.request.segments[1].deleted);
+            assert!(queue::get(
+                &f.local,
+                "service",
+                "bob",
+                &f.root.to_string_lossy(),
+                Some(machine_annotation::DEFAULT_SOURCE)
+            )
+            .unwrap()
+            .is_none());
+            let before = crate::review_outbox::batch(&f.local, "service", "alice", false).unwrap();
+            let identity =
+                serde_json::from_str::<Value>(before[0]["details"]["value"].as_str().unwrap())
+                    .unwrap()["identityKey"]
+                    .clone();
+            if status == "pending" {
+                assert!(!f.root.join(OUTPUT).exists());
+                let restored = queue::local_view(&stored, &action_user(), None);
+                assert_eq!(
+                    restored.review.segments[0].description,
+                    "更名之前的人工草稿"
+                );
+            } else {
+                let result = queue::publish_with_probe(
+                    &f.local,
+                    "service",
+                    &action_user(),
+                    &AtomicBool::new(false),
+                    &|_| Ok(()),
+                )
+                .unwrap();
+                assert_eq!(
+                    (result.written, result.remaining),
+                    (1, 0),
+                    "{:?}",
+                    result.errors
+                );
+                assert!(f.root.join(OUTPUT).exists());
+                let after =
+                    crate::review_outbox::batch(&f.local, "service", "alice", false).unwrap();
+                assert_eq!(after.len(), 2);
+                for e in after {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(e["details"]["value"].as_str().unwrap())
+                            .unwrap()["identityKey"],
+                        identity
+                    );
+                }
+            }
+        }
     }
 
     fn action_entry(

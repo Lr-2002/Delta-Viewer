@@ -7,13 +7,17 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Default, Deserialize, Serialize)]
 pub struct Registry {
     #[serde(default)]
-    moves: Vec<Move>,
+    pub(crate) moves: Vec<Move>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 #[derive(Deserialize, Serialize)]
-struct Move {
-    source: String,
-    destination: String,
-    state: String,
+pub(crate) struct Move {
+    pub(crate) source: String,
+    pub(crate) destination: String,
+    pub(crate) state: String,
+    #[serde(flatten)]
+    pub(crate) extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 fn safe(value: &str) -> bool {
@@ -38,24 +42,78 @@ pub fn share_root(path: &Path) -> Option<&Path> {
 
 impl Registry {
     pub fn read(path: &Path) -> AppResult<Self> {
-        let Some(share) = share_root(path) else {
+        let Some((anchor, file)) = registry_location(path)? else {
             return Ok(Self::default());
         };
-        let directory = share.join("Delta-Viewer-TaskIndex/Delta-D1");
-        let bytes = match crate::machine_annotation::read_bytes(&directory.join("layout.json"))? {
+        let bytes = match crate::machine_annotation::read_bytes(&file)? {
             Some(bytes) => Some(bytes),
-            None => {
-                crate::machine_annotation::read_bytes(&directory.join("layout.last-good.json"))?
-            }
+            None => crate::machine_annotation::read_bytes(
+                &file.with_file_name("layout.last-good.json"),
+            )?,
         };
         let Some(bytes) = bytes else {
             return Ok(Self::default());
         };
-        let registry: Self = serde_json::from_slice(&bytes)?;
+        let mut registry: Self = serde_json::from_slice(&bytes)?;
         if registry.moves.len() > 10_000
             || registry.moves.iter().any(|m| {
-                !safe(&m.source) || !safe(&m.destination) || !m.destination.starts_with("Delta-D1/")
+                !safe(&m.source)
+                    || !safe(&m.destination)
+                    || (share_root(path).is_some()
+                        && !m.destination.starts_with("Delta-D1/")
+                        && !m.destination.starts_with("一汽data/"))
             })
+        {
+            return Err(AppError::Message(
+                "DATASET_LAYOUT_INVALID: 目录迁移映射无效，未猜测目标目录".into(),
+            ));
+        }
+        for movement in &mut registry.moves {
+            if movement.state == "prepared" && safe(&movement.source) && safe(&movement.destination)
+            {
+                let old = std::fs::symlink_metadata(anchor.join(&movement.source));
+                let new = std::fs::symlink_metadata(anchor.join(&movement.destination));
+                if old
+                    .as_ref()
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                    && new
+                        .as_ref()
+                        .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+                {
+                    let id = movement.extra.get("renameId").and_then(|v| v.as_str());
+                    let marker = crate::machine_annotation::read_bytes(
+                        &anchor
+                            .join(&movement.destination)
+                            .join(".delta-viewer-batch.json"),
+                    )?
+                    .map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes))
+                    .transpose()?;
+                    if id.is_none() || marker.as_ref().and_then(|m| m["renameId"].as_str()) != id {
+                        return Err(AppError::Message("DATASET_LAYOUT_INVALID: 更名中断后无法确认目标身份，请联系管理员检查映射".into()));
+                    }
+                    movement.state = "completed".into();
+                }
+            }
+        }
+        // A prepared intent whose original directory still exists never moved.
+        // Discard it in memory so a failed Windows rename can be retried safely.
+        let mut retained = Vec::new();
+        for movement in registry.moves {
+            if movement.state == "prepared" {
+                match std::fs::symlink_metadata(anchor.join(&movement.source)) {
+                    Ok(_) => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(AppError::Message("DATASET_LAYOUT_INVALID: 更名中断，源和目标均无法确认，请恢复磁盘连接后重试".into())),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            retained.push(movement);
+        }
+        registry.moves = retained;
+        if registry.moves.len() > 10_000
+            || registry
+                .moves
+                .iter()
+                .any(|m| !safe(&m.source) || !safe(&m.destination))
         {
             return Err(AppError::Message(
                 "DATASET_LAYOUT_INVALID: 目录迁移映射无效，未猜测目标目录".into(),
@@ -132,12 +190,12 @@ impl Registry {
 
 /// Resolve only registered moves, never search by a repeated episode name.
 pub fn resolve(path: &Path) -> AppResult<PathBuf> {
-    let Some(share) = share_root(path) else {
+    let Some((share, _)) = registry_location(path)? else {
         return Ok(path.to_path_buf());
     };
     let registry = Registry::read(path)?;
     let relative = path
-        .strip_prefix(share)
+        .strip_prefix(&share)
         .unwrap()
         .to_string_lossy()
         .replace('\\', "/");
@@ -184,6 +242,23 @@ pub fn resolve(path: &Path) -> AppResult<PathBuf> {
 /// The durable offline queue must never consult the unavailable NAS.
 pub fn cache_registry(data_root: &Path, path: &Path) -> AppResult<()> {
     let registry = Registry::read(path)?;
+    if share_root(path).is_none() && !registry.moves.is_empty() {
+        let Some((anchor, _)) = registry_location(path)? else {
+            return Ok(());
+        };
+        std::fs::create_dir_all(data_root)?;
+        let file = data_root.join("local-directory-layouts.json");
+        let _lock =
+            crate::machine_review::lock_file(&data_root.join(".local-directory-layouts.lock"))?;
+        let mut layouts: std::collections::BTreeMap<String, Registry> =
+            crate::machine_annotation::read_bytes(&file)?
+                .map(|bytes| serde_json::from_slice(&bytes))
+                .transpose()?
+                .unwrap_or_default();
+        layouts.insert(anchor.to_string_lossy().into_owned(), registry);
+        crate::machine_review::atomic_json(&file, &serde_json::to_value(layouts)?)?;
+        return Ok(());
+    }
     if share_root(path).is_some() && !registry.moves.is_empty() {
         // A fresh/unconfigured dataset must not erase known offline relocation history.
         std::fs::create_dir_all(data_root)?;
@@ -197,7 +272,20 @@ pub fn cache_registry(data_root: &Path, path: &Path) -> AppResult<()> {
 
 pub fn historical_paths_cached(data_root: &Path, path: &Path) -> AppResult<Vec<PathBuf>> {
     let Some(share) = share_root(path) else {
-        return Ok(vec![]);
+        let file = data_root.join("local-directory-layouts.json");
+        let Some(bytes) = crate::machine_annotation::read_bytes(&file)? else {
+            return Ok(vec![]);
+        };
+        let layouts: std::collections::BTreeMap<String, Registry> = serde_json::from_slice(&bytes)?;
+        let mut paths = vec![];
+        let path = plain_windows_path(path);
+        for (anchor, registry) in layouts {
+            let anchor = plain_windows_path(Path::new(&anchor));
+            if path.starts_with(&anchor) {
+                paths.extend(historical_paths(&registry, &anchor, &path)?);
+            }
+        }
+        return Ok(paths);
     };
     let Some(bytes) =
         crate::machine_annotation::read_bytes(&data_root.join("dataset-layout.json"))?
@@ -243,10 +331,10 @@ fn historical_paths(registry: &Registry, share: &Path, path: &Path) -> AppResult
 }
 
 pub fn historical_paths_for(path: &Path) -> AppResult<Vec<PathBuf>> {
-    let Some(share) = share_root(path) else {
+    let Some((share, _)) = registry_location(path)? else {
         return Ok(vec![]);
     };
-    historical_paths(&Registry::read(path)?, share, path)
+    historical_paths(&Registry::read(path)?, &share, path)
 }
 
 #[cfg(test)]
@@ -349,7 +437,12 @@ pub fn task_center_root(path: &Path) -> PathBuf {
 
 pub fn batch_key(namespace: &str, batch: &str, registry: &Registry) -> String {
     let relative = format!("{namespace}/{batch}");
-    let original = registry.translate(&relative, true).unwrap_or(relative);
+    let original = registry.translate(&relative, true).unwrap_or_else(|| {
+        registry
+            .translate(batch, true)
+            .map(|old| format!("{namespace}/{old}"))
+            .unwrap_or(relative)
+    });
     let (dataset, batch) = original.split_once('/').unwrap_or((&original, ""));
     format!(
         "{:x}",
@@ -385,6 +478,42 @@ pub fn adapt_node(node: &mut serde_json::Value, source: &Path, prefix: &str, reg
     );
     node["batchKey"] = serde_json::json!(batch_key(&namespace, &batch, registry));
     node["batchRoot"] = serde_json::json!(dataset.join(&batch).to_string_lossy());
+}
+
+/// Local batches keep a shared sibling registry too; ordinary playback never
+/// creates it. Missing paths can still find the registry through their parent.
+pub(crate) fn registry_location(path: &Path) -> AppResult<Option<(PathBuf, PathBuf)>> {
+    if let Some(share) = share_root(path) {
+        return Ok(Some((
+            share.to_path_buf(),
+            share.join("Delta-Viewer-TaskIndex/Delta-D1/layout.json"),
+        )));
+    }
+    for parent in path.ancestors().skip(1) {
+        let file = parent.join(".delta-viewer-layout.json");
+        match std::fs::symlink_metadata(&file) {
+            Ok(info) if info.is_file() && !info.file_type().is_symlink() => {
+                return Ok(Some((parent.to_path_buf(), file)))
+            }
+            Ok(_) => {
+                return Err(AppError::Message(
+                    "DATASET_LAYOUT_INVALID: 目录映射不是普通文件".into(),
+                ))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(None)
+}
+
+fn plain_windows_path(path: &Path) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{unc}"))
+    } else {
+        PathBuf::from(value.strip_prefix(r"\\?\").unwrap_or(&value))
+    }
 }
 
 #[cfg(test)]

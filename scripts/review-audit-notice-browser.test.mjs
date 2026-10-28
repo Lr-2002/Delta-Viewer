@@ -48,6 +48,7 @@ test('persistent audit notice shows real outbox facts, recovery and account isol
         lastSuccessAtMs:Number(localStorage.getItem('fixture-receipt:'+username))||null};
     }
     window.__TAURI_INTERNALS__={invoke:async(cmd,args)=>{
+      if(cmd==='review_identity_path') return args.path;
       if(cmd==='get_review_audit_queue_status') return state(args.username);
       if(cmd==='persist_review_audit') {
         if(window.failDisk) throw Error('ENOSPC: no space left on device');

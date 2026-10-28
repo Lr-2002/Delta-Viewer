@@ -182,11 +182,42 @@ pub fn load_with_receipt(
     {
         return Err(invalid("服务器索引版本或数据集不匹配"));
     }
-    let selected = [prefix.as_str(), relative]
+    let requested = [prefix.as_str(), relative]
         .into_iter()
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("/");
+    let registry = crate::dataset_layout::Registry::read(source)?;
+    let current = registry
+        .translate(&format!("Delta-D1/{requested}"), false)
+        .and_then(|p| p.strip_prefix("Delta-D1/").map(str::to_owned));
+    let mut candidates = vec![requested.clone()];
+    if let Some(current) = current {
+        candidates.insert(0, current);
+    }
+    let dataset_path = source
+        .ancestors()
+        .find(|p| {
+            p.file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case("Delta-D1"))
+        })
+        .ok_or_else(|| invalid("数据集目录无效"))?;
+    for old in crate::dataset_layout::historical_paths_for(&dataset_path.join(&requested))? {
+        if let Ok(relative) = old.strip_prefix(dataset_path) {
+            candidates.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    let selected = candidates
+        .iter()
+        .find(|path| !manifest["nodes"][path.as_str()].is_null())
+        .cloned()
+        .or_else(|| {
+            candidates.into_iter().rev().find(|path| {
+                path.rsplit_once('/')
+                    .is_some_and(|(parent, _)| !manifest["nodes"][parent].is_null())
+            })
+        })
+        .ok_or_else(|| invalid("目录不在最近统计结果中，请等待服务器校准"))?;
     let leaf = manifest["nodes"][&selected].is_null();
     let shard_path = if leaf {
         selected.rsplit_once('/').map_or("", |(parent, _)| parent)
@@ -233,16 +264,39 @@ pub fn load_with_receipt(
             return Err(invalid("子目录越界"));
         }
         validate_node(child, &child_path, &child_path)?;
-        child["relativePath"] = json!(if prefix.is_empty() {
-            child_path.as_str()
-        } else {
-            child_path
-                .strip_prefix(&format!("{prefix}/"))
-                .ok_or_else(|| invalid("子目录越界"))?
-        });
     }
-    tree["relativePath"] = json!(relative);
-    let registry = crate::dataset_layout::Registry::read(source)?;
+    // Verify every original byte/hash/node first, then translate only paths and
+    // display names. Server counts and timestamps remain the verified snapshot.
+    let translate = |node: &mut Value| -> AppResult<()> {
+        let old = node["relativePath"]
+            .as_str()
+            .ok_or_else(|| invalid("目录路径无效"))?;
+        let full = format!("Delta-D1/{old}");
+        let mapped = registry.translate(&full, false).unwrap_or(full);
+        let mapped = mapped
+            .strip_prefix("Delta-D1/")
+            .ok_or_else(|| invalid("目录映射越界"))?;
+        let local = if prefix.is_empty() {
+            mapped
+        } else if mapped == prefix {
+            ""
+        } else {
+            mapped
+                .strip_prefix(&format!("{prefix}/"))
+                .ok_or_else(|| invalid("目录映射超出当前批次"))?
+        };
+        node["relativePath"] = json!(local);
+        if !mapped.is_empty() {
+            node["name"] = json!(mapped.rsplit('/').next().unwrap_or(mapped));
+        }
+        Ok(())
+    };
+    translate(&mut tree)?;
+    if let Some(children) = tree["children"].as_array_mut() {
+        for child in children {
+            translate(child)?;
+        }
+    }
     registry.require_task_identity(&selected)?;
     for child in tree["children"].as_array().unwrap() {
         let relative = child["relativePath"].as_str().unwrap();
@@ -371,7 +425,10 @@ mod tests {
 
     #[test]
     fn reads_shards_without_source_scan_and_rejects_corruption_and_traversal() {
-        let root = std::env::temp_dir().join(format!("viewer-task-index-{}", std::process::id()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("viewer-task-index-{}", std::process::id()));
         let source = root.join("Delta-D1");
         let output = root.join("Delta-Viewer-TaskIndex/Delta-D1");
         fs::create_dir_all(output.join("nodes")).unwrap();
@@ -403,6 +460,31 @@ mod tests {
             r#"{"running":false,"schedule":"23:00 Asia/Shanghai"}"#,
         )
         .unwrap();
+        // A batch renamed after this snapshot must remain readable at both
+        // dataset and batch roots, without weakening the original hash checks.
+        fs::create_dir_all(source.join("batch/session")).unwrap();
+        fs::write(source.join("batch/session/session.json"), b"{}").unwrap();
+        let data = root.join("app");
+        fs::create_dir_all(&data).unwrap();
+        crate::batch_rename::rename(&data, &source.join("batch"), "renamed").unwrap();
+        let mapped = load(&source, "renamed").unwrap();
+        assert_eq!(mapped["catalog"]["tree"]["name"], "renamed");
+        assert_eq!(mapped["catalog"]["tree"]["batchKey"], key("batch"));
+        assert_eq!(
+            mapped["catalog"]["tree"]["children"][0]["relativePath"],
+            "renamed/session"
+        );
+        assert_eq!(mapped["server"]["completedAtMs"], 123);
+        let inside = load(&source.join("renamed"), "").unwrap();
+        assert_eq!(
+            inside["catalog"]["tree"]["children"][0]["relativePath"],
+            "session"
+        );
+        let single = load(&source, "renamed/session").unwrap();
+        assert_eq!(single["catalog"]["tree"]["relativePath"], "renamed/session");
+        // Restore isolated fixture for the existing corruption/refresh checks.
+        fs::rename(source.join("renamed"), source.join("batch")).unwrap();
+        fs::remove_file(output.join("layout.json")).unwrap();
         let value = load(&source, "batch").unwrap();
         assert_eq!(
             value["catalog"]["tree"]["children"][0]["relativePath"],

@@ -52,6 +52,7 @@ for (const callback of [true, false]) test(`proofreading uses actual video frame
       video.requestVideoFrameCallback(presented);
     }, true);
     window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+        if (command === "review_identity_path") return args.path;
       if (command === "get_review_audit_queue_status" || command === "persist_review_audit" || command === "flush_review_audit_queue") return { pending: 0, blocked: 0, error: "" };
       if (command === "get_video_source") return { fps: 30, mediaFps: 30, segmentSeconds: 3, startFrame: 0, paths: [new URL("/proofreading-test.mp4", location.origin).href] };
       if (command === "load_machine_annotation") return { sourceHash: "test", episodeId: "synthetic", model: "Test", validationStatus: "needs_review", frameCount: 90, segments, warnings: ["未观察到本 episode 的开始姿态，请一审核对", "同一 episode 的任务标签不一致，请一审核对"] };

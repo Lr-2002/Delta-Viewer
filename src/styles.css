@@ -1665,3 +1665,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .episode-local-pending { display: block; width: fit-content; max-width: 100%; white-space: normal; overflow-wrap: anywhere; color: #854d0e; background: #fff7ed; }
 
 .admin-update-reminder { top:auto; bottom:20px; }
+
+.sidebar-rename-button { margin: 0 18px 10px; width: calc(100% - 36px); justify-content: center; }
+.batch-rename-dialog { width: min(520px, calc(100vw - 24px)); }
+.batch-rename-dialog p { overflow-wrap: anywhere; line-height: 1.6; }
+.batch-rename-dialog input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+
+.batch-rename-dialog { font-family: inherit; }
+.batch-rename-dialog > form > p { font-size: 13px; color: var(--muted); }
+.batch-rename-dialog .batch-rejection-path { padding: 10px 12px; background: var(--surface-subtle, #f5f5f5); border: 1px solid var(--line); border-radius: 6px; font-size: 12px; color: var(--ink); }
+.batch-rename-dialog .batch-rename-help { font-size: 12px; margin-bottom: 20px; }
+.batch-rename-dialog header { margin-bottom: 16px; }
+.batch-rename-dialog footer { padding-top: 16px; border-top: 1px solid var(--line); }
+.batch-rename-dialog footer .button { min-height: 36px; }
+@media (max-width: 480px) { .batch-rename-dialog { padding: 18px; } .batch-rename-dialog h2 { font-size: 16px; } }

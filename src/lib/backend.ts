@@ -1631,3 +1631,15 @@ export const cloudQcInvoke = <T,>(command: string, args: Record<string, unknown>
 };
 
 export const chooseCloudQcConfig = () => open({ multiple: false, filters: [{ name: "云端 QC 接入配置", extensions: ["json"] }] });
+
+
+export async function renameBatchFolder(sourcePath: string, name: string, operationId: number): Promise<import("../types").BatchRenameResult> {
+  if (!isTauriRuntime()) throw new Error("批次文件夹更名需要桌面端，网页演示不会修改磁盘。");
+  return invoke("rename_batch_folder", { sourcePath, name, operationId });
+}
+
+
+/** Local cached aliases only: audit persistence never waits for the NAS. */
+export async function reviewIdentityPath(path: string): Promise<string> {
+  return isTauriRuntime() ? invoke<string>("review_identity_path", {path}) : path;
+}

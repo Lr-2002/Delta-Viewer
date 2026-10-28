@@ -286,7 +286,7 @@ pub fn store(
     let tx = db.transaction().map_err(failure)?;
     tx.execute("INSERT OR IGNORE INTO source_review_history SELECT service,username,event_id,payload FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=?",params![service,username,entry.request.source_path,entry.request.source_name.as_deref().unwrap_or("")]).map_err(failure)?;
     tx.execute("INSERT INTO source_reviews VALUES(?,?,?,?,?,?) ON CONFLICT(service,username,source_path,source_name) DO UPDATE SET payload=excluded.payload,event_id=excluded.event_id", params![service,username,entry.request.source_path,entry.request.source_name.as_deref().unwrap_or(""),raw,id]).map_err(failure)?;
-    enqueue_receipt(&tx, service, username, &entry, "local", None)?;
+    enqueue_receipt(root, &tx, service, username, &entry, "local", None)?;
     tx.commit().map_err(failure)?;
     Ok(entry)
 }
@@ -311,6 +311,7 @@ pub fn receipt_metadata(path: &str, event: &Value, source: Option<&str>, storage
 }
 
 fn enqueue_receipt(
+    data_root: &Path,
     db: &rusqlite::Connection,
     service: &str,
     username: &str,
@@ -319,12 +320,31 @@ fn enqueue_receipt(
     revision: Option<&str>,
 ) -> AppResult<()> {
     let mut audit = entry.audit.clone();
-    let metadata = receipt_metadata(
-        &entry.request.source_path,
+    let aliases = crate::dataset_layout::historical_paths_cached(
+        data_root,
+        Path::new(&entry.request.source_path),
+    )?;
+    let identity_path = aliases
+        .last()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| entry.request.source_path.clone());
+    let mut metadata = receipt_metadata(
+        &identity_path,
         &audit,
         entry.request.source_name.as_deref(),
         storage,
     );
+    // A prior durable receipt is immutable evidence. Preserve its identity when
+    // a queued conclusion is written after another directory relocation.
+    if let Some(previous) = audit["details"]["value"]
+        .as_str()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+    {
+        if previous["schema"] == "delta.review-receipt.v1" {
+            metadata["identityKey"] = previous["identityKey"].clone();
+            metadata["dataset"] = previous["dataset"].clone();
+        }
+    }
     if storage == "nas" {
         use sha2::{Digest, Sha256};
         let digest = format!(
@@ -392,7 +412,7 @@ fn migrate_receipts(root: &Path, service: &str, username: &str) -> AppResult<()>
         let tx = db.transaction().map_err(failure)?;
         for raw in entries {
             let entry: DeferredReview = serde_json::from_str(&raw)?;
-            enqueue_receipt(&tx, service, username, &entry, "local", None)?;
+            enqueue_receipt(root, &tx, service, username, &entry, "local", None)?;
         }
         tx.commit().map_err(failure)?;
     }
@@ -664,8 +684,9 @@ fn publish_entry(
     };
     let mut db = open(root)?;
     let tx = db.transaction().map_err(failure)?;
-    enqueue_receipt(&tx, service, &user.username, entry, "local", None)?;
+    enqueue_receipt(root, &tx, service, &user.username, entry, "local", None)?;
     enqueue_receipt(
+        root,
         &tx,
         service,
         &user.username,

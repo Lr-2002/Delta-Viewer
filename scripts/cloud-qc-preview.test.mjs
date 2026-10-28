@@ -21,6 +21,7 @@ test('cloud preview stays read only until an explicit verified claim; local revi
         window.__proofData={summary:{name:'synthetic',root,streams:[stream]},states:[]};
         window.owner=null;window.claimCalls=0;window.saveCalls=0;window.accessFails=false;
         window.__TAURI_INTERNALS__={convertFileSrc:p=>p,invoke:async(command,args)=>{
+        if (command === "review_identity_path") return args.path;
           if(['get_review_audit_queue_status','persist_review_audit','flush_review_audit_queue'].includes(command)) return {pending:0,blocked:0,error:''};
           if(command==='list_machine_annotation_sources')return ['bailian_annotation.json'];
           if(command==='load_machine_annotation')return {sourceName:'bailian_annotation.json',sourceHash:'synthetic-source',sourceJson:'{}',episodeId:'synthetic',frameCount:30,segments,warnings:[]};

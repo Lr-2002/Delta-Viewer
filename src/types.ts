@@ -684,3 +684,5 @@ export interface ClientVersionReport { clientId: string; version: string; platfo
 export interface AccountClientVersions { username: string; displayName: string; role: "admin" | "operator"; accountStatus: "active" | "paused"; canManage: boolean; clients: ClientVersionReport[]; pendingReminder: UpdateReminder | null; }
 export interface ClientVersions { generatedAtMs: number; users: AccountClientVersions[]; }
 export interface ClientPoll { generatedAtMs: number; reminder: UpdateReminder | null; }
+
+export interface BatchRenameResult { sourcePath: string; destinationPath: string; warning: string }

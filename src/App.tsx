@@ -41,6 +41,7 @@ import { AuthScreen } from "./components/AuthScreen";
 import { auditNeedsLogin } from "./lib/review-audit-status";
 import { AuditSyncNotice } from "./components/AuditSyncNotice";
 import { SourceReviewNotice } from "./components/SourceReviewNotice";
+import { BatchRenameDialog } from "./components/BatchRenameDialog";
 import { BatchExportPanel } from "./components/BatchExportPanel";
 import { BatchRejectionDialog, type RejectionTarget } from "./components/BatchRejectionDialog";
 import { ChecksPanel } from "./components/ChecksPanel";
@@ -58,6 +59,7 @@ import {
   APP_VERSION,
   DISPLAY_VERSION,
   resolveSourcePath,
+  renameBatchFolder,
   IS_DEVELOPMENT_EDITION,
   DEMO_ROOT,
   cancelTask,
@@ -210,6 +212,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.4.1": "新增整批文件夹实际更名入口，保留领取、审核和本机待写关联；三维骨架使用整段固定地面参照，保留走动、下蹲及跳跃位移。",
   "1.4.0": "发布云端 QC 与本地回放优化：云任务独立领取及持久补传；长记录首屏优先、真实采集时间同步；视频错误具体诊断，不通过原因支持自定义。",
   "1.3.9-rc.cloudqc.9": "长记录首屏视频优先读取，完整检查后开放审核；减少首包等待、重复时间索引与预览文件统计，延续系统原生硬件解码路径。",
   "1.3.9-rc.cloudqc.8": "优化 SD 卡长记录首帧预览、状态解析复用与 MP4 帧率探测；新录制按真实采集时间同步七路，相机缓冲时协调等待并自动恢复。",
@@ -358,6 +361,7 @@ function App() {
   const [tasks, setTasks] = useState<TaskDefinition[]>([]);
   const [assignedTasks, setAssignedTasks] = useState<AssignedTask[]>([]);
   const [personalTaskOpen, setPersonalTaskOpen] = useState(false);
+  const [batchRenamePath, setBatchRenamePath] = useState<string | null>(null);
   const [batchReviewRevision, setBatchReviewRevision] = useState(0);
   const [batchRejection, setBatchRejection] = useState<{ folder?: string; selected?: RejectionTarget[] } | null>(null);
   const [batchRejectionSelection, setBatchRejectionSelection] = useState<Record<string, RejectionTarget>>({});
@@ -937,6 +941,52 @@ function App() {
     }
   }
 
+  async function renameCurrentBatch(name: string) {
+    if (!batchRenamePath || busy) throw new Error("请等待当前操作完成");
+    await flushMachineReviewSaves(data?.summary.root);
+    await flushCloudMachineReviewSaves(data?.summary.root);
+    if (reviewUnsaved.current) throw new Error("当前修改尚未保存，请先重试保存");
+    const owner = beginOperation();
+    if (!owner) throw new Error("当前操作尚未完成");
+    const previousEpisode = data?.summary.root ?? selectedEpisode?.root;
+    let result: Awaited<ReturnType<typeof renameBatchFolder>> | undefined;
+    let preferredAfterRename: string | undefined;
+    let resumeAudit: (() => void) | undefined;
+    try {
+      setPlaying(false);
+      resumeAudit = await pauseAndPersistReviewAudit();
+      // Unmount video elements before the native directory rename on Windows.
+      resetLoadedData();
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      result = await renameBatchFolder(batchRenamePath, name, owner.id);
+      ensureOperationActive(owner);
+      setBatchRenamePath(null);
+      setScan(null);
+      setSourcePath(result.destinationPath);
+      if (authStatus?.currentUser?.role === "operator") {
+        try { await setAssignedSourceRoot(result.destinationPath); }
+        catch (reason) { result.warning += ` 本机目录配置更新失败，旧路径仍可解析：${toMessage(reason)}`; }
+      }
+      setReviewedEpisodes({});
+      setPendingReviewEpisodes({});
+      setBatchRejectionSelection({});
+      setSkippedEpisodeRoots({});
+      setBatchReviewRevision(value => value + 1);
+      if (previousEpisode) {
+        try { preferredAfterRename = await resolveSourcePath(previousEpisode); }
+        catch (reason) { result.warning += ` 上次位置解析失败，可从列表重新打开：${toMessage(reason)}`; }
+      }
+      const username = authStatus?.currentUser?.username;
+      if (username && preferredAfterRename) {
+        writeReviewResume(username, { sourceRoot: result.destinationPath, episodeRoot: preferredAfterRename, active: true });
+      }
+    } finally { resumeAudit?.(); finishOperation(owner); }
+    if (result) {
+      await openSource(result.destinationPath, true, assignedTasks, false, preferredAfterRename);
+      setNotice(`批次已更名，领取和审核关联已保留。${result.warning || "服务器统计目录名称将在下次读取时按迁移映射显示。"}`);
+    }
+  }
+
   async function chooseSource() {
     if (reviewUnsaved.current) { setNotice("正在保存当前修改，请稍候。"); return; }
     if (sourcePickerOpenRef.current || operationScopeRef.current.current()) return;
@@ -1233,6 +1283,7 @@ function App() {
   function resetWorkspaceData() {
     setReviewedEpisodes({});
     setBatchRejectionSelection({});
+    setBatchRenamePath(null);
     episodeFocusRestoreToken.current += 1;
     setEpisodeFocusRestoreRequest(null);
     resetLoadedData();
@@ -2086,6 +2137,8 @@ function App() {
         />
       ) : null}
 
+      {batchRenamePath && <BatchRenameDialog path={batchRenamePath} onRename={renameCurrentBatch} onClose={() => setBatchRenamePath(null)} />}
+
       {!showManagement && syncNotice}
       {error && !workspaceAuthError ? (
         <div className="alert-banner alert-error" role="alert">
@@ -2135,6 +2188,7 @@ function App() {
           </div>
           {!sidebarCollapsed ? <label className="sidebar-zoom">目录缩放<input aria-label="目录缩放" type="range" min="0.75" max="1.35" step="0.05" value={sidebarScale} onChange={(event) => setSidebarScale(event.currentTarget.valueAsNumber)} /><output>{Math.round(sidebarScale * 100)}%</output></label> : null}
           <div className="sidebar-path" title={sourcePath}>{sourcePath ? shortPath(sourcePath, 38) : "等待 SD 卡"}</div>
+          {!sidebarCollapsed && isManagedWorkspace && scan && !cloudWorkspaceNumber(scan.sourceRoot) && <button type="button" className="button button-secondary sidebar-rename-button" disabled={busy || reviewHasUnsaved} onClick={() => setBatchRenamePath(scan.sourceRoot)}><Pencil size={14} />修改批次名称</button>}
           {!sidebarCollapsed && isManagedWorkspace && currentUser?.role === "operator" && scan && <div className="sidebar-review-toolbar" aria-label="当前目录批量审核">
             <div className="sidebar-review-actions">
               <button type="button" className="button button-secondary" disabled={busy || !Object.keys(batchRejectionSelection).length} onClick={() => startBatchRejection()}><X size={14} />批量不通过</button>

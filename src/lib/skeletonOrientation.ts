@@ -181,3 +181,52 @@ export function transformSkeletonPoint(
 ): THREE.Vector3 {
   return target.set(point[0], point[1], point[2]).sub(origin).applyQuaternion(alignment);
 }
+
+
+export interface SkeletonGroundReference {
+  origin: THREE.Vector3;
+  alignment: THREE.Quaternion;
+  floorY: number;
+  bodyHeight: number;
+}
+
+/** One coordinate system for the whole clip, independent of playback/seek order.
+ * Feet estimate a visual reference, not a calibrated capture-room floor.
+ * Never snap each frame to it: that would remove real jumps and root motion.
+ */
+export function createSkeletonGroundReference(skeleton: SkeletonSeries): SkeletonGroundReference {
+  const { frames, jointCount } = skeleton;
+  const origin = frames.length ? skeletonOrigin(frames[0], jointCount) : new THREE.Vector3();
+  const alignment = createSkeletonAlignment(skeleton, frames[0]?.frameId);
+  const feet = jointCount >= 24 ? [7, 8, 10, 11] : jointCount >= 17 ? [15, 16] : [];
+  const heights: number[] = [];
+  const bodyHeights: number[] = [];
+  const count = Math.min(256, frames.length);
+  for (let index = 0; index < count; index += 1) {
+    const frame = frames[Math.floor(index * (frames.length - 1) / Math.max(1, count - 1))];
+    let bottom = Infinity;
+    let top = -Infinity;
+    for (const point of frame.joints) {
+      if (point.some(value => !Number.isFinite(value))) continue;
+      const y = transformSkeletonPoint(point, origin, alignment).y;
+      bottom = Math.min(bottom, y);
+      top = Math.max(top, y);
+    }
+    if (Number.isFinite(bottom) && top > bottom) bodyHeights.push(top - bottom);
+    const footHeights = feet.flatMap(index => {
+      const point = pointAt(frame, index);
+      return point ? [point.sub(origin).applyQuaternion(alignment).y] : [];
+    });
+    const height = footHeights.length ? Math.min(...footHeights) : bottom;
+    if (Number.isFinite(height)) heights.push(height);
+  }
+  heights.sort((a, b) => a - b);
+  bodyHeights.sort((a, b) => a - b);
+  return {
+    origin, alignment,
+    // A low quantile tolerates isolated tracking spikes while retaining contact
+    // frames when the clip starts mid-jump. It is never recomputed on seek.
+    floorY: heights[Math.floor(Math.max(0, heights.length - 1) * 0.1)] ?? -1,
+    bodyHeight: Math.max(0.1, bodyHeights[Math.floor(bodyHeights.length * 0.75)] ?? 2),
+  };
+}

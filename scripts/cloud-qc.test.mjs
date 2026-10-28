@@ -26,6 +26,7 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
       window.plan={id:'a'.repeat(32),job_id:'b'.repeat(32),company_id:'company-a',external_order_id:'upload_'+ 'e'.repeat(32),source_revision:'f'.repeat(64),batch_path:'',created_at:'2026-10-27T08:44:17Z',version:1,state:'sampling',sample_count:1,population_count:20,sample_approved:0,sample_rejected:0,full_review:false,tasks:[{recording_id:'c'.repeat(32),path:'采集批次/recording_001',kind:'sample',assignee:null,qc:{decision:'pending',reason:null},claim_version:0}]};
       window.policy={version:1,policy:{enabled:true,sample_percent:5,batch_scope:'sealed_order',rounding:'ceil_min_one',release_mode:'sampled_only',failure_action:'hold'}};
       window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
+        if (command === "review_identity_path") return args.path;
         window.calls.push([command,args]);
         if(command==='cloud_qc_call'){
           if(args.action==='identity')return {account_id:'alice',role:window.cloudRole==='admin'?'admin':'reviewer'};
@@ -155,6 +156,7 @@ test('App cloud download owns the operation, invalidates delayed login restore a
     await page.addInitScript(()=>{
       window.calls=[];window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
       window.__TAURI_INTERNALS__={transformCallback:()=>1,unregisterCallback(){},invoke:async(command,args={})=>{
+        if (command === "review_identity_path") return args.path;
         window.calls.push([command,args]);
         if(command==='get_auth_status')return {workspaceMode:'managed',currentUser:{username:'alice',displayName:'审核甲',role:'operator'},userCenter:{configured:true,serviceId:'fixture',endpoint:'https://127.0.0.1:1'}};
         if(command==='get_assigned_source_root'){window.restoreWaiting=true;return new Promise(resolve=>{window.resolveRestore=resolve;});}

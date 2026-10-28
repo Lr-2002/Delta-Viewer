@@ -3,14 +3,14 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { SkeletonSeries } from "../types";
 import {
-  skeletonFrameForTimeline,
   skeletonSampleForTimeline,
   type SkeletonTimelineSample,
 } from "../lib/skeleton-frame";
 import {
-  createSkeletonAlignment,
+  createSkeletonGroundReference,
   skeletonOrigin,
   transformSkeletonPoint,
+  type SkeletonGroundReference,
 } from "../lib/skeletonOrientation";
 
 interface SkeletonViewerProps {
@@ -92,28 +92,44 @@ export const SkeletonViewer = memo(function SkeletonViewer({
     const jointPositions = new Float32Array(skeleton.jointCount * 3);
     jointsGeometry.setAttribute("position", new THREE.BufferAttribute(jointPositions, 3));
     const jointsMaterial = new THREE.PointsMaterial({ color: 0xf2f5f5, size: 0.042, sizeAttenuation: true });
-    scene.add(new THREE.Points(jointsGeometry, jointsMaterial));
+    const joints = new THREE.Points(jointsGeometry, jointsMaterial);
+    joints.frustumCulled = false;
+    scene.add(joints);
 
     const edges = skeletonEdges(skeleton.jointCount);
-    const initialFrame = skeletonFrameForTimeline(
-      skeleton.frames,
-      frameId,
-      timelineStartFrame,
-      timelineEndFrame,
-      skeleton.usesTimelineFrameIds,
-    );
-    const alignment = createSkeletonAlignment(skeleton, initialFrame?.frameId ?? frameId);
+    const reference = createSkeletonGroundReference(skeleton);
     const bonesGeometry = new THREE.BufferGeometry();
     const bonePositions = new Float32Array(edges.length * 6);
     bonesGeometry.setAttribute("position", new THREE.BufferAttribute(bonePositions, 3));
     const bonesMaterial = new THREE.LineBasicMaterial({ color: 0x35bab0, transparent: true, opacity: 0.96 });
-    scene.add(new THREE.LineSegments(bonesGeometry, bonesMaterial));
+    const bones = new THREE.LineSegments(bonesGeometry, bonesMaterial);
+    bones.frustumCulled = false;
+    scene.add(bones);
 
     const ambient = new THREE.AmbientLight(0xffffff, 1.2);
     const keyLight = new THREE.DirectionalLight(0xffffff, 1.6);
     keyLight.position.set(2, 3, 4);
     scene.add(ambient, keyLight);
 
+    const { bodyHeight, floorY } = reference;
+    const floorGeometry = new THREE.PlaneGeometry(bodyHeight * 400, bodyHeight * 400);
+    const floorMaterial = new THREE.MeshBasicMaterial({ color: 0x1c2427, side: THREE.DoubleSide });
+    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = floorY - bodyHeight * 0.002;
+    scene.add(floor);
+    scene.fog = new THREE.Fog(0x111516, bodyHeight * 5, bodyHeight * 18);
+    const gridSize = bodyHeight * 16;
+    const grid = new THREE.GridHelper(gridSize, 32, 0x829396, 0x415356);
+    grid.position.y = floorY;
+    scene.add(grid);
+    const markerGeometry = new THREE.RingGeometry(bodyHeight * 0.1, bodyHeight * 0.112, 48);
+    const markerMaterial = new THREE.MeshBasicMaterial({ color: 0x95a8aa, side: THREE.DoubleSide });
+    const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+    marker.rotation.x = -Math.PI / 2;
+    marker.position.y = floorY + bodyHeight * 0.002;
+    scene.add(marker);
+    let previousRoot: THREE.Vector3 | null = null;
     let displayedFrame = Math.max(
       timelineStartFrame,
       Math.min(timelineEndFrame, frameId),
@@ -131,11 +147,30 @@ export const SkeletonViewer = memo(function SkeletonViewer({
         skeleton.usesTimelineFrameIds,
       );
       if (!sample) return { extent: 1, minY: -1, maxY: 1 };
-      const bounds = fillJointPositions(sample, jointPositions, bonePositions, edges, alignment, skeleton.jointCount);
+      const bounds = fillJointPositions(sample, jointPositions, bonePositions, edges, reference, skeleton.jointCount);
+      const root = skeletonOrigin(sample.before, skeleton.jointCount).lerp(skeletonOrigin(sample.after, skeleton.jointCount), sample.mix);
+      root.sub(reference.origin).applyQuaternion(reference.alignment).setY(0);
+      if (previousRoot) {
+        const delta = root.clone().sub(previousRoot);
+        camera.position.add(delta);
+        controls.target.add(delta);
+      }
+      previousRoot = root;
+      marker.position.x = root.x;
+      marker.position.z = root.z;
+      // Move by whole cells only; the world grid stays visually fixed even on
+      // long walks, while geometry remains small and independent of clip length.
+      const cell = gridSize / 32;
+      grid.position.x = Math.round(root.x / cell) * cell;
+      grid.position.z = Math.round(root.z / cell) * cell;
+      floor.position.x = root.x;
+      floor.position.z = root.z;
       jointsGeometry.attributes.position.needsUpdate = true;
       bonesGeometry.attributes.position.needsUpdate = true;
       displayedFrame = requestedFrame;
       displayedSourcePosition = sample.sourcePosition;
+      renderer.domElement.dataset.floorY = String(floorY);
+      renderer.domElement.dataset.rootY = String(jointPositions[1]);
       renderer.domElement.dataset.frameId = String(Math.round(displayedFrame));
       renderer.domElement.dataset.skeletonFrameId = String(sample.frame.frameId);
       if (frameLabelRef.current) {
@@ -159,17 +194,15 @@ export const SkeletonViewer = memo(function SkeletonViewer({
       if (sample && Math.abs(sample.sourcePosition - displayedSourcePosition) > 1e-4) paintFrame(targetFrame);
     };
     const initialBounds = paintFrame(displayedFrame);
-    const bodyHeight = Math.max(0.5, initialBounds.maxY - initialBounds.minY);
-    const targetY = initialBounds.minY + bodyHeight * 0.52;
-    const cameraDistance = Math.max(1.5, initialBounds.extent * 2.6);
-    controls.target.set(0, targetY, 0);
-    camera.position.set(0, targetY + cameraDistance * 0.28, cameraDistance);
-    camera.near = Math.max(0.001, initialBounds.extent / 1000);
-    camera.far = Math.max(100, initialBounds.extent * 100);
+    const targetY = floorY + bodyHeight * 0.55;
+    const cameraDistance = Math.max(bodyHeight * 2.1, initialBounds.extent * 2.6);
+    const rootX = marker.position.x;
+    const rootZ = marker.position.z;
+    controls.target.set(rootX, targetY, rootZ);
+    camera.position.set(rootX + cameraDistance * 0.22, targetY + cameraDistance * 0.28, rootZ + cameraDistance);
+    camera.near = Math.max(0.001, bodyHeight / 1000);
+    camera.far = Math.max(100, bodyHeight * 500);
     controls.update();
-    const grid = new THREE.GridHelper(Math.max(2, initialBounds.extent * 2.4), 10, 0x536061, 0x263032);
-    grid.position.y = initialBounds.minY;
-    scene.add(grid);
 
     const resize = () => {
       const { width, height } = mount.getBoundingClientRect();
@@ -198,6 +231,13 @@ export const SkeletonViewer = memo(function SkeletonViewer({
       jointsMaterial.dispose();
       bonesGeometry.dispose();
       bonesMaterial.dispose();
+      grid.geometry.dispose();
+      const gridMaterials = Array.isArray(grid.material) ? grid.material : [grid.material];
+      gridMaterials.forEach(material => material.dispose());
+      floorGeometry.dispose();
+      floorMaterial.dispose();
+      markerGeometry.dispose();
+      markerMaterial.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };
@@ -220,7 +260,7 @@ export const SkeletonViewer = memo(function SkeletonViewer({
       </header>
       <div ref={mountRef} className="skeleton-canvas" />
       {unavailable ? <p className="skeleton-unavailable">当前设备不支持 3D 渲染</p> : null}
-      <footer>{skeleton.sourceName} · {skeleton.frameCount} 帧</footer>
+      <footer>{skeleton.sourceName} · {skeleton.frameCount} 帧 · 估计地面参照</footer>
     </section>
   );
 });
@@ -236,12 +276,13 @@ function fillJointPositions(
   jointPositions: Float32Array,
   bonePositions: Float32Array,
   edges: [number, number][],
-  alignment: THREE.Quaternion,
+  reference: SkeletonGroundReference,
   jointCount: number,
 ): SkeletonBounds {
   const beforeOrigin = skeletonOrigin(sample.before, jointCount);
   const afterOrigin = skeletonOrigin(sample.after, jointCount);
-  const origin = beforeOrigin.clone().lerp(afterOrigin, sample.mix);
+  const { origin, alignment } = reference;
+  const movingOrigin = beforeOrigin.clone().lerp(afterOrigin, sample.mix).sub(origin).applyQuaternion(alignment);
   let extent = 0.5;
   let minY = Number.POSITIVE_INFINITY;
   let maxY = Number.NEGATIVE_INFINITY;
@@ -258,7 +299,7 @@ function fillJointPositions(
     jointPositions[offset] = transformed.x;
     jointPositions[offset + 1] = transformed.y;
     jointPositions[offset + 2] = transformed.z;
-    extent = Math.max(extent, Math.hypot(jointPositions[offset], jointPositions[offset + 1], jointPositions[offset + 2]));
+    extent = Math.max(extent, transformed.distanceTo(movingOrigin));
     minY = Math.min(minY, transformed.y);
     maxY = Math.max(maxY, transformed.y);
   }

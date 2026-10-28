@@ -28,6 +28,7 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
     await page.addInitScript(() => {
       window.fixture={calls:[],saved:[],audit:[],delay:false,scanError:false};
       window.__TAURI_INTERNALS__={transformCallback:()=>1,unregisterCallback:()=>{},invoke:async (command,args)=>{
+        if (command === "review_identity_path") return args.path;
         if(command==='persist_review_audit') {window.fixture.audit.push(...args.events);return {pending:0,blocked:0,error:''};}
         if(command==='flush_review_audit_queue') return {pending:0,blocked:0,error:''};
         if(command==='scan_task_center') {

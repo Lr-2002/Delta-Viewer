@@ -16,6 +16,7 @@ test('one compact sync notice, native history modality and both outboxes recover
   localStorage.setItem('delta.updates.release-notes.seen',version);
   window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
   window.__TAURI_INTERNALS__={transformCallback:()=>1,invoke:async(cmd,args)=>{
+   if(cmd==='review_identity_path')return args.path;
    if(cmd==='plugin:event|listen')return 1;if(cmd==='plugin:event|unlisten')return null;
    if(cmd==='get_auth_status')return {workspaceMode:'managed',currentUser:user,userCenter:{configured:true,endpoint:'https://fixture.local',serviceId:'fixture'}};
    if(cmd==='check_app_update')return {currentVersion:version,latestVersion:version,available:false,ready:false,notes:null};

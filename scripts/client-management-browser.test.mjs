@@ -16,6 +16,7 @@ test('admin switches modes in one session, account versions stay truthful, singl
   window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
   const users=['admin','alice','bob','legacy'].map(username=>({username,displayName:username,accountStatus:'active',operations:0,approved:0,rejected:0,seeks:0,labelsAdded:0,labelsDeleted:0,averageMs:null,lastActivityAtMs:null,online:false}));
   window.__TAURI_INTERNALS__={transformCallback:()=>1,unregisterCallback(){},invoke:async(cmd,args={})=>{
+        if (cmd === "review_identity_path") return args.path;
    if(cmd==='plugin:event|listen')return 1;if(cmd==='plugin:event|unlisten')return null;
    if(cmd==='get_auth_status')return {workspaceMode:'managed',currentUser:{username:'admin',displayName:'内测账号',role:'operator',canManage:true},userCenter:{configured:true,endpoint:'https://10.1.11.200:17880',serviceId:'fixture'}};
    if(cmd==='check_app_update')return {currentVersion:version,latestVersion:version,available:false,ready:false,notes:null};

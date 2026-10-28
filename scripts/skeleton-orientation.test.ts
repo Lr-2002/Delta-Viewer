@@ -161,3 +161,44 @@ test("keeps frame-relative lean after computing one stable alignment", () => {
   assertClose(leftHead.z, 1);
   assertClose(rightHead.z, -1);
 });
+
+test("fixed ground preserves walking and jump translation, independent of seek", async () => {
+  const { createSkeletonGroundReference } = await import("../src/lib/skeletonOrientation.ts");
+  const pose = (x: number, y: number): [number, number, number][] => {
+    const points = Array.from({ length: 24 }, () => [x, 1 + y, 0] as [number, number, number]);
+    points[15] = [x, 2 + y, 0];
+    points[7] = [x - 0.1, y, 0]; points[8] = [x + 0.1, y, 0];
+    points[10] = [x - 0.1, y, 0.2]; points[11] = [x + 0.1, y, 0.2];
+    return points;
+  };
+  const series = skeleton(pose(0, 0));
+  series.frames = [pose(0, 0), pose(2, 0), pose(2, 1), pose(3, 0)].map((joints, frameId) => ({ joints, frameId }));
+  series.frameCount = series.frames.length;
+  const reference = createSkeletonGroundReference(series);
+  const first = transformSkeletonPoint(series.frames[0].joints[0], reference.origin, reference.alignment);
+  const walked = transformSkeletonPoint(series.frames[1].joints[0], reference.origin, reference.alignment);
+  const jumped = transformSkeletonPoint(series.frames[2].joints[0], reference.origin, reference.alignment);
+  assertClose(walked.x - first.x, 2);
+  assertClose(jumped.y - walked.y, 1);
+  assertClose(reference.floorY, -1);
+  const again = createSkeletonGroundReference(series);
+  assertClose(again.floorY, reference.floorY);
+  assert.deepEqual(again.origin.toArray(), reference.origin.toArray());
+});
+
+test("ground estimate ignores isolated foot outliers and does not lift a squat", async () => {
+  const { createSkeletonGroundReference } = await import("../src/lib/skeletonOrientation.ts");
+  const series = skeleton(Array.from({length:24}, () => [0, 0, 0]));
+  series.frames = Array.from({length:30}, (_, frameId) => {
+    const joints: [number,number,number][] = Array.from({length:24}, () => [0, 1, 0]);
+    joints[15] = [0, 2, 0];
+    for (const i of [7,8,10,11]) joints[i] = [0, frameId === 29 ? -100 : 0, i > 8 ? 0.2 : 0];
+    if (frameId === 15) { joints[0] = [0, 0.5, 0]; joints[15] = [0, 1.5, 0]; }
+    return {frameId,joints};
+  });
+  const reference = createSkeletonGroundReference(series);
+  assertClose(reference.floorY, -1);
+  const squat = transformSkeletonPoint(series.frames[15].joints[0], reference.origin, reference.alignment);
+  assertClose(squat.y, -0.5);
+  assertClose(createSkeletonGroundReference({...series,frames:[]}).floorY, -1);
+});
