@@ -412,7 +412,9 @@ export const FramePanel = memo(function FramePanel({
     let active = true;
     let callbackId = 0;
     const reportMediaTime = (mediaTime: number) => {
-      if (!active) return;
+      // A presentation queued by the compositor can arrive after a shared
+      // buffering pause or during a seek. Neither may advance the UI clock.
+      if (!active || video.paused || video.seeking) return;
       const timelinePosition = captureTimes?.length
         ? captureTimelinePosition(captureTimes, mediaTime, videoSegmentIndex, nativeVideo.mediaFps, nativeVideo.segmentSeconds)
         : nativeVideoTimelinePosition(

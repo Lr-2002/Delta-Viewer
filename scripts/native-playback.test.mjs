@@ -112,6 +112,15 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
       window.__nativeStreams = streams;
       window.__nativeEnd = end;
       window.__nativeStats = { fallbacks: 0, events: [], discovered: false };
+      if (presentationCallback) {
+        window.__pendingPresentations = new Map();
+        const request = HTMLVideoElement.prototype.requestVideoFrameCallback;
+        HTMLVideoElement.prototype.requestVideoFrameCallback = function (callback) {
+          const id = request.call(this, callback);
+          window.__pendingPresentations.set(this, { id, callback });
+          return id;
+        };
+      }
       window.__TAURI_INTERNALS__ = {
         invoke: async (command, args) => {
           if (command === "get_video_source") {
@@ -174,6 +183,17 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
           mediaTimes: [...document.querySelectorAll("video")].map((video) => video.currentTime),
         };
       });
+      if (presentationCallback) {
+        // A compositor callback already queued before the shared pause may
+        // arrive afterward. It must not change the frozen shared timeline.
+        await page.evaluate(() => {
+          const video = document.querySelector("video");
+          const pending = window.__pendingPresentations.get(video);
+          if (!pending) throw Error("primary presentation callback was not registered");
+          video.cancelVideoFrameCallback(pending.id);
+          pending.callback(performance.now(), { mediaTime: video.currentTime + .25 });
+        });
+      }
       await page.waitForTimeout(250);
       assert.equal(await page.locator("#position").textContent(), paused.position,
         "buffering must freeze the shared timeline");
