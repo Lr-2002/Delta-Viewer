@@ -357,6 +357,8 @@ export interface StreamSummary {
 }
 
 export interface VideoSource {
+  captureTimeline?: number[];
+  timingError?: string;
   adaptivePaths?: string[];
   previewError?: string;
   fps: number;
@@ -448,6 +450,8 @@ export interface SkeletonSeries {
 export interface EpisodeData {
   summary: EpisodeSummary;
   states: StateRecord[];
+  statesPartial?: boolean;
+  timelineFps?: number | null;
   skeleton: SkeletonSeries | null;
   skeletonError: string | null;
 }

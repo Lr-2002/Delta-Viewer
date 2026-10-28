@@ -127,6 +127,17 @@ fn history_dir(data_root: &Path) -> std::path::PathBuf {
 }
 
 fn classify_error(message: &str) -> &'static str {
+    for code in [
+        "VIDEO_FILE_MISSING",
+        "VIDEO_FILE_DAMAGED",
+        "VIDEO_MANIFEST_INVALID",
+        "VIDEO_READ_FAILED",
+        "FRAME_READ_FAILED",
+    ] {
+        if message.starts_with(&format!("{code}:")) {
+            return code;
+        }
+    }
     let normalized = message.to_ascii_lowercase();
     if normalized.contains("operation not allowed")
         || normalized.contains("operation not permitted")
@@ -202,6 +213,14 @@ mod tests {
 
     #[test]
     fn classifies_platform_permission_messages() {
+        assert_eq!(
+            classify_error("VIDEO_FILE_DAMAGED: moov atom not found"),
+            "VIDEO_FILE_DAMAGED"
+        );
+        assert_eq!(
+            classify_error("VIDEO_FILE_MISSING: clip.mp4"),
+            "VIDEO_FILE_MISSING"
+        );
         assert_eq!(
             classify_error("Operation not permitted (os error 1)"),
             "PERMISSION_DENIED"

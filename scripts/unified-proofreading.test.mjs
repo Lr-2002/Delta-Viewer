@@ -426,6 +426,43 @@ test("new account cannot automatically save another account's recovery draft", a
   } finally { await context.close(); }
 });
 
+test("long recording shows usable read-only video controls while checks wait and mounts audit only afterward", async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+  const page = await context.newPage();
+  await context.route("**/src/lib/backend.ts", async route => {
+    const response = await route.fetch();
+    let body = await response.text();
+    const begin = body.indexOf("export async function loadEpisode(");
+    const end = body.indexOf("export async function validateEpisode(", begin);
+    const load = body.slice(begin, end).replaceAll("return {", "return { statesPartial: !window.previewChecksDone,");
+    body = body.slice(0, begin) + load + body.slice(end);
+    body = body.replace(/(export async function validateEpisode\([^]*?\) \{)/, `$1
+      window.previewValidationStarted=true;
+      await new Promise(resolve=>{window.finishPreviewChecks=()=>{window.previewChecksDone=true;resolve();};});
+    `);
+    for (const name of ["listMachineAnnotationSources", "loadMachineAnnotation", "loadMachineReview"]) {
+      body = body.replace(new RegExp("(export async function " + name + "\\([^]*?\\) \\{)"),
+        '$1\n window.previewEditorReads=(window.previewEditorReads??0)+1;');
+    }
+    await route.fulfill({ response, body });
+  });
+  try {
+    await open(page, "machineAnnotation=present");
+    await page.getByRole("region", { name: "只读视频预览", exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.previewEditorReads??0), 0);
+    assert.equal(await page.getByRole("button", { name: "通过", exact: true }).count(), 0);
+    const slider = page.getByRole("slider", { name: "预览播放帧", exact: true });
+    await page.getByRole("button", { name: "下一帧", exact: true }).click();
+    assert.equal(await slider.inputValue(), "1");
+    await page.waitForFunction(() => window.previewValidationStarted);
+    assert.equal(await page.evaluate(() => window.previewEditorReads??0), 0);
+    await page.evaluate(() => window.finishPreviewChecks());
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    assert.ok(await page.evaluate(() => window.previewEditorReads > 0));
+    assert.equal(await slider.count(), 0);
+  } finally { await context.close(); }
+});
+
 let server, browser, url;
 before(async () => {
   server = await createServer({ logLevel: "error", server: { host: "127.0.0.1", port: 5174, strictPort: false } });
@@ -753,10 +790,16 @@ test("rejection uses buttons, requires other text, persists the reason and clear
     assert.equal(await dialog.getByRole("button", { name: "确认不通过" }).isEnabled(), false);
     await dialog.getByRole("button", { name: "取消", exact: true }).click();
     assert.equal((await saved()).revision, before.revision);
-    for (const reason of ["骨架抖动", "镜头污渍", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "状态异常", "动作失范", "其他原因"]) {
+    for (const reason of ["骨架抖动", "镜头污渍", "动作错误", "画面过曝", "轨迹不动", "无效数据", "任务不符", "动作过快", "状态异常", "动作失范", "数据内容缺失", "多路视频不同步", "其他原因"]) {
       await page.getByRole("button", { name: "不通过", exact: true }).click();
+      if (reason === "多路视频不同步") {
+        await dialog.getByRole("button", { name: "添加常用原因", exact: true }).click();
+        await dialog.getByLabel("常用原因名称").fill(reason);
+        await dialog.getByLabel("常用原因名称").press("Enter");
+        assert.equal((await saved()).status, "rejected", "adding a label must not submit a new decision");
+      }
       await dialog.getByRole("button", { name: reason, exact: true }).click();
-      let expected = reason;
+      let expected = reason === "多路视频不同步" ? `其他原因：${reason}` : reason;
       if (reason === "其他原因") {
         await dialog.getByLabel("其他原因内容").fill("   ");
         assert.equal(await dialog.getByRole("button", { name: "确认不通过" }).isEnabled(), false);
@@ -1000,7 +1043,7 @@ test("rejection reasons drag without selecting, persist per account and keep oth
     await show();
     const dialog = page.getByRole("dialog", { name: "不通过原因" });
     const labels = () => dialog.locator(".rejection-options button").allTextContents();
-    assert.equal((await labels()).length, 12);
+    assert.equal((await labels()).length, 13);
     await dialog.getByRole("button", { name: "调整顺序", exact: true }).click();
     await dialog.getByRole("button", { name: "动作失范", exact: true }).dragTo(dialog.getByRole("button", { name: "骨架抖动", exact: true }));
     assert.equal((await labels())[0], "动作失范");
@@ -1014,8 +1057,8 @@ test("rejection reasons drag without selecting, persist per account and keep oth
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 844 });
       const other = await dialog.getByRole("button", { name: "其他原因", exact: true }).boundingBox();
-      const lastLeft = await dialog.locator(".rejection-options button").nth(10).boundingBox();
-      assert.ok(other.x > lastLeft.x && Math.abs(other.y - lastLeft.y) < 2);
+      const remaining = await dialog.locator('.rejection-options button:not(.rejection-other)').evaluateAll(buttons => buttons.map(button => ({x: button.getBoundingClientRect().x, y: button.getBoundingClientRect().y})));
+      assert.ok(Math.abs(other.x - Math.max(...remaining.map(box => box.x))) < 2 && other.y >= Math.max(...remaining.map(box => box.y)));
       const confirm = dialog.getByRole("button", { name: "确认不通过" });
       await confirm.scrollIntoViewIfNeeded();
       const box = await confirm.boundingBox();

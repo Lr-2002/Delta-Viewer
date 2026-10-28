@@ -1,5 +1,7 @@
 # 发布维护指南
 
+从 1.4.0 起统一使用正式版本号：`1.4.0 → 1.4.1 → … → 1.4.9 → 1.5.0`，不再为迭代添加 `rc.cloudqc` 等候选版后缀。每次交付同步版本号和中文更新摘要。
+
 Release CD 定义在 `.github/workflows/release.yml`。`main` 的 CI 成功后，workflow
 检查 `package.json`、`Cargo.toml`、`Cargo.lock`、Tauri config 和完整 Changelog
 版本是否一致；当对应的 `vX.Y.Z` 不存在时，使用仓库 `GITHUB_TOKEN` 自动创建

@@ -5,6 +5,8 @@ import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexed
 import type { UserIdentity } from "../types";
 import { emptyTaskFilters, matchesTaskBatch } from "../lib/task-center-filter";
 import "./task-center.css";
+import type { CloudOperationHandle } from "../lib/cloud-qc";
+import { CloudQcTasks } from "./CloudQcTasks";
 
 interface Props {
   currentUser: UserIdentity;
@@ -12,9 +14,13 @@ interface Props {
   onSourceChange?: (root: string) => void;
   onOpen?: (root: string, episodeRoot?: string, batchRoot?: string) => Promise<void>;
   onClose?: () => void;
+  cloudCurrentUser?: UserIdentity;
+  onOpenCloudReview?: (root: string) => Promise<void>;
+  workspaceBusy?: boolean;
+  beginCloudOperation?: () => CloudOperationHandle | null;
 }
 
-export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, onClose }: Props) {
+export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, onClose, cloudCurrentUser, onOpenCloudReview, workspaceBusy, beginCloudOperation }: Props) {
   const [root, setRoot] = useState(sourceRoot ?? "");
   const [catalog, setCatalog] = useState<TaskCatalog | null>(null);
   const [claims, setClaims] = useState<Record<string, BatchClaim>>({});
@@ -56,6 +62,7 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
   const refreshActive = useRef(false);
   const ownerRef = useRef(currentUser.username); ownerRef.current = currentUser.username;
   const admin = currentUser.role === "admin";
+  const [cloudOpen, setCloudOpen] = useState(false);
   useEffect(() => {
     if (pendingOnlyBatch === null || !catalog) return;
     const batch = findTaskNode(catalog.tree, pendingOnlyBatch);
@@ -391,8 +398,10 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       {isRoot && open && !children.length && node.children.length > 0 && <p className="task-empty">{filters.owner.trim() && !claimsReady ? "正在读取领取状态，请稍候…" : "没有符合查询条件的批次，请调整条件或清空查询。"}</p>}
     </div>;
   }
-  return <section ref={panelRef} className="task-center" role={onClose ? "dialog" : undefined} aria-modal={onClose ? true : undefined} aria-label="任务中心" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !pending) onClose?.(); }}>
-    <header><h2>任务中心</h2><div>{admin && <button className="button button-secondary" disabled={requesting || server?.running} onClick={() => void rebuild()}><Database size={16} />立即统计</button>}<button type="button" className="button button-secondary task-refresh-button" aria-label="刷新任务进度" title="刷新服务器统计及领取状态；展开或本人领取的批次会在服务器重新核对 QC，不扫描媒体" disabled={!root || loading || manualRefreshing || Boolean(pending)} onClick={() => void refreshProgress()}><RefreshCw size={17} className={loading || manualRefreshing ? "spin" : ""} /><span>{loading || manualRefreshing ? "刷新中" : "刷新进度"}</span></button>{onClose && <button className="icon-button" aria-label="关闭任务中心" title="关闭任务中心" onClick={onClose}><X size={18} /></button>}</div></header>
+  return <section ref={panelRef} className={`task-center${cloudOpen ? " task-center-cloud" : ""}`} role={onClose ? "dialog" : undefined} aria-modal={onClose ? true : undefined} aria-label="任务中心" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !pending) onClose?.(); }}>
+    <header><h2>任务中心</h2><div>{!cloudOpen && <>{admin && <button className="button button-secondary" disabled={requesting || server?.running} onClick={() => void rebuild()}><Database size={16} />立即统计</button>}<button type="button" className="button button-secondary task-refresh-button" aria-label="刷新任务进度" title="刷新服务器统计及领取状态；展开或本人领取的批次会在服务器重新核对 QC，不扫描媒体" disabled={!root || loading || manualRefreshing || Boolean(pending)} onClick={() => void refreshProgress()}><RefreshCw size={17} className={loading || manualRefreshing ? "spin" : ""} /><span>{loading || manualRefreshing ? "刷新中" : "刷新进度"}</span></button></>}{onClose && <button className="icon-button" aria-label="关闭任务中心" title="关闭任务中心" onClick={onClose}><X size={18} /></button>}</div></header>
+    <div className="task-center-tabs" role="group" aria-label="任务来源"><button type="button" className="button button-secondary" aria-pressed={!cloudOpen} onClick={() => setCloudOpen(false)}>本地任务</button><button type="button" className="button button-secondary" aria-pressed={cloudOpen} onClick={() => setCloudOpen(true)}>云端 QC</button></div>
+    {cloudOpen ? <CloudQcTasks workspaceBusy={workspaceBusy} beginOperation={beginCloudOperation} currentUser={cloudCurrentUser ?? currentUser} onOpen={onOpenCloudReview ?? (onOpen ? root => onOpen(root) : undefined)} /> : <>
     <div className="task-root-setting"><span title={root}>默认根目录：{root || "未找到已挂载的数据目录"}</span><button type="button" className="button button-secondary" disabled={Boolean(pending)} onClick={() => void chooseRoot()}><FolderOpen size={16} />更改目录</button></div>
     {(error || refreshError || claimError || claimActionError || openError) && <p role="alert" className="task-center-error">{error || refreshError || claimError || claimActionError || openError}</p>}
     <div className="task-scan-status" role="status">
@@ -415,5 +424,6 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       <span className="task-filter-summary" role="status">{filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo ? "起始日期不能晚于结束日期。" : catalog ? `显示 ${taskBatches(catalog.tree).filter((node) => matchesTaskBatch(node, claims[node.batchKey], filters)).length} / ${taskBatches(catalog.tree).length} 个批次` : "等待读取批次"} · 日期按批次文件夹名称；组合条件即时生效{filters.owner.trim() && !claimsReady ? "；领取状态尚未读取成功，查询结果待确认" : ""}</span>
     </form>
     <div className="task-tree" aria-busy={loading}>{catalog ? row(catalog.tree, 0) : <p className="task-empty">{loading ? "正在读取服务器统计…" : error ? "统计读取失败" : "等待服务器首次统计完成"}</p>}</div>
+    </>}
   </section>;
 }

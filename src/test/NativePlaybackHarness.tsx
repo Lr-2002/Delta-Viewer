@@ -20,7 +20,7 @@ function NativePlaybackHarness() {
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
-  const [buffering, setBuffering] = useState(false);
+  const [buffering, setBuffering] = useState<Record<string, boolean>>({});
   const clockActive = useRef(false);
   const presented = useCallback((_stream: string, next: number) => {
     setFrame(Math.min(next, window.__nativeEnd));
@@ -28,7 +28,7 @@ function NativePlaybackHarness() {
   }, []);
   const clockChanged = useCallback((_stream: string, active: boolean) => { clockActive.current = active; }, []);
   const bufferingChanged = useCallback((stream: string, value: boolean) => {
-    if (stream === "cam0") setBuffering(value);
+    setBuffering(current => current[stream] === value ? current : {...current, [stream]: value});
   }, []);
   useEffect(() => {
     window.__nativePlayback = {
@@ -51,7 +51,7 @@ function NativePlaybackHarness() {
       {window.__nativeStreams.map((stream, index) => <FramePanel
         key={stream.name} root="/native-playback-fixture" stream={stream}
         isPrimary={index === 0} frameId={frame} playing={playing}
-        nativePlaybackEnabled={playing && (index === 0 || !buffering)} playbackFps={30} playbackEndFrame={window.__nativeEnd}
+        nativePlaybackEnabled={playing} playbackHeld={Object.values(buffering).some(Boolean)} playbackFps={30} playbackEndFrame={window.__nativeEnd}
         speed={speed} className={`camera-${index}`} onFramePresented={presented}
         onNativeClockChange={clockChanged}
         onBufferingChange={bufferingChanged}

@@ -385,6 +385,8 @@ mod automatic_tests {
         )
         .unwrap();
         let source = VideoSource {
+            capture_timeline: None,
+            timing_error: None,
             adaptive_paths: None,
             preview_error: None,
             fps: 30.0,

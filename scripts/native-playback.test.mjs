@@ -158,7 +158,7 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
     assert.ok(moving.every((v) => v.time > 0.5 && !v.error), JSON.stringify(moving));
     if (!sampleRoot) {
       await page.evaluate(() => {
-        const primary = document.querySelector("video");
+        const primary = document.querySelectorAll("video")[1];
         const tail = primary.currentTime + .05;
         Object.defineProperty(primary, "buffered", { configurable: true,
           value: { length: 1, start: () => 0, end: () => tail } });
@@ -180,7 +180,7 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
       assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll("video")].map((video) => video.currentTime)),
         paused.mediaTimes, "buffering must freeze the media clocks");
       assert.ok(await page.evaluate(() => [...document.querySelectorAll("video")].every((video) => video.paused)));
-      await page.evaluate(() => { delete document.querySelector("video").buffered; });
+      await page.evaluate(() => { delete document.querySelectorAll("video")[1].buffered; });
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => !v.paused));
       const before = await page.evaluate(() => window.__nativeStats.events.filter((e) => e.event === "seeking" && e.stream === "cam0").length);
       await page.evaluate(() => window.__nativePlayback.speed(1.25));

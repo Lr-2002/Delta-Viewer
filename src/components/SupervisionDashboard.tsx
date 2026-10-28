@@ -33,6 +33,7 @@ import {
   getClientVersions,
   pushUpdateReminders,
 } from "../lib/backend";
+import type { CloudOperationHandle } from "../lib/cloud-qc";
 import { TextCorrectionsPanel } from "./TextCorrectionsPanel";
 import {
   reviewActionLabels,
@@ -90,6 +91,8 @@ export function SupervisionDashboard({
   updateBusy = false,
   onTestMode,
   syncNotice,
+  onOpenCloudReview,
+  beginCloudOperation,
 }: {
   currentUser: UserIdentity;
   onLogout: () => Promise<void>;
@@ -97,6 +100,8 @@ export function SupervisionDashboard({
   updateBusy?: boolean;
   onTestMode?: () => void;
   syncNotice?: ReactNode;
+  onOpenCloudReview?: (root: string) => Promise<void>;
+  beginCloudOperation?: () => CloudOperationHandle | null;
 }) {
   const [view, setView] = useState<View>(currentUser.canManage ? "accounts" : "overview");
   const [refreshId, setRefreshId] = useState(0);
@@ -478,7 +483,7 @@ export function SupervisionDashboard({
           </button>
         ))}
       </nav>
-      {view === "tasks" && <TaskCenter currentUser={{...currentUser, role:"admin"}} />}
+      {view === "tasks" && <TaskCenter workspaceBusy={updateBusy} beginCloudOperation={beginCloudOperation} currentUser={{...currentUser, role:"admin"}} cloudCurrentUser={currentUser} onOpenCloudReview={onOpenCloudReview} />}
       <div className="review-supervision-filters" hidden={view === "tasks" || view === "corrections" || view === "accounts"}>
         <label>
           审核账号

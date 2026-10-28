@@ -225,7 +225,7 @@ test("keeps decoded tiles visible through delayed playback and retains the works
     });
     await page.getByRole("button", { name: "下一帧" }).click();
     await page.waitForFunction(() => (
-      document.querySelector(".alert-error")?.textContent?.includes("FRAME_UNAVAILABLE")
+      document.querySelector(".alert-error")?.textContent?.includes("画面读取失败")
     ));
     assert.equal(await page.locator(".camera-grid").count(), 1);
     assert.equal(await page.locator(".frame-panel:not(.camera-placeholder)").count(), 5);

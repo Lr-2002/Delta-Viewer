@@ -1,0 +1,5 @@
+{
+  "identifier": "com.dohc.viewer.cloudqc139",
+  "productName": "Delta Viewer",
+  "app": { "windows": [{ "label": "main", "title": "Delta Viewer", "width": 1440, "height": 920, "minWidth": 960, "minHeight": 680, "dragDropEnabled": false }] }
+}

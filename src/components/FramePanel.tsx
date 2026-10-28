@@ -1,7 +1,8 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ImageOff } from "lucide-react";
 import type Hls from "hls.js";
-import { frameUrl, videoSource } from "../lib/backend";
+import { diagnoseVideoFailure, frameUrl, videoSource } from "../lib/backend";
+import { mediaFailure, type MediaFailure } from "../lib/media-failure";
 import {
   FrameCache,
   frameRequestKey,
@@ -14,6 +15,7 @@ import {
   secondaryPlaybackFrame,
   sourceAlignedTimelineFrame,
 } from "../lib/playback-clock";
+import { captureVideoPosition, captureTimelinePosition, capturePlaybackRate } from "../lib/capture-timeline";
 import type { StreamSummary, VideoSource } from "../types";
 
 interface FramePanelProps {
@@ -23,6 +25,7 @@ interface FramePanelProps {
   isPrimary?: boolean;
   playing?: boolean;
   nativePlaybackEnabled?: boolean;
+  playbackHeld?: boolean;
   readAheadEnabled?: boolean;
   readAheadFrames?: number;
   readAheadStride?: number;
@@ -32,8 +35,10 @@ interface FramePanelProps {
   speed?: number;
   className?: string;
   onFrameSettled?: (stream: string, frameId: number) => void;
-  onFrameUnavailable?: (stream: string, frameId: number) => void;
+  onFirstFrameAvailable?: (root: string, stream: string) => void;
+  onFrameUnavailable?: (stream: string, frameId: number, failure: MediaFailure) => void;
   onSourceFpsChange?: (stream: string, fps: number | null) => void;
+  onCaptureEndChange?: (stream: string, end: number | null) => void;
   onNativeClockChange?: (stream: string, active: boolean) => void;
   onFramePresented?: (stream: string, frameId: number, timelinePosition: number) => void;
   onBufferingChange?: (stream: string, buffering: boolean) => void;
@@ -72,6 +77,7 @@ export const FramePanel = memo(function FramePanel({
   isPrimary = false,
   playing = false,
   nativePlaybackEnabled = playing,
+  playbackHeld = false,
   readAheadEnabled = playing,
   readAheadFrames,
   readAheadStride = 1,
@@ -81,8 +87,10 @@ export const FramePanel = memo(function FramePanel({
   speed = 1,
   className = "",
   onFrameSettled,
+  onFirstFrameAvailable,
   onFrameUnavailable,
   onSourceFpsChange,
+  onCaptureEndChange,
   onNativeClockChange,
   onFramePresented,
   onBufferingChange,
@@ -91,6 +99,7 @@ export const FramePanel = memo(function FramePanel({
   const [frames, setFrames] = useState<FrameSlots>([null, null]);
   const [visibleSlot, setVisibleSlot] = useState<FrameSlotIndex>(0);
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
+  const [failure, setFailure] = useState<MediaFailure>(() => mediaFailure(null));
   const framesRef = useRef<FrameSlots>([null, null]);
   const imageRefs = useRef<[HTMLImageElement | null, HTMLImageElement | null]>([null, null]);
   const stagedSlotRef = useRef<FrameSlotIndex | null>(null);
@@ -144,7 +153,18 @@ export const FramePanel = memo(function FramePanel({
     onSourceFpsChange?.(stream.name, nativeVideo?.fps ?? null);
   }, [nativeVideo?.fps, onSourceFpsChange, stream.name]);
 
+  useEffect(() => {
+    const end = nativeVideo?.captureTimeline?.at(-1);
+    onCaptureEndChange?.(stream.name, end === undefined ? null : Math.floor(end + 1e-6));
+    return () => onCaptureEndChange?.(stream.name, null);
+  }, [nativeVideo?.captureTimeline, onCaptureEndChange, stream.name]);
+
   const nativeVideoActive = nativeVideo !== null && !nativeVideoFailed;
+
+  useEffect(() => {
+    if (!nativeVideoActive) onBufferingChange?.(stream.name, false);
+    return () => onBufferingChange?.(stream.name, false);
+  }, [nativeVideoActive, onBufferingChange, stream.name]);
 
   useEffect(() => {
     if (!isPrimary) return undefined;
@@ -154,7 +174,7 @@ export const FramePanel = memo(function FramePanel({
     onNativeClockChange?.(stream.name, supportsNativeClock);
     return () => onNativeClockChange?.(stream.name, false);
   }, [isPrimary, nativePlaybackEnabled, nativeVideoActive, onNativeClockChange, stream.name]);
-  const alignFallbackFrame = (candidateFrameId: number) => nativeVideo && nativeVideoFailed
+  const alignFallbackFrame = (candidateFrameId: number) => nativeVideo?.captureTimeline?.length ? candidateFrameId : nativeVideo && nativeVideoFailed
     ? sourceAlignedTimelineFrame(
       candidateFrameId,
       nativeVideo.startFrame,
@@ -172,8 +192,8 @@ export const FramePanel = memo(function FramePanel({
     : frameId;
   const fallbackFrameId = clampStreamFrame(
     alignFallbackFrame(fallbackPlaybackFrameId),
-    stream.firstFrame,
-    stream.lastFrame,
+    nativeVideo?.captureTimeline?.length ? Math.floor(nativeVideo.captureTimeline[0]) : stream.firstFrame,
+    nativeVideo?.captureTimeline?.length ? Math.floor(nativeVideo.captureTimeline.at(-1)!) : stream.lastFrame,
   );
   const fallbackFrameStride = nativeVideo && nativeVideoFailed
     ? Math.max(1, Math.round(playbackFps / nativeVideo.fps))
@@ -182,13 +202,17 @@ export const FramePanel = memo(function FramePanel({
   const requestedKeyRef = useRef(requestKey);
   const timelineSeconds = Math.max(0, frameId - (nativeVideo?.startFrame ?? 0))
     / Math.max(playbackFps, 1);
-  const videoSegmentIndex = nativeVideo
+  const captureTimes = nativeVideo?.captureTimeline;
+  const mapped = nativeVideo && captureTimes?.length
+    ? captureVideoPosition(captureTimes, frameId, nativeVideo.mediaFps, nativeVideo.segmentSeconds) : null;
+  const videoSegmentIndex = mapped ? Math.min(nativeVideo!.paths.length - 1, mapped.segment) : nativeVideo
     ? Math.min(nativeVideo.paths.length - 1, Math.floor(timelineSeconds / nativeVideo.segmentSeconds))
     : 0;
-  const mediaClockRatio = nativeVideo
+  const mediaClockRatio = nativeVideo && captureTimes?.length
+    ? capturePlaybackRate(captureTimes, videoSegmentIndex, nativeVideo.mediaFps, nativeVideo.segmentSeconds, playbackFps) : nativeVideo
     ? nativeVideo.fps / Math.max(nativeVideo.mediaFps, 1)
     : 1;
-  const videoLocalSeconds = nativeVideo
+  const videoLocalSeconds = mapped ? mapped.seconds : nativeVideo
     ? (timelineSeconds - videoSegmentIndex * nativeVideo.segmentSeconds) * mediaClockRatio
       // Seeking on a rounded PTS boundary can display the preceding frame.
       + (exactFrameSeek ? 0.5 / Math.max(nativeVideo.mediaFps, 1) : 0)
@@ -248,30 +272,43 @@ export const FramePanel = memo(function FramePanel({
     }
     let active = true;
     const resume = () => {
-      if (!active || !video.paused || video.seeking || video.ended
-        || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
-      if (exactFrameSeek && Math.abs(video.currentTime - requestedVideoTimeRef.current) > 0.03) {
-        video.currentTime = requestedVideoTimeRef.current;
+      if (!active || video.seeking || video.ended) return;
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        onBufferingChange?.(stream.name, true);
+        setVideoStatus("buffering");
+        return;
+      }
+      const target = requestedVideoTimeRef.current;
+      const drift = Math.abs(video.currentTime - target);
+      // Align a recovered camera before releasing the shared hold. Seeking is
+      // only requested once; seeked/progress recheck the same latest target.
+      if (video.paused && drift > 0.08) {
+        video.currentTime = target;
+        onBufferingChange?.(stream.name, true);
         return;
       }
       const remaining = Math.max(0, video.duration - video.currentTime);
-      const runway = Math.min(1.5 * video.playbackRate, remaining);
+      const runway = Math.min(0.75 * video.playbackRate, remaining);
       const buffered = Array.from({ length: video.buffered.length }, (_, index) => index)
         .some((index) => video.buffered.start(index) <= video.currentTime + 0.01
           && video.buffered.end(index) - video.currentTime >= runway - 0.02);
-      if (isPrimary && !buffered) {
+      if (!buffered) {
+        video.pause();
         setVideoStatus("buffering");
         onBufferingChange?.(stream.name, true);
         return;
       }
-      void video.play().catch(() => { if (active) setVideoStatus("ready"); });
+      onBufferingChange?.(stream.name, false);
+      if (playbackHeld) { video.pause(); return; }
+      if (video.paused) void video.play().catch(() => { if (active) setVideoStatus("ready"); });
     };
     const waitForRunway = () => {
-      if (!active || !isPrimary || video.ended) return;
+      if (!active || video.ended) return;
       video.pause();
       setVideoStatus("buffering");
       onBufferingChange?.(stream.name, true);
     };
+    if (playbackHeld) video.pause();
     // Browser buffers stay in memory. Resume only after a short runway, so
     // bursty NAS reads do not repeatedly start and stop the primary decoder.
     video.addEventListener("waiting", waitForRunway);
@@ -292,7 +329,7 @@ export const FramePanel = memo(function FramePanel({
       video.removeEventListener("canplay", resume);
       video.removeEventListener("seeked", resume);
     };
-  }, [exactFrameSeek, isPrimary, nativePlaybackEnabled, nativeVideoActive, onBufferingChange, stream.name, videoSegmentIndex, videoUrl]);
+  }, [exactFrameSeek, isPrimary, nativePlaybackEnabled, playbackHeld, nativeVideoActive, onBufferingChange, stream.name, videoSegmentIndex, videoUrl]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -376,7 +413,9 @@ export const FramePanel = memo(function FramePanel({
     let callbackId = 0;
     const reportMediaTime = (mediaTime: number) => {
       if (!active) return;
-      const timelinePosition = nativeVideoTimelinePosition(
+      const timelinePosition = captureTimes?.length
+        ? captureTimelinePosition(captureTimes, mediaTime, videoSegmentIndex, nativeVideo.mediaFps, nativeVideo.segmentSeconds)
+        : nativeVideoTimelinePosition(
         mediaTime,
         videoSegmentIndex,
         nativeVideo.segmentSeconds,
@@ -431,11 +470,11 @@ export const FramePanel = memo(function FramePanel({
     if (visible?.key === requestKey) onFrameSettled?.(stream.name, frameId);
   }, [frameId, nativeVideoActive, onFrameSettled, requestKey, stream.name]);
 
-  function reportFrameUnavailable(frame: CachedFrame | { frameId: number }) {
+  function reportFrameUnavailable(frame: CachedFrame | { frameId: number }, failure: MediaFailure) {
     const key = `${streamKey}:${frame.frameId}`;
     if (unavailableFrameRef.current === key) return;
     unavailableFrameRef.current = key;
-    onFrameUnavailable?.(stream.name, frame.frameId);
+    onFrameUnavailable?.(stream.name, frame.frameId, failure);
   }
   function stageFrame(frame: CachedFrame, presentImmediately = false) {
     const current = framesRef.current[visibleSlotRef.current];
@@ -492,7 +531,9 @@ export const FramePanel = memo(function FramePanel({
     setFrames(nextFrames);
   }
 
-  function settleFrameFailure(unavailableFrameId: number, failedSlot?: FrameSlotIndex) {
+  function settleFrameFailure(unavailableFrameId: number, failedSlot?: FrameSlotIndex, reason?: unknown) {
+    const failure = mediaFailure(reason);
+    setFailure(failure);
     if (!isPrimary) {
       // Keep the last visible secondary frame if its replacement fails. A
       // staged replacement can be discarded safely; removing the visible
@@ -500,8 +541,7 @@ export const FramePanel = memo(function FramePanel({
       if (failedSlot !== undefined && failedSlot !== visibleSlotRef.current) {
         discardFailedFrame(failedSlot);
       }
-      const visible = framesRef.current[visibleSlotRef.current];
-      setStatus(visible?.streamKey === streamKey ? "ready" : "failed");
+      setStatus("failed");
       onFrameSettled?.(stream.name, frameId);
       return;
     }
@@ -509,13 +549,14 @@ export const FramePanel = memo(function FramePanel({
     clearCurrentStreamFrames();
     setStatus("failed");
     onFrameSettled?.(stream.name, frameId);
-    reportFrameUnavailable({ frameId: unavailableFrameId });
+    reportFrameUnavailable({ frameId: unavailableFrameId }, failure);
   }
 
-  function handleFrameError(slot: FrameSlotIndex, frame: CachedFrame) {
+  async function handleFrameError(slot: FrameSlotIndex, frame: CachedFrame) {
     if (requestedKeyRef.current !== frame.key || framesRef.current[slot]?.key !== frame.key) return;
-
-    settleFrameFailure(frame.frameId, slot);
+    const reason = await diagnoseVideoFailure(root, stream.name, frame.frameId, "画面显示失败，无法取得解码图像。");
+    if (requestedKeyRef.current !== frame.key || framesRef.current[slot]?.key !== frame.key) return;
+    settleFrameFailure(frame.frameId, slot, reason);
   }
 
   useEffect(() => {
@@ -558,9 +599,11 @@ export const FramePanel = memo(function FramePanel({
         // own frames, leaving the old tile visible.
         stageFrame(frame, playing && nativePlaybackEnabled);
       })
-      .catch(() => {
+      .catch(async (reason: unknown) => {
         if (!active || requestedKeyRef.current !== effectRequestKey) return;
-        settleFrameFailure(fallbackFrameId);
+        const diagnosed = await diagnoseVideoFailure(root, stream.name, fallbackFrameId, reason);
+        if (!active || requestedKeyRef.current !== effectRequestKey) return;
+        settleFrameFailure(fallbackFrameId, undefined, diagnosed);
       });
     if (playing && readAheadEnabled && (!nativeVideo || nativeVideoFailed)) {
       const streamEnd = stream.lastFrame ?? playbackEndFrame;
@@ -593,7 +636,7 @@ export const FramePanel = memo(function FramePanel({
           src={useAdaptive ? undefined : videoUrl}
           muted
           playsInline
-          preload="auto"
+          preload={playing ? "auto" : "metadata"}
           onLoadedMetadata={(event) => {
             rememberDimensions(event.currentTarget.videoWidth, event.currentTarget.videoHeight);
             if (videoRef.current && Math.abs(videoRef.current.currentTime - requestedVideoTimeRef.current) > 0.001) {
@@ -603,17 +646,21 @@ export const FramePanel = memo(function FramePanel({
           onResize={(event) => rememberDimensions(event.currentTarget.videoWidth, event.currentTarget.videoHeight)}
           onLoadedData={() => {
             setVideoStatus("ready");
+            onFirstFrameAvailable?.(root, stream.name);
             if (!nativePlaybackEnabled) onFrameSettled?.(stream.name, frameId);
           }}
           onPlaying={() => {
             setVideoStatus("playing");
             onBufferingChange?.(stream.name, false);
           }}
-          onWaiting={() => setVideoStatus("buffering")}
+          onWaiting={() => { setVideoStatus("buffering"); if (nativePlaybackEnabled) onBufferingChange?.(stream.name, true); }}
           onStalled={() => setVideoStatus("buffering")}
           onEnded={() => {
+            onBufferingChange?.(stream.name, false);
             if (!isPrimary || !nativePlaybackEnabled || !videoRef.current) return;
-            const position = nativeVideoTimelinePosition(
+            const position = captureTimes?.length
+              ? captureTimelinePosition(captureTimes, videoRef.current.duration, videoSegmentIndex, nativeVideo.mediaFps, nativeVideo.segmentSeconds)
+              : nativeVideoTimelinePosition(
               videoRef.current.duration, videoSegmentIndex, nativeVideo.segmentSeconds,
               nativeVideo.startFrame, playbackFps, nativeVideo.fps, nativeVideo.mediaFps,
             );
@@ -658,18 +705,20 @@ export const FramePanel = memo(function FramePanel({
         {adaptiveUrl && <select className="preview-quality" aria-label={`${stream.label}清晰度`} title="播放清晰度" value={quality} onChange={(event) => { setAdaptiveFailed(false); setQuality(event.target.value); }}>
           <option value="auto">自动</option>{[...new Set(levels)].sort((a, b) => b - a).map((height) => <option key={height} value={height}>{height}p</option>)}<option value="original">原片</option>
         </select>}
+        {nativeVideo?.timingError && <span className="preview-warning" title={nativeVideo.timingError}>时间轴回退</span>}
         {(nativeVideo?.previewError || adaptiveFailed) && <span className="preview-warning" title={nativeVideo?.previewError ?? "预览播放失败，已回退原片"}>{nativeVideo?.previewError ? "预览校验失败" : "预览回退原片"}</span>}
         {nativeVideo ? (
           <span className="video-playback-status">
-            {nativeVideoFailed || videoStatus === "fallback" ? "逐帧回退" : videoStatus === "playing" ? "原生播放" : videoStatus === "buffering" ? "缓冲中" : "原生就绪"}
+            {nativeVideoFailed || videoStatus === "fallback" ? "逐帧回退" : playbackHeld && nativePlaybackEnabled && videoStatus !== "buffering" ? "等待其他相机" : videoStatus === "playing" ? "原生播放" : videoStatus === "buffering" ? "缓冲中" : "原生就绪"}
           </span>
         ) : null}
       </figcaption>
       {!nativeVideoActive && status === "loading" && !playing ? <span className="frame-loading">解码中</span> : null}
       {!nativeVideoActive && status === "failed" ? (
-        <span className="frame-error">
+        <span className="frame-error" title={failure.detail} role="status" style={{ display: "flex", flexDirection: "column", justifyContent: "center", padding: "8px 8px 28px", overflow: "hidden" }}>
           <ImageOff size={18} aria-hidden="true" />
-          帧不可用
+          {failure.label}
+          <small style={{ minHeight: 0, maxHeight: "55%", maxWidth: "100%", overflowY: "auto", overflowWrap: "anywhere", textAlign: "center" }}>{failure.detail.replace(/^[A-Z_]+:\s*/, "").split(" 原始读取错误：")[0]}</small>
         </span>
       ) : null}
     </figure>

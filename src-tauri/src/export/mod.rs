@@ -351,6 +351,8 @@ fn select_episode_data(
     summary.end_time_ns = states.last().map(|state| state.capture_time_ns.clone());
     summary.streams = streams;
     Ok(EpisodeData {
+        states_partial: false,
+        timeline_fps: None,
         summary,
         states,
         skeleton: None,
@@ -933,6 +935,8 @@ mod tests {
             })
             .collect();
         let data = EpisodeData {
+            states_partial: false,
+            timeline_fps: None,
             summary: EpisodeSummary {
                 root: source.display().to_string(),
                 name: "fixture".into(),

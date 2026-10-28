@@ -72,6 +72,7 @@ import type {
 
 export const DEMO_ROOT = DEMO_EPISODE_ROOT;
 export const APP_VERSION = packageInfo.version;
+export const DISPLAY_VERSION = APP_VERSION.replace(/-rc\.cloudqc\.\d+$/, "");
 export const CAPTURE_WORKBENCH_URL = "http://10.1.41.17:44587/qc.html?viewer=overview";
 
 /** Open the read-only overview backed by the workbench's live statistics API. */
@@ -1453,6 +1454,22 @@ export async function frameUrl(root: string, stream: string, frameId: number): P
   return `data:${payload.mimeType};base64,${payload.data}`;
 }
 
+export async function diagnoseVideoFailure(root: string, stream: string, frameId: number, reason: unknown): Promise<unknown> {
+  if (!isTauriRuntime()) return reason;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const diagnosis = await Promise.race([
+      invoke<string | null>("diagnose_video_failure", { root, stream, frameId }),
+      new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 6000); }),
+    ]);
+    return diagnosis ? `${diagnosis} 原始读取错误：${reason instanceof Error ? reason.message : String(reason)}` : reason;
+  } catch (diagnosisError) {
+    return `${reason instanceof Error ? reason.message : String(reason)}；文件检查未完成：${String(diagnosisError)}`;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function videoSource(root: string, stream: string): Promise<VideoSource | null> {
   if (!isTauriRuntime()) return null;
   try {
@@ -1606,3 +1623,11 @@ export async function pushUpdateReminders(usernames: string[], all = false): Pro
   if (isTauriRuntime()) return invoke("client_management", {request:{kind:"remind",all,usernames}});
   return {queued:usernames.map(username=>({username,id:crypto.randomUUID(),reused:false}))};
 }
+
+/** Native-only cloud QC commands; credentials and network stay in Rust. */
+export const cloudQcInvoke = <T,>(command: string, args: Record<string, unknown> = {}) => {
+  if (!["cloud_qc_call", "cloud_qc_fetch", "cloud_qc_sync", "cloud_qc_configure", "cloud_qc_pending", "cloud_qc_access", "cancel_task"].includes(command)) return Promise.reject(new Error("CLOUD_QC_ACTION_INVALID"));
+  return invoke<T>(command, args);
+};
+
+export const chooseCloudQcConfig = () => open({ multiple: false, filters: [{ name: "云端 QC 接入配置", extensions: ["json"] }] });

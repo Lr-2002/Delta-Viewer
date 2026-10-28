@@ -13,7 +13,7 @@ use crate::{importer, storage};
 use image::{DynamicImage, GenericImageView, ImageReader};
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -134,69 +134,9 @@ fn validate_episode_with_mode(
         ));
     } else {
         checked_files += 1;
-        let file = File::open(&states_path)?;
-        let reader = BufReader::new(file);
-        for (line_number, line) in reader.lines().enumerate() {
-            if cancelled.load(Ordering::Relaxed) {
-                return Err(AppError::Cancelled);
-            }
-            let line = line?;
-            if line.trim().is_empty() {
-                issues.push(issue(
-                    Severity::Warning,
-                    "EMPTY_STATE_LINE",
-                    "states",
-                    &format!("第 {} 行为空", line_number + 1),
-                ));
-                continue;
-            }
-            match serde_json::from_str::<RawStateRecord>(&line) {
-                Ok(state) => {
-                    if state.frame_id < 0 {
-                        issues.push(issue(
-                            Severity::Error,
-                            "INVALID_FRAME_ID",
-                            "states",
-                            &format!("第 {} 行的 frame_id 为负数", line_number + 1),
-                        ));
-                    }
-                    if state.capture_time_ns < 0 {
-                        issues.push(issue_at(
-                            Severity::Error,
-                            "INVALID_TIMESTAMP",
-                            "states",
-                            &format!("第 {} 行的 capture_time_ns 为负数", line_number + 1),
-                            state.frame_id,
-                        ));
-                    }
-                    if !state_is_finite(&state) {
-                        issues.push(issue_at(
-                            Severity::Error,
-                            "NON_FINITE_STATE",
-                            "states",
-                            &format!("第 {} 行包含 NaN 或 Infinity", line_number + 1),
-                            state.frame_id,
-                        ));
-                    }
-                    states.push(state);
-                }
-                Err(error) => {
-                    let code = if contains_non_finite_token(&line)
-                        || error.to_string().contains("number out of range")
-                    {
-                        "NON_FINITE_STATE"
-                    } else {
-                        "INVALID_STATE_JSON"
-                    };
-                    issues.push(issue(
-                        Severity::Error,
-                        code,
-                        "states",
-                        &format!("第 {} 行无法解析: {}", line_number + 1, error),
-                    ));
-                }
-            }
-        }
+        let snapshot = crate::state_snapshot::read(&states_path, cancelled)?;
+        issues.extend(snapshot.issues.iter().cloned());
+        states.extend(snapshot.states.iter().cloned());
     }
 
     let state_frame_rate = check_state_sequence(&states, &mut issues);
@@ -980,7 +920,7 @@ fn report_partial_path(output: &Path) -> PathBuf {
     output.with_file_name(format!(".{name}.partial-{nonce}"))
 }
 
-fn state_is_finite(state: &RawStateRecord) -> bool {
+pub(crate) fn state_is_finite(state: &RawStateRecord) -> bool {
     state
         .position
         .iter()
@@ -996,7 +936,7 @@ fn state_is_finite(state: &RawStateRecord) -> bool {
             .all(f64::is_finite)
 }
 
-fn contains_non_finite_token(line: &str) -> bool {
+pub(crate) fn contains_non_finite_token(line: &str) -> bool {
     let bytes = line.as_bytes();
     let mut in_string = false;
     let mut escaped = false;

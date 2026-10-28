@@ -2012,6 +2012,7 @@ fn validated_rejection_reason(status: &str, reason: Option<&str>) -> AppResult<S
         "动作过快",
         "状态异常",
         "动作失范",
+        "数据内容缺失",
     ];
     if fixed.contains(&reason) {
         return Ok(reason.into());
@@ -4620,6 +4621,8 @@ mod tests {
             "动作过快",
             "状态异常",
             "动作失范",
+            "数据内容缺失",
+            "其他原因：多路视频不同步",
             "骨架抖动",
             "镜头污渍",
             "动作错误",

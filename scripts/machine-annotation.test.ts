@@ -112,7 +112,7 @@ test("mismatched media and missing camera cannot silently align", () => {
   assert.ok(machineTimelineMapping(annotation, { ...stream, lastFrame: 764 }).error);
 });
 
-import { REJECTION_REASONS, normalizeReasonOrder, reorderReason } from "../src/lib/rejection-reasons.ts";
+import { REJECTION_REASONS, normalizeReasonOrder, reorderReason, customReasonError, normalizeCustomReasons, rejectionReasonValue } from "../src/lib/rejection-reasons.ts";
 test("reason order migrates valid labels, appends new reasons and pins other last", () => {
   const order = normalizeReasonOrder(["动作过快", "其他原因", "动作过快", "removed", null]);
   assert.equal(order[0], "动作过快");
@@ -123,6 +123,24 @@ test("reason order migrates valid labels, appends new reasons and pins other las
   assert.deepEqual(reorderReason(order, "骨架抖动", "其他原因"), order);
   assert.equal(reorderReason(order, "动作失范", "动作过快")[0], "动作失范");
   assert.deepEqual(normalizeReasonOrder({ invalid: true }), REJECTION_REASONS);
+});
+
+
+test("custom rejection labels validate, retain ordering and use compatible other-reason payloads", () => {
+  assert.ok(REJECTION_REASONS.includes("数据内容缺失"));
+  assert.ok(customReasonError("数据内容缺失", []));
+  assert.ok(customReasonError("重复", ["重复"]));
+  assert.ok(customReasonError("字".repeat(41), []));
+  assert.ok(customReasonError("两行\n文字", []));
+  assert.equal(customReasonError(" 视频不同步 ", []), "");
+  const custom = normalizeCustomReasons(["视频不同步", "视频不同步", "其他原因", null, " 数据不完整 "]);
+  assert.deepEqual(custom, ["视频不同步", "数据不完整"]);
+  const order = normalizeReasonOrder(["视频不同步", "动作失范"], custom);
+  assert.equal(order[0], "视频不同步");
+  assert.equal(order.at(-1), "其他原因");
+  assert.equal(reorderReason(order, "数据不完整", "视频不同步", custom)[0], "数据不完整");
+  assert.equal(rejectionReasonValue("视频不同步", custom), "其他原因：视频不同步");
+  assert.equal(rejectionReasonValue("数据内容缺失", custom), "数据内容缺失");
 });
 
 

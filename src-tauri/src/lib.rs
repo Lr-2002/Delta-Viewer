@@ -3,6 +3,7 @@
 mod adaptive_preview;
 mod annotations;
 mod assigned_source;
+mod cloud_qc;
 mod dataset_layout;
 mod episode_metadata;
 mod error;
@@ -11,10 +12,13 @@ mod identity;
 mod importer;
 mod machine_annotation;
 mod machine_review;
+mod media_diagnostics;
 mod media_stream_server;
 mod model;
+mod mp4_clock;
 mod mp4_preview_cache;
 mod operation_history;
+mod recording_timing;
 mod review_catalog;
 mod review_outbox;
 mod segment_bin;
@@ -23,6 +27,7 @@ mod source;
 mod source_index_cache;
 mod source_path_probe;
 mod source_review_queue;
+mod state_snapshot;
 mod storage;
 pub mod stress;
 mod supervision;
@@ -989,6 +994,102 @@ async fn task_center_claims(
 }
 
 #[tauri::command]
+async fn cloud_qc_configure(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    config_path: String,
+) -> Result<serde_json::Value, String> {
+    cloud_qc::configure(&app_data_root(&app)?, auth.inner(), Path::new(&config_path))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cloud_qc_call(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    action: String,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    cloud_qc::call(&app_data_root(&app)?, auth.inner(), &action, payload)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cloud_qc_fetch(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    job_id: String,
+    recording_id: String,
+    operation_id: u64,
+) -> Result<String, String> {
+    auth.require_managed_user().map_err(|e| e.to_string())?;
+    let task = control.start(operation_id)?;
+    let data = app_data_root(&app)?;
+    let auth = auth.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(cloud_qc::fetch(
+            &data,
+            &auth,
+            &job_id,
+            &recording_id,
+            &task.cancelled(),
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cloud_qc_sync(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    directory: String,
+) -> Result<serde_json::Value, String> {
+    let data = app_data_root(&app)?;
+    let auth = auth.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(cloud_qc::sync(&data, &auth, Path::new(&directory)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cloud_qc_access(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    directory: String,
+    claim: bool,
+) -> Result<serde_json::Value, String> {
+    let data = app_data_root(&app)?;
+    let auth = auth.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(cloud_qc::access(&data, &auth, Path::new(&directory), claim))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cloud_qc_pending(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<serde_json::Value, String> {
+    let data = app_data_root(&app)?;
+    let auth = auth.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cloud_qc::pending(&data, &auth))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_assigned_source_root(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -1143,6 +1244,7 @@ async fn load_machine_review(
 ) -> Result<machine_review::ReviewView, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
+    let auth_user = auth.current_user().map_err(|e| e.to_string())?;
     let owner = user_center::source_review_owner(&data_root, auth.inner()).ok();
     ensure_source_directory_responsive(&source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -1162,8 +1264,24 @@ async fn load_machine_review(
                 &source_path,
                 source_name.as_deref(),
             )? {
-                return Ok(source_review_queue::local_view(&entry, &user, Some(view)));
+                let mut local = source_review_queue::local_view(&entry, &user, Some(view));
+                cloud_qc::decorate_view(
+                    &data_root,
+                    &user.username,
+                    Path::new(&source_path),
+                    &mut local,
+                )?;
+                return Ok(local);
             }
+        }
+        let mut view = view;
+        if let Some(user) = auth_user {
+            cloud_qc::decorate_view(
+                &data_root,
+                &user.username,
+                Path::new(&source_path),
+                &mut view,
+            )?;
         }
         Ok::<_, error::AppError>(view)
     })
@@ -1186,13 +1304,19 @@ async fn save_machine_review(
     let data_root = app_data_root(&app)?;
     let (_, service) =
         user_center::source_review_owner(&data_root, auth.inner()).map_err(|e| e.to_string())?;
+    cloud_qc::require_editable(&data_root, auth.inner(), Path::new(&request.source_path))
+        .await
+        .map_err(|e| e.to_string())?;
     if request.source_name.as_deref() != Some(machine_annotation::SKELETON_SOURCE) {
         let mut entry = local_entry.ok_or_else(|| {
             "ACTION_DRAFT_REQUIRED: 动作修改必须先保存本机草稿，请使用新版客户端".to_string()
         })?;
         entry.request = request;
         return tauri::async_runtime::spawn_blocking(move || {
-            source_review_queue::submit_action(&data_root, &service, &user, entry)
+            let directory = entry.request.source_path.clone();
+            let mut view = source_review_queue::submit_action(&data_root, &service, &user, entry)?;
+            cloud_qc::decorate_view(&data_root, &user.username, Path::new(&directory), &mut view)?;
+            Ok::<_, error::AppError>(view)
         })
         .await
         .map_err(|e| e.to_string())?
@@ -1249,6 +1373,9 @@ async fn defer_machine_review(
     let data = app_data_root(&app)?;
     let (user, service) =
         user_center::source_review_owner(&data, auth.inner()).map_err(|e| e.to_string())?;
+    cloud_qc::require_editable(&data, auth.inner(), Path::new(&entry.request.source_path))
+        .await
+        .map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         source_review_queue::store(&data, &service, &user.username, entry)
             .map(|saved| source_review_queue::local_view(&saved, &user, None))
@@ -1289,9 +1416,22 @@ async fn publish_pending_source_reviews(
     let (user, service) =
         user_center::source_review_owner(&data, auth.inner()).map_err(|e| e.to_string())?;
     let task = control.start(operation_id)?;
+    let auth = auth.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _task = &task;
-        source_review_queue::publish(&data, &service, &user, &task.cancelled())
+        if !data.join("cloud-qc/data").exists() {
+            return source_review_queue::publish(&data, &service, &user, &task.cancelled());
+        }
+        source_review_queue::publish_with_probe(
+            &data,
+            &service,
+            &user,
+            &task.cancelled(),
+            &|path| {
+                tauri::async_runtime::block_on(cloud_qc::require_editable(&data, &auth, path))?;
+                source_path_probe::ensure_review_storage_responsive(path)
+            },
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1460,6 +1600,9 @@ async fn reject_pending_machine_review(
     }
     let task = control.start(operation_id)?;
     let data_root = app_data_root(&app)?;
+    cloud_qc::require_editable(&data_root, auth.inner(), Path::new(&source_path))
+        .await
+        .map_err(|e| e.to_string())?;
     let (_, service) =
         user_center::source_review_owner(&data_root, auth.inner()).map_err(|e| e.to_string())?;
     let (data, path, username) = (
@@ -2074,12 +2217,16 @@ async fn get_video_source(
         let scope = app.asset_protocol_scope();
         for path in &mut source.paths {
             let file_path = PathBuf::from(path.as_str());
-            scope
-                .allow_file(&file_path)
-                .map_err(|error| error.to_string())?;
             if let Some(server) = media_stream_server.as_ref() {
+                // The loopback route already restricts access to this exact file.
+                // Asset-protocol registration duplicates filesystem work and is
+                // only needed when the loopback service is unavailable.
                 *path = server
                     .register(&file_path)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                scope
+                    .allow_file(&file_path)
                     .map_err(|error| error.to_string())?;
             }
         }
@@ -2111,6 +2258,23 @@ async fn get_jpeg_stream_source(
             .register_jpeg_directory(&directory)
             .map(Some)
             .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn diagnose_video_failure(
+    auth: State<'_, AuthState>,
+    root: String,
+    stream: String,
+    frame_id: u64,
+) -> Result<Option<String>, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    ensure_source_directory_responsive(&root).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        source::diagnose_video_failure(Path::new(&root), &stream, frame_id)
+            .map_err(media_diagnostics::diagnostic_io_error)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -2239,6 +2403,12 @@ pub fn run() {
             get_task_center_root,
             set_task_center_root,
             task_center_claims,
+            cloud_qc_configure,
+            cloud_qc_call,
+            cloud_qc_fetch,
+            cloud_qc_sync,
+            cloud_qc_pending,
+            cloud_qc_access,
             set_assigned_source_root,
             create_task_definition,
             import_task_template_config,
@@ -2280,6 +2450,7 @@ pub fn run() {
             get_video_source,
             get_jpeg_stream_source,
             read_frame,
+            diagnose_video_failure,
             get_preview_location,
             set_preview_location
         ])

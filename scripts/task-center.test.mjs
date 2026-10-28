@@ -15,7 +15,7 @@ test("task center shows QC tree, enforces claim states, refreshes without collap
       import {TaskCenter} from '/src/components/TaskCenter.tsx'; import '/src/styles.css';
       const root = createRoot(document.getElementById('root'));
       window.hideTask = () => root.render(null);
-      window.showTask = (role='operator') => root.render(React.createElement('div', {className:'personal-task-overlay'}, React.createElement(TaskCenter, {currentUser:{username:'alice',displayName:'审核甲',role},onClose:()=>{window.taskFixture.closed++;},onOpen:async(root)=>{
+      window.showTask = (role='operator') => root.render(React.createElement('div', {className:'personal-task-overlay'}, React.createElement(TaskCenter, {currentUser:{username:'alice',displayName:'审核甲',role,canManage:true},onClose:()=>{window.taskFixture.closed++;},onOpen:async(root)=>{
         window.taskFixture.openCalls.push(root);
         if(window.taskFixture.delayOpen) await new Promise(resolve=>{window.taskFixture.finishOpen=resolve;});
         if(window.taskFixture.openError) throw Error(window.taskFixture.openError);

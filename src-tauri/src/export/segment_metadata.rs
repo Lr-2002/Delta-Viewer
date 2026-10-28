@@ -159,6 +159,8 @@ mod tests {
         fs::write(&artifact, b"mcap").unwrap();
         let source = root.join("readonly-source");
         let data = EpisodeData {
+            states_partial: false,
+            timeline_fps: None,
             summary: EpisodeSummary {
                 root: source.display().to_string(),
                 name: "trajectory".into(),

@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,19 +35,22 @@ fn probed_mp4_fps(path: &Path, app: Option<&AppHandle>) -> Option<f64> {
             return Some(*fps);
         }
     }
-    let fps = crate::export::lerobot::ffmpeg_candidates(app)
-        .into_iter()
-        .find_map(|ffmpeg| {
-            let output = Command::new(ffmpeg)
-                .args(["-hide_banner", "-i"])
-                .arg(path)
-                .output()
-                .ok()?;
-            let text = String::from_utf8_lossy(&output.stderr).replace(['\r', '\n'], " ");
-            let fps_marker = text.find(" fps")?;
-            text[..fps_marker]
-                .rsplit_once(',')
-                .and_then(|(_, value)| value.trim().parse::<f64>().ok())
+    let fps = crate::mp4_clock::fps(path)
+        .or_else(|| {
+            crate::export::lerobot::ffmpeg_candidates(app)
+                .into_iter()
+                .find_map(|ffmpeg| {
+                    let output = Command::new(ffmpeg)
+                        .args(["-hide_banner", "-i"])
+                        .arg(path)
+                        .output()
+                        .ok()?;
+                    let text = String::from_utf8_lossy(&output.stderr).replace(['\r', '\n'], " ");
+                    let fps_marker = text.find(" fps")?;
+                    text[..fps_marker]
+                        .rsplit_once(',')
+                        .and_then(|(_, value)| value.trim().parse::<f64>().ok())
+                })
         })
         .filter(|value| value.is_finite() && *value > 0.0);
     if let Some(value) = fps {
@@ -161,6 +164,61 @@ pub fn load_episode(
     load_episode_with_index(root, &index, cancelled)
 }
 
+fn recording_preview_states(
+    root: &Path,
+    cancelled: &AtomicBool,
+) -> AppResult<Option<Vec<StateRecord>>> {
+    const LIMIT: u64 = 128 * 1024;
+    let path = root.join("states.jsonl");
+    if !is_regular_file(&root.join(".session_meta/manifest.json"))
+        || !is_regular_file(&path)
+        || fs::metadata(&path)?.len() < 512 * 1024
+    {
+        return Ok(None);
+    }
+    let Some(manifest) = read_mp4_manifest(root)? else {
+        return Ok(None);
+    };
+    if manifest.hybrid {
+        return Ok(None);
+    }
+    let mut states = Vec::new();
+    for line in BufReader::new(File::open(&path)?.take(LIMIT))
+        .lines()
+        .take(32)
+    {
+        check_cancelled(cancelled)?;
+        if let Ok(state) = serde_json::from_str::<RawStateRecord>(&line?) {
+            states.push(StateRecord::from(state));
+        }
+    }
+    let mut tail = File::open(&path)?;
+    tail.seek(SeekFrom::End(-(LIMIT as i64)))?;
+    let mut bytes = Vec::new();
+    tail.take(LIMIT).read_to_end(&mut bytes)?;
+    let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') else {
+        return Ok(None);
+    };
+    let last = bytes[newline + 1..]
+        .split(|byte| *byte == b'\n')
+        .rev()
+        .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+        .find_map(|line| serde_json::from_slice::<RawStateRecord>(line).ok());
+    if let Some(last) = last {
+        if states
+            .first()
+            .is_some_and(|first| last.frame_id > first.frame_id)
+            && states
+                .last()
+                .is_some_and(|state| last.frame_id > state.frame_id)
+        {
+            states.push(StateRecord::from(last));
+            return Ok(Some(states));
+        }
+    }
+    Ok(None)
+}
+
 pub fn load_episode_preview(
     root: &Path,
     app: Option<&AppHandle>,
@@ -174,7 +232,12 @@ pub fn load_episode_preview(
         let index = scan_episode_index(root, app, cancelled)?;
         return load_episode_with_index(root, &index, cancelled);
     }
-    let states = read_states(&root.join("states.jsonl"), cancelled)?;
+    let partial = recording_preview_states(root, cancelled)?;
+    let states_partial = partial.is_some();
+    let states = match partial {
+        Some(states) => states,
+        None => read_states(&root.join("states.jsonl"), cancelled)?,
+    };
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
     let mut frame_file_count = 0_u64;
     let mp4_manifest = read_mp4_manifest(root)?;
@@ -182,7 +245,7 @@ pub fn load_episode_preview(
     for (index, stream_name) in stream_names.iter().enumerate() {
         check_cancelled(cancelled)?;
         if let Some(manifest) = mp4_manifest.as_ref() {
-            let summary = mp4_stream_summary(root, stream_name, manifest);
+            let summary = mp4_stream_summary_mode(root, stream_name, manifest, false);
             frame_file_count = frame_file_count.saturating_add(summary.frame_count);
             streams.push(summary);
         } else {
@@ -207,9 +270,14 @@ pub fn load_episode_preview(
     let state_count = states.len() as u64;
     let start_time_ns = states.first().map(|state| state.capture_time_ns.clone());
     let end_time_ns = states.last().map(|state| state.capture_time_ns.clone());
-    let (skeleton, skeleton_error) =
-        crate::skeleton::load_optional_skeleton(root, &states, cancelled)?;
+    let (skeleton, skeleton_error) = if states_partial {
+        (None, None)
+    } else {
+        crate::skeleton::load_optional_skeleton(root, &states, cancelled)?
+    };
     Ok(EpisodeData {
+        states_partial,
+        timeline_fps: mp4_manifest.as_ref().map(|manifest| manifest.timeline_fps),
         summary: EpisodeSummary {
             root: root.display().to_string(),
             name: episode_name(root),
@@ -247,6 +315,8 @@ pub fn load_episode_with_index(
         let (skeleton, skeleton_error) =
             crate::skeleton::load_optional_skeleton(root, &states, cancelled)?;
         return Ok(EpisodeData {
+            states_partial: false,
+            timeline_fps: None,
             summary: index.summary.clone(),
             states,
             skeleton,
@@ -270,6 +340,8 @@ pub fn load_episode_with_summary(
     let (skeleton, skeleton_error) =
         crate::skeleton::load_optional_skeleton(root, &states, cancelled)?;
     Ok(EpisodeData {
+        states_partial: false,
+        timeline_fps: read_mp4_manifest(root)?.map(|manifest| manifest.timeline_fps),
         summary,
         states,
         skeleton,
@@ -375,8 +447,18 @@ fn read_mp4_frame(
         .and_then(|value| value.as_f64())
         .unwrap_or(60.0);
     let relative_frame = frame_id.saturating_sub(manifest.stream_start_frame(stream));
-    let target_index =
-        ((relative_frame as f64) * declared_fps / manifest.timeline_fps.max(1.0)).floor() as u64;
+    let capture_times = crate::recording_timing::load(
+        root,
+        stream,
+        stream_info["frame_count"].as_u64().unwrap_or(0),
+        manifest.timeline_fps,
+    )
+    .ok()
+    .flatten();
+    let target_index = capture_times.as_ref().map_or_else(
+        || ((relative_frame as f64) * declared_fps / manifest.timeline_fps.max(1.0)).floor() as u64,
+        |times| crate::recording_timing::index_for(times, frame_id),
+    );
     let frame_count = stream_info
         .get("frame_count")
         .and_then(|value| value.as_u64())
@@ -467,9 +549,16 @@ pub(crate) fn read_mp4_preview_batch(
         .ok_or_else(|| AppError::Message(format!("{stream} 的 MP4 清单缺少 segments")))?;
     let segment_seconds = manifest.segment_seconds.unwrap_or(300.0).max(1.0);
     let timeline_fps = manifest.timeline_fps.max(1.0);
+    let capture_times =
+        crate::recording_timing::load(root, stream, frame_count, manifest.timeline_fps)
+            .ok()
+            .flatten();
     let target_for = |timeline_frame: u64| {
         let relative = timeline_frame.saturating_sub(manifest.stream_start_frame(stream));
-        ((relative as f64) * fps / timeline_fps).floor() as u64
+        capture_times.as_ref().map_or_else(
+            || ((relative as f64) * fps / timeline_fps).floor() as u64,
+            |times| crate::recording_timing::index_for(times, timeline_frame),
+        )
     };
 
     let first_target = target_for(start_frame_id);
@@ -699,6 +788,10 @@ fn read_mp4_manifest(root: &Path) -> AppResult<Option<Mp4Manifest>> {
     }))
 }
 
+type RecordingClock = (f64, BTreeMap<String, u64>);
+type RecordingClockCache = Option<(PathBuf, u64, std::time::SystemTime, String, RecordingClock)>;
+static RECORDING_CLOCK_CACHE: OnceLock<Mutex<RecordingClockCache>> = OnceLock::new();
+
 // New recording manifests moved under .session_meta. Their state cadence is
 // independent of camera FPS, and startup batches may contain no encoded frames.
 fn recording_timeline(
@@ -714,10 +807,29 @@ fn recording_timeline(
     if !is_regular_file(&path) {
         return Ok((nominal, BTreeMap::new()));
     }
+    let path = path.canonicalize()?;
+    let meta = fs::metadata(&path)?;
+    let modified = meta.modified()?;
+    let streams_key = serde_json::to_string(streams)?;
+    // Serialize only this small prefix read, not full episode loading. Seven
+    // simultaneous video-source requests must not reread it seven times.
+    let mut cached = RECORDING_CLOCK_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| AppError::Message("录制时间索引不可用".into()))?;
+    if let Some((cached_path, bytes, time, key, result)) = cached.as_ref() {
+        if cached_path == &path && *bytes == meta.len() && *time == modified && key == &streams_key
+        {
+            return Ok(result.clone());
+        }
+    }
     let mut first = None;
     let mut last = None;
     let mut starts = BTreeMap::new();
-    for line in BufReader::new(File::open(path)?).lines().take(128) {
+    for line in BufReader::new(File::open(&path)?.take(128 * 1024))
+        .lines()
+        .take(128)
+    {
         let line = line?;
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
@@ -750,6 +862,16 @@ fn recording_timeline(
                 .filter(|fps| (fps - rate).abs() / fps < 0.1)
         })
         .unwrap_or(nominal);
+    let after = fs::metadata(&path)?;
+    if after.len() == meta.len() && after.modified()? == modified {
+        *cached = Some((
+            path,
+            meta.len(),
+            modified,
+            streams_key,
+            (fps, starts.clone()),
+        ));
+    }
     Ok((fps, starts))
 }
 
@@ -838,7 +960,26 @@ pub(crate) fn video_source(
         .first()
         .and_then(|path| probed_mp4_fps(Path::new(path), app))
         .unwrap_or(fps);
+    let (capture_timeline, timing_error) =
+        if is_regular_file(&root.join(".session_meta/manifest.json")) {
+            match crate::recording_timing::load(
+                root,
+                stream,
+                info["frame_count"].as_u64().unwrap_or(0),
+                manifest.timeline_fps,
+            ) {
+                Ok(times) => (times.map(|times| times.as_ref().clone()), None),
+                Err(error) => (
+                    None,
+                    Some(format!("真实采集时间读取失败，暂按标称帧率播放：{error}")),
+                ),
+            }
+        } else {
+            (None, None)
+        };
     Ok(VideoSource {
+        capture_timeline,
+        timing_error,
         adaptive_paths: None,
         preview_error: None,
         fps,
@@ -847,6 +988,79 @@ pub(crate) fn video_source(
         start_frame: manifest.stream_start_frame(stream),
         paths,
     })
+}
+
+/// Diagnose only the requested stream after playback fails. Never rewrites media
+/// or changes frame counts/validation gates, and does not invoke another decoder.
+pub(crate) fn diagnose_video_failure(
+    root: &Path,
+    stream: &str,
+    frame_id: u64,
+) -> AppResult<Option<String>> {
+    if !supported_stream(stream) {
+        return Err(AppError::InvalidStream(stream.to_string()));
+    }
+    let root = root.canonicalize()?;
+    if let Some(manifest) = read_mp4_manifest(&root)? {
+        if let Some(info) = manifest.streams.get(stream) {
+            let fps = info["fps"].as_f64().unwrap_or(30.0).max(1.0);
+            let relative_frame = frame_id.saturating_sub(manifest.stream_start_frame(stream));
+            let timestamp = relative_frame as f64 / manifest.timeline_fps.max(1.0);
+            let segment =
+                (timestamp / manifest.segment_seconds.unwrap_or(300.0).max(1.0)).floor() as usize;
+            if relative_frame as f64 * fps / manifest.timeline_fps.max(1.0)
+                >= info["frame_count"].as_u64().unwrap_or(0) as f64
+            {
+                return Ok(None);
+            }
+            if let Some(entry) = info["segments"]
+                .as_array()
+                .and_then(|entries| entries.get(segment))
+            {
+                if let Some(relative) = entry["path"].as_str() {
+                    return crate::media_diagnostics::inspect_mp4(
+                        &root,
+                        Path::new(relative),
+                        entry["size"].as_u64(),
+                    );
+                }
+            }
+            return Ok(Some(
+                "VIDEO_MANIFEST_INVALID: 视频清单异常：找不到当前帧对应的 MP4 分段。".into(),
+            ));
+        }
+    }
+    // Recovery manifests may incorrectly declare JPEG despite leftover MP4s.
+    // Inspect a bounded directory listing, but never fabricate playback metadata.
+    let directory = root.join(stream);
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(&directory)?.take(128) {
+        let entry = entry?;
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|value| value.eq_ignore_ascii_case("mp4"))
+        {
+            paths.push(Path::new(stream).join(entry.file_name()));
+        }
+    }
+    paths.sort();
+    if let Some(path) = paths.first() {
+        if let Some(reason) = crate::media_diagnostics::inspect_mp4(&root, path, None)? {
+            return Ok(Some(reason));
+        }
+        return Ok(Some(
+            "VIDEO_MANIFEST_INVALID: 视频清单异常：目录含 MP4，但清单未声明可播放的 MP4 数据。"
+                .into(),
+        ));
+    }
+    Ok(None)
 }
 
 pub(crate) fn review_camera_summary(root: &Path) -> AppResult<StreamSummary> {
@@ -1055,6 +1269,15 @@ fn segment_stream_summary(
 }
 
 fn mp4_stream_summary(root: &Path, stream_name: &str, manifest: &Mp4Manifest) -> StreamSummary {
+    mp4_stream_summary_mode(root, stream_name, manifest, true)
+}
+
+fn mp4_stream_summary_mode(
+    root: &Path,
+    stream_name: &str,
+    manifest: &Mp4Manifest,
+    measure_bytes: bool,
+) -> StreamSummary {
     let info = manifest.streams.get(stream_name);
     let fps = info
         .and_then(|item| item.get("fps"))
@@ -1069,6 +1292,9 @@ fn mp4_stream_summary(root: &Path, stream_name: &str, manifest: &Mp4Manifest) ->
         .and_then(|item| item.get("size"))
         .and_then(|item| item.as_u64())
         .unwrap_or_else(|| {
+            if !measure_bytes {
+                return 0; // Preview sizes are unknown until the complete index arrives.
+            }
             info.and_then(|item| item.get("segments"))
                 .and_then(|item| item.as_array())
                 .into_iter()
@@ -1553,47 +1779,24 @@ fn summarize_states(
     if !is_regular_file(path) {
         return Ok((0, None, None));
     }
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut count = 0;
-    let mut first = None;
-    let mut last = None;
-    for line in reader.lines() {
-        check_cancelled(cancelled)?;
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        count += 1;
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-            if let Some(timestamp) = value.get("capture_time_ns").and_then(|item| item.as_i64()) {
-                let timestamp = timestamp.to_string();
-                first.get_or_insert_with(|| timestamp.clone());
-                last = Some(timestamp);
-            }
-        }
-    }
-    Ok((count, first, last))
+    let snapshot = crate::state_snapshot::read(path, cancelled)?;
+    Ok((
+        snapshot.rows,
+        snapshot.first_time.clone(),
+        snapshot.last_time.clone(),
+    ))
 }
 
 fn read_states(path: &Path, cancelled: &AtomicBool) -> AppResult<Vec<StateRecord>> {
     if !is_regular_file(path) {
         return Ok(Vec::new());
     }
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut states = Vec::new();
-    for line in reader.lines() {
-        check_cancelled(cancelled)?;
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(raw) = serde_json::from_str::<RawStateRecord>(&line) {
-            states.push(raw.into());
-        }
-    }
-    Ok(states)
+    Ok(crate::state_snapshot::read(path, cancelled)?
+        .states
+        .iter()
+        .cloned()
+        .map(StateRecord::from)
+        .collect())
 }
 
 pub fn collect_stream_files(
@@ -1673,7 +1876,7 @@ pub fn is_regular_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn is_regular_directory(path: &Path) -> bool {
+pub(crate) fn is_regular_directory(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .map(|metadata| metadata.file_type().is_dir())
         .unwrap_or(false)
@@ -1722,6 +1925,68 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn long_recording_preview_is_bounded_but_full_load_preserves_middle_errors() {
+        use std::io::{Seek, SeekFrom, Write};
+        let root = std::env::temp_dir().join(format!(
+            "delta-bounded-preview-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join(".session_meta")).unwrap();
+        fs::write(root.join(".session_meta/manifest.json"), r#"{"storage_format":"h264-split-mp4-v1","streams":{"cam0":{"fps":30,"frame_count":1000,"segments":[]}}}"#).unwrap();
+        let path = root.join("states.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(b"{\"batch_id\":0,\"capture_time_ns\":1000000000}\n")
+            .unwrap();
+        file.seek(SeekFrom::Start(9 * 1024 * 1024)).unwrap();
+        file.write_all(b"\n{\"batch_id\":999,\"capture_time_ns\":34300000000}\n")
+            .unwrap();
+        drop(file);
+        let cancelled = AtomicBool::new(false);
+        let preview = super::load_episode_preview(&root, None, &cancelled).unwrap();
+        assert!(preview.states_partial);
+        assert_eq!(preview.states.len(), 2);
+        assert_eq!(preview.states.last().unwrap().frame_id, 999);
+        let report = crate::validation::validate_episode(&root, None, &cancelled).unwrap();
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "INVALID_STATE_JSON"));
+        let full = super::load_episode(&root, None, &cancelled).unwrap();
+        assert!(!full.states_partial);
+        assert_eq!(full.states.len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diagnoses_manifest_media_and_recovery_leftovers_without_mutation() {
+        let root = test_output("media-diagnostics");
+        fs::create_dir_all(root.join("cam0")).unwrap();
+        let manifest = serde_json::json!({"storage_format":"h264-split-mp4-v1","streams":{"cam0":{"fps":30,"frame_count":10,"segments":[{"path":"cam0/clip.mp4","size":64}]}}});
+        fs::write(root.join("manifest.json"), manifest.to_string()).unwrap();
+        let diagnose = || {
+            super::diagnose_video_failure(&root, "cam0", 0)
+                .unwrap()
+                .unwrap()
+        };
+        assert!(diagnose().starts_with("VIDEO_FILE_MISSING:"));
+        let truncated = b"\0\0\0\x40mdatpayload";
+        fs::write(root.join("cam0/clip.mp4"), truncated).unwrap();
+        assert!(diagnose().starts_with("VIDEO_FILE_DAMAGED:"));
+        fs::write(
+            root.join("manifest.json"),
+            r#"{"storage_format":"jpeg-stream-v1","streams":{}}"#,
+        )
+        .unwrap();
+        assert!(diagnose().starts_with("VIDEO_FILE_DAMAGED:"));
+        assert_eq!(fs::read(root.join("cam0/clip.mp4")).unwrap(), truncated);
+        assert!(super::diagnose_video_failure(&root, "../cam0", 0).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn maps_mp4_source_counts_to_the_shared_timeline_end() {

@@ -680,6 +680,8 @@ impl From<RawStateRecord> for StateRecord {
 pub struct EpisodeData {
     pub summary: EpisodeSummary,
     pub states: Vec<StateRecord>,
+    pub states_partial: bool,
+    pub timeline_fps: Option<f64>,
     pub skeleton: Option<SkeletonSeries>,
     pub skeleton_error: Option<String>,
 }
@@ -906,6 +908,10 @@ pub struct FramePayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoSource {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_timeline: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_paths: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]

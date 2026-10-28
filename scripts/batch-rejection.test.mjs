@@ -58,7 +58,7 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
     await confirm.waitFor();
     assert.equal(await confirm.isDisabled(),true);
     const reasons = page.getByRole('group',{name:'原因选项'});
-    assert.equal(await reasons.getByRole('button').count(),12);
+    assert.equal(await reasons.getByRole('button').count(),13);
     await page.getByRole('button',{name:'调整顺序',exact:true}).click();
     await reasons.getByRole('button',{name:'动作失范',exact:true}).dragTo(reasons.getByRole('button',{name:'骨架抖动',exact:true}));
     assert.equal(await reasons.getByRole('button').first().textContent(),'动作失范');
@@ -103,10 +103,13 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
     await page.evaluate(()=>{window.fixture.delay=false;window.fixture.calls=[];window.showBatch(true);});
     await page.getByText('待处理 2 条 · 已排除已审核或异常数据 2 条',{exact:true}).waitFor();
     assert.equal(await reasons.getByRole('button').first().textContent(),'动作失范','folder and selected modes share the account order');
-    await reasons.getByRole('button',{name:'任务不符',exact:true}).click();await acknowledge.check();await confirm.click();
+    await page.getByRole('button',{name:'添加常用原因',exact:true}).click();
+    await page.getByLabel('常用原因名称').fill('多路视频不同步');await page.getByLabel('常用原因名称').press('Enter');
+    assert.equal(await page.evaluate(()=>window.fixture.calls.length),0,'adding a button must not submit');
+    await reasons.getByRole('button',{name:'多路视频不同步',exact:true}).click();await acknowledge.check();await confirm.click();
     await page.getByText('成功 1 · 本机待写 0 · 跳过 0 · 失败 1 · 未执行 0',{exact:true}).waitFor();
     assert.deepEqual(await page.evaluate(()=>window.fixture.calls.map(c=>c.sourcePath)),['/source/batch/1','/source/batch/3']);
-    assert.equal(await page.evaluate(()=>window.fixture.calls[0].reason),'任务不符');
+    assert.equal(await page.evaluate(()=>window.fixture.calls[0].reason),'其他原因：多路视频不同步');
     await page.getByRole('button',{name:'完成',exact:true}).click();
     await page.evaluate(()=>{window.fixture.full=true;window.fixture.saved=[];window.fixture.audit=[];window.showBatch();});
     await page.getByRole('button',{name:'其他原因',exact:true}).click();await reason.fill('无效数据');await acknowledge.check();await confirm.click();

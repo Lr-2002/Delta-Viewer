@@ -79,6 +79,13 @@ jobs:
       - name: Run task center interaction regressions
         run: pnpm test:task-center
 
+      - name: Run cloud QC and review extension regressions
+        env:
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
+        run: |
+          pnpm test:cloud-qc
+          pnpm test:review-extensions
+
       - name: Run NAS task index regressions
         run: python3 scripts/task-index-server.test.py
 

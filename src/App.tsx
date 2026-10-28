@@ -1,3 +1,7 @@
+import { PreviewPriority } from "./lib/preview-priority";
+import { CloudMachineAnnotationPanel, flushCloudMachineReviewSaves } from "./components/CloudMachineAnnotationPanel";
+import { cloudWorkspaceNumber } from "./lib/cloud-qc";
+import { CloudQcSyncStatus } from "./components/CloudQcSyncStatus";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type RefObject } from "react";
 import {
   Activity,
@@ -52,6 +56,7 @@ import { beginReviewAudit, getReviewSyncStatus, configureReviewAudit, endReviewA
 import { TelemetryChart } from "./components/TelemetryChart";
 import {
   APP_VERSION,
+  DISPLAY_VERSION,
   resolveSourcePath,
   IS_DEVELOPMENT_EDITION,
   DEMO_ROOT,
@@ -94,6 +99,8 @@ import {
   REMOTE_SECONDARY_READ_AHEAD_FRAMES,
 } from "./lib/frame-cache";
 import { formatBytes, shortPath } from "./lib/format";
+import { mediaFailure, type MediaFailure } from "./lib/media-failure";
+import { diagnoseVideoFailure } from "./lib/backend";
 import { getPlaybackFrameBounds, resolveIssueLocation } from "./lib/issue-locate";
 import { OperationScope, type OperationToken } from "./lib/operationScope";
 import {
@@ -203,6 +210,16 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.4.0": "发布云端 QC 与本地回放优化：云任务独立领取及持久补传；长记录首屏优先、真实采集时间同步；视频错误具体诊断，不通过原因支持自定义。",
+  "1.3.9-rc.cloudqc.9": "长记录首屏视频优先读取，完整检查后开放审核；减少首包等待、重复时间索引与预览文件统计，延续系统原生硬件解码路径。",
+  "1.3.9-rc.cloudqc.8": "优化 SD 卡长记录首帧预览、状态解析复用与 MP4 帧率探测；新录制按真实采集时间同步七路，相机缓冲时协调等待并自动恢复。",
+  "1.3.9-rc.cloudqc.7": "不通过新增“数据内容缺失”，支持按账号在本机添加、移除常用原因按钮；单条、批量和整文件夹共用，支持拖动排序，其他原因固定右下角。",
+  "1.3.9-rc.cloudqc.6": "播放失败时明确提示视频文件缺失、损坏或清单异常，保留原始原因与具体相机；网络和权限失败不误判损坏。只在失败后有界只读检查媒体，审核与源数据不变。",
+  "1.3.9-rc.cloudqc.5": "恢复 1.3.8 本地任务领取角色、管理视图及原动作审核界面；云端 QC 使用独立界面和样式。本地统计服务异常如实提示，保留原有数据与队列。",
+  "1.3.9-rc.cloudqc.4": "独立云端联调候选，未生产发布。云端预览未领取时只读，领取权限由原生实时核对；已有本机结论可显式领取后原样补传，保留原提交编号和时间。修复会话标定小数往返精度，细化云端异常提示。",
+  "1.3.9-rc.cloudqc.3": "独立云端联调候选，未生产发布。简化标题和任务中心，批次按名称、时间与短编号区分；空机标明确显示来源与原因，保留原本地审核和模式逻辑。",
+  "1.3.9-rc.cloudqc.2": "云端预览与登录恢复共用任务保护：恢复期间明确等待，下载时阻止旧目录异步抢占；保留只读预览、取消及真实审核权限。",
+  "1.3.9-rc.cloudqc.1": "云端 QC 独立联调候选：接入真实抽检任务、核验下载、已有回放及持久回传；保留 1.3.8 管理模式，未生产发布。",
   "1.3.8": "账号列表只显示当前已确认的版本，设备与历史上报移入版本日志；未上报不再暗示未工作。修复升级产生重复设备标识，恢复前台与网络后主动重报，保留审核数据与统计逻辑。",
   "1.3.7": "同步异常收为单一紧凑状态栏，详情按需展开；历史版本弹窗不再被提示遮挡，更新轻提示移至右下角。适配磁盘失败回归并重新执行完整发布检查，保留审核草稿及补传保护。",
   "1.3.6": "同步异常合并为紧凑状态栏，数量和补传入口持续可见，时间与错误按需展开；历史版本使用原生模态层，修复同步警告穿透弹窗、重复登录提示及更新消息遮挡。",
@@ -320,7 +337,7 @@ const RELEASE_SUMMARIES_ZH: Record<string, string> = {
 
 function parseReleaseHistory(markdown: string): ReleaseHistoryEntry[] {
   const entries: ReleaseHistoryEntry[] = [];
-  const headings = Array.from(markdown.matchAll(/^## (\d+\.\d+\.\d+) - (\d{4}-\d{2}-\d{2})$/gm));
+  const headings = Array.from(markdown.matchAll(/^## (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?) - (\d{4}-\d{2}-\d{2})$/gm));
   for (const [index, heading] of headings.entries()) {
     const bodyStart = (heading.index ?? 0) + heading[0].length;
     const bodyEnd = headings[index + 1]?.index ?? markdown.length;
@@ -419,10 +436,24 @@ function App() {
   });
   const frameRef = useRef(0);
   const skeletonFramePresenterRef = useRef<((frameId: number) => void) | null>(null);
+  const previewPriorityRef = useRef<PreviewPriority | null>(null);
+  const handleFirstFrameAvailable = useCallback((root: string, stream: string) => {
+    previewPriorityRef.current?.presented(root, stream);
+  }, []);
+  useEffect(() => () => previewPriorityRef.current?.close(), []);
   const primaryNativeClockRef = useRef(false);
   const settledFrameByStreamRef = useRef(new Map<string, number>());
   const [playbackPrimed, setPlaybackPrimed] = useState(false);
-  const [primaryBuffering, setPrimaryBuffering] = useState(false);
+  const [bufferingStreams, setBufferingStreams] = useState<Record<string, boolean>>({});
+  const playbackHeld = Object.values(bufferingStreams).some(Boolean);
+  useEffect(() => { setBufferingStreams({}); }, [data?.summary.root, playing]);
+  const [captureEndByStream, setCaptureEndByStream] = useState<Record<string, number>>({});
+  const handleCaptureEndChange = useCallback((name: string, end: number | null) => {
+    setCaptureEndByStream(current => {
+      if (end === null) { if (!(name in current)) return current; const next = {...current}; delete next[name]; return next; }
+      return current[name] === end ? current : {...current, [name]: end};
+    });
+  }, []);
   const [sourceFpsByStream, setSourceFpsByStream] = useState<Record<string, number>>({});
   const didAutoLoad = useRef(false);
   const operationScopeRef = useRef(new OperationScope());
@@ -436,7 +467,7 @@ function App() {
     token: number;
   } | null>(null);
   const batchSelectionInitialized = useRef(false);
-  const estimatedFps = useMemo(() => estimateFrameRate(data?.states ?? []), [data]);
+  const estimatedFps = useMemo(() => data?.timelineFps ?? estimateFrameRate(data?.states ?? []), [data]);
   const cameraSlots = useMemo(() => ["cam0", "cam1", "cam2", "t265_left", "t265_right", "extension_left", "extension_right"], []);
   const availableStreams = useMemo(
     () => data?.summary.streams.filter((stream) => cameraSlots.includes(stream.name) && stream.frameCount > 0) ?? [],
@@ -455,7 +486,7 @@ function App() {
   const playbackEnd = segmentPlaying ? machinePreviewRange!.endFrame : (proofreading && data ? getMaxFrame(data) : clipEndFrame);
   const primaryPlaybackEndFrame = Math.min(
     playbackEnd,
-    primaryStream?.lastFrame ?? playbackEnd,
+    (primaryStreamName ? captureEndByStream[primaryStreamName] : undefined) ?? primaryStream?.lastFrame ?? playbackEnd,
   );
   const playbackFps = fpsOverride ?? estimatedFps;
   const secondaryReadAheadStride = Math.max(1, Math.round(playbackFps / 10));
@@ -489,8 +520,8 @@ function App() {
     primaryNativeClockRef.current = active;
   }, [primaryStreamName]);
   const handleNativeBufferingChange = useCallback((streamName: string, buffering: boolean) => {
-    if (streamName === primaryStreamName) setPrimaryBuffering(buffering);
-  }, [primaryStreamName]);
+    setBufferingStreams(current => current[streamName] === buffering ? current : { ...current, [streamName]: buffering });
+  }, []);
   const handleSkeletonFramePresenterChange = useCallback((
     presenter: ((frameId: number) => void) | null,
   ) => {
@@ -519,6 +550,19 @@ function App() {
     setBusy(true);
     setProgress(null);
     return operation;
+  }
+
+  const ReviewPanel = data && cloudWorkspaceNumber(data.summary.root) ? CloudMachineAnnotationPanel : MachineAnnotationPanel;
+
+  function beginCloudOperation() {
+    if (reviewUnsaved.current) return null;
+    const owner = beginOperation();
+    if (!owner) return null;
+    // Explicit navigation wins over a still-resolving login restore request.
+    sourceNavigationVersion.current += 1;
+    setPendingSourceRestore(null);
+    setPlaying(false);
+    return { id: owner.id, finish: () => finishOperation(owner) };
   }
 
   function isCurrentOperation(operation: OperationToken): boolean {
@@ -559,6 +603,7 @@ function App() {
     if (busy || operationScopeRef.current.current()) throw new Error("正在处理数据或导出，请等待完成后再安装更新");
     // Capture blur/autosave work before reserving the operation slot.
     await flushMachineReviewSaves(data?.summary.root);
+    await flushCloudMachineReviewSaves(data?.summary.root);
     if (reviewUnsaved.current) throw new Error("当前修改尚未保存，请重试保存成功后再安装更新");
     const owner = beginOperation();
     if (!owner) throw new Error("当前任务尚未完成");
@@ -1026,6 +1071,10 @@ function App() {
     const loadedMaxFrame = getMaxFrame(loaded);
     // Show read-only frames immediately, but mount draft editors only after
     // validation has cached the fingerprint and saved bounds are restored.
+    previewPriorityRef.current?.close();
+    const priority = loaded.statesPartial ? new PreviewPriority(root,
+      loaded.summary.streams.filter(stream => cameraSlots.includes(stream.name) && stream.frameCount > 0).map(stream => stream.name)) : null;
+    previewPriorityRef.current = priority;
     setData(loaded);
     setMachinePreviewRange(null);
     setReport(null);
@@ -1042,24 +1091,37 @@ function App() {
     frameRef.current = loadedMinFrame;
     setView("proofread");
 
+    if (priority) {
+      // Give native videos time to read their first frame before the full
+      // states scan competes for the same disk. A failed decoder cannot hold
+      // validation indefinitely; navigation still belongs to this operation.
+      await priority.ready;
+      if (previewPriorityRef.current === priority) previewPriorityRef.current = null;
+      ensureOperationActive(owner);
+    }
     const validated = await validateEpisode(root, owner.id);
     ensureOperationActive(owner);
     if (validated.report.status === "warning") auditActivity("validation_warning");
     if (validated.report.status === "error") auditActivity("validation_error");
     updateScannedEpisode(validated.summary);
     if (!validated.summary.streams.some((stream) => stream.frameCount > 0)) {
+      const reason = await diagnoseVideoFailure(root, "cam0", loadedMinFrame, "未发现可读取的视频或图像；可能缺少媒体文件或清单不完整。");
+      ensureOperationActive(owner);
       resetLoadedData();
       throw new Error(
-        `FRAME_UNAVAILABLE: ${loaded.summary.name} 未发现可读取的视频或图像，请检查数据文件是否完整。`,
+        `${mediaFailure(reason).code}: ${loaded.summary.name}：${mediaFailure(reason).detail}`,
       );
     }
 
+    // A bounded first preview never substitutes for complete telemetry/checks.
+    const complete = loaded.statesPartial ? await loadEpisode(root, owner.id) : loaded;
+    ensureOperationActive(owner);
     const candidate: PendingAnnotationConfirmation = {
-      data: { ...loaded, summary: validated.summary },
+      data: { ...complete, summary: validated.summary },
       report: validated.report,
       sourceEpisodeRoot,
-      minFrame: loadedMinFrame,
-      maxFrame: loadedMaxFrame,
+      minFrame: getMinFrame(complete),
+      maxFrame: getMaxFrame(complete),
     };
     // Quality findings remain visible without discarding readable camera data.
 
@@ -1138,18 +1200,19 @@ function App() {
     if (count) setNotice(`已恢复 ${count} 条跳过的数据。`);
   }
 
-  const handleFrameUnavailable = useCallback((streamName: string, frameId: number) => {
+  const handleFrameUnavailable = useCallback((streamName: string, frameId: number, failure: MediaFailure) => {
     if (!data) return;
     if (streamName !== primaryStreamName) return;
     const episode = data.summary;
     const stream = data.summary.streams.find((candidate) => candidate.name === streamName);
-    const message = `FRAME_UNAVAILABLE: ${episode.name} 的 ${stream?.label ?? streamName} 帧 ${frameId} 暂时无法读取，已暂停播放。数据仍保留，可定位其他帧继续查看。`;
+    const message = `${failure.code}: ${episode.name} · ${stream?.label ?? streamName} · 帧 ${frameId}：${failure.detail} 已暂停播放。`;
     setPlaying(false);
     resetPlaybackPreparation();
     void reportFailure("load_frame", new Error(message), data.summary.root);
   }, [data, primaryStreamName]);
 
   function resetLoadedData() {
+    previewPriorityRef.current?.close(); previewPriorityRef.current = null;
     reviewUnsaved.current = false; setReviewHasUnsaved(false);
     setMachinePreviewRange(null);
     settledFrameByStreamRef.current.clear();
@@ -1253,7 +1316,7 @@ function App() {
     // The current frame is already the synchronization anchor. Read-ahead is
     // opportunistic and must never delay starting playback on local or NAS data.
     setPlaybackPrimed(true);
-    setPrimaryBuffering(false);
+    setBufferingStreams({});
   }
 
   function seekFrame(frame: number) {
@@ -1860,11 +1923,35 @@ function App() {
     setProfileEditorOpen(false);
     setManagementMode(true);
   }
+  const playbackControls = data ? <>
+                          <div className="transport-buttons">
+                            <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧"><SkipBack size={17} /></button>
+                            <button className="play-button" type="button" onClick={() => { if (playing && !machinePreviewRange) setPlaying(false); else playGlobal(); }} title={playing && !machinePreviewRange ? "暂停" : "全局播放"} aria-label={playing && !machinePreviewRange ? "暂停" : "全局播放"}>{playing && !machinePreviewRange ? <Pause size={17} /> : <Play size={17} />}</button>
+                            <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧"><SkipForward size={17} /></button>
+                          </div>
+                          <span className="segment-frame-readout">帧 {currentFrame} / {maxFrame}</span>
+                          <span className="time-readout">{currentState ? formatStateTime(data, currentState.captureTimeNs) : "—"}</span>
+                          <label className="speed-control">
+                            <Gauge size={16} />
+                            <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label="播放速度">
+                              <option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>1×（正常速度）</option><option value={2}>2×</option>
+                            </select>
+                          </label>
+                          <label className="fps-control" title="播放帧率">
+                            <Timer size={16} />
+                            <select value={fpsOverride ?? "auto"} onChange={(event) => setFpsOverride(event.target.value === "auto" ? null : Number(event.target.value))} aria-label="播放帧率">
+                              <option value="auto">自动 {estimatedFps.toFixed(1)} FPS</option><option value={15}>15 FPS</option><option value={24}>24 FPS</option><option value={30}>30 FPS</option><option value={60}>60 FPS</option>
+                            </select>
+                          </label>
+  </> : null;
   return (
     <>
       {isManagedWorkspace && currentUser && <ClientPresence key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={`${authStatus.userCenter.serviceId}:${currentUser.username}`} />}
       {showManagement && currentUser && <SupervisionDashboard currentUser={currentUser} onLogout={logout} updateBusy={busy} updateControls={updateControls}
-        onTestMode={currentUser.role === "operator" ? () => setManagementMode(false) : undefined} syncNotice={syncNotice} />}
+        onTestMode={currentUser.role === "operator" ? () => setManagementMode(false) : undefined} syncNotice={syncNotice} beginCloudOperation={beginCloudOperation} onOpenCloudReview={async root => {
+          if (busy || reviewUnsaved.current) throw new Error("当前保存尚未完成");
+          await openSource(root, true, [], true); setManagementMode(false); setPersonalTaskOpen(false);
+        }} />}
       {releaseHistoryOpen ? (
         <ReleaseHistoryDialog
           currentVersion={APP_VERSION}
@@ -1872,13 +1959,14 @@ function App() {
           onClose={() => setReleaseHistoryOpen(false)}
         />
       ) : null}
+      {currentUser && isTauriRuntime() && <CloudQcSyncStatus key={`cloud:${authStatus.userCenter.serviceId}:${currentUser.username}`} username={currentUser.username} />}
       <div className="app-shell" hidden={showManagement} inert={showManagement}>
       <header className="topbar">
         <div className="brand-lockup">
           <span className="brand-mark">D</span>
           <div>
-            <strong>Delta Viewer{IS_DEVELOPMENT_EDITION ? " Dev" : ""}</strong>
-            <span>v{APP_VERSION}</span>
+            <strong>Delta Viewer</strong>
+            <span>v{DISPLAY_VERSION}</span>
           </div>
           <button
             className="version-history-trigger"
@@ -1965,6 +2053,12 @@ function App() {
           onOpen={async (root, episodeRoot, batchRoot) => {
             if (reviewUnsaved.current || busy) throw new Error("当前操作尚未完成，请稍后打开任务");
             await openSource(batchRoot ?? root, true, [], true, episodeRoot);
+          }}
+          workspaceBusy={busy || reviewHasUnsaved}
+          beginCloudOperation={beginCloudOperation}
+          onOpenCloudReview={async root => {
+            if (reviewUnsaved.current || busy) throw new Error("当前操作尚未完成，请稍后打开任务");
+            await openSource(root, true, [], true); setPersonalTaskOpen(false);
           }}
           onClose={() => setPersonalTaskOpen(false)}
         />
@@ -2154,8 +2248,8 @@ function App() {
                             frameId={currentFrame}
                             isPrimary={stream.name === primaryStreamName}
                             playing={playing}
-                            nativePlaybackEnabled={playing && playbackPrimed
-                              && (stream.name === primaryStreamName || !primaryBuffering)}
+                            nativePlaybackEnabled={playing && playbackPrimed}
+                            playbackHeld={playbackHeld}
                             readAheadEnabled={playing}
                             readAheadFrames={stream.name === primaryStreamName
                               ? 12
@@ -2170,8 +2264,10 @@ function App() {
                             speed={speed}
                             className={`camera-${index}`}
                             onFrameSettled={handleFrameSettled}
+                            onFirstFrameAvailable={handleFirstFrameAvailable}
                             onFrameUnavailable={handleFrameUnavailable}
                             onSourceFpsChange={handleSourceFpsChange}
+                            onCaptureEndChange={handleCaptureEndChange}
                             onNativeClockChange={handlePrimaryNativeClockChange}
                             onFramePresented={handlePrimaryFramePresented}
                             onBufferingChange={handleNativeBufferingChange}
@@ -2213,28 +2309,17 @@ function App() {
                       />
                     ) : null}
                   </section>
-                    <MachineAnnotationPanel username={authStatus.currentUser?.username ?? ""} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement} busy={busy || showManagement || annotationReadyRoot !== data.summary.root}
+                    {annotationReadyRoot !== data.summary.root ? <div className="quality-workspace quality-embedded">
+                      <section className="quality-timeline" aria-label="只读视频预览">
+                        <div className="proofreading-transport">{playbackControls}</div>
+                        <input type="range" aria-label="预览播放帧" min={minFrame} max={maxFrame} value={currentFrame}
+                          onChange={event => seekFrame(event.currentTarget.valueAsNumber)} />
+                        <p role="status">视频可预览，完整数据检查中；检查完成后开放片段编辑和审核。</p>
+                      </section>
+                    </div> : <ReviewPanel username={authStatus.currentUser?.username ?? ""} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement} busy={busy || showManagement || annotationReadyRoot !== data.summary.root}
                       playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onPlay: playSegment, onToggle: togglePlayback, controls: (
 <>
-                          <div className="transport-buttons">
-                            <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧"><SkipBack size={17} /></button>
-                            <button className="play-button" type="button" onClick={() => { if (playing && !machinePreviewRange) setPlaying(false); else playGlobal(); }} title={playing && !machinePreviewRange ? "暂停" : "全局播放"} aria-label={playing && !machinePreviewRange ? "暂停" : "全局播放"}>{playing && !machinePreviewRange ? <Pause size={17} /> : <Play size={17} />}</button>
-                            <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧"><SkipForward size={17} /></button>
-                          </div>
-                          <span className="segment-frame-readout">帧 {currentFrame} / {maxFrame}</span>
-                          <span className="time-readout">{currentState ? formatStateTime(data, currentState.captureTimeNs) : "—"}</span>
-                          <label className="speed-control">
-                            <Gauge size={16} />
-                            <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label="播放速度">
-                              <option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>1×（正常速度）</option><option value={2}>2×</option>
-                            </select>
-                          </label>
-                          <label className="fps-control" title="播放帧率">
-                            <Timer size={16} />
-                            <select value={fpsOverride ?? "auto"} onChange={(event) => setFpsOverride(event.target.value === "auto" ? null : Number(event.target.value))} aria-label="播放帧率">
-                              <option value="auto">自动 {estimatedFps.toFixed(1)} FPS</option><option value={15}>15 FPS</option><option value={24}>24 FPS</option><option value={30}>30 FPS</option><option value={60}>60 FPS</option>
-                            </select>
-                          </label>
+                          {playbackControls}
                         </>
                       ) }}
                       onReviewSaved={(saved) => {
@@ -2254,7 +2339,7 @@ function App() {
                           });
                         }
                         if (nextRoot) setQueuedEpisodeRoot(nextRoot);
-                      }} />
+                      }} />}
                   <section className="telemetry-section">
                     <div className="section-heading compact-heading">
                       <div>
@@ -2269,7 +2354,9 @@ function App() {
                         ))}
                       </div>
                     </div>
-                    <TelemetryChart states={data.states} metric={metric} frameId={currentFrame} />
+                    {data.statesPartial
+                      ? <p role="status">完整状态数据检查中，当前先预览视频；检查完成后显示完整曲线。</p>
+                      : <TelemetryChart states={data.states} metric={metric} frameId={currentFrame} />}
                   </section>
                 </div>
               ) : view === "checks" ? (
@@ -2547,6 +2634,11 @@ function toMessage(reason: unknown): string {
 }
 
 function presentOperationError(message: string): string {
+  if (/^(VIDEO_FILE_MISSING|VIDEO_FILE_DAMAGED|VIDEO_MANIFEST_INVALID|VIDEO_READ_FAILED|FRAME_READ_FAILED):/.test(message)) {
+    const summary = message.split(" 原始读取错误：")[0]
+      .replace(/\b(VIDEO_FILE_MISSING|VIDEO_FILE_DAMAGED|VIDEO_MANIFEST_INVALID|VIDEO_READ_FAILED|FRAME_READ_FAILED):\s*/g, "");
+    return `${summary}${message.endsWith("已暂停播放。") && !summary.endsWith("已暂停播放。") ? " 已暂停播放。" : ""}`;
+  }
   const normalized = message.toLowerCase();
   if (
     normalized.includes("operation not allowed")
@@ -2582,6 +2674,11 @@ function operationErrorLabel(code: string): string {
     PATH_NOT_FOUND: "路径失效",
     SOURCE_UNRESPONSIVE: "网络目录无响应",
     FRAME_UNAVAILABLE: "帧不可用",
+    FRAME_READ_FAILED: "画面读取失败",
+    VIDEO_FILE_MISSING: "视频文件缺失",
+    VIDEO_FILE_DAMAGED: "视频文件损坏",
+    VIDEO_MANIFEST_INVALID: "视频清单异常",
+    VIDEO_READ_FAILED: "视频读取失败",
     OPERATION_FAILED: "操作失败",
   };
   return labels[code] ?? code;

@@ -70,7 +70,7 @@ fn open(root: &Path) -> AppResult<rusqlite::Connection> {
     CREATE TABLE IF NOT EXISTS source_review_receipts(service TEXT NOT NULL, username TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY(service,username,event_id));").map_err(failure)?;
     Ok(db)
 }
-fn owner_lock(root: &Path, service: &str, username: &str) -> AppResult<std::fs::File> {
+pub(crate) fn owner_lock(root: &Path, service: &str, username: &str) -> AppResult<std::fs::File> {
     // Validate the private, no-follow queue directory before creating its lock.
     drop(open(root)?);
     let directory = root.join("review-outbox");
@@ -159,6 +159,19 @@ pub fn contains_submitted(
     open(root)?.query_row(
         &format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND source_name!='skeleton.description.json' AND {PUBLISHABLE})"),
         params![service, username, serde_json::to_string(&paths)?], |r|r.get(0),
+    ).map_err(failure)
+}
+pub(crate) fn contains_action_draft(
+    root: &Path,
+    service: &str,
+    username: &str,
+    path: &str,
+) -> AppResult<bool> {
+    let paths = path_aliases(root, path)?;
+    let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
+    open(root)?.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND source_name!='skeleton.description.json' AND coalesce(json_extract(payload,'$.request.status'),'pending')='pending')"),
+        params![service, username, serde_json::to_string(&paths)?], |r| r.get(0),
     ).map_err(failure)
 }
 pub fn contains_related(

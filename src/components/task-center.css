@@ -68,3 +68,82 @@
 }
 
 .task-node-path { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+/* Cloud tasks share the task-center shell; styling stays inside this surface. */
+.task-center-cloud { overflow: hidden; height: min(740px, calc(100dvh - 100px)); border-radius: 12px; box-shadow: 0 16px 64px #16253424; }
+.task-center-tabs { display: flex; gap: 4px; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+.task-center .task-center-tabs .button { border: 0; background: transparent; color: var(--muted); box-shadow: none; min-height: 32px; padding: 6px 14px; border-radius: 7px; }
+.task-center .task-center-tabs .button[aria-pressed=true] { background: #edf3f6; color: #163c4a; font-weight: 650; }
+.task-center > .cloud-qc-tasks { flex: 1 1 auto; min-height: 0; }
+.cloud-qc-tasks { display: flex; flex-direction: column; min-width: 0; gap: 0; overflow: hidden; font-size: 12px; }
+.cloud-qc-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 20px 10px; flex-shrink: 0; }
+.cloud-qc-toolbar-copy, .cloud-qc-toolbar-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cloud-qc-toolbar-copy > svg { color: #376273; flex-shrink: 0; }
+.cloud-qc-toolbar-copy strong { font-size: 13px; font-weight: 650; display: block; }
+.cloud-qc-toolbar-copy small { display: block; color: var(--muted); margin-top: 4px; font-size: 11px; }
+.cloud-qc-tasks .button { min-height: 32px; padding: 6px 10px; font-size: 12px; border-radius: 6px; white-space: nowrap; transition: background-color 150ms, border-color 150ms; }
+.cloud-qc-sync-line { padding: 0 20px 12px; display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.cloud-qc-notice { margin: 0 18px 10px; padding: 10px 12px; background: #edf4f7; border: 1px solid #d5e4eb; border-radius: 7px; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; flex-wrap: wrap; flex-shrink: 0; }
+.cloud-qc-notice svg { flex-shrink: 0; }
+.cloud-qc-notice > span { min-width: 0; flex: 1; }
+.cloud-qc-error { background: #fff3f1; border-color: #f1d8d2; color: #963c32; max-height: 120px; overflow-y: auto; }
+.cloud-qc-error > span { flex-basis: 100%; }
+.cloud-qc-list { display: grid; align-content: start; gap: 12px; min-height: 0; padding: 0 18px 18px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.cloud-qc-plan { border: 1px solid #dce3e6; background: var(--surface, #fff); border-radius: 9px; min-width: 0; }
+.cloud-qc-plan > header { display: flex; gap: 12px; align-items: center; padding: 14px 15px 10px; }
+.cloud-qc-plan-title { display: flex; gap: 9px; align-items: center; flex: 1; min-width: 0; }
+.cloud-qc-plan-title > svg { flex-shrink: 0; color: #738c98; }
+.cloud-qc-plan h3 { font-size: 14px; font-weight: 650; margin: 0; overflow-wrap: anywhere; line-height: 1.4; }
+.cloud-qc-plan-title small { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.cloud-qc-badge { flex-shrink: 0; border: 1px solid #dae6eb; border-radius: 5px; color: #3d6577; background: #f1f7f9; padding: 3px 7px; font-size: 11px; }
+.cloud-qc-state-blocked, .cloud-qc-state-invalidated { color: #9a493b; border-color: #f0d9d1; background: #fff4f0; }
+.cloud-qc-state-sample_passed, .cloud-qc-state-full_review_complete { color: #3d7356; border-color: #d6e7dd; background: #f1f8f4; }
+.cloud-qc-plan-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 0 15px 12px 41px; color: var(--muted); font-size: 11px; }
+.cloud-qc-plan-summary b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cloud-qc-details { margin-left: auto; min-width: 0; }
+.cloud-qc-details summary { cursor: pointer; display: flex; gap: 4px; align-items: center; list-style: none; padding: 3px 0; }
+.cloud-qc-details summary::-webkit-details-marker { display: none; }
+.cloud-qc-details[open] { flex: 1 0 100%; }
+.cloud-qc-details[open] summary svg { transform: rotate(180deg); }
+.cloud-qc-details dl { margin: 8px 0 0; display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px 12px; background: #f6f8f9; padding: 12px; border-radius: 6px; }
+.cloud-qc-details dt { color: var(--muted); }
+.cloud-qc-details dd { margin: 0; overflow-wrap: anywhere; user-select: text; color: var(--ink); }
+.cloud-qc-scroll { max-height: 340px; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid #e8edef; }
+.cloud-qc-row { display: flex; gap: 14px; align-items: center; padding: 12px 15px; }
+.cloud-qc-row + .cloud-qc-row { border-top: 1px solid #edf0f1; }
+.cloud-qc-recording { flex: 1; min-width: 0; }
+.cloud-qc-recording > strong { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.cloud-qc-recording > small { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.cloud-qc-recording-meta { display: flex; align-items: center; gap: 10px; margin-top: 7px; color: #61717a; font-size: 11px; }
+.cloud-qc-recording-meta > span { display: inline-flex; gap: 4px; align-items: center; }
+.cloud-qc-decision-approved { color: #30734e; }
+.cloud-qc-decision-rejected, .cloud-qc-recording > .cloud-qc-rejection { color: #a14c40; }
+.cloud-qc-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; flex: 0 1 auto; }
+.cloud-qc-policy { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; padding: 14px; border: 1px solid var(--line, #ddd); border-radius: 9px; }
+.cloud-qc-policy label { display: grid; gap: 4px; max-width: 100%; }
+.cloud-qc-policy input[type=number] { width: 80px; }
+@media (max-width: 600px) {
+  .task-center-cloud { height: calc(100dvh - 70px); }
+  .cloud-qc-toolbar { align-items: flex-start; flex-wrap: wrap; padding: 12px; gap: 12px; }
+  .cloud-qc-toolbar-actions { flex-wrap: wrap; }
+  .cloud-qc-sync-line { padding: 0 12px 12px; flex-wrap: wrap; }
+  .cloud-qc-list { padding: 0 10px 12px; }
+  .cloud-qc-plan > header { align-items: flex-start; flex-wrap: wrap; padding: 12px 10px 8px; }
+  .cloud-qc-plan-title { flex-basis: calc(100% - 92px); }
+  .cloud-qc-plan-summary { padding: 0 10px 10px; gap: 7px 12px; }
+  .cloud-qc-row { flex-wrap: wrap; padding: 12px 10px; gap: 10px; }
+  .cloud-qc-recording { flex: 1 0 100%; }
+  .cloud-qc-row-actions { justify-content: flex-start; }
+  .cloud-qc-details dl { grid-template-columns: minmax(0, 1fr); gap: 5px; }
+  .cloud-qc-details dd + dt { margin-top: 5px; }
+}
+@media (prefers-reduced-motion: reduce) { .cloud-qc-tasks .button { transition: none; } }
+
+.cloud-qc-sync-status { display:flex; align-items:center; gap:12px; padding:10px 16px; background:#fff4db; color:#684000; overflow-wrap:anywhere; flex-wrap:wrap; }
+.cloud-qc-policy > strong { flex-basis: 100%; font-size: 13px; }
+.cloud-qc-policy label { flex: 1 1 155px; font-size: 11px; color: var(--muted); }
+.cloud-qc-policy select, .cloud-qc-policy input:not([type=checkbox]) { min-width: 0; width: 100%; min-height: 30px; border: 1px solid var(--line-strong); border-radius: 5px; background: white; padding: 4px 7px; font: inherit; color: var(--ink); }
+.cloud-qc-policy label:has(input[type=checkbox]) { display: flex; align-items: center; align-self: center; gap: 7px; }
+.cloud-qc-policy input[type=checkbox] { width: 14px; height: 14px; margin: 0; }
+
+.cloud-qc-percent { display: flex; align-items: center; gap: 7px; }
+.cloud-qc-percent > input { flex: 1; }

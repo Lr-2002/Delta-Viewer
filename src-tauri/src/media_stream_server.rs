@@ -278,10 +278,18 @@ fn copy_media_range(
     writer: &mut impl Write,
     length: u64,
 ) -> io::Result<()> {
+    // Deliver initial container/keyframe bytes without waiting for a whole MiB
+    // from a slow removable drive. Once started, keep large sequential reads.
     let mut buffer = vec![0_u8; 1024 * 1024];
+    let startup_bytes = length.min(1024 * 1024);
     let mut remaining = length;
     while remaining > 0 {
-        let wanted = remaining.min(buffer.len() as u64) as usize;
+        let chunk = if length - remaining < startup_bytes {
+            64 * 1024
+        } else {
+            buffer.len()
+        };
+        let wanted = remaining.min(chunk as u64) as usize;
         let count = reader.read(&mut buffer[..wanted])?;
         if count == 0 {
             return Err(io::Error::new(
@@ -440,6 +448,34 @@ mod tests {
     }
 
     #[test]
+    fn initial_media_reads_are_small_then_switch_to_sequential_throughput() {
+        struct Measured {
+            left: usize,
+            requests: Vec<usize>,
+        }
+        impl Read for Measured {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.requests.push(buffer.len());
+                let size = buffer.len().min(self.left);
+                buffer[..size].fill(7);
+                self.left -= size;
+                Ok(size)
+            }
+        }
+        let length = 2 * 1024 * 1024 + 37;
+        let mut reader = Measured {
+            left: length,
+            requests: Vec::new(),
+        };
+        let mut output = Vec::new();
+        copy_media_range(&mut reader, &mut output, length as u64).unwrap();
+        assert!(reader.requests[..16].iter().all(|size| *size == 64 * 1024));
+        assert_eq!(reader.requests[16..], [1024 * 1024, 37]);
+        assert_eq!(output.len(), length);
+        assert!(output.iter().all(|byte| *byte == 7));
+    }
+
+    #[test]
     fn disconnected_player_stops_reading_the_source() {
         struct Disconnected;
         impl Write for Disconnected {
@@ -453,7 +489,7 @@ mod tests {
         let bytes = vec![0; 3 * 1024 * 1024];
         let mut input = bytes.as_slice();
         assert!(copy_media_range(&mut input, &mut Disconnected, bytes.len() as u64).is_err());
-        assert_eq!(input.len(), 2 * 1024 * 1024);
+        assert_eq!(input.len(), 3 * 1024 * 1024 - 64 * 1024);
     }
 
     #[test]
