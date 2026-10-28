@@ -322,6 +322,7 @@ try {
 
         switch (command) {
           case "resolve_source_path": return args.batchRoot ? "" : args.path;
+          case "review_identity_path": return args.path;
           case "get_pending_source_reviews": return {pending:0,items:[],ready:false,storageError:""};
           case "get_auth_status":
             return {

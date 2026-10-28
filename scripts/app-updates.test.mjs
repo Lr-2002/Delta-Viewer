@@ -169,6 +169,7 @@ test('real workspace saves before install and audit disk failure preserves the a
   });
   await context.route('**/__update-native-audit',route=>route.fulfill({contentType:'application/javascript',body:`
     export const isTauriRuntime=()=>true;
+    export const reviewIdentityPath=async path=>path;
     export async function persistReviewAudit(username,serviceId,events){if(window.failAllAudit)throw Error('模拟审核磁盘失败');for(const e of events)window.auditDisk.set(e.eventId,e);return {pending:window.auditDisk.size,blocked:0,error:''}}
     export async function getReviewAuditQueueStatus(){return {pending:window.auditDisk.size,blocked:0,error:''}}
     export async function flushReviewAuditQueue(){return {pending:window.auditDisk.size,blocked:0,error:'offline'}}

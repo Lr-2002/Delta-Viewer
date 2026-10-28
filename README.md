@@ -134,7 +134,7 @@ ext4 with the Linux kernel. The native deb can select any mounted path allowed
 by the current user. The complete
 command sequence is in the [Wiki installation guide](https://github.com/Lr-2002/Delta-Viewer/wiki/Installation).
 
-Batch folders can be renamed from the entry above the loaded directory list (1.4.1). This changes the actual local/NAS folder name within its parent, retains the original collection date prefix, and preserves claims, QC, drafts and pending submissions through durable directory mappings. Confirm before renaming; existing destinations, volume/dataset/group roots, individual recordings and cloud download workspaces are rejected. Other workstations should use the same current version to resolve the new paths.
+Batch folders can be renamed from the entry above the loaded directory list (1.4.2). This changes the actual local/NAS folder name within its parent, retains the original collection date prefix, and preserves claims, QC, drafts and pending submissions through durable directory mappings. Confirm before renaming; existing destinations, volume/dataset/group roots, individual recordings and cloud download workspaces are rejected. Other workstations should use the same current version to resolve the new paths.
 
 The 3D skeleton uses a fixed coordinate reference for the clip with a visible floor grid and ground projection. The floor is estimated from bounded foot samples, not measured room calibration. Horizontal camera tracking preserves root translation and vertical motion, including real jumps; source skeleton files remain unchanged.
 
