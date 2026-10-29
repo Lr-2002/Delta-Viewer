@@ -216,6 +216,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.5.1": "骨架增加可回退的追赶显示试验：1.02/1.05/1.10 倍，最多提前 0.8 秒后同速；暂停与拖动保持可重复，不修改源骨架和审核时间轴。",
   "1.5.0": "解除读取与检查前重复查询 NAS 容量、文件系统造成的等待；Windows 共享源直接识别网络介质，保留完整数据检查和写入目标容量保护。",
   "1.4.9": "包含 MP4 元数据读取与预览定位优化、具体加载阶段和 NAS 慢响应提示；加强原生发布测试目录隔离，保留审核写入与完整校验。",
   "1.4.8": "减少 MP4 元数据和预览目录的额外读取，加载中显示具体阶段与慢响应原因；任务中心超时明确指向共享目录读取，保留原统计与审核队列。",
@@ -2382,6 +2383,9 @@ function App() {
                             timelineEndFrame={primaryStream?.lastFrame ?? maxFrame}
                             playing={playing}
                             nativePlayback={primaryNativeClockRef.current}
+                            playbackStartFrame={playbackStart}
+                            playbackEndFrame={primaryPlaybackEndFrame}
+                            timelineFps={estimatedFps}
                             onFramePresenterChange={handleSkeletonFramePresenterChange}
                           />
                         ) : null}

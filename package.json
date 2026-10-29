@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.5.0",
+  "version": "1.5.1",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -20,7 +20,7 @@
     "test:native-playback": "node --test scripts/native-playback.test.mjs",
     "test:source-review:browser": "node --test scripts/source-review-notice.test.mjs",
     "test:proofreading": "node --test --experimental-strip-types scripts/machine-annotation.test.ts && node --test --test-concurrency=1 scripts/proofreading-playback.test.mjs scripts/unified-proofreading.test.mjs scripts/machine-video-range.test.mjs",
-    "test:playback": "node --test --experimental-strip-types scripts/frame-cache.test.mjs scripts/playback-clock.test.mjs scripts/playback-rendering.test.mjs scripts/capture-timeline.test.ts scripts/preview-priority.test.ts scripts/skeleton-frame.test.ts scripts/skeleton-orientation.test.ts",
+    "test:playback": "node --test --experimental-strip-types scripts/frame-cache.test.mjs scripts/playback-clock.test.mjs scripts/playback-rendering.test.mjs scripts/capture-timeline.test.ts scripts/preview-priority.test.ts scripts/skeleton-frame.test.ts scripts/skeleton-catchup.test.ts scripts/skeleton-orientation.test.ts scripts/skeleton-catchup-browser.test.mjs",
     "test:issue-locate": "node --test --experimental-strip-types scripts/issue-locate.test.mjs",
     "test:update-mirror": "node --test scripts/update-mirror-server.test.mjs",
     "test:user-center": "node --test scripts/user-center-server.test.mjs scripts/client-presence-store.test.mjs scripts/client-management.test.mjs && node --test --experimental-strip-types scripts/review-audit.test.mjs",

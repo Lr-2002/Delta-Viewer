@@ -2,6 +2,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { SkeletonSeries } from "../types";
+import { skeletonCatchupFrame, SKELETON_CATCHUP_RATES } from "../lib/skeleton-catchup";
 import {
   skeletonSampleForTimeline,
   type SkeletonTimelineSample,
@@ -20,6 +21,9 @@ interface SkeletonViewerProps {
   timelineEndFrame: number;
   playing?: boolean;
   nativePlayback?: boolean;
+  playbackStartFrame?: number;
+  playbackEndFrame?: number;
+  timelineFps?: number;
   onFramePresenterChange?: (presenter: ((frameId: number) => void) | null) => void;
 }
 
@@ -51,12 +55,22 @@ export const SkeletonViewer = memo(function SkeletonViewer({
   timelineEndFrame,
   playing = false,
   nativePlayback = false,
+  playbackStartFrame = timelineStartFrame,
+  playbackEndFrame = timelineEndFrame,
+  timelineFps = 30,
   onFramePresenterChange,
 }: SkeletonViewerProps) {
   const mountRef = useRef<HTMLDivElement>(null);
   const frameLabelRef = useRef<HTMLSpanElement>(null);
   const rendererRef = useRef<RendererState | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [catchupRate, setCatchupRate] = useState(1);
+  const latestFrameRef = useRef(frameId);
+  const catchupRef = useRef({ rate: catchupRate, start: playbackStartFrame, end: playbackEndFrame, fps: timelineFps });
+  catchupRef.current = { rate: catchupRate, start: playbackStartFrame, end: playbackEndFrame, fps: timelineFps };
+  // A new model/data object starts with exact source-time playback. The
+  // experiment is intentionally session-local and never alters stored frames.
+  useLayoutEffect(() => { setCatchupRate(1); }, [skeleton]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -173,16 +187,24 @@ export const SkeletonViewer = memo(function SkeletonViewer({
       renderer.domElement.dataset.frameId = String(Math.round(displayedFrame));
       renderer.domElement.dataset.skeletonFrameId = String(sample.frame.frameId);
       if (frameLabelRef.current) {
-        frameLabelRef.current.textContent = `帧 ${Math.round(displayedFrame)} · ${skeleton.jointCount} 关节`;
+        const primary = Math.round(latestFrameRef.current);
+        frameLabelRef.current.textContent = catchupRef.current.rate === 1
+          ? `帧 ${Math.round(displayedFrame)} · ${skeleton.jointCount} 关节`
+          : `视频 ${primary} / 骨架 ${Math.round(displayedFrame)}`;
       }
       render();
       return bounds;
     };
     const update = (requestedFrame: number) => {
+      latestFrameRef.current = requestedFrame;
+      const { start, end, fps, rate } = catchupRef.current;
       const targetFrame = Math.max(
         timelineStartFrame,
-        Math.min(timelineEndFrame, requestedFrame),
+        Math.min(timelineEndFrame, skeletonCatchupFrame(requestedFrame, start, end, fps, rate)),
       );
+      renderer.domElement.dataset.primaryFrameId = String(requestedFrame);
+      renderer.domElement.dataset.catchupRate = String(rate);
+      renderer.domElement.dataset.leadFrames = String(targetFrame - requestedFrame);
       const sample = skeletonSampleForTimeline(
         skeleton.frames,
         targetFrame,
@@ -190,7 +212,8 @@ export const SkeletonViewer = memo(function SkeletonViewer({
         timelineEndFrame,
         skeleton.usesTimelineFrameIds,
       );
-      if (sample && Math.abs(sample.sourcePosition - displayedSourcePosition) > 1e-4) paintFrame(targetFrame, sample);
+      if (sample && (Math.abs(sample.sourcePosition - displayedSourcePosition) > 1e-4
+        || frameLabelRef.current?.textContent?.startsWith("视频") !== (rate !== 1))) paintFrame(targetFrame, sample);
     };
     const initialBounds = paintFrame(displayedFrame);
     const targetY = floorY + bodyHeight * 0.55;
@@ -248,6 +271,10 @@ export const SkeletonViewer = memo(function SkeletonViewer({
     if (!playing || !nativePlayback) rendererRef.current?.update(frameId);
   }, [frameId, nativePlayback, playing, skeleton]);
 
+  useLayoutEffect(() => {
+    rendererRef.current?.update(latestFrameRef.current);
+  }, [catchupRate, playbackStartFrame, playbackEndFrame, timelineFps]);
+
   return (
     <section className="skeleton-viewer" aria-label="SMPL 骨架">
       <header className="skeleton-heading">
@@ -257,6 +284,12 @@ export const SkeletonViewer = memo(function SkeletonViewer({
         </div>
         <span ref={frameLabelRef}>帧 {frameId} · {skeleton.jointCount} 关节</span>
       </header>
+      <div className="skeleton-sync-controls">
+        <select aria-label="骨架追赶速度" value={catchupRate} onChange={event => setCatchupRate(Number(event.target.value))}>
+          {SKELETON_CATCHUP_RATES.map(rate => <option key={rate} value={rate}>{rate === 1 ? "原速同步" : `追赶 ${rate.toFixed(2)}×`}</option>)}
+        </select>
+        <span role="status">{catchupRate === 1 ? "原始时间轴" : "显示试验 · 最多提前 0.8 秒"}</span>
+      </div>
       <div ref={mountRef} className="skeleton-canvas" />
       {unavailable ? <p className="skeleton-unavailable">当前设备不支持 3D 渲染</p> : null}
       <footer>{skeleton.sourceName} · {skeleton.frameCount} 帧 · {skeleton.jointSource === "raw_smpl_joints" ? "原始同帧估计 · " : skeleton.jointSource === "smpl_joints" ? "滤波估计 · " : ""}估计地面参照</footer>

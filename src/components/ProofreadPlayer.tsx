@@ -100,6 +100,7 @@ export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame,
       segments={segments} selected={selected} onSeek={seek} onBoundary={onBoundary} previewBoundary={previewBoundary} onChoose={onChoose} onBoundaryFocus={onBoundaryFocus} />
     {(skeleton || skeletonError) && <div className="skeleton-side-panel">
       {skeleton ? <SkeletonViewer skeleton={skeleton} frameId={offset + frame * step}
+        playbackStartFrame={offset + start * step} playbackEndFrame={offset + end * step} timelineFps={fps * step}
         timelineStartFrame={offset} timelineEndFrame={offset + (frameCount - 1) * step} playing={playing}
         nativePlayback={nativeClock.current} onFramePresenterChange={presenterChanged} />
         : <section className="skeleton-load-error" aria-label="骨架数据"><strong>骨架数据不可用</strong><span>{skeletonError}</span></section>}
