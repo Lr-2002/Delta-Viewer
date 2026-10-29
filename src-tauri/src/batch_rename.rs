@@ -243,16 +243,27 @@ fn cache_completed(data: &Path, source: &Path, file: &Path, registry: &Registry)
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn fixture_root(parent: &Path) -> PathBuf {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let root = parent.join(format!(
+                "viewer-rename-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => return root,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create isolated fixture {}: {error}", root.display()),
+            }
+        }
+    }
 
     fn fixture() -> (PathBuf, PathBuf, PathBuf) {
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
-            "viewer-rename-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root = fixture_root(&std::env::temp_dir().canonicalize().unwrap());
+        eprintln!("isolated batch rename fixture: {}", root.display());
         let data = root.join("app");
         let source = root.join("share/Delta-D1/D1-Daily/2026-09-16-Old");
         fs::create_dir_all(&data).unwrap();
@@ -264,6 +275,32 @@ mod tests {
         .unwrap();
         fs::write(source.join("001/description.json"), b"{\"segments\":[]}").unwrap();
         (root, data, source)
+    }
+
+    #[test]
+    fn concurrent_fixtures_never_share_or_remove_each_others_directory() {
+        let parent = fixture_root(&std::env::temp_dir().canonicalize().unwrap());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let parent = parent.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let root = fixture_root(&parent);
+                    fs::write(root.join("owned"), b"fixture").unwrap();
+                    root
+                })
+            })
+            .collect();
+        let roots: std::collections::BTreeSet<_> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(roots.len(), 16);
+        for root in roots {
+            assert_eq!(fs::read(root.join("owned")).unwrap(), b"fixture");
+            fs::remove_dir_all(root).unwrap();
+        }
+        fs::remove_dir(parent).unwrap();
     }
 
     #[test]
