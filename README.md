@@ -1,5 +1,7 @@
 # Delta Viewer
 
+1.4.4 已恢复优先读取稳定的处理/滤波骨架，原始估计仅作回退。详见[骨架抖动修复与任务中心提醒诊断](docs/skeleton-stability-task-index-20261029.md)。
+
 登录页可选择 **离线模式**，无需账号、网络或用户中心配置。本地回放、检查、动作/骨架编辑、审核及导出可用；离线结果以“离线本机”署名，与联网账号存储隔离，不参与公司统计。详见[离线模式与同步修复说明](docs/offline-playback-review-20261028.md)。
 
 Version 1.0.21 replaces the administrator annotation cockpit with review supervision:

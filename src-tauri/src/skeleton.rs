@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_COORDINATES: usize = 12_000_000;
+// Keep the established processed-array order. Raw estimates can be much
+// noisier; use them only when none of the processed representations is valid.
 const JOINT_ARRAY_NAMES: [&str; 9] = [
-    "raw_smpl_joints",
     "joints",
     "joint_positions",
     "smpl_joints",
@@ -18,6 +19,7 @@ const JOINT_ARRAY_NAMES: [&str; 9] = [
     "keypoints3d",
     "keypoints_3d",
     "poses",
+    "raw_smpl_joints",
 ];
 const FRAME_ID_ARRAY_NAMES: [&str; 4] = ["frame_ids", "frame_id", "frame_indices", "frames"];
 
@@ -374,6 +376,9 @@ mod tests {
         });
         let frame_ids = Array1::from_vec(vec![42_i64, 44]);
         let mut archive = NpzWriter::new(File::create(&archive_path).unwrap());
+        archive
+            .add_array("raw_smpl_joints", &Array3::from_elem((2, 24, 3), 999.0_f32))
+            .unwrap();
         archive.add_array("joints", &joints).unwrap();
         archive.add_array("frame_ids", &frame_ids).unwrap();
         archive.finish().unwrap();
@@ -384,6 +389,7 @@ mod tests {
         let skeleton = skeleton.expect("skeleton should load");
         assert_eq!(error, None);
         assert_eq!(skeleton.source_name, "smpl_skeleton.npz");
+        assert_eq!(skeleton.joint_source, "joints");
         assert_eq!(skeleton.frame_count, 2);
         assert_eq!(skeleton.joint_count, 24);
         assert!(skeleton.uses_timeline_frame_ids);
@@ -417,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_same_frame_joints_win_and_cam0_ids_follow_acquisition_clock() {
+    fn stable_processed_joints_win_and_their_cam0_ids_follow_acquisition_clock() {
         let root = test_root("raw-cam0");
         fs::create_dir_all(root.join(".session_meta")).unwrap();
         fs::write(root.join(".session_meta/manifest.json"), r#"{"storage_format":"h264-split-mp4-v1","streams":{"cam0":{"fps":30,"frame_count":3}}}"#).unwrap();
@@ -426,27 +432,46 @@ mod tests {
             "{\"batch_id\":1,\"capture_time_ns\":33333333,\"availability\":{\"cam0\":true}}\n"
         )).unwrap();
         let path = root.join("smpl_skeleton.npz");
-        let raw = Array3::from_elem((3, 24, 3), 9.0_f32);
+        let raw = Array3::from_shape_fn(
+            (3, 24, 3),
+            |(frame, _, _)| {
+                if frame == 1 {
+                    -9.0_f32
+                } else {
+                    9.0_f32
+                }
+            },
+        );
         let filtered = Array3::from_elem((3, 24, 3), 1.0_f32);
         let mut archive = NpzWriter::new(File::create(&path).unwrap());
         archive.add_array("raw_smpl_joints", &raw).unwrap();
         archive.add_array("smpl_joints", &filtered).unwrap();
         archive
             .add_array(
-                "raw_smpl_joints_frame_ids",
+                "smpl_joints_frame_ids",
                 &Array1::from_vec(vec![0_i64, 1, 2]),
+            )
+            .unwrap();
+        archive
+            .add_array(
+                "raw_smpl_joints_frame_ids",
+                &Array1::from_vec(vec![7_i64, 8, 9]),
             )
             .unwrap();
         archive
             .add_array("frame_ids", &Array1::from_vec(vec![42_i64, 43, 44]))
             .unwrap();
         archive.finish().unwrap();
+        let original = fs::read(&path).unwrap();
         let (skeleton, error) =
             load_optional_skeleton(&root, &[], &AtomicBool::new(false)).unwrap();
         assert!(error.is_none(), "{error:?}");
         let skeleton = skeleton.unwrap();
-        assert_eq!(skeleton.joint_source, "raw_smpl_joints");
-        assert_eq!(skeleton.frames[0].joints[0], [9.0; 3]);
+        assert_eq!(skeleton.joint_source, "smpl_joints");
+        assert!(skeleton
+            .frames
+            .iter()
+            .all(|frame| frame.joints[0] == [1.0; 3]));
         assert_eq!(skeleton.frames[0].frame_id, 0);
         assert_eq!(skeleton.frames[0].timeline_position, Some(1.0));
         assert_eq!(skeleton.frames[2].timeline_position, Some(3.0));
@@ -458,7 +483,41 @@ mod tests {
         let frames = skeleton.unwrap().frames;
         assert!((frames[0].timeline_position.unwrap() - 0.9).abs() < 1e-7);
         assert!((frames[2].timeline_position.unwrap() - 3.6).abs() < 1e-7);
+        assert_eq!(fs::read(&path).unwrap(), original);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn raw_joints_remain_a_fallback_when_processed_arrays_are_missing_or_invalid() {
+        for invalid_processed in [false, true] {
+            let root = test_root("raw-fallback");
+            fs::create_dir_all(&root).unwrap();
+            let mut archive = NpzWriter::new(File::create(root.join("smpl_skeleton.npz")).unwrap());
+            archive
+                .add_array("raw_smpl_joints", &Array3::from_elem((2, 24, 3), 2.0_f32))
+                .unwrap();
+            archive
+                .add_array(
+                    "raw_smpl_joints_frame_ids",
+                    &Array1::from_vec(vec![4_i64, 6]),
+                )
+                .unwrap();
+            if invalid_processed {
+                archive
+                    .add_array("smpl_joints", &Array3::from_elem((2, 24, 3), f32::NAN))
+                    .unwrap();
+            }
+            archive.finish().unwrap();
+            let (skeleton, error) =
+                load_optional_skeleton(&root, &[], &AtomicBool::new(false)).unwrap();
+            assert!(error.is_none(), "{error:?}");
+            let skeleton = skeleton.unwrap();
+            assert_eq!(skeleton.joint_source, "raw_smpl_joints");
+            assert_eq!(skeleton.frames[0].frame_id, 4);
+            assert_eq!(skeleton.frames[1].frame_id, 6);
+            assert_eq!(skeleton.frames[0].joints[0], [2.0; 3]);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
