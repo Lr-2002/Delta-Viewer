@@ -603,6 +603,8 @@ export interface TaskProgress {
 }
 
 export interface AppUpdateInfo {
+  downloadSource?: "lan" | "github";
+  sourceNote?: string | null;
   ready: boolean;
   currentVersion: string;
   latestVersion: string;

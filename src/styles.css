@@ -1692,3 +1692,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .skeleton-model-actions { display: flex; align-items: center; gap: 6px; height: 32px; }
 .skeleton-model-status { height: 32px; overflow-y: auto; font-size: 11px; line-height: 1.5; }
 .sidebar-is-collapsed .skeleton-model-picker, .sidebar-is-collapsed .episode-model-filter { display: none; }
+.update-source-choice { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 16px 0; font-size: 13px; }
+.update-source-choice select { flex: 1; min-width: 0; max-width: 320px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: inherit; font: inherit; }
+.update-source-note { overflow-wrap: anywhere; }

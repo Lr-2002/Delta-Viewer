@@ -1,6 +1,6 @@
 # Delta Viewer
 
-1.4.6 包含独立骨架模型库与 1080p 实验模型选择，保留旧骨架默认；片段覆盖/恢复保持身份颜色，待写回结论可保留历史后重新编辑。见 [本版说明](docs/mhr-library-timeline-reedit-20261029.md)。
+1.4.7 新增公司内网更新下载，默认优先内网，保留 GitHub 备用；审核电脑无需代理。旧版可从 http://10.1.41.17:17879/ 安装一次新版。见 [更新说明](docs/github-updates.md)。
 
 1.4.4 已恢复优先读取稳定的处理/滤波骨架，原始估计仅作回退。详见[骨架抖动修复与任务中心提醒诊断](docs/skeleton-stability-task-index-20261029.md)。
 
@@ -55,7 +55,7 @@ in the Wiki. Installing the deb through `apt` also installs
 software decoding and hardware acceleration when the machine exposes VA-API.
 
 Starting with `1.0.63`, unified management mode checks
-the official `Lr-2002/Delta-Viewer` GitHub latest stable Release after login. Checks run in the background without blocking data loading. Users view the notes and choose to download, then choose “Save and restart to update” or “Later”. Installation waits for current work and audit persistence. Packages must pass platform, exact-size, SHA-256 and Minisign checks. See [the update workflow](docs/github-updates.md).
+the official `Lr-2002/Delta-Viewer` stable Release after login. Since `1.4.7`, automatic mode first checks the fixed company LAN mirror (`10.1.41.17:17879`), with GitHub as fallback; users can explicitly select either route. Checks run in the background without blocking data loading. Users view the notes and choose to download, then choose “Save and restart to update” or “Later”. Installation waits for current work and audit persistence. Packages must pass platform, exact-size, SHA-256 and Minisign checks. See [the update workflow](docs/github-updates.md).
 
 ## Workflow
 
@@ -130,10 +130,10 @@ IP addresses as certificate-covered compatibility aliases so already configured
 clients continue to sign in while disconnected from the Internet.
 
 Recording data is read through operating-system-mounted paths. The client connects
-to the configured LAN user center for identity/audit and the fixed official GitHub
-Release API/assets for updates. Update requests send no user-center credentials,
+to the configured LAN user center for identity/audit, and either the fixed company
+LAN mirror or official GitHub Release API/assets for updates. Update requests send no user-center credentials,
 source paths, annotations or media. Exact platform, size, SHA-256 and Minisign
-validation remain mandatory. The mirror scripts only serve legacy clients.
+validation remain mandatory. The independent mirror serves verified software packages only.
 SSH was used only once to retrieve
 the development sample from the current ext4 card. Ubuntu can mount
 ext4 with the Linux kernel. The native deb can select any mounted path allowed
@@ -515,16 +515,18 @@ trusted Linux package signature, so the outer installers remain `UNSIGNED`.
 Automatic tagging still uses only `GITHUB_TOKEN`; the updater signing secrets
 are not GitHub App credentials.
 
-The macOS host runs `scripts/update-mirror-server.mjs` as a `launchd` service on
-`0.0.0.0:17879`. Every five minutes it synchronizes the immutable GitHub
-release, verifies updater signatures and all installer hashes, then atomically
-activates the version. Clients receive mirror URLs in `latest.json`; a partial
-or tampered sync leaves the previous verified version available. The mirror
-exposes only GET/HEAD and does not retain client identity or application data.
-When an update is available, the application concurrently fetches a bounded
-32 KiB range sample from the public and LAN mirror addresses, then downloads
-from the faster successful path. The complete payload still passes the existing
-exact-size and Minisign checks before installation.
+The company Linux server runs an independent `delta-viewer-update-mirror` user service
+at `http://10.1.41.17:17879/`. Every five minutes it synchronizes official
+GitHub Release bytes, verifies all updater signatures and installer hashes,
+then atomically activates the complete version. Failed syncs retain the last
+verified version. `update-service.lan.config.json` and
+`scripts/install-update-mirror-linux.mjs` define this deployment; the older
+macOS/public-mirror configuration remains historical compatibility only.
+The `/client/latest.json` endpoint preserves official immutable asset identities;
+the client derives a fixed LAN transport address and always verifies bytes
+before installation. This service does not use NAS space or receive review data.
+Old clients need one manual installation from the LAN download page. The server
+still needs a working upstream path; reviewers only need company-LAN access.
 
 The hosted-runner smoke does not replace clean Win10/Win11 offline testing,
 target-Mac testing, physical exFAT SD-card validation, or the formal

@@ -132,8 +132,9 @@ let demoOperationsData: SupervisionDashboardData | null = null;
 let sessionActivationRetryAttempts = 0;
 const DEMO_OFFLINE_IDENTITY: UserIdentity = { username: "offline.local", displayName: "离线本机", role: "operator" };
 
-export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
-  if (isTauriRuntime()) return invoke<AppUpdateInfo>("check_for_app_update");
+export type AppUpdateSource = "auto" | "lan" | "github";
+export async function checkForAppUpdate(source: AppUpdateSource = "auto"): Promise<AppUpdateInfo> {
+  if (isTauriRuntime()) return invoke<AppUpdateInfo>("check_for_app_update", { source });
   return {
     currentVersion: APP_VERSION,
     latestVersion: APP_VERSION,

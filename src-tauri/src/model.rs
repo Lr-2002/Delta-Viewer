@@ -841,6 +841,8 @@ pub struct TaskProgressEvent {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppUpdateInfo {
+    pub download_source: String,
+    pub source_note: Option<String>,
     pub ready: bool,
     pub current_version: String,
     pub latest_version: String,

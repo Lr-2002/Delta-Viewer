@@ -215,3 +215,52 @@ test('administrator workspace exposes the same update entry and version history'
   await dialog.getByRole('button',{name:'稍后',exact:true}).click();
   assert.equal(await page.getByRole('heading',{name:'审核监管',exact:true}).isVisible(),true);
 });
+
+
+test('LAN download selection persists, failed checks clear stale actions, and fallback is explicit', async t => {
+  const server=await createServer({logLevel:'error',server:{host:'127.0.0.1',port:0},plugins:[{
+    name:'lan-update-choice',configureServer(server){server.middlewares.use(async(req,res,next)=>{
+      if(!req.url?.startsWith('/__lanupdates'))return next();
+      res.setHeader('content-type','text/html');
+      res.end(await server.transformIndexHtml(req.url,`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"></head><body><div id="root"></div><script type="module">
+        import React from 'react';import {createRoot} from 'react-dom/client';import {AppUpdates} from '/src/components/AppUpdates.tsx';import '/src/styles.css';
+        window.calls=[];window.downloads=0;window.installs=0;window.fail=false;
+        createRoot(document.getElementById('root')).render(React.createElement(AppUpdates,{version:'1.4.6',currentSummary:'测试',currentNotes:[],busy:false,
+          check:async(source)=>{window.calls.push(source);if(window.fail)throw Error('公司内网服务暂时不可用');return {currentVersion:'1.4.6',latestVersion:'1.4.7',available:true,ready:false,notes:'测试更新',downloadSource:source==='github'?'github':'lan',sourceNote:source==='github'?'GitHub 备用线路':'公司内网已缓存的正式版本'}},
+          onDownload:async()=>{window.downloads++},onInstall:async()=>{window.installs++},onViewHistory:()=>{}}));
+      </script></body></html>`));
+    });}
+  }]});await server.listen();t.after(()=>server.close());
+  const browser=await chromium.launch({executablePath:process.env.PLAYWRIGHT_CHROMIUM??chromium.executablePath(),headless:true});t.after(()=>browser.close());
+  const page=await browser.newPage();
+  await page.addInitScript(()=>{localStorage.setItem('delta.updates.release-notes.seen','1.4.6');localStorage.setItem('delta.updates.available.notified','1.4.7')});
+  await page.goto(server.resolvedUrls.local[0]+'__lanupdates');
+  await page.waitForFunction(()=>window.calls?.length===1);
+  assert.deepEqual(await page.evaluate(()=>window.calls),['auto']);
+  await page.getByRole('button',{name:'版本与更新',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'版本与更新详情'});const choice=dialog.getByLabel('更新下载线路');
+  await dialog.getByText(/无需访问 GitHub/).waitFor();
+  await choice.selectOption('lan');await page.waitForFunction(()=>window.calls.length===2);
+  assert.equal(await page.evaluate(()=>localStorage.getItem('delta.updates.download-source')),'lan');
+  await page.reload();await page.waitForFunction(()=>window.calls?.length===1);
+  assert.deepEqual(await page.evaluate(()=>window.calls),['lan']);
+  await page.getByRole('button',{name:'版本与更新',exact:true}).click();
+  await page.evaluate(()=>window.fail=true);await choice.selectOption('github');
+  await dialog.getByRole('alert').waitFor();assert.equal(await dialog.getByRole('button',{name:'下载更新',exact:true}).count(),0);
+  assert.equal(await dialog.getByRole('button',{name:'检查更新',exact:true}).isEnabled(),true);
+  assert.equal(await page.evaluate(()=>window.downloads+window.installs),0);
+  await page.evaluate(()=>window.fail=false);await dialog.getByRole('button',{name:'检查更新',exact:true}).click();
+  await dialog.getByText('GitHub 备用线路',{exact:true}).waitFor();
+  for(const [width,height] of [[1440,920],[960,680],[390,844]]){
+    await page.setViewportSize({width,height});
+    for(const control of [choice,...await dialog.locator('footer button').all()]) {
+      const box=await control.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=width+1&&box.y>=0&&box.y+box.height<=height+1);
+    }
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await mkdir('artifacts/app-updates',{recursive:true});await page.screenshot({path:'artifacts/app-updates/lan-'+width+'.png'});
+  }
+  await choice.selectOption('lan');await dialog.getByText(/无需访问 GitHub/).waitFor();
+  await dialog.getByRole('button',{name:'下载更新',exact:true}).click();await dialog.getByRole('button',{name:'保存并重启更新',exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.downloads),1);assert.equal(await page.evaluate(()=>window.installs),0);
+  assert.equal(await choice.isDisabled(),true,'a verified ready package retains its selected version and transport');
+});

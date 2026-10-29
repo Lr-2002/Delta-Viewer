@@ -1,4 +1,4 @@
-//! Bounded, cancellable GET retries for public GitHub update data only.
+//! Bounded, cancellable GET retries for public update data only; no identity traffic.
 use crate::error::{AppError, AppResult};
 use futures_util::StreamExt;
 use reqwest::{Client, Response, Url};
@@ -86,12 +86,12 @@ fn retryable(error: &reqwest::Error) -> bool {
 fn explain(error: &reqwest::Error) -> String {
     if let Some(status) = error.status() {
         let reason = match status.as_u16() {
-            403 => "GitHub 拒绝访问或 API 额度已用尽",
+            403 => "更新服务拒绝访问或 API 额度已用尽",
             404 => "正式版本或更新资产不存在",
             407 => "系统代理要求身份验证",
-            429 => "GitHub 请求受到限流",
-            500..=599 => "GitHub 服务暂时异常",
-            _ => "GitHub 返回请求错误",
+            429 => "更新服务请求受到限流",
+            500..=599 => "更新服务暂时异常",
+            _ => "更新服务返回请求错误",
         };
         return format!("{reason}（HTTP {}）", status.as_u16());
     }
@@ -144,8 +144,14 @@ pub(super) async fn bytes(
         let result = async {
             let response = interruptible(client.get(request.url.clone()).send(), request.cancelled)
                 .await
-                .map_err(Failure::Invalid)??
-                .error_for_status()?;
+                .map_err(Failure::Invalid)??;
+            if response.status().is_redirection() {
+                return Err(Failure::Invalid(super::update_manifest_error(&format!(
+                    "更新服务返回未允许的跳转（HTTP {}）",
+                    response.status().as_u16()
+                ))));
+            }
+            let response = response.error_for_status()?;
             if response.content_length().is_some_and(|size| {
                 size > request.limit || request.expected.is_some_and(|expected| size != expected)
             }) {

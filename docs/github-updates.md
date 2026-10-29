@@ -1,7 +1,14 @@
-# GitHub 正式 Release 更新（1.1.1）
+# 正式 Release 与公司内网更新（1.4.7）
 
-更新来源固定为 https://github.com/Lr-2002/Delta-Viewer 。登录后从 GitHub latest Release API 查找正式版本；匿名 API 限流或不可用时改读同仓库官方 /releases/latest 的 HTTPS 精确 tag 跳转，再执行相同清单与包验证，忽略草稿、预发布和低于当前版本的结果。检查不占用数据任务，也不阻断目录恢复、数据载入和审核。
+正式发布来源仍为 https://github.com/Lr-2002/Delta-Viewer 。1.4.7 起“版本与更新”提供下载线路：
 
+- **自动（优先公司内网）**：三秒内检查固定 `http://10.1.41.17:17879/client/latest.json`，成功就使用公司内网缓存；不可用时回退官方 GitHub，并显示内网原因。
+- **公司内网（无需代理）**：检查和下载均固定直连公司服务器，不连接 GitHub、不走系统代理、不跟随 HTTP 跳转。内网异常时显示错误，可重试或手动选择 GitHub。
+- **GitHub（外网备用）**：沿用官方 API 与 latest/tag 回退、HTTPS 和系统代理支持。
+
+选择在本机保留。界面显示实际下载线路及内网缓存版本；“内网无需更新”只说明缓存版本，不承诺其等于 GitHub 实时最新。没有联网能力的旧二进制不能通过修改服务器自动学会新协议，旧版用户须先打开 [公司内网下载页](http://10.1.41.17:17879/)，安装一次 1.4.7 或更新版。之后直接使用软件内更新入口。离开公司内网时需选择可达的 GitHub；本次未提供公网镜像。
+
+内网服务器每五分钟拉取同仓库正式稳定版本。三平台更新包签名、大小和 SHA-256，以及全部安装器大小/hash 都通过后才启用；未完成、被篡改或下载失败保持上一可用版。软件检查不阻断数据载入和审核。
 1. 发现新版后，在“版本与更新”显示标记，并对同版本显示一次轻提示。
 2. 点击“查看更新”阅读该版本发布说明，选择“下载更新”。此时不会安装。
 3. 当前平台包按精确大小有界下载，验证 SHA-256、Minisign 签名后原子保存到应用本机缓存，显示“更新已准备好”。
@@ -11,9 +18,9 @@
 
 缓存可以跨应用重启保留；重启后须联网检查到匹配的正式版本，再重新校验缓存恢复准备好状态。后台每 30 分钟可重新检查；正在下载、已准备好或正在安装时保持所选版本，避免说明和实际包不一致。网络不可达、HTTP 错误、GitHub API 限流只影响更新；错误留在入口和详情中，允许重试，不自动遮挡审核。
 
-更新模块不使用用户中心凭据，不上传业务数据。元数据读取上限 1 MiB，正式包 1–64 MiB，固定三平台目标与文件名；只允许官方仓库精确 tag HTTPS 资产 URL 和 GitHub 官方下载 CDN 重定向。安装使用 Tauri 原生平台实现（Windows NSIS、macOS arm64 app tar、Linux deb），安装前重新检查大小、哈希和内嵌公钥签名。
+更新模块不使用用户中心凭据，不上传业务数据。元数据读取上限 1 MiB，正式包 1–64 MiB，固定三平台目标与文件名；清单仍只允许官方仓库精确 tag HTTPS 资产身份；GitHub 线路只跟随官方 CDN，内网传输由客户端按固定服务器/版本/文件名自行构造，不采信任意下载 URL。安装使用 Tauri 原生平台实现（Windows NSIS、macOS arm64 app tar、Linux deb），安装前重新检查大小、哈希和内嵌公钥签名。
 
-`update-service.config.json` 和旧镜像脚本保留给历史客户端，本版不依赖、不部署或重启旧镜像服务。旧客户端需要手动安装 1.0.63 一次才能迁移来源。三平台完整 Release 门禁、公开资产不可覆盖和 UNSIGNED 披露继续保留。
+`update-service.config.json` 保留给历史部署，新服务使用独立的 `update-service.lan.config.json`，不改变 Tauri 官方 HTTPS endpoints 或打开不安全更新开关。三平台完整 Release 门禁、公开资产不可覆盖和 UNSIGNED 披露继续保留。
 
 ## 1.1.1 稳定性与故障排查
 
@@ -27,4 +34,16 @@
 
 维护人员可显式运行 `cargo test --manifest-path src-tauri/Cargo.toml updater::tests::live_official_release_discovery -- --ignored --exact --nocapture` 核查当前正式清单，或将测试名改为 `live_official_release_download` 下载当前平台包并核验 SHA-256/Minisign。后者不会安装、提交审核或操作源数据。Windows Release workflow 额外保存七天的原生测试程序供目标机诊断，独立于正式安装包，不进入公开 Release 资产集合。所有离线故障测试和原生 Windows 更新回归必须通过才发布。
 
-本次排查与复查记录见 [更新稳定性报告](github-update-stability-20261015.md)。GitHub、其资产 CDN 和可用网络仍是联网检查与下载的必要条件；网络不可达时显示可重试错误，保留当前版本及工作状态。
+本次排查与复查记录见 [更新稳定性报告](github-update-stability-20261015.md)。GitHub/资产 CDN 是服务器获取新版本和客户端 GitHub 线路的必要条件；内网线路只要求审核电脑可访问公司服务器。上游中断时服务器继续提供已验证缓存，不声称缓存是实时最新版。
+
+
+## Linux 内网服务维护
+
+在公司服务器且 Node.js 支持 `--use-env-proxy` 时执行 `node scripts/install-update-mirror-linux.mjs`。安装器只创建当前用户 `delta-viewer-update-mirror.service`，代码副本和缓存位于 `~/.local/share/delta-viewer-update-service/`，由 systemd 用户服务常驻；需主机已启用用户 linger 才可脱离登录持续运行。本部署已满足。服务端可沿用安装环境的 HTTP(S) 代理，其配置仅存本机权限 0600 的 `upstream.env`，不发送给审核端。
+
+- `systemctl --user status delta-viewer-update-mirror`：查看服务。
+- `journalctl --user -u delta-viewer-update-mirror`：同步错误日志。
+- `http://10.1.41.17:17879/healthz`：查看缓存版本、最近尝试、成功时间及原因。
+- 更新服务代码后重跑安装器，再仅重启 `delta-viewer-update-mirror`；不要重启工作台、用户中心或上传服务。
+
+缓存只保留两版软件包，使用服务器本地盘。服务不保存账号、NAS、视频或审核数据，不给审核员推送通知。客户端重试、审核保存/落盘失败与安装保护沿用。完整验证记录见 [内网更新报告](lan-updates-20261029.md)。

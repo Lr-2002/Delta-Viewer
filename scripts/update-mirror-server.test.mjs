@@ -170,7 +170,7 @@ test("mirrors signed installers locally and retains the last good release after 
     let body;
     if (url.pathname === "/api/releases/latest") {
       fallbackRequests += 1;
-      body = Buffer.from(JSON.stringify({ tag_name: `v${currentRelease.latest.version}` }));
+      body = Buffer.from(JSON.stringify({ tag_name: `v${currentRelease.latest.version}`, draft: false, prerelease: false }));
       response.setHeader("content-type", "application/json");
     } else if (url.pathname === "/latest.json" && latestRouteMissing) {
       response.writeHead(404).end();
@@ -253,6 +253,19 @@ test("mirrors signed installers locally and retains the last good release after 
       const bytes = Buffer.from(await fetch(entry.url).then((response) => response.arrayBuffer()));
       assert.equal(sha256(bytes), entry.sha256);
     }
+    const clientLatest = await fetch(`${publicBaseUrl}/client/latest.json`).then(response => response.json());
+    assert.deepEqual(clientLatest, currentRelease.latest, "client metadata preserves official immutable identities and signed hashes");
+    const immutable = structuredClone(currentRelease.latest);
+    currentRelease.latest.platforms[TARGETS[0].target].sha256 = "a".repeat(64);
+    await assert.rejects(mirror.sync(), /changed immutable/);
+    assert.equal((await fetch(latest.platforms[TARGETS[0].target].url)).status, 200);
+    currentRelease.latest = immutable;
+    for (const invalid of ["1.2.3-rc.1", "01.2.3"]) {
+      currentRelease.latest.version = invalid;
+      await assert.rejects(mirror.sync(), /semver/);
+      assert.equal((await fetch(`${publicBaseUrl}/client/latest.json`).then(r => r.json())).version, "1.2.3");
+    }
+    currentRelease.latest.version = "1.2.3";
     const rangedEntry = latest.platforms[TARGETS[0].target];
     const rangedResponse = await fetch(rangedEntry.url, {
       headers: { range: "bytes=0-31" },

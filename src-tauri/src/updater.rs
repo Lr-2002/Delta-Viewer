@@ -1,4 +1,7 @@
+mod lan;
 mod network;
+
+pub use lan::UpdateSource;
 
 use crate::error::{AppError, AppResult};
 use crate::model::{AppUpdateInfo, ProgressPayload};
@@ -33,8 +36,13 @@ const TARGETS: [&str; 3] = [
     "linux-x86_64-deb",
 ];
 
+#[derive(Clone)]
+struct SelectedUpdate {
+    update: Update,
+    route: lan::DownloadRoute,
+}
 #[derive(Default)]
-pub struct UpdateState(Mutex<Option<Update>>);
+pub struct UpdateState(Mutex<Option<SelectedUpdate>>);
 
 #[derive(Deserialize)]
 struct Release {
@@ -295,27 +303,37 @@ async fn discover_release(client: &Client) -> AppResult<(String, Url, Option<Rel
     }
 }
 
-pub async fn check(app: &AppHandle, state: &UpdateState) -> AppResult<AppUpdateInfo> {
+pub async fn check(
+    app: &AppHandle,
+    state: &UpdateState,
+    requested: UpdateSource,
+) -> AppResult<AppUpdateInfo> {
+    *state.0.lock().map_err(update_check_error)? = None;
     let current_version = app.package_info().version.to_string();
-    let client = client(CHECK_TIMEOUT)?;
-    let (version, manifest_url, release) = discover_release(&client).await?;
+    let candidate = lan::resolve(requested).await?;
+    let lan::Candidate {
+        version,
+        manifest,
+        route,
+        note,
+        published_at,
+    } = candidate;
+    let manifest_url = asset_url(&version, "latest.json")?;
     let remote_version = semver::Version::parse(&version).map_err(update_check_error)?;
     let current = semver::Version::parse(&current_version).map_err(update_check_error)?;
     if remote_version <= current {
+        *state.0.lock().map_err(update_check_error)? = None;
         return Ok(AppUpdateInfo {
             current_version: current_version.clone(),
-            latest_version: current_version,
+            latest_version: version,
             available: false,
             notes: None,
-            published_at: release.as_ref().and_then(|r| r.published_at.clone()),
+            published_at,
             ready: false,
+            download_source: route.name().into(),
+            source_note: note,
         });
     }
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &bounded_get(&client, manifest_url.clone(), MAX_METADATA_BYTES).await?,
-    )
-    .map_err(update_check_error)?;
-    validate_manifest(&manifest, &version, release.as_ref())?;
     // Reuse this bounded, validated response. A second HTTP read adds another
     // failure point and may observe a different manifest for the same check.
     let updater = app
@@ -344,14 +362,16 @@ pub async fn check(app: &AppHandle, state: &UpdateState) -> AppResult<AppUpdateI
         latest_version: version,
         available: true,
         notes: update.body.clone(),
-        published_at: release.as_ref().and_then(|r| r.published_at.clone()),
+        published_at,
         ready,
+        download_source: route.name().into(),
+        source_note: note,
     };
-    *state.0.lock().map_err(update_check_error)? = Some(update);
+    *state.0.lock().map_err(update_check_error)? = Some(SelectedUpdate { update, route });
     Ok(info)
 }
 
-fn selected(state: &UpdateState) -> AppResult<Update> {
+fn selected(state: &UpdateState) -> AppResult<SelectedUpdate> {
     state
         .0
         .lock()
@@ -467,14 +487,15 @@ pub async fn download(
     operation_id: u64,
     cancelled: &AtomicBool,
 ) -> AppResult<()> {
-    let update = selected(state)?;
+    let SelectedUpdate { update, route } = selected(state)?;
     check_cancelled(cancelled)?;
     let expected = expected_download_bytes(&update)?;
     let started = Instant::now();
+    let download_url = route.asset_url(&update.version, platform_target()?)?;
     let bytes = network::bytes(
-        &client(DOWNLOAD_TIMEOUT)?,
+        &route.client(DOWNLOAD_TIMEOUT)?,
         network::Request {
-            url: &update.download_url,
+            url: &download_url,
             limit: expected,
             expected: Some(expected),
             stage: "下载更新包",
@@ -487,7 +508,11 @@ pub async fn download(
                 ProgressPayload {
                     task: "update".into(),
                     phase: if attempt == 1 {
-                        format!("正在下载 v{}，完成后由您决定安装时间", update.version)
+                        format!(
+                            "正在从{}下载 v{}，完成后由您决定安装时间",
+                            route.label(),
+                            update.version
+                        )
                     } else {
                         format!("正在重试下载 v{}（第 {attempt}/3 次）", update.version)
                     },
@@ -495,7 +520,7 @@ pub async fn download(
                     total: expected,
                     bytes_done: received,
                     total_bytes: expected,
-                    current_path: update.download_url.to_string(),
+                    current_path: download_url.to_string(),
                     elapsed_ms: started.elapsed().as_millis(),
                 },
             );
@@ -517,7 +542,7 @@ pub async fn install(
     cancelled: &AtomicBool,
 ) -> AppResult<()> {
     check_cancelled(cancelled)?;
-    let update = selected(state)?;
+    let SelectedUpdate { update, .. } = selected(state)?;
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         // Re-read, rehash and reverify the staged file immediately before install.

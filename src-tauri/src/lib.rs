@@ -212,11 +212,12 @@ async fn check_for_app_update(
     app: AppHandle,
     updates: State<'_, updater::UpdateState>,
     auth: State<'_, AuthState>,
+    source: Option<updater::UpdateSource>,
 ) -> Result<AppUpdateInfo, String> {
     auth.require_managed_user()
         .map_err(|error| error.to_string())?;
     require_stable_update_channel()?;
-    updater::check(&app, &updates)
+    updater::check(&app, &updates, source.unwrap_or_default())
         .await
         .map_err(|error| error.to_string())
 }

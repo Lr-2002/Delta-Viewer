@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CircleAlert, Download, LoaderCircle, RefreshCw, X } from "lucide-react";
-import { checkForAppUpdate } from "../lib/backend";
+import { checkForAppUpdate, type AppUpdateSource } from "../lib/backend";
 import type { AppUpdateInfo } from "../types";
 import { UpdateToast } from "./UpdateToast";
 
 const seenKey = "delta.updates.release-notes.seen";
 const notifiedKey = "delta.updates.available.notified";
+const sourceKey = "delta.updates.download-source";
 function read(key: string) { try { return localStorage.getItem(key); } catch { return null; } }
 function write(key: string, value: string) { try { localStorage.setItem(key, value); } catch { /* Keep this session's acknowledgement. */ } }
 function summary(notes: string | null) {
@@ -17,8 +18,12 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
   check = checkForAppUpdate }: {
   version: string; currentSummary: string; currentNotes: string[]; busy: boolean;
   onDownload: () => Promise<void>; onInstall: () => Promise<void>; onViewHistory: () => void;
-  check?: () => Promise<AppUpdateInfo>;
+  check?: (source?: AppUpdateSource) => Promise<AppUpdateInfo>;
 }) {
+  const [downloadSource, setDownloadSource] = useState<AppUpdateSource>(() => {
+    const value = read(sourceKey); return value === "lan" || value === "github" ? value : "auto";
+  });
+  const sourceRef = useRef(downloadSource); sourceRef.current = downloadSource;
   const [info, setInfo] = useState<AppUpdateInfo | null>(null);
   const [phase, setPhase] = useState<"idle" | "checking" | "available" | "current" | "downloading" | "ready" | "installing">("idle");
   const [error, setError] = useState("");
@@ -31,11 +36,11 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
   const installedAcknowledged = useRef(read(seenKey) === version);
   const phaseRef = useRef(phase); phaseRef.current = phase;
 
-  async function inspect() {
+  async function inspect(source = sourceRef.current) {
     if (pending.current || phaseRef.current === "ready" || phaseRef.current === "installing") return;
-    pending.current = true; setPhase("checking"); setError("");
+    pending.current = true; setInfo(null); setNotice(current => current === "installed" ? current : null); deferredNotice.current = null; setPhase("checking"); setError("");
     try {
-      const result = await check();
+      const result = await check(source);
       if (!mounted.current) return;
       setInfo(result); setPhase(result.available ? result.ready ? "ready" : "available" : "current");
       if (result.available && !notified.current.has(result.latestVersion) && read(notifiedKey) !== result.latestVersion) {
@@ -106,10 +111,21 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
     />, document.getElementById("app-update-notices") ?? document.body)}
     {panel && <dialog className="app-update-dialog" aria-label="版本与更新详情" ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setPanel(false)}>
       <header><div><h2>{label}</h2><p>当前版本 v{version}</p></div><button className="icon-button" type="button" aria-label="关闭版本与更新" onClick={() => setPanel(false)}><X size={18} /></button></header>
-      {phase === "checking" && <p role="status">正在后台检查 GitHub 最新正式版本，数据载入可继续进行。网络短暂波动时自动重试，最多 3 次。</p>}
-      {phase === "current" && <p role="status">已是最新正式版本。</p>}
+      <label className="update-source-choice">下载线路
+        <select aria-label="更新下载线路" value={downloadSource} disabled={working || ready} onChange={event => {
+          const source = event.target.value as AppUpdateSource;
+          write(sourceKey, source); setDownloadSource(source); setInfo(null); void inspect(source);
+        }}>
+          <option value="auto">自动（优先公司内网）</option>
+          <option value="lan">公司内网（无需代理）</option>
+          <option value="github">GitHub（外网备用）</option>
+        </select>
+      </label>
+      {phase === "checking" && <p role="status">正在检查所选线路的正式版本，数据载入可继续进行。</p>}
+      {phase === "current" && <p role="status">{info?.downloadSource === "lan" ? `公司内网已同步至 v${info.latestVersion}，当前无需更新。` : "已是最新正式版本。"}</p>}
       <div className="app-update-notes">{available ? <><h3>本次更新内容</h3><pre>{info?.notes || "此版本未提供更新说明。"}</pre></> : <><h3>当前版本更新摘要</h3><p>{currentSummary}</p><ul>{currentNotes.map((note, i) => <li key={i}>{note}</li>)}</ul></>}</div>
-      <p className="muted">更新来源：github.com/Lr-2002/Delta-Viewer · 正式 Release</p>
+      <p className="muted">发布来源：github.com/Lr-2002/Delta-Viewer · 正式 Release<br />下载线路：{info?.downloadSource === "lan" ? "公司内网 · 无需访问 GitHub" : info?.downloadSource === "github" ? "GitHub" : "等待检查"}</p>
+      {info?.sourceNote && <p className="muted update-source-note">{info.sourceNote}</p>}
       {busy && <p role="status">正在处理数据或导出，请等待完成后再下载或安装更新。</p>}
       {error && <p className="update-error" role="alert">{error}。当前版本可继续使用。</p>}
       <footer className="update-actions">

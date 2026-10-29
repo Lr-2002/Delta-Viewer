@@ -36,7 +36,7 @@ const MIN_ASSET_BYTES = 1024 * 1024;
 const MAX_UPDATER_BYTES = 64 * 1024 * 1024;
 const MAX_INSTALLER_BYTES = 512 * 1024 * 1024;
 const MAX_JSON_BYTES = 1024 * 1024;
-const MANIFEST_TIMEOUT_MS = 15_000;
+const MANIFEST_TIMEOUT_MS = 30_000;
 const ASSET_TIMEOUT_MS = 20 * 60_000;
 
 function releaseBrand(version) {
@@ -110,7 +110,7 @@ function requirePlainObject(value, label) {
 }
 
 function requireSemver(value, label = "version") {
-  if (typeof value !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value)) {
+  if (typeof value !== "string" || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value)) {
     throw new Error(`${label} is not valid semver`);
   }
   return value;
@@ -186,6 +186,10 @@ function normalizeConfiguration(raw) {
   ) {
     throw new Error("production mirror must use the official GitHub latest release API");
   }
+  if (config.allowTestUpstream !== true && (
+    (config.upstreamAssetOrigin ?? OFFICIAL_ASSET_ORIGIN) !== OFFICIAL_ASSET_ORIGIN
+    || (config.upstreamAssetPathPrefix ?? OFFICIAL_ASSET_PATH_PREFIX) !== OFFICIAL_ASSET_PATH_PREFIX
+  )) throw new Error("production mirror must use official GitHub asset identities");
   if (typeof config.updaterPublicKey !== "string" || !config.updaterPublicKey) {
     throw new Error("updaterPublicKey is required");
   }
@@ -279,14 +283,16 @@ async function fetchJson(fetchImpl, url) {
 async function fetchLatestManifest(fetchImpl, configuration) {
   try {
     return await fetchJson(fetchImpl, configuration.upstreamManifestUrl);
-  } catch (error) {
-    if (error?.status !== 404) throw error;
+  } catch {
+    // The latest/download route can be temporarily unavailable; discover the
+    // same official stable tag via the API and keep all validation below.
   }
   const release = requirePlainObject(
     await fetchJson(fetchImpl, configuration.upstreamReleaseApiUrl),
     "GitHub latest release",
   );
-  if (typeof release.tag_name !== "string" || !release.tag_name.startsWith("v")) {
+  if (release.draft !== false || release.prerelease !== false
+    || typeof release.tag_name !== "string" || !release.tag_name.startsWith("v")) {
     throw new Error("GitHub latest release has no valid version tag");
   }
   const version = requireSemver(release.tag_name.slice(1), "GitHub latest release tag");
@@ -410,7 +416,12 @@ async function downloadFile(fetchImpl, descriptor, destination) {
         throw new Error(`${descriptor.fileName} exceeded its bounded size`);
       }
       hash.update(bytes);
-      await handle.write(bytes);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset);
+        if (!bytesWritten) throw new Error(`${descriptor.fileName} disk write made no progress`);
+        offset += bytesWritten;
+      }
     }
     await handle.sync();
     if (total !== descriptor.size) {
@@ -783,15 +794,23 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
       configuration,
     );
     const finalDirectory = path.join(configuration.cacheRoot, "versions", `v${latest.version}`);
+    if (state.current?.version === latest.version) {
+      for (const { target } of TARGETS) {
+        const old = state.current.latest.platforms[target];
+        const next = latest.platforms[target];
+        if (["size", "sha256", "signature"].some(key => old[key] !== next[key])) {
+          throw new Error("upstream changed immutable release metadata; keeping verified cache");
+        }
+      }
+    }
+    let replaceExisting = false;
     try {
       const existing = await verifyCachedRelease(configuration, latest.version, latest);
       await activate(existing);
       return existing;
     } catch (error) {
-      if (error?.code !== "ENOENT") {
-        if (!await isOwnedCacheDirectory(finalDirectory, latest.version)) throw error;
-        await rm(finalDirectory, { recursive: true, force: false });
-      }
+      if (await isOwnedCacheDirectory(finalDirectory, latest.version)) replaceExisting = true;
+      else if (error?.code !== "ENOENT") throw error;
     }
 
     const partial = await mkdtemp(
@@ -805,7 +824,16 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
         partial,
         fetchImpl,
       );
-      await rename(partial, finalDirectory);
+      // A failed redownload must never remove the active last-good cache.
+      const backup = `${partial}-previous`;
+      if (replaceExisting) await rename(finalDirectory, backup);
+      try {
+        await rename(partial, finalDirectory);
+      } catch (error) {
+        if (replaceExisting) await rename(backup, finalDirectory);
+        throw error;
+      }
+      if (replaceExisting) await rm(backup, { recursive: true, force: true });
       const verified = await verifyCachedRelease(configuration, latest.version, latest);
       await activate({ ...verified, ...cached });
       return state.current;
@@ -910,6 +938,23 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
           latestForBase(configuration, state.current, requestBaseUrl(configuration, request)),
           "no-cache",
         );
+        return;
+      }
+      if (url.pathname === "/client/latest.json") {
+        if (!state.current) {
+          sendJson(response, 503, { error: "signed release is not cached yet" });
+          return;
+        }
+        // Keep the official immutable asset identities. Modern clients derive
+        // their fixed LAN transport locally and still verify the original key.
+        const latest = state.current.latest;
+        sendJson(response, 200, {
+          ...latest,
+          platforms: Object.fromEntries(TARGETS.map(definition => [definition.target, {
+            ...latest.platforms[definition.target],
+            url: `${configuration.upstreamAssetOrigin}${configuration.upstreamAssetPathPrefix}v${latest.version}/${encodeURIComponent(definition.updaterName(latest.version))}`,
+          }])),
+        }, "no-cache");
         return;
       }
       if (url.pathname === "/") {

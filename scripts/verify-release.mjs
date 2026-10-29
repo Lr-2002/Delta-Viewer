@@ -200,6 +200,17 @@ async function verify(options) {
   ) {
     throw new Error("the local update mirror configuration is not release-safe");
   }
+  const lanConfig = JSON.parse(await readFile(path.join(options.root, "update-service.lan.config.json"), "utf8"));
+  const lanClient = await readFile(path.join(options.root, "src-tauri/src/updater/lan.rs"), "utf8");
+  if (lanConfig.schemaVersion !== 1 || lanConfig.listenHost !== "10.1.41.17"
+    || lanConfig.listenPort !== 17879 || lanConfig.publicBaseUrl !== "http://10.1.41.17:17879"
+    || JSON.stringify(lanConfig.fallbackBaseUrls) !== "[]"
+    || lanConfig.upstreamManifestUrl !== expectedUpdaterEndpoints[0]
+    || lanConfig.refreshIntervalSeconds !== 300 || lanConfig.retainedVersions !== 2
+    || lanConfig.allowTestUpstream === true
+    || !lanClient.includes('BASE_URL: &str = "' + lanConfig.publicBaseUrl + '"')) {
+    throw new Error("LAN transport and service configuration must match the fixed company origin");
+  }
   const updaterPublicKey = updaterConfig.pubkey;
   let decodedUpdaterPublicKey = "";
   try {

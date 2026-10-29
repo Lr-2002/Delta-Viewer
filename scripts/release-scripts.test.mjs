@@ -199,6 +199,11 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
     refreshIntervalSeconds: 300,
     retainedVersions: 2,
   });
+  await writeFile(path.join(testRoot, "update-service.lan.config.json"),
+    await readFile(path.join(root, "update-service.lan.config.json")));
+  await mkdir(path.join(testRoot, "src-tauri/src/updater"), { recursive: true });
+  await writeFile(path.join(testRoot, "src-tauri/src/updater/lan.rs"),
+    await readFile(path.join(root, "src-tauri/src/updater/lan.rs")));
   await writeFile(
     path.join(testRoot, "packaging/linux/com.dohc.viewer.metainfo.xml"),
     "<component><id>com.dohc.viewer</id></component>\n",

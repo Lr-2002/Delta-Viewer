@@ -1,5 +1,12 @@
 # Delta Viewer 开发指南
 
+### 2026-10-29 公司内网正式更新线路（1.4.7）
+
+用户明确要求审核电脑无需代理/GitHub下载，此授权覆盖旧“客户端仅GitHub HTTPS”限制。正式来源仍为同仓库GitHub Release；新增固定10.1.41.17:17879直连内网传输，自动优先内网，可手选内网或GitHub。LAN不走代理、不跟随跳转、不接受网络提供的任意地址，客户端仍核对正式stable版本、三平台固定官方资产身份、1–64MiB大小、SHA256、内嵌公钥Minisign及安装前审核落盘。不能将内网缓存版本声称为GitHub实时最新，检查失败清除旧操作，已验证准备好时保持选择。
+
+独立Linux systemd用户服务只缓存软件包在服务器本地盘，不用NAS、不接收业务身份；完整校验后原子启用，五分钟同步、保留两版，同步失败保持上一可用版。旧版须先从内网页面手动安装一次1.4.7，服务器仍需能获取GitHub发布资产；审核端无需访问外网。旧update-service.config.json仅历史兼容，新增update-service.lan.config.json，不关闭TLS/签名校验，不放开Tauri不安全更新开关。部署只启用新17879服务，不重启其他业务服务/上传，不碰源数据或待写队列。每次改动正常版本递增及完整三平台发布；发布后不代管理员主动推送更新弹窗。
+
+
 ### 2026-10-29 Windows 更新回归服务修复（1.4.6）
 
 1.4.5 已有精确 annotated tag，但两次CD均被Windows updater/network回环测试拦截，未公开Release。Winsock接受连接继承监听器非阻塞模式，原测试忽略read错误并提前消费脚本响应；仅修测试服务，显式阻塞、有界完整读取请求头，新增分片请求回归，生产更新/审核/模型行为与门禁不变。不重跑碰运气、不放宽校验、不改旧tag；正常递增1.4.6并同步摘要，完整三平台发布后在.119验证。1.4.5功能全部继承，原数据与队列保持。
@@ -801,7 +808,7 @@ GitHub Wiki，不直接在网页维护分叉版本。
 - Dialog capability 只开放目录选择和消息框；新增 capability 必须对应明确的用户操作。
 - 用户中心服务使用 Node 内置 `scrypt`（N=16384、r=8、p=1）和操作系统 CSPRNG 盐保存密码哈希；客户端不保存密码。服务端不引入账号网络同步以外的数据路径，Windows/macOS/Linux 客户端均只保存固定证书配置和进程内会话。
 - `tauri-plugin-opener 2.5.4` 为 MIT/Apache-2.0 双许可的官方跨平台实现。`v0.3.0` 全部变更使 macOS ARM debug 二进制增加 1,239,152 bytes（约 2.2%）；Windows release 体积必须在目标构建机另行记录。
-- `tauri-plugin-updater 2.10.1`（MIT/Apache-2.0）负责跨平台安装；本版 vendored 最小补丁为其清单读取添加 1 MiB 上限，来源和 archive checksum 见 `vendor/tauri-plugin-updater/DELTA_PATCH.md`，没有新增原生依赖；`reqwest 0.13.4`（MIT/Apache-2.0）用于 64 MiB 上限的 HTTP(S) 流式读取，`minisign-verify 0.2.5`（MIT）使用应用内嵌公钥验证更新包。不得退回 updater 插件无大小中止能力的默认 `Vec` 下载路径，也不得关闭签名校验。客户端只使用官方 GitHub HTTPS，签名仍是安装完整性的硬门禁。`semver 1`（MIT/Apache-2.0，原已在 Cargo.lock 中作为传递依赖）显式用于解析和比较正式版本，不引入新的原生库，三平台均支持。
+- `tauri-plugin-updater 2.10.1`（MIT/Apache-2.0）负责跨平台安装；本版 vendored 最小补丁为其清单读取添加 1 MiB 上限，来源和 archive checksum 见 `vendor/tauri-plugin-updater/DELTA_PATCH.md`，没有新增原生依赖；`reqwest 0.13.4`（MIT/Apache-2.0）用于 64 MiB 上限的 HTTP(S) 流式读取，`minisign-verify 0.2.5`（MIT）使用应用内嵌公钥验证更新包。不得退回 updater 插件无大小中止能力的默认 `Vec` 下载路径，也不得关闭签名校验。发布身份为官方 GitHub HTTPS，1.4.7 起允许固定公司内网传输同一签名包，签名仍是安装完整性的硬门禁。`semver 1`（MIT/Apache-2.0，原已在 Cargo.lock 中作为传递依赖）显式用于解析和比较正式版本，不引入新的原生库，三平台均支持。
 - `foxglove 0.26.0`（MIT）、`prost 0.14.4`（Apache-2.0）和 `bytes 1.12.1`（MIT）用于生成官方 Foxglove protobuf schema/消息；Foxglove 默认 features 保持关闭。`v0.9.0` macOS ARM debug 主程序相对 `v0.8.0` 增加 383,472 bytes（约 0.5%），Windows x64 MSVC all-target 条件编译已通过，目标机 release 体积仍需另行记录。
 
 ## 12. Git 与工作区纪律
