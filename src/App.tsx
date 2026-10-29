@@ -216,6 +216,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.5.0": "解除读取与检查前重复查询 NAS 容量、文件系统造成的等待；Windows 共享源直接识别网络介质，保留完整数据检查和写入目标容量保护。",
   "1.4.9": "包含 MP4 元数据读取与预览定位优化、具体加载阶段和 NAS 慢响应提示；加强原生发布测试目录隔离，保留审核写入与完整校验。",
   "1.4.8": "减少 MP4 元数据和预览目录的额外读取，加载中显示具体阶段与慢响应原因；任务中心超时明确指向共享目录读取，保留原统计与审核队列。",
   "1.4.7": "新增公司内网更新线路，自动优先从公司服务器下载同一份 GitHub 正式发布包，保留 GitHub 备用、完整校验及保存后安装；旧版可从内网页面安装一次升级。",

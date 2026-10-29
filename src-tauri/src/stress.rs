@@ -904,6 +904,7 @@ mod tests {
 
     fn volume(root: &str, filesystem: &str, available_bytes: u64) -> VolumeInfo {
         VolumeInfo {
+            capacity_known: true,
             root: root.into(),
             filesystem: Some(filesystem.into()),
             drive_type: "fixed".into(),

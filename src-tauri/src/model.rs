@@ -529,6 +529,8 @@ pub struct ScanResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VolumeInfo {
+    /// False for read-only remote source summaries: capacity was not queried.
+    pub capacity_known: bool,
     pub root: String,
     pub filesystem: Option<String>,
     pub drive_type: String,

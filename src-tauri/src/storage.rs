@@ -13,6 +13,61 @@ const MANIFEST_MIN_RESERVE: u64 = 1024 * 1024;
 const MANIFEST_BYTES_PER_FILE: u64 = 256;
 const EXPORT_MIN_RESERVE: u64 = 64 * 1024 * 1024;
 
+/// Reading a remote source does not require free-space or filesystem queries.
+/// Keep strict volume_info for write preflights and formal storage diagnostics.
+pub fn source_volume_info(path: &Path) -> AppResult<VolumeInfo> {
+    #[cfg(windows)]
+    let remote = remote_source_root(path);
+    #[cfg(not(windows))]
+    let remote = None;
+    source_volume_with(path, remote, volume_info)
+}
+
+fn source_volume_with(
+    path: &Path,
+    remote_root: Option<String>,
+    query: impl FnOnce(&Path) -> AppResult<VolumeInfo>,
+) -> AppResult<VolumeInfo> {
+    if let Some(root) = remote_root {
+        return Ok(VolumeInfo {
+            capacity_known: false,
+            root,
+            filesystem: None,
+            drive_type: "remote".into(),
+            total_bytes: 0,
+            available_bytes: 0,
+        });
+    }
+    query(path)
+}
+
+#[cfg(windows)]
+fn remote_source_root(path: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows_sys::Win32::System::WindowsProgramming::DRIVE_REMOTE;
+    let Component::Prefix(prefix) = path.components().next()? else {
+        return None;
+    };
+    match prefix.kind() {
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => Some(format!(
+            r"\\{}\{}\",
+            server.to_string_lossy(),
+            share.to_string_lossy()
+        )),
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+            let root = format!("{}:\\", char::from(letter));
+            let wide: Vec<u16> = std::ffi::OsStr::new(&root)
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            (unsafe { GetDriveTypeW(wide.as_ptr()) } == DRIVE_REMOTE).then_some(root)
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PartialMarker {
@@ -31,6 +86,7 @@ pub fn volume_info(path: &Path) -> AppResult<VolumeInfo> {
     let stats = fs2::statvfs(path)?;
     let (root, filesystem, drive_type) = platform_volume_details(path);
     Ok(VolumeInfo {
+        capacity_known: true,
         root,
         filesystem,
         drive_type,
@@ -844,6 +900,39 @@ fn platform_volume_details(path: &Path) -> (String, Option<String>, String) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn unc_sources_are_classified_without_contacting_server() {
+        for path in [
+            r"\\unreachable.invalid\data\batch\001",
+            r"\\?\UNC\unreachable.invalid\data\batch\001",
+        ] {
+            assert_eq!(
+                super::remote_source_root(std::path::Path::new(path)),
+                Some(r"\\unreachable.invalid\data\".into())
+            );
+        }
+    }
+    #[test]
+    fn remote_source_summary_never_queries_capacity_or_filesystem() {
+        let volume = super::source_volume_with(
+            std::path::Path::new("unreachable-source"),
+            Some(r"\\nas\datasets\".into()),
+            |_| panic!("source-only load must not wait on disk-capacity RPC"),
+        )
+        .unwrap();
+        assert!(!volume.capacity_known);
+        assert_eq!(volume.drive_type, "remote");
+        assert!(volume.filesystem.is_none());
+    }
+
+    #[test]
+    fn local_source_summary_keeps_volume_query_errors() {
+        let result = super::source_volume_with(std::path::Path::new("missing"), None, |_| {
+            Err(crate::error::AppError::MissingPath("missing".into()))
+        });
+        assert!(result.is_err());
+    }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::volume_info;
     use super::{
@@ -937,6 +1026,7 @@ mod tests {
     #[test]
     fn permits_mapped_network_volumes_as_sources() {
         let volume = VolumeInfo {
+            capacity_known: true,
             root: "Z:\\".into(),
             filesystem: Some("SMB".into()),
             drive_type: "remote".into(),

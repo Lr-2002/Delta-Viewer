@@ -394,6 +394,7 @@ export interface ScanResult {
 }
 
 export interface VolumeInfo {
+  capacityKnown?: boolean;
   root: string;
   filesystem: string | null;
   driveType: "removable" | "fixed" | "remote" | "optical" | "ramdisk" | "unknown";

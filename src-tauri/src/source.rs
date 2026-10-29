@@ -123,8 +123,7 @@ pub fn scan_source_catalog(
         )));
     }
 
-    let volume = storage::volume_info(root)?;
-    storage::ensure_source_volume(&volume)?;
+    let volume = storage::source_volume_info(root)?;
     let episode_roots = discover_episode_roots(root, cancelled)?;
     if episode_roots.is_empty() {
         return Err(AppError::NoEpisodes(root.display().to_string()));
@@ -227,8 +226,6 @@ pub fn load_episode_preview(
     if !root.is_dir() {
         return Err(AppError::MissingPath(root.display().to_string()));
     }
-    emit_read_stage(app, "读取数据卷信息", root);
-    storage::ensure_source_volume(&storage::volume_info(root)?)?;
     emit_read_stage(app, "识别采集记录格式", root);
     if is_segment_episode(root) {
         let index = scan_episode_index(root, app, cancelled)?;
@@ -308,7 +305,6 @@ pub fn load_episode_with_index(
         if !root.is_dir() {
             return Err(AppError::MissingPath(root.display().to_string()));
         }
-        storage::ensure_source_volume(&storage::volume_info(root)?)?;
         let states = segment
             .states
             .iter()
@@ -337,7 +333,6 @@ pub fn load_episode_with_summary(
     if !root.is_dir() {
         return Err(AppError::MissingPath(root.display().to_string()));
     }
-    storage::ensure_source_volume(&storage::volume_info(root)?)?;
     let states_path = root.join("states.jsonl");
     let states = read_states(&states_path, cancelled)?;
     let (skeleton, skeleton_error) =
@@ -1136,8 +1131,6 @@ pub fn scan_episode_index(
         return Err(AppError::MissingPath(root.display().to_string()));
     }
 
-    emit_read_stage(app, "读取数据卷信息", root);
-    storage::ensure_source_volume(&storage::volume_info(root)?)?;
     emit_read_stage(app, "读取采集清单与分段索引", root);
     let segment_folder = segment_folder_for_episode(root);
     let segment = match segment_folder.as_deref() {
@@ -1431,7 +1424,6 @@ pub fn collect_files(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathB
 }
 
 pub fn episode_fingerprint(root: &Path, cancelled: &AtomicBool) -> AppResult<String> {
-    storage::ensure_source_volume(&storage::volume_info(root)?)?;
     let files = if segment_bin::is_segment_folder(root) {
         collect_segment_indexed_files(root, cancelled)?
     } else {
