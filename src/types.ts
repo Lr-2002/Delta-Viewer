@@ -508,6 +508,7 @@ export interface AccountReview {
 }
 
 export interface MachineReview {
+  pendingEventId?: string;
   localDraft?: boolean;
   outputName?: string;
   pendingSourceWrite?: boolean;
@@ -688,3 +689,11 @@ export interface ClientVersions { generatedAtMs: number; users: AccountClientVer
 export interface ClientPoll { generatedAtMs: number; reminder: UpdateReminder | null; }
 
 export interface BatchRenameResult { sourcePath: string; destinationPath: string; warning: string }
+
+export interface SkeletonLibraryInfo {
+  root: string;
+  libraryId: string;
+  revision: string;
+  model: {id: string; label: string; release: string; experimental: boolean; inputResolution: {width: number; height: number}} | null;
+  relatives: string[];
+}

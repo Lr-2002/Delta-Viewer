@@ -64,6 +64,8 @@ pub struct ReviewState {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_event_id: Option<String>,
     pub local_draft: bool,
     #[serde(flatten)]
     pub review: ReviewState,
@@ -79,6 +81,7 @@ pub struct ReviewView {
 pub fn view_for_source(root: &Path, source: Option<&str>, review: ReviewState) -> ReviewView {
     if source == Some(machine_annotation::SKELETON_SOURCE) {
         return ReviewView {
+            pending_event_id: None,
             local_draft: false,
             review,
             output_name: machine_annotation::SKELETON_SOURCE.into(),
@@ -137,6 +140,7 @@ pub fn view_for_root(root: &Path, review: ReviewState) -> ReviewView {
         OUTPUT
     };
     ReviewView {
+        pending_event_id: None,
         local_draft: false,
         output_name: output_name.into(),
         review,
@@ -4004,6 +4008,194 @@ mod tests {
             0
         );
         assert!(auth.require_managed_user().is_err());
+    }
+
+    #[test]
+    fn explicit_reopen_keeps_conclusion_history_and_source_unchanged_then_allows_new_approval() {
+        use crate::source_review_queue as queue;
+        for decision in ["approved", "rejected"] {
+            let f = Fixture::new(0, true);
+            let user = action_user();
+            let original = shared_bytes(&f);
+            let state = load(&f.local, &f.root).unwrap();
+            let entry = action_entry(&f, &state, decision);
+            let id = entry.audit["eventId"].as_str().unwrap().to_owned();
+            queue::submit_action_with_probe(&f.local, "s", &user, entry, &|_| {
+                Err(failure("REVIEW_STORAGE_FULL: test"))
+            })
+            .unwrap();
+            let before = queue::list(&f.local, "s", &user.username).unwrap();
+            for (owner, event) in [("bob", id.as_str()), ("alice", "stale-event")] {
+                let mut wrong = user.clone();
+                wrong.username = owner.into();
+                assert!(queue::reopen_action(
+                    &f.local,
+                    "s",
+                    &wrong,
+                    f.root.to_str().unwrap(),
+                    Some(machine_annotation::DEFAULT_SOURCE),
+                    event
+                )
+                .is_err());
+            }
+            assert_eq!(
+                queue::list(&f.local, "s", &user.username).unwrap()[0].audit,
+                before[0].audit
+            );
+            let db = crate::review_outbox::open(&f.local).unwrap();
+            db.execute_batch("CREATE TRIGGER fail_reopen_receipt BEFORE INSERT ON pending BEGIN SELECT RAISE(ABORT,'isolated disk full'); END;").unwrap();
+            assert!(queue::reopen_action(
+                &f.local,
+                "s",
+                &user,
+                f.root.to_str().unwrap(),
+                Some(machine_annotation::DEFAULT_SOURCE),
+                &id
+            )
+            .is_err());
+            assert_eq!(
+                queue::list(&f.local, "s", &user.username).unwrap()[0].audit,
+                before[0].audit
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM source_review_history", [], |r| r
+                    .get::<_, u64>(0))
+                    .unwrap(),
+                0
+            );
+            assert_eq!(shared_bytes(&f), original);
+            db.execute_batch("DROP TRIGGER fail_reopen_receipt")
+                .unwrap();
+            drop(db);
+            let reopened = queue::reopen_action(
+                &f.local,
+                "s",
+                &user,
+                f.root.to_str().unwrap(),
+                Some(machine_annotation::DEFAULT_SOURCE),
+                &id,
+            )
+            .unwrap();
+            assert!(reopened.local_draft && !reopened.pending_source_write);
+            assert_eq!(reopened.review.status, "pending");
+            assert_eq!(
+                queue::status(&f.local, "s", &user.username, false)
+                    .unwrap()
+                    .pending,
+                0
+            );
+            assert_eq!(shared_bytes(&f), original);
+            let db = crate::review_outbox::open(&f.local).unwrap();
+            let history:String=db.query_row("SELECT payload FROM source_review_history WHERE service='s' AND username='alice' AND event_id=?",[&id],|r|r.get(0)).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&history).unwrap()["audit"],
+                before[0].audit
+            );
+            let published =
+                queue::publish_with_probe(&f.local, "s", &user, &AtomicBool::new(false), &|_| {
+                    panic!("reopened draft must never publish")
+                })
+                .unwrap();
+            assert_eq!(published.written, 0);
+            let mut edits = reopened.review.clone();
+            edits.segments[0].description = "重新审核后的文字".into();
+            let final_view = queue::submit_action_with_probe(
+                &f.local,
+                "s",
+                &user,
+                action_entry(&f, &edits, "approved"),
+                &|_| Ok(()),
+            )
+            .unwrap();
+            assert!(!final_view.pending_source_write);
+            assert_eq!(final_view.qc_status, "approved");
+            assert_eq!(
+                f.output()["episode_results"][0]["annotations"][0]["attributes_zh"]["动作描述"],
+                "重新审核后的文字"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_reopen_batch_rejection_restores_selected_source_and_rejects_ambiguous_conclusions()
+    {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        let user = action_user();
+        let original = shared_bytes(&f);
+        let state = load(&f.local, &f.root).unwrap();
+        let mut entry = action_entry(&f, &state, "rejected");
+        entry.only_pending = true;
+        entry.request.source_name = None;
+        entry.request.source_hash.clear();
+        entry.request.segments.clear();
+        let id = entry.audit["eventId"].as_str().unwrap().to_owned();
+        queue::store(&f.local, "s", &user.username, entry.clone()).unwrap();
+        let mut duplicate = action_entry(&f, &state, "approved");
+        duplicate.request.source_name = Some(machine_annotation::FLASH_SOURCE.into());
+        // Model a legacy conflicting queue; the regular store already prevents
+        // creating this ambiguity in current versions.
+        let db = crate::review_outbox::open(&f.local).unwrap();
+        db.execute(
+            "INSERT INTO source_reviews VALUES(?,?,?,?,?,?)",
+            rusqlite::params![
+                "s",
+                user.username,
+                duplicate.request.source_path,
+                duplicate.request.source_name,
+                serde_json::to_string(&duplicate).unwrap(),
+                duplicate.audit["eventId"].as_str().unwrap()
+            ],
+        )
+        .unwrap();
+        drop(db);
+        assert!(queue::reopen_action(
+            &f.local,
+            "s",
+            &user,
+            f.root.to_str().unwrap(),
+            Some(machine_annotation::DEFAULT_SOURCE),
+            &id
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("SOURCE_REVIEW_CONFLICT"));
+        assert_eq!(shared_bytes(&f), original);
+        let db = crate::review_outbox::open(&f.local).unwrap();
+        db.execute(
+            "DELETE FROM source_reviews WHERE source_name=?",
+            [machine_annotation::FLASH_SOURCE],
+        )
+        .unwrap();
+        drop(db);
+        let reopened = queue::reopen_action(
+            &f.local,
+            "s",
+            &user,
+            f.root.to_str().unwrap(),
+            Some(machine_annotation::DEFAULT_SOURCE),
+            &id,
+        )
+        .unwrap();
+        assert!(reopened.local_draft && !reopened.pending_source_write);
+        assert_eq!(reopened.review.status, "pending");
+        assert_eq!(
+            serde_json::to_value(&reopened.review.segments).unwrap(),
+            serde_json::to_value(&state.segments).unwrap()
+        );
+        let stored = queue::get(
+            &f.local,
+            "s",
+            &user.username,
+            f.root.to_str().unwrap(),
+            Some(machine_annotation::DEFAULT_SOURCE),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!stored.only_pending);
+        assert_eq!(stored.request.source_hash, state.source_hash);
+        assert_ne!(stored.audit["eventId"], entry.audit["eventId"]);
+        assert_eq!(shared_bytes(&f), original);
     }
 
     #[test]

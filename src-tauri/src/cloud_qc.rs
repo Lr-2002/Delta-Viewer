@@ -1098,6 +1098,7 @@ mod tests {
         new_payload["description"]["_human_review"]["reviewedAt"] = json!("2026-10-27T00:00:00Z");
         assert!(published_changed(&binding, &new_payload).unwrap());
         let mut view=crate::machine_review::ReviewView {
+            pending_event_id: None,
             local_draft:false,review:serde_json::from_value(json!({"sourceHash":"","revision":0,"segments":[],"published":true,"outputHash":null,"updatedAtMs":0,"reviewer":"fixture"})).unwrap(),
             output_name:"description.json".into(),qc_status:"approved".into(),qc_rejection_reason:String::new(),qc_status_error:String::new(),pending_source_write:false,source_write_error:String::new(),qc_content_hash:None,
         };

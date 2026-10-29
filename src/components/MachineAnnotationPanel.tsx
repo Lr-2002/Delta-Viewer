@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
-import { deferMachineReview, isTauriRuntime, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
+import { reopenMachineReview, deferMachineReview, isTauriRuntime, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
 import { createDeferredReviewEvent, enqueueCommittedReviewEvent, reviewReceiptValue, persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { createReviewBoundaryEditor, addReviewSegment, recoverReviewSegments, reviewVideoIntersection, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ProofreadPlayer } from "./ProofreadPlayer";
@@ -96,6 +96,9 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
   const [timelineAdapted, setTimelineAdapted] = useState(false);
   const [rangeRepairOpen, setRangeRepairOpen] = useState(false);
   const [rangeRepairConfirmed, setRangeRepairConfirmed] = useState(false);
+  const [reopenConfirm, setReopenConfirm] = useState(false);
+  const [reopening, setReopening] = useState(false);
+  const [reopenError, setReopenError] = useState("");
   const [labelLibraryOpen, setLabelLibraryOpen] = useState(false);
   const [labelLibrary, setLabelLibrary] = useState<LabelLibraryItem[]>([]);
   const [labelLibraryError, setLabelLibraryError] = useState("");
@@ -129,7 +132,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
   const completionAwaitingAudit = useRef<"approved" | "rejected" | null>(null);
   const labelLibraryStorageKey = skeletonMode ? `${labelLibraryKey(username)}:skeleton` : labelLibraryKey(username);
   const unsaved = saving || Boolean(saveError) || finishing || Boolean(auditCompletionError);
-  const blocksNavigation = saving || finishing || Boolean(recoveryError) || Boolean(auditCompletionError);
+  const blocksNavigation = reopening || saving || finishing || Boolean(recoveryError) || Boolean(auditCompletionError);
   useEffect(() => {
     setLabelLibraryOpen(false);
     setLabelLibraryError("");
@@ -212,6 +215,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
               enqueueCommittedReviewEvent(deferredAudit);
             }
             stateRef.current = saved;
+            if (mounted.current && !skeletonMode) setExistingConclusion(Boolean(saved.pendingSourceWrite && ["approved", "rejected"].includes(saved.status ?? "")));
             if (mounted.current) { setReview(saved); if (!skeletonMode) onReviewSaved?.(saved); }
             if (!pending.current) {
               try {
@@ -441,6 +445,17 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
     next.splice(to, 0, moved);
     if (saveLabelLibrary(next)) recordReviewInteraction("control", { target: "label_library_order", labelId: moved.id, value: moved.text, before: String(from + 1), after: String(to + 1) }, root);
   }
+  async function reopenConclusion() {
+    if (!review?.pendingEventId || reopening || busy) return;
+    setReopening(true);setReopenError("");
+    try {
+      const reopened=await reopenMachineReview(root,loadedSource.current,review.pendingEventId);
+      stateRef.current=reopened;setReview(reopened);setEdits(reopened.segments);editsRef.current=reopened.segments;
+      boundaryEditor.current.reset();setExistingConclusion(false);setRecoveryMessages([]);setReopenConfirm(false);
+      recordReviewInteraction("control",{value:"将本机待写结论转为待复审草稿，历史保留"},root);
+    }catch(reason){setReopenError(String(reason));}
+    finally{setReopening(false);}
+  }
   function boundary(kind: "startFrame" | "endFrame", value: number) {
     if (!active || !result || !canEdit || finishLock.current) return;
     const updated = boundaryEditor.current.commit(editsRef.current, active.sourceIndex, kind, value, editFrameCount);
@@ -580,6 +595,27 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
     } finally { setFinishing(false); }
   }
 
+  async function retrySave() {
+    if (finishLock.current || running.current || reopening) return;
+    const next = pending.current ?? { segments: editsRef.current, status: "pending" as const };
+    finishLock.current = true;
+    setFinishing(true);
+    try {
+      if (!skeletonMode && (next.status === "approved" || next.status === "rejected")) {
+        requireReviewAuditSession(root);
+        await persistPendingReviewAudit();
+      }
+      if (await persist(next)) {
+        if (!skeletonMode && (next.status === "approved" || next.status === "rejected")) {
+          completionAwaitingAudit.current = next.status;
+          await finishAuditCompletion();
+        }
+      }
+    } catch (reason) {
+      setAuditPreparationError(`尚未重试保存审核结论：${String(reason)}。恢复后请重试。`);
+    } finally { finishLock.current = false; setFinishing(false); }
+  }
+
   function openRejection() {
     playback?.onPause(); setPlaying(false);
     const previous = review?.rejectionReason ?? "";
@@ -617,6 +653,13 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
         <button className="icon-button" title="查看原始 JSON" aria-label="查看 JSON" disabled={!result} onClick={() => setShowJson(true)}><Code size={15} /></button>
         <button className="icon-button" title={skeletonMode ? "重新读取骨架描述" : "重新读取机标"} aria-label={skeletonMode ? "重新读取骨架描述" : "重新读取机标"} disabled={loading || blocksNavigation || busy} onClick={() => setReload(reload + 1)}><RefreshCw size={15} /></button>
       </header>
+      {existingConclusion && <div className="machine-boundary-warning" role="region" aria-label="审核结论待写回">
+        <strong>本机已有{review?.status === "approved" ? "通过" : "不通过"}结论，尚未写回数据目录</strong>
+        <p>为防止覆盖已提交结论，片段暂时只读。可确认重新编辑，原结论及操作记录保留，新修改作为待复审草稿，重新点击通过后才发布片段。</p>
+        <button type="button" className="button button-secondary" disabled={busy || reopening || !review?.pendingEventId} onClick={()=>setReopenConfirm(true)}>重新编辑片段</button>
+        {!review?.pendingEventId && <p>请重新读取当前数据以取得原结论编号，之后可重新编辑。</p>}
+      </div>}
+      {reopenError && <p role="alert" className="machine-message">{reopenError}</p>}
       {loading && <p role="status" className="machine-message"><LoaderCircle size={15} />{skeletonMode ? "正在读取骨架描述" : "正在读取机标"}</p>}
       {error && <p role="alert" className="machine-message">{error}</p>}
       {mapping?.error && <div role="alert" className="machine-message"><p>{mapping.error}</p>
@@ -695,7 +738,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
         {auditPreparationError && <p role="alert" className="machine-message">{auditPreparationError}</p>}
         {auditCompletionError && <div role="alert" className="machine-message audit-completion-error"><span>{auditCompletionError}</span><button type="button" className="button button-secondary" disabled={finishing} onClick={() => void finishAuditCompletion()}>重试保存操作记录</button></div>}
         {saveSlow && saving && <div role="status" className="machine-message">保存耗时较长，正在等待本机保存或审核结论写入确认，尚未确认提交成功。{!recoveryError && "本机应急草稿已保留。"}请保持应用打开，等待结果后再重试；用户中心的操作记录上传独立进行。</div>}
-        {saveError && <div role="alert" className="machine-message review-save-error"><span>{saveError}{!recoveryError && " 本机应急草稿已保留，恢复后请重试保存。"}</span><button type="button" className="button button-secondary" aria-label="重试保存复核" onClick={() => void persist(pending.current ?? { segments: editsRef.current, status: "pending" })}><RefreshCw size={15} />重试保存</button></div>}
+        {saveError && <div role="alert" className="machine-message review-save-error"><span>{saveError}{!recoveryError && " 本机应急草稿已保留，恢复后请重试保存。"}</span><button type="button" className="button button-secondary" aria-label="重试保存复核" disabled={saving || finishing || reopening} onClick={() => void retrySave()}><RefreshCw size={15} />重试保存</button></div>}
         <div className="quality-output" title={`${root}/${outputName}`}>{outputName}{!skeletonMode && <span>{review?.pendingSourceWrite && review.status === "approved" ? "本机通过 · 待写回" : review?.pendingSourceWrite && review.status === "rejected" ? "本机不通过 · 待写回" : review?.qcStatus === "approved" ? "已通过" : review?.qcStatus === "rejected" ? "未通过" : review?.qcStatus === "pending" ? "待审核" : "审核状态未知"}</span>}</div>
         {!skeletonMode && review?.qcStatusError && <p role="alert" className="machine-message">当前目录审核状态读取失败，请重新读取：{review.qcStatusError}</p>}
         {!skeletonMode && ((review?.pendingSourceWrite && review.status === "rejected" && review.rejectionReason) || (review?.qcStatus === "rejected" && review.qcRejectionReason)) && <p className="review-rejection-reason">{review?.pendingSourceWrite ? "本机不通过（待写回）" : "不通过"}：{review?.pendingSourceWrite ? review.rejectionReason : review?.qcRejectionReason}</p>}
@@ -705,6 +748,11 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
         </div>}
       </footer>
     </section>
+    {reopenConfirm && <dialog className="text-quality-dialog" aria-label="重新编辑审核结论" ref={node=>{if(node&&!node.open)node.showModal();}} onCancel={event=>{if(reopening)event.preventDefault();else setReopenConfirm(false);}}>
+      <h2>重新编辑片段</h2><p>当前本机待写结论会转为待复审草稿，停止补传原结论；原结论和记录保留在本机历史中。已在 NAS 的结果不会被此操作改写。修改完成后请重新审核。</p>
+      {reopenError&&<p role="alert">{reopenError}</p>}
+      <footer><button className="button button-secondary" autoFocus disabled={reopening} onClick={()=>setReopenConfirm(false)}>取消</button><button className="button button-primary" disabled={reopening} onClick={()=>void reopenConclusion()}>{reopening?"保存中…":"确认重新编辑"}</button></footer>
+    </dialog>}
     {textCheckOpen && <dialog className="text-quality-dialog" aria-label="通过前文字检查" ref={node=>{if(node&&!node.open)node.showModal();}} onCancel={()=>setTextCheckOpen(false)}><h2>通过前文字检查</h2><p>{allTextIssues.length} 个疑似问题</p><ul className="text-check-summary">{allTextIssues.map((issue,i)=><li key={i}><button className="review-user-link" onClick={()=>{setTextCheckOpen(false);setSelected(issue.row.sourceIndex);seek(issue.row.startFrame);}}>片段 {rows.indexOf(issue.row)+1}：{issue.row.description}</button><p>{issue.original} → {issue.suggestion}（{issue.reason}）</p></li>)}</ul><footer><button className="button button-secondary" autoFocus onClick={()=>setTextCheckOpen(false)}>返回检查</button><button className="button button-primary" disabled={finishing} onClick={()=>{recordReviewInteraction("control",{value:`已核对 ${allTextIssues.length} 项文字提示并继续通过`},root);setTextCheckOpen(false);void finish("approved",undefined,true);}}><Check size={16}/>已核对，继续通过</button></footer></dialog>}
     {rangeRepairOpen && rangeRepair && <dialog className="rejection-dialog video-range-dialog" aria-label="处理机标越界范围" ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setRangeRepairOpen(false)}>
       <header><h2>处理机标越界范围</h2></header>

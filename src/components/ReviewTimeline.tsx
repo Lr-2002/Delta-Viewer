@@ -3,8 +3,10 @@ import type { ReviewSegment } from "../types";
 import { adjustReviewBoundary } from "../lib/machine-annotation";
 
 const COLORS = ["#087e79", "#5489a3", "#b3914b", "#797895", "#628969"];
-function segmentColor(position: number): string {
-  return COLORS[position % COLORS.length];
+function segmentColor(sourceIndex: number): string {
+  // Identity survives clipping, temporary coverage and reordering. Never use
+  // the visible row position: removing a covered row recolored every successor.
+  return COLORS[sourceIndex] ?? `hsl(${(sourceIndex * 137.508) % 360} 38% 42%)`;
 }
 interface Props {
   frame: number; frameCount: number; start: number; end: number; editable: boolean;
@@ -53,17 +55,17 @@ export function ReviewTimeline({ frame, frameCount, start, end, editable, segmen
   const shownEnd = activePreview?.endFrame ?? end;
   return <div className="review-timeline">
     <div className="review-track" ref={track} aria-label="动作分段条">
-      {shown.filter(segment => !segment.deleted).map((segment, index) => <button type="button" className="review-span" key={segment.sourceIndex}
+      {shown.filter(segment => !segment.deleted).map((segment, index) => <button type="button" className="review-span" key={segment.sourceIndex} data-source-index={segment.sourceIndex}
         title={`${segment.description || "暂无中文描述"} [${segment.startFrame}, ${segment.endFrame + 1})`}
         aria-label={`选择机标片段 ${index + 1}`} aria-pressed={segment.sourceIndex === selected}
-        onClick={() => onChoose(segment.sourceIndex)} style={{ left: `${segment.startFrame / frameCount * 100}%`, width: `${(segment.endFrame + 1 - segment.startFrame) / frameCount * 100}%`, background: segmentColor(index) }} />)}
+        onClick={() => onChoose(segment.sourceIndex)} style={{ left: `${segment.startFrame / frameCount * 100}%`, width: `${(segment.endFrame + 1 - segment.startFrame) / frameCount * 100}%`, background: segmentColor(segment.sourceIndex) }} />)}
       <input type="range" className={`review-playhead-input${selectedControl === "playhead" ? " selected-control" : ""}`} min={0} max={frameCount - 1} value={frame} step={1} aria-label="校对播放帧" onFocus={() => selectControl("playhead")} onPointerDown={() => selectControl("playhead")} onChange={(event) => onSeek(event.currentTarget.valueAsNumber)} />
       <i className="review-playhead" style={{ left: `${frame / frameCount * 100}%` }} />
-      {editable && (["startFrame", "endFrame"] as const).map((kind) => {
+      {(["startFrame", "endFrame"] as const).map((kind) => {
         const isStart = kind === "startFrame";
         const value = isStart ? shownStart : shownEnd + 1;
         return <button key={kind} type="button" role="slider" className={`review-edge ${isStart ? "start" : "end"}${selectedControl === kind ? " selected-control" : ""}`}
-          aria-label={isStart ? "微调起始帧" : "微调结束帧"} title={isStart ? "拖动起始帧" : "拖动结束帧"}
+          disabled={!editable} aria-label={isStart ? "微调起始帧" : "微调结束帧"} title={!editable ? "当前片段只读，请先处理上方提示" : isStart ? "拖动起始帧" : "拖动结束帧"}
           aria-valuemin={isStart ? 0 : start + 1} aria-valuemax={isStart ? end : frameCount} aria-valuenow={value}
           style={{ left: `${value / frameCount * 100}%` }}
           onFocus={() => selectControl(kind)} onClick={() => selectControl(kind)}

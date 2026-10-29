@@ -93,6 +93,30 @@ fn load_skeleton_archive(
     states: &[StateRecord],
     cancelled: &AtomicBool,
 ) -> AppResult<SkeletonSeries> {
+    load_archive(
+        path,
+        path.parent().unwrap_or(Path::new(".")),
+        states,
+        cancelled,
+        false,
+    )
+}
+
+pub(crate) fn load_model_archive(
+    path: &Path,
+    episode: &Path,
+    cancelled: &AtomicBool,
+) -> AppResult<SkeletonSeries> {
+    load_archive(path, episode, &[], cancelled, true)
+}
+
+fn load_archive(
+    path: &Path,
+    episode: &Path,
+    states: &[StateRecord],
+    cancelled: &AtomicBool,
+    model: bool,
+) -> AppResult<SkeletonSeries> {
     check_cancelled(cancelled)?;
     let metadata = fs::metadata(path)?;
     if metadata.len() > MAX_ARCHIVE_BYTES {
@@ -109,7 +133,11 @@ fn load_skeleton_archive(
         .names()
         .map_err(|error| AppError::Message(format!("无法列出 NPZ 字段: {error}")))?;
     let mut joints = None;
-    for name in joint_array_candidates(&names) {
+    for name in if model {
+        vec!["smpl_joints".into()]
+    } else {
+        joint_array_candidates(&names)
+    } {
         check_cancelled(cancelled)?;
         if let Some(value) = read_joint_frames(&mut archive, &name, cancelled)? {
             joints = Some((name, value));
@@ -124,26 +152,43 @@ fn load_skeleton_archive(
     };
     let frame_count = joints.len();
     let joint_count = joints.first().map_or(0, Vec::len);
-    if frame_count == 0 || joint_count < 2 {
+    if frame_count == 0 || joint_count < 2 || (model && joint_count != 24) {
         return Err(AppError::Message("骨架数组为空".into()));
     }
 
-    let (frame_ids, uses_timeline_frame_ids) =
-        match read_frame_ids(&mut archive, &names, &joint_source, frame_count) {
-            Some(frame_ids) => (frame_ids, true),
-            None => (fallback_frame_ids(states, frame_count), false),
-        };
-    let camera_indices = matches!(joint_source.as_str(), "raw_smpl_joints" | "smpl_joints")
-        && names
+    let ids = if model {
+        let ids = read_integer_array(&mut archive, "frame_ids")
+            .filter(|v| v.len() == frame_count && v.windows(2).all(|p| p[0] < p[1]));
+        if let Some(specific) = names
             .iter()
-            .any(|name| name == &format!("{joint_source}_frame_ids"));
+            .find(|n| *n == &format!("{joint_source}_frame_ids"))
+        {
+            if read_integer_array(&mut archive, specific) != ids {
+                return Err(AppError::Message(
+                    "新骨架专属索引与 frame_ids 不一致".into(),
+                ));
+            }
+        }
+        ids
+    } else {
+        read_frame_ids(&mut archive, &names, &joint_source, frame_count)
+    };
+    let (frame_ids, uses_timeline_frame_ids) = match ids {
+        Some(frame_ids) => (frame_ids, true),
+        None => (fallback_frame_ids(states, frame_count), false),
+    };
+    let camera_indices = model
+        || (matches!(joint_source.as_str(), "raw_smpl_joints" | "smpl_joints")
+            && names
+                .iter()
+                .any(|name| name == &format!("{joint_source}_frame_ids")));
     if camera_indices && !uses_timeline_frame_ids {
         return Err(AppError::Message(
             "骨架专属帧索引无效，不能猜测相机时间对应关系".into(),
         ));
     }
     let positions = if camera_indices {
-        crate::source::skeleton_cam0_positions(path.parent().unwrap_or(Path::new(".")), &frame_ids)?
+        crate::source::skeleton_cam0_positions(episode, &frame_ids)?
     } else {
         None
     };

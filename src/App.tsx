@@ -51,6 +51,9 @@ import { PreviewSettings } from "./components/PreviewSettings";
 import { ProgressStrip } from "./components/ProgressStrip";
 import { TaskCenter } from "./components/TaskCenter";
 import { SkeletonViewer } from "./components/SkeletonViewer";
+import { SkeletonModelPicker } from "./components/SkeletonModelPicker";
+import { modelEpisodeCandidate } from "./lib/skeleton-library";
+import type { SkeletonLibraryInfo, SkeletonSeries } from "./types";
 import { ClientPresence } from "./components/ClientPresence";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
 import { beginReviewAudit, getReviewSyncStatus, configureReviewAudit, endReviewAudit, observeReviewInteractions, pauseAndPersistReviewAudit, recordReviewInteraction, recordReviewSeek, retryReviewAudit, updateReviewFrame } from "./lib/review-audit";
@@ -90,6 +93,7 @@ import {
   recordAnnotationAudit,
   onTaskProgress,
   revealOutput,
+  reviewIdentityPath,
   scanSource,
   setAssignedSourceRoot,
   selectWorkspaceMode,
@@ -212,6 +216,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.4.5": "新增独立骨架模型库、原有与 1080p 实验模型选择及逐条提示；片段覆盖与恢复保持颜色身份；待写回结论支持保留历史后重新编辑为待复审草稿。",
   "1.4.4": "恢复 1.4.2 的稳定骨架读取优先级，优先使用已有处理/滤波结果，原始估计仅兼容回退；保留相机时间对齐、离线模式及审核保护。",
   "1.4.3": "新增无需账号与网络的离线模式；骨架优先读取同帧原始估计并对齐主相机采集时间，优化多路播放追帧；修复批量本机待写结论漏读、重复提交误报及冲突提示。",
   "1.4.2": "交付批次文件夹实际更名与三维骨架固定地面参照；补齐更新前审核落盘回归的路径接口测试适配，保留审核保护。",
@@ -407,7 +412,13 @@ function App() {
   const [playing, setPlaying] = useState(false);
   const [operationBusy, setBusy] = useState(false);
   const [sourcePublishing, setSourcePublishing] = useState(false);
-  const busy = operationBusy || Boolean(batchRejection) || sourcePublishing;
+  const [modelBusy, setModelBusy] = useState(false);
+  const [onlyModelEpisodes, setOnlyModelEpisodes] = useState(false);
+  const [modelLibrary, setModelLibrary] = useState<SkeletonLibraryInfo | null>(null);
+  const [modelParentAliases, setModelParentAliases] = useState<{scan: ScanResult | null; paths: Record<string, string>}>({scan:null, paths:{}});
+  const [modelSelection, setModelSelection] = useState<{root: string; series: SkeletonSeries} | null>(null);
+  const selectedSkeleton = modelSelection?.root === data?.summary.root ? modelSelection?.series : null;
+  const busy = operationBusy || Boolean(batchRejection) || sourcePublishing || modelBusy;
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -1827,6 +1838,19 @@ function App() {
     () => scan?.episodes.filter((episode) => (!skippedEpisodeRoots[episode.root] || Boolean(reviewedEpisodes[episode.root]))) ?? [],
     [scan?.episodes, skippedEpisodeRoots, reviewedEpisodes],
   );
+  useEffect(() => {
+    let active = true;
+    if (!scan || !modelLibrary) return;
+    const parents = [...new Set(scan.episodes.map(episode => episode.root.replaceAll('\\', '/').replace(/\/[^/]+$/, '')))];
+    void Promise.all(parents.map(async parent => {
+      try { return [parent, await reviewIdentityPath(parent)] as const; }
+      catch { return [parent, parent] as const; }
+    })).then(rows => { if (active) setModelParentAliases({scan, paths:Object.fromEntries(rows)}); });
+    return () => { active = false; };
+  }, [scan, modelLibrary, authStatus?.currentUser?.username]);
+  const modelAliases = modelParentAliases.scan === scan ? modelParentAliases.paths : {};
+  const displayedEpisodes = useMemo(() => visibleEpisodes.filter(episode => !onlyModelEpisodes || modelEpisodeCandidate(episode.root, modelLibrary, modelAliases)), [visibleEpisodes, onlyModelEpisodes, modelLibrary, modelAliases]);
+  function changeModelFilter(value: boolean) { setOnlyModelEpisodes(value); setBatchRejectionSelection({}); }
   function toggleRejection(episode: EpisodeSummary, checked: boolean) {
     setBatchRejectionSelection(previous => {
       const next = { ...previous };
@@ -1845,7 +1869,7 @@ function App() {
       setNotice("请先完成当前操作并保存审核修改，再执行批量不通过。");
       return;
     }
-    const selected = scan.episodes.filter(episode => batchRejectionSelection[episode.root])
+    const selected = displayedEpisodes.filter(episode => batchRejectionSelection[episode.root])
       .map(episode => ({ path: episode.root, name: episode.name }));
     if (!folder && !selected.length) return;
     if (!folder && selected.length > 20000) {
@@ -2201,20 +2225,22 @@ function App() {
               <button type="button" className="button button-secondary" disabled={busy || !Object.keys(batchRejectionSelection).length} onClick={() => startBatchRejection()}><X size={14} />批量不通过</button>
               <button type="button" className="button button-secondary" disabled={busy} onClick={() => startBatchRejection(scan.sourceRoot)}><FolderOpen size={14} />整文件夹不通过</button>
             </div>
-            <label><input type="checkbox" aria-label="全选当前目录列表" disabled={busy || !visibleEpisodes.length} checked={visibleEpisodes.length > 0 && visibleEpisodes.every(episode => Boolean(batchRejectionSelection[episode.root]))} onChange={event => setBatchRejectionSelection(event.target.checked ? Object.fromEntries(visibleEpisodes.map(episode => [episode.root, { path: episode.root, name: episode.name }])) : {})} />全选<span>已选 {Object.keys(batchRejectionSelection).length} 条</span></label>
+            <label><input type="checkbox" aria-label="全选当前目录列表" disabled={busy || !displayedEpisodes.length} checked={displayedEpisodes.length > 0 && displayedEpisodes.every(episode => Boolean(batchRejectionSelection[episode.root]))} onChange={event => setBatchRejectionSelection(event.target.checked ? Object.fromEntries(displayedEpisodes.map(episode => [episode.root, { path: episode.root, name: episode.name }])) : {})} />全选<span>已选 {Object.keys(batchRejectionSelection).length} 条</span></label>
           </div>}
           {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
+          {modelLibrary?.relatives.length ? <label className="episode-model-filter"><input type="checkbox" checked={onlyModelEpisodes} disabled={busy} onChange={event=>changeModelFilter(event.target.checked)} />仅看有新模型</label> : null}
           <div className="episode-list">
-            {visibleEpisodes.length ? (
-              visibleEpisodes.map((episode) => <EpisodeListRow
+            {displayedEpisodes.length ? (
+              displayedEpisodes.map((episode) => <EpisodeListRow
                 key={episode.root} episode={episode} selected={selectedEpisode?.root === episode.root}
                 sourceState={episodeSourceStates[episode.root] ?? "available"}
                 savedAnnotation={annotationTags[episode.root]} reviewStatus={reviewedEpisodes[episode.root]} pendingReviewStatus={pendingReviewEpisodes[episode.root]} busy={busy}
                 rejectionSelectable={currentUser?.role === "operator"}
                 rejectionSelected={Boolean(batchRejectionSelection[episode.root])}
+                modelAvailable={modelEpisodeCandidate(episode.root, modelLibrary, modelAliases)}
                 actions={episodeActions} buttonRefs={episodeButtonRefs}
               />)
-            ) : skippedEpisodeCount ? (
+            ) : onlyModelEpisodes ? (<div className="sidebar-empty"><span>当前列表没有新模型条目</span><button className="text-button" type="button" onClick={()=>changeModelFilter(false)}>显示全部</button></div>) : skippedEpisodeCount ? (
               <div className="sidebar-empty sidebar-skipped">
                 <EyeOff size={23} />
                 <span>已跳过 {skippedEpisodeCount} 条数据</span>
@@ -2227,6 +2253,8 @@ function App() {
               </div>
             )}
           </div>
+          <SkeletonModelPicker root={data?.summary.root} disabled={operationBusy || sourcePublishing || reviewHasUnsaved || Boolean(batchRejection) || showManagement}
+            onLibrary={info => { setModelLibrary(info); setBatchRejectionSelection({}); }} onModel={series => setModelSelection(series && data ? {root:data.summary.root,series}:null)} onBusy={setModelBusy} />
           <div className="sidebar-footer">
             <div><span>文件</span><strong>{selectedEpisode?.indexed ? selectedEpisode.totalFiles : "—"}</strong></div>
             <div><span>容量</span><strong>{selectedEpisode?.indexed ? formatBytes(selectedEpisode.totalBytes) : "—"}</strong></div>
@@ -2294,7 +2322,7 @@ function App() {
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
                       <PreviewSettings />
                     </div>
-                    <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
+                    <div className={`replay-visual-row${selectedSkeleton || data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
                       <div className="camera-grid camera-grid-expanded">
                         {cameraSlots.map((name, index) => {
                           const stream = availableStreams.find((stream) => stream.name === name);
@@ -2341,9 +2369,9 @@ function App() {
                         );})}
                       </div>
                       <div className="skeleton-side-panel">
-                        {data.skeleton ? (
+                        {selectedSkeleton || data.skeleton ? (
                           <SkeletonViewer
-                            skeleton={data.skeleton}
+                            skeleton={(selectedSkeleton ?? data.skeleton)!}
                             frameId={currentFrame}
                             timelineStartFrame={primaryStream?.firstFrame ?? minFrame}
                             timelineEndFrame={primaryStream?.lastFrame ?? maxFrame}
@@ -2352,7 +2380,7 @@ function App() {
                             onFramePresenterChange={handleSkeletonFramePresenterChange}
                           />
                         ) : null}
-                        {!data.skeleton && data.skeletonError ? (
+                        {!selectedSkeleton && !data.skeleton && data.skeletonError ? (
                           <section className="skeleton-load-error" aria-label="骨架数据">
                             <strong>骨架数据不可用</strong>
                             <span>{data.skeletonError}</span>
@@ -2530,7 +2558,7 @@ function EmptyWorkspace({
 // Keep the NAS catalog out of the per-frame video render work. Action refs
 // retain current application state without invalidating every row on a tick.
 const EpisodeListRow = memo(function EpisodeListRow({
-  episode, selected, sourceState, savedAnnotation, reviewStatus, pendingReviewStatus, busy, actions, buttonRefs, rejectionSelectable, rejectionSelected,
+  episode, selected, sourceState, savedAnnotation, reviewStatus, pendingReviewStatus, busy, actions, buttonRefs, rejectionSelectable, rejectionSelected, modelAvailable,
 }: {
   episode: EpisodeSummary;
   selected: boolean;
@@ -2541,6 +2569,7 @@ const EpisodeListRow = memo(function EpisodeListRow({
   busy: boolean;
   rejectionSelectable: boolean;
   rejectionSelected: boolean;
+  modelAvailable?: boolean;
   actions: RefObject<{
     select: (episode: EpisodeSummary) => void;
     load: (episode: EpisodeSummary, imported: boolean, focus: boolean) => Promise<void>;
@@ -2584,6 +2613,7 @@ const EpisodeListRow = memo(function EpisodeListRow({
       <span className="episode-item-meta">{episode.indexed
         ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
         : episode.stateCount ? `${episode.stateCount} states · 快速预览` : "待读取"}</span>
+      {modelAvailable && <span className="episode-model-hint" title="该完整相对路径列有新模型，选择时还需核对 session 和文件校验值">新骨架可选 · 1080p 实验</span>}
       <span className="stream-dots">{episode.streams.map((stream) => <i
         className={episode.indexed ? stream.frameCount ? "dot-ok" : "dot-error" : stream.frameCount ? "dot-ok" : ""}
         key={stream.name} title={stream.label} />)}</span>

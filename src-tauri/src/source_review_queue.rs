@@ -475,6 +475,7 @@ pub fn local_view(
     base: Option<ReviewView>,
 ) -> ReviewView {
     let mut view = base.unwrap_or_else(|| ReviewView {
+        pending_event_id: None,
         local_draft: false,
         review: ReviewState {
             reviewer_username: user.username.clone(),
@@ -530,6 +531,7 @@ pub fn local_view(
         .status
         .clone()
         .unwrap_or_else(|| "pending".into());
+    view.pending_event_id = entry.audit["eventId"].as_str().map(str::to_owned);
     view.review.rejection_reason = entry.request.rejection_reason.clone().unwrap_or_default();
     view.review.reviewer = user.display_name.clone();
     view.review.reviewer_username = user.username.clone();
@@ -547,6 +549,97 @@ pub fn local_view(
     view.source_write_error = entry.error.clone();
     view
 }
+/// Explicitly supersede one queued conclusion with a new local draft. Both the
+/// original payload and original audit event remain immutable evidence. Nothing
+/// is written to NAS, and a draft is never a publishable conclusion.
+pub fn reopen_action(
+    root: &Path,
+    service: &str,
+    user: &UserIdentity,
+    path: &str,
+    source: Option<&str>,
+    expected_event_id: &str,
+) -> AppResult<ReviewView> {
+    if source == Some(crate::machine_annotation::SKELETON_SOURCE) {
+        return Err(failure("骨架描述没有审核结论"));
+    }
+    let _lock = owner_lock(root, service, &user.username)?;
+    let previous = pending_batch_rejection(root, service, &user.username, path)?
+        .or(get(root, service, &user.username, path, source)?)
+        .ok_or_else(|| failure("待写结论已改变，请重新读取"))?;
+    if previous.audit["eventId"].as_str() != Some(expected_event_id) || previous.is_action_draft() {
+        return Err(failure("待写结论已改变，本次未撤回，请重新读取"));
+    }
+    // A second pending source would be ambiguous; preserve both for resolution.
+    let aliases = path_aliases(root, path)?;
+    let db = open(root)?;
+    let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
+    let count:i64=db.query_row(&format!("SELECT count(*) FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND source_name!='skeleton.description.json' AND {PUBLISHABLE}"),params![service,user.username,serde_json::to_string(&aliases)?],|r|r.get(0)).map_err(failure)?;
+    if count != 1 {
+        return Err(failure("本机存在多份结论，请先核对冲突"));
+    }
+    let base = machine_review::load_selected(root, Path::new(path), source)?;
+    let mut draft = previous.clone();
+    if previous.only_pending {
+        draft.request.source_path = path.into();
+        draft.request.source_name = source.map(str::to_owned);
+        draft.request.source_hash = base.source_hash;
+        draft.request.expected_revision = base.revision;
+        draft.request.segments = base.segments;
+        draft.output_hash = base.output_hash;
+    }
+    draft.only_pending = false;
+    draft.request.status = Some("pending".into());
+    draft.request.rejection_reason = None;
+    for row in &mut draft.request.segments {
+        row.decision = "pending".into();
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).map_err(|_| failure("无法生成重新编辑事件编号"))?;
+    nonce[6] = (nonce[6] & 0x0f) | 0x40;
+    nonce[8] = (nonce[8] & 0x3f) | 0x80;
+    let hex: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    draft.audit["eventId"] = json!(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ));
+    draft.audit["occurredAtMs"] = json!(now);
+    draft.audit["action"] = json!("saved");
+    draft.audit["elapsedMs"] = json!(0);
+    draft.audit["details"]["target"] = json!("重新编辑审核结论");
+    draft.error.clear();
+    let mut db = open(root)?;
+    let tx = db.transaction().map_err(failure)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO source_review_history VALUES(?,?,?,?)",
+        params![
+            service,
+            user.username,
+            expected_event_id,
+            serde_json::to_string(&previous)?
+        ],
+    )
+    .map_err(failure)?;
+    let changed=tx.execute("DELETE FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=? AND event_id=?",params![service,user.username,previous.request.source_path,previous.request.source_name.as_deref().unwrap_or(""),expected_event_id]).map_err(failure)?;
+    if changed != 1 {
+        return Err(failure("原结论已经改变，未覆盖"));
+    }
+    // A prior draft from the selected source is preserved before replacement.
+    tx.execute("INSERT OR IGNORE INTO source_review_history SELECT service,username,event_id,payload FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=?",params![service,user.username,draft.request.source_path,draft.request.source_name.as_deref().unwrap_or("")]).map_err(failure)?;
+    tx.execute("INSERT INTO source_reviews VALUES(?,?,?,?,?,?) ON CONFLICT(service,username,source_path,source_name) DO UPDATE SET payload=excluded.payload,event_id=excluded.event_id",params![service,user.username,draft.request.source_path,draft.request.source_name.as_deref().unwrap_or(""),serde_json::to_string(&draft)?,draft.audit["eventId"].as_str().unwrap_or("")]).map_err(failure)?;
+    enqueue_receipt(root, &tx, service, &user.username, &draft, "local", None)?;
+    tx.commit().map_err(failure)?;
+    Ok(local_view(&draft, user, None))
+}
+
 pub fn status(
     root: &Path,
     service: &str,

@@ -1649,3 +1649,22 @@ export async function renameBatchFolder(sourcePath: string, name: string, operat
 export async function reviewIdentityPath(path: string): Promise<string> {
   return isTauriRuntime() ? invoke<string>("review_identity_path", {path}) : path;
 }
+
+export async function skeletonModelLibrary(root?: string): Promise<import('../types').SkeletonLibraryInfo> {
+  if (!isTauriRuntime()) return {root: '', libraryId: '', revision: '', model: null, relatives: []};
+  return invoke('skeleton_model_library', {root: root ?? null});
+}
+export async function loadSkeletonModel(sourcePath: string, revision: string): Promise<import('../types').SkeletonSeries> {
+  if (!isTauriRuntime()) throw new Error('模型库需要桌面端读取本机文件');
+  return invoke('load_skeleton_model', {sourcePath, revision, operationId: Date.now()});
+}
+
+export async function reopenMachineReview(sourcePath: string, sourceName: string | undefined, expectedEventId: string): Promise<import('../types').MachineReview> {
+  if (!isTauriRuntime()) {
+    const state=await loadMachineReview(sourcePath,sourceName);
+    return saveMachineReview(sourcePath,state.sourceHash,state.revision,state.segments,sourceName,'pending');
+  }
+  const result=await invoke<import('../types').MachineReview>('reopen_machine_review',{sourcePath,sourceName,expectedEventId});
+  window.dispatchEvent(new Event('source-review-pending'));
+  return result;
+}

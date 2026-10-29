@@ -24,6 +24,7 @@ mod review_catalog;
 mod review_outbox;
 mod segment_bin;
 mod skeleton;
+mod skeleton_library;
 mod source;
 mod source_index_cache;
 mod source_path_probe;
@@ -1307,6 +1308,36 @@ async fn load_machine_review(
 }
 
 #[tauri::command]
+async fn reopen_machine_review(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    source_path: String,
+    source_name: Option<String>,
+    expected_event_id: String,
+) -> Result<machine_review::ReviewView, String> {
+    let data = app_data_root(&app)?;
+    let (user, service) =
+        user_center::source_review_owner(&data, auth.inner()).map_err(|e| e.to_string())?;
+    cloud_qc::require_editable(&data, auth.inner(), Path::new(&source_path))
+        .await
+        .map_err(|e| e.to_string())?;
+    ensure_source_directory_responsive(&source_path).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        source_review_queue::reopen_action(
+            &data,
+            &service,
+            &user,
+            &source_path,
+            source_name.as_deref(),
+            &expected_event_id,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn save_machine_review(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -1868,6 +1899,52 @@ async fn scan_source(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn skeleton_model_library(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    root: Option<String>,
+) -> Result<skeleton_library::LibraryInfo, String> {
+    auth.require_user().map_err(|e| e.to_string())?;
+    let data = base_app_data_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || match root {
+        Some(root) => skeleton_library::configure(&data, &root),
+        None => skeleton_library::info(&data),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn load_skeleton_model(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    source_path: String,
+    revision: String,
+    operation_id: u64,
+) -> Result<model::SkeletonSeries, String> {
+    auth.require_user().map_err(|e| e.to_string())?;
+    let task = control.start(operation_id)?;
+    let data = base_app_data_root(&app)?;
+    let alias_data = app_data_root(&app)?;
+    ensure_source_directory_responsive(&source_path).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = &task;
+        skeleton_library::load_with_aliases(
+            &data,
+            &alias_data,
+            Path::new(&source_path),
+            &revision,
+            &task.cancelled(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2531,6 +2608,7 @@ pub fn run() {
             list_machine_annotation_sources,
             load_machine_review,
             save_machine_review,
+            reopen_machine_review,
             defer_machine_review,
             get_pending_source_reviews,
             publish_pending_source_reviews,
@@ -2549,6 +2627,8 @@ pub fn run() {
             rename_batch_folder,
             review_identity_path,
             load_episode,
+            skeleton_model_library,
+            load_skeleton_model,
             validate_episode,
             prepare_import_workspace,
             inspect_import_destination,

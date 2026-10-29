@@ -181,10 +181,6 @@ test("NAS storage failures save a local conclusion and advance without claiming 
     assert.match(await page.locator(".episode-item.selected").textContent(),/session-a/);
     await page.evaluate(()=>{window.localQueueFails=false;});
     await page.getByRole("button",{name:"重试保存复核"}).click();
-    await page.getByText("结果已保存本机 · 待写回数据目录").waitFor();
-    assert.equal(await page.locator(".quality-output").textContent(),"description.json本机通过 · 待写回");
-    assert.equal(await page.getByRole("button",{name:"通过",exact:true}).isEnabled(),true);
-    await page.getByRole("button",{name:"通过",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('.episode-item.selected')?.textContent.includes('session-b'));
     const rows=await page.evaluate(()=>window.localReviewRows);
     const pendingBadge = page.locator('.episode-item').filter({hasText:'session-a'}).getByLabel('本机待写回');
@@ -202,8 +198,8 @@ test("NAS storage failures save a local conclusion and advance without claiming 
     await pendingBadge.waitFor({state:'detached'});
     await page.locator('.episode-item').filter({hasText:'session-a'}).getByLabel('已审核',{exact:true}).waitFor();
     assert.match(await page.locator('.episode-item').filter({hasText:'session-a'}).textContent(),/我已审·通过/);
-    assert.equal(rows.length,2);assert.equal(rows[1].audit.action,"approved");
-    assert.equal(rows[1].audit.sessionId,rows[0].audit.sessionId);
+    assert.equal(rows.length,1,"successful retry commits the conclusion once and completes navigation");
+    assert.equal(rows[0].audit.action,"approved");
     const audit=await page.evaluate(()=>JSON.parse(localStorage.getItem("dohc.demo.review-events")??"[]"));
     assert.equal(audit.filter(e=>e.action==="approved").length,0,"do not upload a shared approval before NAS confirmation");
   } finally {await context.close();}
@@ -841,7 +837,13 @@ test("timeline colors remain distinct for adjacent segments after splitting and 
   try {
     await open(page, "machineAnnotation=present");
     await page.waitForFunction(() => !document.querySelector('[aria-label="复核动作描述"]').disabled);
+    const identities = new Map();
     const distinct = async () => {
+      const spans = await page.locator(".review-span").evaluateAll(spans=>spans.map(span=>({id:span.dataset.sourceIndex,color:getComputedStyle(span).backgroundColor})));
+      for (const span of spans) {
+        if (identities.has(span.id)) assert.equal(span.color,identities.get(span.id),`identity ${span.id} keeps its color`);
+        else identities.set(span.id,span.color);
+      }
       const colors = await page.locator(".review-span").evaluateAll((spans) => spans.map((span) => getComputedStyle(span).backgroundColor));
       for (let i = 1; i < colors.length; i++) assert.notEqual(colors[i], colors[i - 1]);
     };
@@ -1302,13 +1304,15 @@ test("drag crosses multiple segments smoothly and commits only when released; ca
     const edge=page.getByRole('slider',{name:'微调结束帧'}),track=page.locator('.review-track');
     const e=await edge.boundingBox(),t=await track.boundingBox();
     const before=await page.evaluate(()=>window.timelineSaveCount);
+    const originalColors=await page.locator('.review-span').evaluateAll(spans=>Object.fromEntries(spans.map(s=>[s.dataset.sourceIndex,getComputedStyle(s).backgroundColor])));
+    const stableColors=async()=>{for(const span of await page.locator('.review-span').evaluateAll(spans=>spans.map(s=>({id:s.dataset.sourceIndex,color:getComputedStyle(s).backgroundColor}))))assert.equal(span.color,originalColors[span.id]);};
     await page.mouse.move(e.x+e.width/2,e.y+e.height/2);await page.mouse.down();
     await page.mouse.move(t.x+t.width,e.y+e.height/2,{steps:40});
     await page.waitForFunction(()=>document.querySelector('[aria-label="复核结束帧"]').value==='196');
     assert.equal(await page.locator('.review-span').count(),1);
     assert.equal(await page.evaluate(()=>window.timelineSaveCount),before,'drag preview performs no disk writes');
     await page.mouse.move(t.x+t.width*80/196,e.y+e.height/2,{steps:20});
-    assert.equal(await page.locator('.review-span').count(),3,'reversing restores crossed preview rows');
+    assert.equal(await page.locator('.review-span').count(),3,'reversing restores crossed preview rows');await stableColors();
     await page.mouse.move(t.x+t.width,e.y+e.height/2,{steps:20});await page.mouse.up();
     await page.waitForFunction(()=>!document.querySelector('.quality-save-state').textContent.includes('正在保存'));
     assert.equal(await page.evaluate(()=>window.timelineSaveCount),before+1);
@@ -1333,7 +1337,7 @@ test("drag crosses multiple segments smoothly and commits only when released; ca
     await page.waitForFunction(()=>!document.querySelector('.quality-save-state').textContent.includes('正在保存'));
     const restored=await page.evaluate(async()=> (await import('/src/lib/backend.ts')).loadMachineReview('/demo/2026-07-13_07-34-12'));
     assert.deepEqual(restored.segments.map(s=>[s.startFrame,s.endFrame,s.description,s.deleted]),original.segments.map(s=>[s.startFrame,s.endFrame,s.description,false]));
-    assert.equal(restored.status,'pending');
+    assert.equal(restored.status,'pending');await stableColors();
     assert.equal(await page.evaluate(()=>window.timelineSaveCount),before+2);
     for(const [width,height] of [[1440,920],[960,680],[390,844]]){
       await page.setViewportSize({width,height});await edge.scrollIntoViewIfNeeded();
@@ -1351,6 +1355,7 @@ test("saved start-boundary expansion reverses with mouse and keyboard; later tex
     await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
     const saved = () => page.evaluate(async () => (await import('/src/lib/backend.ts')).loadMachineReview('/demo/2026-07-13_07-34-12'));
     const original = await saved();
+    const originalColors=await page.locator('.review-span').evaluateAll(spans=>Object.fromEntries(spans.map(s=>[s.dataset.sourceIndex,getComputedStyle(s).backgroundColor])));
     const target = original.segments.filter(s=>!s.deleted).at(-1);
     await page.getByRole('button',{name:'定位机标片段 3',exact:true}).click();
     const edge=page.getByRole('slider',{name:'微调起始帧',exact:true}),track=await page.locator('.review-track').boundingBox();
@@ -1362,6 +1367,7 @@ test("saved start-boundary expansion reverses with mouse and keyboard; later tex
     };
     await dragTo(0);
     assert.equal((await saved()).segments.filter(s=>!s.deleted).length,1);
+    assert.equal(await page.locator('.review-span').evaluate(s=>getComputedStyle(s).backgroundColor),originalColors[target.sourceIndex]);
     await page.keyboard.press('ArrowRight');
     await page.waitForFunction(()=>document.querySelectorAll('.review-span').length===2);
     let rows=(await saved()).segments;
@@ -1405,4 +1411,36 @@ test("a batch conclusion pending writeback stays visible and read-only across th
     assert.equal(await page.getByLabel("复核动作描述").isDisabled(),true);
     assert.deepEqual(errors,[]);
   } finally {await page.close();}
+});
+
+test('queued approval or rejection can be explicitly reopened; cancel preserves conclusion and handles remain visible', async()=>{
+  for(const status of ['approved','rejected']){
+    const page=await browser.newPage({viewport:{width:960,height:680}});
+    const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(()=>{window.testReopened=false;});
+    await page.route('**/src/lib/backend.ts',async route=>{
+      const response=await route.fetch(),original=await response.text();
+      let body=original.replace('  if (saved) return structuredClone(saved);',`if (saved) return structuredClone(saved);
+        if(!window.testReopened){const baseline=await loadMachineAnnotation(sourcePath,sourceName);return {sourceHash:baseline.sourceHash,revision:0,status:'${status}',qcStatus:'pending',pendingSourceWrite:true,pendingEventId:'original-event',updatedAtMs:1234,reviewer:'Alice',segments:baseline.segments.map((s,i)=>({...s,sourceIndex:i,deleted:false,decision:'pending'}))};}`);
+      body=body.replace('export async function reopenMachineReview(sourcePath, sourceName, expectedEventId) {','export async function reopenMachineReview(sourcePath, sourceName, expectedEventId) {\nwindow.testReopened=true;');
+      // Vite can preserve TS annotations depending on transform order; replace
+      // at the first function statement instead of assuming emitted signature.
+      if(!body.includes('window.testReopened=true;')) body=body.replace(/(export async function reopenMachineReview\([^]*?\)\s*(?::[^]*?)?\{)/,'$1\nwindow.testReopened=true;');
+      assert.notEqual(body,original);await route.fulfill({response,body});
+    });
+    try{
+      await open(page,'machineAnnotation=present');
+      const handle=page.getByRole('slider',{name:'微调结束帧'});await handle.waitFor();assert.equal(await handle.isDisabled(),true);
+      await page.getByRole('button',{name:'重新编辑片段',exact:true}).click();
+      const dialog=page.getByRole('dialog',{name:'重新编辑审核结论'});await dialog.waitFor();
+      await dialog.getByRole('button',{name:'取消',exact:true}).click();assert.equal(await handle.isDisabled(),true);
+      await page.getByRole('button',{name:'重新编辑片段',exact:true}).click();await dialog.getByRole('button',{name:'确认重新编辑',exact:true}).click();
+      await page.waitForFunction(()=>document.querySelector('[aria-label="复核动作描述"]')?.disabled===false);
+      assert.equal(await handle.isDisabled(),false);await page.getByLabel('复核结束帧',{exact:true}).fill('20');
+      await page.waitForFunction(()=>!document.querySelector('.quality-save-state').textContent.includes('正在保存'));
+      const saved=await page.evaluate(async()=> (await import('/src/lib/backend.ts')).loadMachineReview('/demo/2026-07-13_07-34-12'));
+      assert.equal(saved.status,'pending');assert.equal(saved.localDraft,true);assert.equal(saved.segments[0].endFrame,19);
+      assert.deepEqual(errors,[]);
+    }finally{await page.close();}
+  }
 });
