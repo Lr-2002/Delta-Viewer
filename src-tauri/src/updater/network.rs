@@ -249,11 +249,24 @@ mod tests {
                         Err(error) => panic!("accept: {error}"),
                     }
                 };
+                // Winsock accepts inherit the listener's nonblocking mode.
+                // This thread intentionally waits for the complete request;
+                // an early WouldBlock must not consume a scripted response.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
                 let mut request = [0; 4096];
-                let _ = stream.read(&mut request);
+                let mut received = 0;
+                while !request[..received].windows(4).any(|end| end == b"\r\n\r\n") {
+                    assert!(received < request.len(), "test request headers too large");
+                    let size = stream.read(&mut request[received..]).unwrap();
+                    assert!(size > 0, "test client closed before completing headers");
+                    received += size;
+                }
                 counted.fetch_add(1, Ordering::SeqCst);
                 match reply {
                     Reply::Data(response) => {
@@ -282,6 +295,34 @@ mod tests {
         }
     }
     const OK: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+
+    #[test]
+    fn loopback_server_waits_for_complete_fragmented_request_headers() {
+        let (url, count, worker) = server(vec![Reply::Data(OK)]);
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", url.port().unwrap())).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        client
+            .write_all(b"GET /metadata HTTP/1.1\r\nHost: localhost\r\n")
+            .unwrap();
+        let mut byte = [0];
+        let error = client.read(&mut byte).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        client.write_all(b"\r\n").unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert_eq!(response, OK);
+        worker.join().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn retries_service_failure_and_connection_drop_then_succeeds() {

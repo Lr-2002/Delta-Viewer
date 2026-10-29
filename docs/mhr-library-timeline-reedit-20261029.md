@@ -1,4 +1,4 @@
-# 1.4.5 独立模型库、片段身份与重新编辑
+# 1.4.6 独立模型库、片段身份与重新编辑
 
 ## 新旧骨架
 
@@ -31,3 +31,11 @@ Windows 模型库交付位置：C:\Users\lenovo\codex-work\model-libraries\mhr-2
 隔离 Rust 用例覆盖正确源时钟、处理结果优先、同名错批拒绝、session/NPZ/revision 改变、路径穿越/链接、取消、重新编辑后的原历史/源字节保留、跨账号及过期编号拒绝、多份结论拒绝、批量不通过恢复当前来源片段、落盘失败事务回滚、草稿不会自动发布、重新审核成功。真实 Washing_003 新骨架只读加载通过，559 帧映射到原 cam0 采集时钟。
 
 浏览器覆盖片段覆盖/反向恢复/分割/删除后的身份配色、已提交待写结果确认或取消重新编辑、模型选择与错误回退、宽窄视口。正式 CI/CD、目标 Windows 界面/播放与本机队列对照结果保存在 ignored artifacts，未完成项不冒称已验收。没有进行 Mac 实机或真人云审核闭环验证。
+
+## 1.4.6 发布恢复
+
+1.4.5 两次 Windows CD 的更新回环回归在不同用例失败，审核保存检查均已通过，没有公开部分 Release。共用测试服务器的监听器采用非阻塞模式；Windows accept 继承属性，原代码忽略读取错误和请求头未完整的情况，可能提前消费响应并断开。微软 [accept 文档](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-accept) 和 [Rust 1.97.1 Windows 实现](https://github.com/rust-lang/rust/blob/1.97.1/library/std/src/sys/net/connection/socket/windows.rs) 可核对该差异。
+
+本版仅修复 cfg(test) 测试服务：接受后显式切回阻塞，设置读写超时，最多4096字节读取完整请求头后再统计和响应；增加分片请求的真实 TCP 回归，保留超时、断流、拒绝重定向和取消校验。生产更新逻辑不变。目标Windows独立socket复现与完整原生流水线证据保存在 ignored artifacts，不能用它替代尚未完成的安装/界面验证。
+
+目标 Windows std-only 对照已完成：监听非阻塞继承时读取返回10035/WouldBlock，显式阻塞读取35字节成功；从真实测试服务提取的分片请求回归在旧代码exit101、新代码exit0。1.4.6本机check:full通过；完整CD与桌面交互另行记录，不以这个局部测试代替。
