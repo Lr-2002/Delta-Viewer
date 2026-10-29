@@ -216,6 +216,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.4.8": "减少 MP4 元数据和预览目录的额外读取，加载中显示具体阶段与慢响应原因；任务中心超时明确指向共享目录读取，保留原统计与审核队列。",
   "1.4.7": "新增公司内网更新线路，自动优先从公司服务器下载同一份 GitHub 正式发布包，保留 GitHub 备用、完整校验及保存后安装；旧版可从内网页面安装一次升级。",
   "1.4.6": "保留片段身份颜色、待写回结论重新编辑和独立骨架模型库；修复 Windows 更新回归测试服务的非阻塞连接继承及分段请求处理，重新执行完整发布检查。",
   "1.4.5": "新增独立骨架模型库、原有与 1080p 实验模型选择及逐条提示；片段覆盖与恢复保持颜色身份；待写回结论支持保留历史后重新编辑为待复审草稿。",
@@ -2405,7 +2406,7 @@ function App() {
                         <div className="proofreading-transport">{playbackControls}</div>
                         <input type="range" aria-label="预览播放帧" min={minFrame} max={maxFrame} value={currentFrame}
                           onChange={event => seekFrame(event.currentTarget.valueAsNumber)} />
-                        <p role="status">视频可预览，完整数据检查中；检查完成后开放片段编辑和审核。</p>
+                        <p role="status">正在读取视频并检查完整数据；画面出现后可预览，检查完成后开放片段编辑和审核。</p>
                       </section>
                     </div> : <ReviewPanel username={reviewStorageUsername} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement} busy={busy || showManagement || annotationReadyRoot !== data.summary.root}
                       playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onPlay: playSegment, onToggle: togglePlayback, controls: (

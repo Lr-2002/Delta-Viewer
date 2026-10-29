@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.4.7",
+  "version": "1.4.8",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -39,7 +39,8 @@
     "test:client-management:browser": "node --test --experimental-strip-types scripts/client-versions.test.ts && node --test scripts/client-management-browser.test.mjs",
     "test:cloud-qc": "node --test --test-concurrency=1 scripts/cloud-qc.test.mjs scripts/cloud-qc-preview.test.mjs",
     "test:app-updates": "node --test scripts/app-updates.test.mjs",
-    "test:review-extensions": "node --test --test-concurrency=1 scripts/custom-rejection-browser.test.mjs scripts/media-failure-browser.test.mjs scripts/skeleton-library.test.mjs"
+    "test:review-extensions": "node --test --test-concurrency=1 scripts/custom-rejection-browser.test.mjs scripts/media-failure-browser.test.mjs scripts/skeleton-library.test.mjs",
+    "test:loading-progress": "node --test scripts/loading-progress.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

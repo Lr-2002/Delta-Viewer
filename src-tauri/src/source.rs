@@ -227,11 +227,14 @@ pub fn load_episode_preview(
     if !root.is_dir() {
         return Err(AppError::MissingPath(root.display().to_string()));
     }
+    emit_read_stage(app, "读取数据卷信息", root);
     storage::ensure_source_volume(&storage::volume_info(root)?)?;
+    emit_read_stage(app, "识别采集记录格式", root);
     if is_segment_episode(root) {
         let index = scan_episode_index(root, app, cancelled)?;
         return load_episode_with_index(root, &index, cancelled);
     }
+    emit_read_stage(app, "读取预览状态记录", &root.join("states.jsonl"));
     let partial = recording_preview_states(root, cancelled)?;
     let states_partial = partial.is_some();
     let states = match partial {
@@ -1133,13 +1136,16 @@ pub fn scan_episode_index(
         return Err(AppError::MissingPath(root.display().to_string()));
     }
 
+    emit_read_stage(app, "读取数据卷信息", root);
     storage::ensure_source_volume(&storage::volume_info(root)?)?;
+    emit_read_stage(app, "读取采集清单与分段索引", root);
     let segment_folder = segment_folder_for_episode(root);
     let segment = match segment_folder.as_deref() {
         Some(folder) => segment_bin::scan_segment_folder(folder, cancelled)?,
         None => None,
     };
     let direct_segment = segment_folder.as_deref() == Some(root);
+    emit_read_stage(app, "读取目录及文件元数据", root);
     let indexed_files = if direct_segment {
         collect_segment_indexed_files(root, cancelled)?
     } else {
@@ -1192,8 +1198,10 @@ pub fn scan_episode_index(
         });
     }
     let states_path = root.join("states.jsonl");
+    emit_read_stage(app, "读取完整状态记录", &states_path);
     let (state_count, start_time_ns, end_time_ns) = summarize_states(&states_path, cancelled)?;
 
+    emit_read_stage(app, "读取视频流清单", root);
     let mp4_manifest = read_mp4_manifest(root)?;
     let stream_names = episode_stream_names(root, mp4_manifest.as_ref())?;
     let mut streams = Vec::with_capacity(STREAM_NAMES.len());
@@ -1247,6 +1255,22 @@ pub fn scan_episode_index(
         stream_files: stream_files_by_name,
         segment: None,
     })
+}
+
+fn emit_read_stage(app: Option<&AppHandle>, phase: &str, path: &Path) {
+    emit_progress(
+        app,
+        ProgressPayload {
+            task: "scan".into(),
+            phase: phase.into(),
+            current: 0,
+            total: 0,
+            bytes_done: 0,
+            total_bytes: 0,
+            current_path: path.display().to_string(),
+            elapsed_ms: 0,
+        },
+    );
 }
 
 fn segment_stream_summary(

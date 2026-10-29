@@ -2019,6 +2019,7 @@ async fn validate_episode(
         let summary = index.summary.clone();
         let mut report =
             validation::validate_episode_with_index(root, &index, Some(&app), &cancelled)?;
+        emit_task_start(&app, operation_id, "validate", "复核源数据变更", &path);
         let after = source::episode_fingerprint(root, &cancelled)?;
         if before != after {
             return Err(error::AppError::Message(

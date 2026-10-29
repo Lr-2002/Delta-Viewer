@@ -168,12 +168,36 @@ fn verify_source(root: &Path, stamp: &SourceStamp, expected_path: &str) -> AppRe
 }
 
 pub fn automatic_location(root: &Path) -> Option<PreviewLocation> {
+    automatic_location_with(root, |path| path.is_dir())
+}
+
+fn automatic_location_with(
+    root: &Path,
+    is_directory: impl Fn(&Path) -> bool,
+) -> Option<PreviewLocation> {
     // Keep the same session-relative mapping on UNC paths, mapped drives and mounts.
+    // Delta-D1 has a fixed sibling preview root. Find it lexically before any
+    // filesystem probe; testing a nonexistent preview at every episode/batch
+    // ancestor multiplies slow SMB requests for every camera.
+    if let Some(dataset) = root.ancestors().find(|path| {
+        path.file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("Delta-D1"))
+    }) {
+        return Some(PreviewLocation {
+            source_root: dataset.to_string_lossy().into_owned(),
+            preview_root: dataset
+                .parent()?
+                .join("Delta-Viewer-Previews")
+                .join(dataset.file_name()?)
+                .to_string_lossy()
+                .into_owned(),
+        });
+    }
     for ancestor in root.ancestors() {
         let name = ancestor.file_name()?;
         let parent = ancestor.parent()?;
         let preview = parent.join("Delta-Viewer-Previews").join(name);
-        if name.to_string_lossy().eq_ignore_ascii_case("Delta-D1") || preview.is_dir() {
+        if is_directory(&preview) {
             return Some(PreviewLocation {
                 source_root: ancestor.to_string_lossy().into_owned(),
                 preview_root: preview.to_string_lossy().into_owned(),
@@ -419,5 +443,15 @@ mod automatic_tests {
                 .unwrap()
                 .join("Delta-Viewer-Previews/Delta-D1")
         );
+    }
+
+    #[test]
+    fn known_dataset_mapping_does_not_probe_each_missing_ancestor() {
+        let root = std::env::temp_dir().join("Delta-D1");
+        let location = automatic_location_with(&root.join("D1-Daily/batch/session"), |_| {
+            panic!("fixed dataset mapping must not issue speculative filesystem requests")
+        })
+        .unwrap();
+        assert_eq!(Path::new(&location.source_root), root);
     }
 }

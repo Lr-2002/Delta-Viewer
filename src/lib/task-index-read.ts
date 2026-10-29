@@ -4,7 +4,7 @@ export async function taskIndexDeadline<T>(request: Promise<T>, timeoutMs = 20_0
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([request, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("TASK_INDEX_TIMEOUT: 读取服务器统计超时，已保留上次结果。请重试；若持续超时，请检查共享目录访问或联系管理员。")), timeoutMs);
+      timer = setTimeout(() => reject(new Error("TASK_INDEX_TIMEOUT: 通过共享目录读取服务器统计超过等待时限，已保留上次结果。这不一定是挂载断开；NAS 磁盘繁忙、空间不足或共享连接异常均可能导致。请管理员检查存储状态后重试。")), timeoutMs);
     })]);
   } finally { clearTimeout(timer); }
 }
