@@ -235,6 +235,9 @@ pub fn store(
     mut entry: DeferredReview,
 ) -> AppResult<DeferredReview> {
     let _lock = owner_lock(root, service, username)?;
+    if let Some(tags) = &entry.request.special_tags {
+        machine_review::validate_special_tags(tags)?;
+    }
     if !Path::new(&entry.request.source_path).is_absolute()
         || !["pending", "approved", "rejected"]
             .contains(&entry.request.status.as_deref().unwrap_or("pending"))
@@ -299,6 +302,9 @@ pub fn store(
     if let Some(old) = old {
         if old.only_pending && !entry.only_pending {
             return Err(AppError::Message("SOURCE_REVIEW_CONFLICT: 已有批量审核结论保存在本机，请先处理待写回；本次未覆盖原结论".into()));
+        }
+        if entry.request.special_tags.is_none() {
+            entry.request.special_tags = old.request.special_tags.clone();
         }
         // Keep the original SQLite key; publication resolves only the filesystem path.
         entry.request.source_path = old.request.source_path;
@@ -478,6 +484,7 @@ pub fn local_view(
         pending_event_id: None,
         local_draft: false,
         review: ReviewState {
+            special_tags: Vec::new(),
             reviewer_username: user.username.clone(),
             recovery_warnings: vec![],
             rejection_reason: String::new(),
@@ -521,6 +528,9 @@ pub fn local_view(
         .into();
     }
     if !entry.only_pending {
+        if let Some(tags) = &entry.request.special_tags {
+            view.review.special_tags = tags.clone();
+        }
         view.review.segments = entry.request.segments.clone();
         view.review.source_hash = entry.request.source_hash.clone();
         view.review.revision = entry.request.expected_revision;
@@ -586,6 +596,7 @@ pub fn reopen_action(
         draft.request.source_hash = base.source_hash;
         draft.request.expected_revision = base.revision;
         draft.request.segments = base.segments;
+        draft.request.special_tags = Some(base.special_tags);
         draft.output_hash = base.output_hash;
     }
     draft.only_pending = false;
@@ -886,6 +897,7 @@ pub(crate) fn submit_action_with_probe(
         )? {
             if previous.request.status == entry.request.status
                 && previous.request.rejection_reason == entry.request.rejection_reason
+                && previous.request.special_tags == entry.request.special_tags
                 && previous.request.segments == entry.request.segments
             {
                 // Retry an unacknowledged conclusion with its original identity
@@ -1011,6 +1023,73 @@ pub(crate) fn publish_with_probe(
 mod path_tests {
     use super::*;
     #[test]
+    fn special_tags_survive_local_disk_reload_and_are_scoped_to_account() {
+        let root = std::env::temp_dir().join(format!(
+            "viewer-special-tags-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let user = UserIdentity {
+            username: "alice".into(),
+            display_name: "Alice".into(),
+            role: Some("operator".into()),
+            can_manage: false,
+        };
+        let tags = vec![crate::machine_review::SpecialTag {
+            camera: "cam0".into(),
+            description: "两根设备线入镜".into(),
+        }];
+        let path = root
+            .join("unavailable-nas/sample")
+            .to_string_lossy()
+            .into_owned();
+        let mut entry = DeferredReview {
+            request: SaveReviewRequest {
+                special_tags: Some(tags.clone()),
+                source_path: path.clone(),
+                source_name: None,
+                source_hash: "source".into(),
+                expected_revision: 0,
+                segments: vec![],
+                status: Some("pending".into()),
+                rejection_reason: None,
+            },
+            output_hash: None,
+            qc_content_hash: None,
+            only_pending: false,
+            audit: json!({"eventId":"11111111-0000-4000-8000-000000000001","occurredAtMs":1234,"action":"saved","details":{}}),
+            error: "".into(),
+            created_at_ms: 0,
+        };
+        store(&root, "service", "alice", entry.clone()).unwrap();
+        let stored = get(&root, "service", "alice", &path, None)
+            .unwrap()
+            .unwrap();
+        let view = local_view(&stored, &user, None);
+        assert_eq!(view.review.special_tags, tags);
+        assert!(view.local_draft);
+        assert!(get(&root, "service", "bob", &path, None).unwrap().is_none());
+        assert!(get(&root, "another-service", "alice", &path, None)
+            .unwrap()
+            .is_none());
+        // An older client that omits tags must preserve the durable draft's tags.
+        entry.request.special_tags = None;
+        entry.request.status = Some("rejected".into());
+        entry.request.rejection_reason = Some("镜头遮挡".into());
+        entry.audit["action"] = json!("rejected");
+        store(&root, "service", "alice", entry).unwrap();
+        let stored = get(&root, "service", "alice", &path, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(local_view(&stored, &user, None).review.special_tags, tags);
+        assert!(contains_submitted(&root, "service", "alice", &path).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn batch_conclusion_recovers_across_sources_and_keeps_original_event_and_segments() {
         let root = std::env::temp_dir().join(format!(
             "viewer-batch-recovery-{}",
@@ -1027,6 +1106,7 @@ mod path_tests {
         };
         let entry = DeferredReview {
             request: SaveReviewRequest {
+                special_tags: None,
                 source_path: root.join("unavailable-nas/sample").to_string_lossy().into(),
                 source_name: None,
                 source_hash: String::new(),
@@ -1191,6 +1271,7 @@ mod path_tests {
         let db = open(&root).unwrap();
         let mut entry = DeferredReview {
             request: SaveReviewRequest {
+                special_tags: None,
                 source_path: r"C:\数据\sample".into(),
                 source_name: None,
                 source_hash: "isolated".into(),

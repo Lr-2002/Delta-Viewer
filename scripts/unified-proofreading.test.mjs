@@ -485,7 +485,9 @@ async function open(page, query, username = "review-test") {
   // The new one-time release summary has its own update-flow coverage. Keep
   // playback layout assertions focused on the regular, acknowledged workspace.
   const acknowledgement = page.getByRole("button", { name: "知道了", exact: true });
-  if (await acknowledgement.count()) { await acknowledgement.click(); await acknowledgement.waitFor({state:"detached"}); }
+  // Toasts can expire while Playwright waits for click actionability on a busy runner.
+  await acknowledgement.evaluateAll(buttons => buttons[0]?.click());
+  await acknowledgement.waitFor({state:"detached"});
   await page.waitForFunction(() => document.querySelectorAll(".camera-grid .frame-panel").length === 7);
 }
 
@@ -1443,4 +1445,72 @@ test('queued approval or rejection can be explicitly reopened; cancel preserves 
       assert.deepEqual(errors,[]);
     }finally{await page.close();}
   }
+});
+
+
+for (const renderer of ["local", "cloud"]) test(`${renderer} episode special tags persist with the human review, support edit/remove and fit small viewports`, async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  try {
+    if (renderer === "cloud") await context.route("**/src/components/MachineAnnotationPanel.tsx", route => route.fulfill({ contentType: "application/javascript", body: 'export { CloudMachineAnnotationPanel as MachineAnnotationPanel, flushCloudMachineReviewSaves as flushMachineReviewSaves } from "/src/components/CloudMachineAnnotationPanel.tsx";' }));
+    await open(page, "machineAnnotation=present");
+    await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
+    const saved = () => page.evaluate(async () => (await import("/src/lib/backend.ts")).loadMachineReview("/demo/2026-07-13_07-34-12"));
+    const before = await saved();
+    const panel = page.getByLabel("数据特殊标签", { exact: true });
+    const add = panel.getByRole("button", { name: "添加标签", exact: true });
+    await add.click();
+    const camera = panel.getByLabel("特殊标签相机", { exact: true });
+    const name = await camera.locator('option').nth(1).getAttribute('value');
+    await camera.selectOption(name);
+    await panel.getByLabel("特殊标签说明", { exact: true }).fill("相机 x123 设备线入镜");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => !document.querySelector('.special-tag-add').disabled);
+    let draft = await saved();
+    assert.deepEqual(draft.specialTags, [{ camera: name, description: "相机 x123 设备线入镜" }]);
+    assert.deepEqual(draft.segments, before.segments, "tag typing must not trigger trim or label shortcuts");
+    assert.equal(draft.status, "pending");
+    await panel.getByRole("button", { name: "修改特殊标签 1", exact: true }).click();
+    await panel.getByLabel("特殊标签说明", { exact: true }).fill("两根设备线入镜");
+    await panel.getByRole("button", { name: "保存", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('.special-tag-add').disabled);
+    await add.click();
+    await camera.selectOption(name);
+    await panel.getByLabel("特殊标签说明", { exact: true }).fill("两根设备线入镜");
+    await panel.getByRole("button", { name: "添加", exact: true }).click();
+    await panel.getByRole("alert").getByText("这个相机已有相同标签。", { exact: true }).waitFor();
+    await camera.selectOption("");
+    await panel.getByLabel("特殊标签说明", { exact: true }).fill("整条数据特殊说明");
+    await panel.getByRole("button", { name: "添加", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('.special-tag-add').disabled);
+    await panel.getByRole("button", { name: "删除特殊标签 2", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('.special-tag-add').disabled);
+    await page.getByRole("button", { name: "重新读取机标", exact: true }).click();
+    await panel.getByText("两根设备线入镜", { exact: true }).waitFor();
+    assert.deepEqual((await saved()).specialTags, [{ camera: name, description: "两根设备线入镜" }]);
+    await add.click();
+    for (const width of [1440, 960, 390]) {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 920 });
+      for (const control of [add, camera, panel.getByLabel("特殊标签说明", { exact: true }), panel.getByRole("button", { name: "添加", exact: true })]) {
+        await control.scrollIntoViewIfNeeded();
+        const box = await control.boundingBox();
+        assert.ok(box && box.x >= 0 && box.x + box.width <= width + 1, `tag control fits ${width}px`);
+      }
+      await page.screenshot({ path: `artifacts/unified-proofreading/special-tags-${width}.png` });
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    }
+    await page.setViewportSize({ width: 1440, height: 920 });
+    await panel.getByRole("button", { name: "取消", exact: true }).click();
+    await page.getByRole("button", { name: "不通过", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "不通过原因", exact: true });
+    await dialog.getByRole("button", { name: "镜头污渍", exact: true }).click();
+    await dialog.getByRole("button", { name: "确认不通过", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.quality-footer')?.textContent.includes('不通过'));
+    draft = await saved();
+    assert.equal(draft.status, "rejected");
+    assert.deepEqual(draft.specialTags, [{ camera: name, description: "两根设备线入镜" }]);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
 });

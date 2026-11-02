@@ -216,6 +216,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.5.2": "回放下方新增整条数据特殊标签：可选择相机、填写异常说明，支持添加、编辑和删除；审核前本机暂存，随人工结果提交，NAS 暂不可写时保留待写回。",
   "1.5.1": "骨架增加可回退的追赶显示试验：1.02/1.05/1.10 倍，最多提前 0.8 秒后同速；暂停与拖动保持可重复，不修改源骨架和审核时间轴。",
   "1.5.0": "解除读取与检查前重复查询 NAS 容量、文件系统造成的等待；Windows 共享源直接识别网络介质，保留完整数据检查和写入目标容量保护。",
   "1.4.9": "包含 MP4 元数据读取与预览定位优化、具体加载阶段和 NAS 慢响应提示；加强原生发布测试目录隔离，保留审核写入与完整校验。",
@@ -2406,6 +2407,7 @@ function App() {
                         total={availableStreams.length}
                       />
                     ) : null}
+                    <div id="episode-special-tags" />
                   </section>
                     {annotationReadyRoot !== data.summary.root ? <div className="quality-workspace quality-embedded">
                       <section className="quality-timeline" aria-label="只读视频预览">

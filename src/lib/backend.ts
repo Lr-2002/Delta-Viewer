@@ -633,9 +633,9 @@ export async function loadMachineReview(sourcePath: string, sourceName?: string)
     })) };
 }
 
-export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending", rejectionReason?: string, commitEvent?: [string, number], durable?: { base: import("../types").MachineReview; audit: import("./review-audit-types").ReviewAuditEvent }): Promise<import("../types").MachineReview> {
+export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending", rejectionReason?: string, commitEvent?: [string, number], durable?: { base: import("../types").MachineReview; audit: import("./review-audit-types").ReviewAuditEvent }, specialTags?: import("../types").SpecialTag[]): Promise<import("../types").MachineReview> {
   if (isTauriRuntime()) {
-    const request = { sourcePath, sourceHash, expectedRevision, segments, sourceName, status, rejectionReason };
+    const request = { sourcePath, sourceHash, expectedRevision, segments, sourceName, status, rejectionReason, specialTags };
     const localEntry = durable && sourceName !== "skeleton.description.json" ? { request, outputHash: durable.base.outputHash ?? null, qcContentHash: durable.base.qcContentHash ?? null, audit: durable.audit, error: "", onlyPending: false } : null;
     const result = await invoke<import("../types").MachineReview>("save_machine_review", { request, commitEvent, localEntry });
     if (localEntry) window.dispatchEvent(new Event("source-review-pending"));
@@ -675,7 +675,7 @@ export async function saveMachineReview(sourcePath: string, sourceHash: string, 
     const original = await loadMachineAnnotation(sourcePath, sourceName);
     segments = committed?.segments ?? original!.segments.map((s, sourceIndex) => ({ sourceIndex, startFrame: s.startFrame, endFrame: s.endFrame, description: s.description, deleted: false, decision: "pending" as const }));
   }
-  const next = { ...state, workflowVersion: 4, status, qcStatus: sourceName === "skeleton.description.json" ? state.qcStatus : status, qcRejectionReason: reason, qcStatusError: "", versionId, previousVersionId: state.versionId ?? "", revision: draft ? state.revision : state.revision + 1,
+  const next = { ...state, specialTags: specialTags ?? state.specialTags ?? [], workflowVersion: 4, status, qcStatus: sourceName === "skeleton.description.json" ? state.qcStatus : status, qcRejectionReason: reason, qcStatusError: "", versionId, previousVersionId: state.versionId ?? "", revision: draft ? state.revision : state.revision + 1,
     rejectionReason: reason, changeSummary, revisionLabel: `${versionId} · ${changeSummary}`, appVersion: APP_VERSION,
     segments: segments.map((item) => ({ ...item, decision: item.deleted ? "pending" as const : status })), localDraft: draft, pendingSourceWrite: false, published: !draft, updatedAtMs: Date.now(), reviewer: "demo" };
   const user = demoActor();
@@ -729,6 +729,7 @@ export async function rejectPendingMachineReview(sourcePath: string, name: strin
 }
 export async function deferMachineReview(request: {
   sourcePath: string; sourceName?: string; sourceHash: string; expectedRevision: number;
+  specialTags?: import("../types").SpecialTag[];
   segments: import("../types").ReviewSegment[]; status: "pending" | "approved" | "rejected"; rejectionReason?: string;
 }, base: import("../types").MachineReview, error: string, audit: import("./review-audit-types").ReviewAuditEvent, onlyPending = false): Promise<import("../types").MachineReview> {
   if (!isTauriRuntime()) throw Error(error);

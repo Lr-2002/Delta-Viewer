@@ -1006,6 +1006,7 @@ mod tests {
         save_for_user(
             &temp.join("local"),
             SaveReviewRequest {
+                special_tags: None,
                 source_path: root.to_string_lossy().into(),
                 source_name: Some("bailian_annotation.json".into()),
                 source_hash: state.source_hash,

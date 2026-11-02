@@ -3,11 +3,12 @@ import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo
 import { reopenMachineReview, deferMachineReview, isTauriRuntime, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
 import { createDeferredReviewEvent, enqueueCommittedReviewEvent, reviewReceiptValue, persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { createReviewBoundaryEditor, addReviewSegment, recoverReviewSegments, reviewVideoIntersection, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
+import { EpisodeSpecialTags } from "./EpisodeSpecialTags";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
 import { RejectionReasons } from "./RejectionReasons";
 import { MachineIdentityNotice } from "./MachineIdentityNotice";
-import type { EpisodeData, ExportRange, MachineAnnotation, MachineReview, ReviewSegment } from "../types";
+import type { EpisodeData, ExportRange, MachineAnnotation, MachineReview, ReviewSegment, SpecialTag } from "../types";
 import { defaultTextPolicy, inspectDescription } from "../lib/text-quality";
 import "./text-quality.css";
 
@@ -29,7 +30,7 @@ interface Props {
   };
 }
 type Status = "pending" | "approved" | "rejected";
-type Snapshot = { segments: ReviewSegment[]; status: Status; rejectionReason?: string };
+type Snapshot = { specialTags?: SpecialTag[]; segments: ReviewSegment[]; status: Status; rejectionReason?: string };
 type LabelLibraryItem = { id: string; text: string; createdAt: number };
 const LABEL_LIBRARY_LIMIT = 80;
 const SKELETON_SOURCE = "skeleton.description.json";
@@ -77,6 +78,8 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
   const [result, setResult] = useState<MachineAnnotation | null>(null);
   const [review, setReview] = useState<MachineReview | null>(null);
   const [edits, setEdits] = useState<ReviewSegment[]>([]);
+  const [specialTags, setSpecialTags] = useState<SpecialTag[]>([]);
+  const tagsRef = useRef<SpecialTag[]>([]);
   const [error, setError] = useState("");
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -180,6 +183,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
   }, [saving]);
 
   function persist(snapshot: Snapshot): Promise<boolean> {
+    snapshot = { ...snapshot, specialTags: snapshot.specialTags ?? tagsRef.current };
     pending.current = snapshot;
     onUnsavedChange?.(true);
     try {
@@ -203,11 +207,11 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
             if (originalDurationMs.current !== null) deferredAudit.details.durationMs = originalDurationMs.current;
             let saved: MachineReview;
             try {
-              saved = await saveMachineReview(root, state.sourceHash, state.revision, next.segments, loadedSource.current, next.status, next.rejectionReason, [deferredAudit.eventId, deferredAudit.occurredAtMs], { base: state, audit: deferredAudit });
+              saved = await saveMachineReview(root, state.sourceHash, state.revision, next.segments, loadedSource.current, next.status, next.rejectionReason, [deferredAudit.eventId, deferredAudit.occurredAtMs], { base: state, audit: deferredAudit }, next.specialTags);
             } catch (cause) {
               const message = String(cause);
               if (!skeletonMode || !/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|SOURCE_REVIEW_DEFERRED|I\/O 错误/.test(message)) throw cause;
-              saved = await deferMachineReview({ sourcePath: root, sourceName: loadedSource.current, sourceHash: state.sourceHash, expectedRevision: state.revision, segments: next.segments, status: next.status, rejectionReason: next.rejectionReason }, state, message, deferredAudit);
+              saved = await deferMachineReview({ sourcePath: root, sourceName: loadedSource.current, sourceHash: state.sourceHash, expectedRevision: state.revision, segments: next.segments, specialTags: next.specialTags, status: next.status, rejectionReason: next.rejectionReason }, state, message, deferredAudit);
             }
             if (!saved.pendingSourceWrite && (skeletonMode || !isTauriRuntime())) {
               deferredAudit.details.revision = saved.revisionLabel ?? String(saved.revision);
@@ -264,6 +268,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
       if (videoCount && (!loaded.videoFrameCount || loaded.videoFrameCount === videoCount) && loaded.frameCount !== videoCount && (state.localDraft || state.published || state.pendingSourceWrite || state.revision > 0)
         && segments.every(item => item.deleted || item.endFrame < videoCount)) setTimelineAdapted(true);
       setReview(state); setEdits(segments); editsRef.current = segments;
+      tagsRef.current = state.specialTags ?? []; setSpecialTags(tagsRef.current);
       setSelected(segments.find((item) => !item.deleted)?.sourceIndex ?? 0);
       setFrame(segments.find((item) => !item.deleted)?.startFrame ?? 0);
       if (!skeletonMode && state.pendingSourceWrite && ["approved", "rejected"].includes(state.status ?? "")) {
@@ -294,7 +299,8 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
         if (videoCount && (!loaded.videoFrameCount || loaded.videoFrameCount === videoCount) && loaded.frameCount !== videoCount
           && restored.segments.every(item => item.deleted || item.endFrame < videoCount)) setTimelineAdapted(true);
         setEdits(restored.segments); editsRef.current = restored.segments;
-        const snapshot = { segments: restored.segments, status: restored.repaired || invalidStatus ? "pending" as const : recovery.status ?? "pending", rejectionReason: recovery.rejectionReason };
+        tagsRef.current = recovery.specialTags ?? state.specialTags ?? []; setSpecialTags(tagsRef.current);
+        const snapshot = { specialTags: tagsRef.current, segments: restored.segments, status: restored.repaired || invalidStatus ? "pending" as const : recovery.status ?? "pending", rejectionReason: recovery.rejectionReason };
         if (ownRaw) void persist(snapshot);
         else {
           legacyRecovery.current = true;
@@ -630,6 +636,13 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
   }
 
   return <div className="quality-review proofreading-view">
+    {!skeletonMode && <EpisodeSpecialTags embedded={Boolean(playback)} tags={specialTags} streams={data.summary.streams} disabled={!canEdit || saving || suspended}
+      onChange={next => {
+        if (!canEdit || finishLock.current) return;
+        tagsRef.current = next; setSpecialTags(next);
+        recordReviewInteraction("control", { value: "修改数据特殊标签" }, root);
+        void persist({ specialTags: next, segments: editsRef.current, status: "pending" });
+      }} /> }
     {playback ? <section className="quality-timeline" aria-label="校对时间轴">
       <div className="proofreading-transport">{playback.controls}<button className="icon-button" type="button" aria-label="剪切片段" aria-keyshortcuts="X" title="剪切片段：在当前帧分割 (X)" disabled={!canEdit || !active || active.endFrame <= active.startFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
       {valid && <ReviewTimeline frame={visibleFrame} frameCount={editFrameCount} start={active?.startFrame ?? 0}

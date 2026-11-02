@@ -508,7 +508,13 @@ export interface AccountReview {
   updatedAtMs: number;
 }
 
+export interface SpecialTag {
+  camera: string;
+  description: string;
+}
+
 export interface MachineReview {
+  specialTags?: SpecialTag[];
   pendingEventId?: string;
   localDraft?: boolean;
   outputName?: string;

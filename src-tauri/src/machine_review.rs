@@ -28,9 +28,65 @@ pub struct ReviewSegment {
     pub decision: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpecialTag {
+    pub camera: String,
+    pub description: String,
+}
+
+pub(crate) fn validate_special_tags(tags: &[SpecialTag]) -> AppResult<()> {
+    if tags.len() > 20 {
+        return Err(failure("特殊标签最多 20 条"));
+    }
+    let mut seen = BTreeSet::new();
+    for tag in tags {
+        if tag.camera.chars().count() > 80
+            || tag.camera.chars().any(char::is_control)
+            || tag.description.trim().is_empty()
+            || tag.description.chars().count() > 200
+            || tag.description.chars().any(char::is_control)
+            || tag.description != tag.description.trim()
+            || !seen.insert((tag.camera.as_str(), tag.description.as_str()))
+        {
+            return Err(failure(
+                "特殊标签无效：说明需为 1–200 字，相机名最多 80 字，不可重复或包含控制字符",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn document_special_tags(document: &Value) -> AppResult<Vec<SpecialTag>> {
+    let tags: Vec<SpecialTag> = document
+        .get("special_tags")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()?
+        .unwrap_or_default();
+    validate_special_tags(&tags)?;
+    Ok(tags)
+}
+
+fn patch_special_tags(document: &mut Value, state: &ReviewState) -> AppResult<()> {
+    validate_special_tags(&state.special_tags)?;
+    // Empty tags are omitted so existing deliverables retain their compact shape.
+    if state.special_tags.is_empty() {
+        document
+            .as_object_mut()
+            .ok_or_else(|| failure("人工结果必须是对象"))?
+            .remove("special_tags");
+    } else {
+        document["special_tags"] = serde_json::to_value(&state.special_tags)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReviewState {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub special_tags: Vec<SpecialTag>,
     #[serde(default)]
     pub reviewer_username: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -156,6 +212,8 @@ pub fn view_for_root(root: &Path, review: ReviewState) -> ReviewView {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveReviewRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub special_tags: Option<Vec<SpecialTag>>,
     pub source_path: String,
     pub source_name: Option<String>,
     pub source_hash: String,
@@ -328,6 +386,7 @@ fn draft_path(data_root: &Path, root: &Path) -> PathBuf {
 
 fn initial(annotation: &MachineAnnotation) -> ReviewState {
     ReviewState {
+        special_tags: Vec::new(),
         recovery_warnings: Vec::new(),
         rejection_reason: String::new(),
         change_summary: String::new(),
@@ -486,6 +545,7 @@ fn load_inner_checked_mode(
     }
     if let Some(bytes) = output {
         let document: Value = serde_json::from_slice(&bytes)?;
+        let special_tags = document_special_tags(&document)?;
         let technical = technical_review(
             &root.join(output_name(annotation, root)),
             output_hash.as_deref().unwrap_or_default(),
@@ -512,6 +572,7 @@ fn load_inner_checked_mode(
             let human =
                 machine_annotation::parse_human_in_directory(&bytes, &annotation.episode_id, root)?;
             let mut state = initial(&human);
+            state.special_tags = special_tags;
             state.workflow_version = 4;
             state.published = true;
             state.revision = local_revision;
@@ -547,6 +608,7 @@ fn load_inner_checked_mode(
             } else {
                 initial(annotation)
             };
+            state.special_tags = special_tags;
             state.output_hash = output_hash;
             return Ok(state);
         };
@@ -561,6 +623,7 @@ fn load_inner_checked_mode(
             review_value["revision"] = sequence;
         }
         let mut state: ReviewState = serde_json::from_value(review_value)?;
+        state.special_tags = special_tags;
         for item in &mut state.segments {
             if !item.deleted {
                 item.decision = state.status.clone();
@@ -1057,6 +1120,7 @@ fn reviewed_document(annotation: &MachineAnnotation, state: &ReviewState) -> App
         .ok_or_else(|| failure("人工结果必须是对象"))?
         .remove("_text_correction");
     document["_human_review"] = public_review(state)?;
+    patch_special_tags(&mut document, state)?;
     Ok(document)
 }
 
@@ -1123,6 +1187,7 @@ fn human_document(
         .ok_or_else(|| failure("人工结果必须是对象"))?
         .remove("_text_correction");
     document["_human_review"] = public_review(state)?;
+    patch_special_tags(&mut document, state)?;
     Ok(document)
 }
 
@@ -1433,6 +1498,7 @@ fn reject_pending_mode(
     let result = save_for_user_mode(
         data_root,
         SaveReviewRequest {
+            special_tags: None,
             source_path: root.to_string_lossy().into(),
             source_name: Some(annotation.source_name),
             source_hash: annotation.source_hash,
@@ -1540,6 +1606,7 @@ fn reject_pending_without_media(
         .insert(username.into(), shared);
     atomic_json(&session_path, &session)?;
     Ok(Some(ReviewState {
+        special_tags: Vec::new(),
         recovery_warnings: Vec::new(),
         reviewer_username: username.into(),
         rejection_reason: reason.into(),
@@ -1608,6 +1675,10 @@ pub fn publish_deferred_for_user(
         && current.reviewer_username == username
         && current.status == status
         && current.rejection_reason == request.rejection_reason.clone().unwrap_or_default()
+        && request
+            .special_tags
+            .as_ref()
+            .is_none_or(|tags| *tags == current.special_tags)
         && current.segments.len() == request.segments.len()
         && current
             .segments
@@ -1792,6 +1863,11 @@ fn save_for_user_mode(
     if request.status.as_deref() != Some("rejected") {
         validate(&annotation, &request.segments)?;
     }
+    let special_tags = request
+        .special_tags
+        .clone()
+        .unwrap_or_else(|| current.special_tags.clone());
+    validate_special_tags(&special_tags)?;
     let status = request.status.unwrap_or_else(pending_status);
     if annotation.source_name == machine_annotation::SKELETON_SOURCE && status != "pending" {
         return Err(failure("骨架片段仅支持描述，不设置审核结论"));
@@ -1819,6 +1895,7 @@ fn save_for_user_mode(
         review_change_summary(&current, &request.segments, &status, &rejection_reason);
     let revision_label = format!("{version_id} · {change_summary}");
     let mut state = ReviewState {
+        special_tags,
         recovery_warnings: Vec::new(),
         workflow_version: 4,
         rejection_reason,
@@ -1908,6 +1985,7 @@ fn save_for_user_mode(
             } else {
                 reviewed_document(&annotation, &state)?
             };
+            patch_special_tags(&mut document, &state)?;
             if annotation.source_name == machine_annotation::SKELETON_SOURCE {
                 if let Some(fields) = document.as_object_mut() {
                     fields.remove("_human_review");
@@ -2205,6 +2283,139 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
+    fn special_tags_roundtrip_with_approval_rejection_removal_and_fresh_host() {
+        let f = Fixture::new(0, true);
+        let original = f.original.clone();
+        let mut state = load(&f.local, &f.root).unwrap();
+        let tags = vec![SpecialTag {
+            camera: "extension_left".into(),
+            description: "两根设备线入镜".into(),
+        }];
+        let request =
+            |state: &ReviewState, tags: Option<Vec<SpecialTag>>, status: &str| SaveReviewRequest {
+                special_tags: tags,
+                source_path: f.root.to_string_lossy().into(),
+                source_name: None,
+                source_hash: state.source_hash.clone(),
+                expected_revision: state.revision,
+                segments: state.segments.clone(),
+                status: Some(status.into()),
+                rejection_reason: Some("镜头遮挡".into()),
+            };
+        state = save_for_user(
+            &f.local,
+            request(&state, Some(tags.clone()), "approved"),
+            "Alice",
+            "alice",
+        )
+        .unwrap();
+        assert_eq!(state.special_tags, tags);
+        assert_eq!(f.output()["special_tags"][0]["camera"], "extension_left");
+        assert_eq!(f.output()["_human_review"].as_object().unwrap().len(), 3);
+        let fresh = f.temp.join("fresh-tag-host");
+        assert_eq!(
+            load_selected(&fresh, &f.root, None).unwrap().special_tags,
+            tags
+        );
+        // The JSON deliverable, not just its technical sidecar, carries the tags.
+        fs::remove_file(technical_path(&f.root.join(OUTPUT))).unwrap();
+        assert_eq!(
+            load_selected(&f.temp.join("no-sidecar"), &f.root, None)
+                .unwrap()
+                .special_tags,
+            tags
+        );
+        state = load_selected(&f.local, &f.root, None).unwrap();
+        let before_segments = f.output()["episode_results"].clone();
+        state = save_for_user(
+            &f.local,
+            request(&state, None, "rejected"),
+            "Alice",
+            "alice",
+        )
+        .unwrap();
+        assert_eq!(
+            state.special_tags, tags,
+            "omitted optional field preserves existing tags"
+        );
+        assert_eq!(
+            f.output()["episode_results"],
+            before_segments,
+            "rejection never publishes draft segment edits"
+        );
+        let changed = vec![SpecialTag {
+            camera: "cam0".into(),
+            description: "线缆入镜".into(),
+        }];
+        state = save_for_user(
+            &f.local,
+            request(&state, Some(changed.clone()), "rejected"),
+            "Alice",
+            "alice",
+        )
+        .unwrap();
+        assert_eq!(
+            load_selected(&f.temp.join("rejected-host"), &f.root, None)
+                .unwrap()
+                .special_tags,
+            changed
+        );
+        save_for_user(
+            &f.local,
+            request(&state, Some(vec![]), "approved"),
+            "Alice",
+            "alice",
+        )
+        .unwrap();
+        assert!(f.output().get("special_tags").is_none());
+        assert_eq!(
+            fs::read(f.root.join("bailian_annotation.json")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn special_tags_reject_invalid_payload_before_publishing() {
+        let f = Fixture::new(0, true);
+        let state = load(&f.local, &f.root).unwrap();
+        let good = SpecialTag {
+            camera: "cam0".into(),
+            description: "设备线入镜".into(),
+        };
+        for tags in [
+            vec![SpecialTag {
+                description: "\n".into(),
+                ..good.clone()
+            }],
+            vec![good.clone(); 21],
+            vec![good.clone(), good.clone()],
+            vec![SpecialTag {
+                description: "字".repeat(201),
+                ..good.clone()
+            }],
+        ] {
+            let result = save_for_user(
+                &f.local,
+                SaveReviewRequest {
+                    special_tags: Some(tags),
+                    source_path: f.root.to_string_lossy().into(),
+                    source_name: None,
+                    source_hash: state.source_hash.clone(),
+                    expected_revision: state.revision,
+                    segments: state.segments.clone(),
+                    status: Some("approved".into()),
+                    rejection_reason: None,
+                },
+                "Alice",
+                "alice",
+            );
+            assert!(result.is_err());
+            assert!(!f.root.join(OUTPUT).exists());
+            assert!(!f.root.join("session.json").exists());
+        }
+    }
+
+    #[test]
     fn skeleton_descriptions_are_independent_reopenable_and_do_not_write_qc() {
         let f = Fixture::new(0, true);
         fs::create_dir_all(f.root.join(".session_meta")).unwrap();
@@ -2227,6 +2438,7 @@ mod tests {
         );
         assert!(!f.root.join(machine_annotation::SKELETON_SOURCE).exists());
         let request = |state: &ReviewState, segments: Vec<ReviewSegment>| SaveReviewRequest {
+            special_tags: None,
             source_path: f.root.to_string_lossy().into(),
             source_name: source.map(Into::into),
             source_hash: state.source_hash.clone(),
@@ -2385,6 +2597,7 @@ mod tests {
             };
             let entry = queue::DeferredReview {
                 request: SaveReviewRequest {
+                    special_tags: None,
                     source_path: f.root.to_string_lossy().into(),
                     source_name: Some(name.into()),
                     source_hash: state.source_hash,
@@ -2529,6 +2742,7 @@ mod tests {
         let saved = save_for_user(
             &f.local,
             SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: None,
                 source_hash: initial.source_hash,
@@ -2605,6 +2819,7 @@ mod tests {
             let selected = format!("./{name}");
             let state = load_selected(&f.local, &f.root, Some(&selected)).unwrap();
             let request = |state: &ReviewState, status: &str| SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: Some(selected.clone()),
                 source_hash: state.source_hash.clone(),
@@ -2670,6 +2885,7 @@ mod tests {
             "alice",
             queue::DeferredReview {
                 request: SaveReviewRequest {
+                    special_tags: None,
                     source_path: old.to_string_lossy().into(),
                     source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
                     source_hash: state.source_hash,
@@ -3040,6 +3256,7 @@ mod tests {
             let saved = save(
                 &f.local,
                 SaveReviewRequest {
+                    special_tags: None,
                     source_path: f.root.to_string_lossy().into(),
                     source_name: None,
                     source_hash: current.source_hash,
@@ -3126,6 +3343,7 @@ mod tests {
             let result = save_for_user_mode(
                 &f.local,
                 SaveReviewRequest {
+                    special_tags: None,
                     source_path: f.root.to_string_lossy().into(),
                     source_name: None,
                     source_hash: state.source_hash,
@@ -3157,6 +3375,7 @@ mod tests {
         let result = save_for_user_mode(
             &fixture.local,
             SaveReviewRequest {
+                special_tags: None,
                 source_path: fixture.root.to_string_lossy().into(),
                 source_name: None,
                 source_hash: state.source_hash,
@@ -3205,6 +3424,7 @@ mod tests {
             save_for_user(
                 &fixture.local,
                 SaveReviewRequest {
+                    special_tags: None,
                     source_path: fixture.root.to_string_lossy().into(),
                     source_name: Some(machine_annotation::MANUAL_SOURCE.into()),
                     source_hash: state.source_hash.clone(),
@@ -3300,6 +3520,7 @@ mod tests {
         let event = json!({"eventId":"11111111-1111-4111-8111-111111111111","sessionId":"22222222-2222-4222-8222-222222222222","episodeKey":"a".repeat(64),"episodeName":"sample","action":"approved","occurredAtMs":1792548000000u64,"elapsedMs":1000,"details":{}});
         let entry = queue::DeferredReview {
             request: SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
                 source_hash: state.source_hash.clone(),
@@ -3457,6 +3678,7 @@ mod tests {
         let initial = load(&f.local, &f.root).unwrap();
         let view = view_for_root(&f.root, initial.clone());
         let request = SaveReviewRequest {
+            special_tags: None,
             source_path: f.root.to_string_lossy().into(),
             source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
             source_hash: initial.source_hash,
@@ -3521,6 +3743,7 @@ mod tests {
         let state = load(&f.local, &f.root).unwrap();
         let mut entry = queue::DeferredReview {
             request: SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
                 source_hash: state.source_hash.clone(),
@@ -3576,6 +3799,7 @@ mod tests {
         save_with_event_for_user(
             &f.local,
             SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: None,
                 source_hash: current.source_hash,
@@ -3627,6 +3851,7 @@ mod tests {
         };
         let entry = queue::DeferredReview {
             request: SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: None,
                 source_hash: String::new(),
@@ -3697,6 +3922,7 @@ mod tests {
                 state = save_for_user(
                     &f.temp.join("new-host"),
                     SaveReviewRequest {
+                        special_tags: None,
                         source_path: root.to_string_lossy().into(),
                         source_name: Some(selected.into()),
                         source_hash: state.source_hash.clone(),
@@ -3776,6 +4002,7 @@ mod tests {
         let saved = save_for_user(
             &f.local,
             SaveReviewRequest {
+                special_tags: None,
                 source_path: root.to_string_lossy().into(),
                 source_name: Some(ann.source_name),
                 source_hash: state.source_hash,
@@ -3901,6 +4128,7 @@ mod tests {
         let view = view_for_root(&f.root, state.clone());
         crate::source_review_queue::DeferredReview {
             request: SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
                 source_hash: state.source_hash.clone(),
@@ -4578,6 +4806,7 @@ mod tests {
             save(
                 &self.local,
                 SaveReviewRequest {
+                    special_tags: None,
                     status: None,
                     source_path: self.root.to_string_lossy().into(),
                     source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
@@ -4681,6 +4910,7 @@ mod tests {
                 let result = save_for_user(
                     &f.local,
                     SaveReviewRequest {
+                        special_tags: None,
                         source_path: f.root.to_string_lossy().into(),
                         source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
                         source_hash: current.source_hash,
@@ -4841,6 +5071,7 @@ mod tests {
         let f = Fixture::new(0, true);
         let initial = load(&f.local, &f.root).unwrap();
         let request = |status: &str| SaveReviewRequest {
+            special_tags: None,
             source_path: f.root.to_string_lossy().into(),
             source_name: None,
             source_hash: initial.source_hash.clone(),
@@ -4916,6 +5147,7 @@ mod tests {
             .is_empty());
         fs::write(f.root.join("session.json"), b"[]").unwrap();
         let request = SaveReviewRequest {
+            special_tags: None,
             source_path: f.root.to_string_lossy().into(),
             source_name: None,
             source_hash: state.source_hash,
@@ -4943,6 +5175,7 @@ mod tests {
             Some("无效类别"),
         ] {
             let request = SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: None,
                 source_hash: state.source_hash.clone(),
@@ -4993,6 +5226,7 @@ mod tests {
         for (index, reason) in reasons.into_iter().enumerate() {
             let previous = state.version_id.clone();
             let request = SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: None,
                 source_hash: state.source_hash.clone(),
@@ -5071,6 +5305,7 @@ mod tests {
             state = save(
                 &f.local,
                 SaveReviewRequest {
+                    special_tags: None,
                     source_path: f.root.to_string_lossy().into(),
                     source_name: None,
                     source_hash: state.source_hash.clone(),
@@ -5221,6 +5456,7 @@ mod tests {
         fs::write(native_root.join("bailian_annotation.json"), &f.original).unwrap();
         let mut state = load(&f.local, &root).unwrap();
         let save_request = |state: &ReviewState, status: &str| SaveReviewRequest {
+            special_tags: None,
             source_path: root.to_string_lossy().into(),
             source_name: None,
             source_hash: state.source_hash.clone(),
@@ -5351,6 +5587,7 @@ mod tests {
         let saved = save_for_user(
             &f.local,
             SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
                 source_hash: state.source_hash,
@@ -5415,6 +5652,7 @@ mod tests {
             save(
                 &fixture.local,
                 SaveReviewRequest {
+                    special_tags: None,
                     status: None,
                     source_path: fixture.root.to_string_lossy().into(),
                     source_name: Some(machine_annotation::FLASH_SOURCE.into()),
@@ -5511,6 +5749,7 @@ mod tests {
         save(
             &fixture.local,
             SaveReviewRequest {
+                special_tags: None,
                 status: None,
                 source_path: root.to_string_lossy().into(),
                 source_name: Some(machine_annotation::FLASH_SOURCE.into()),
@@ -5614,6 +5853,7 @@ mod tests {
             save(
                 &f.local,
                 SaveReviewRequest {
+                    special_tags: None,
                     source_path: f.root.to_string_lossy().into(),
                     source_name: None,
                     source_hash: state.source_hash.clone(),
@@ -6028,6 +6268,7 @@ mod tests {
         let f = Fixture::new(0, true);
         let state = load(&f.local, &f.root).unwrap();
         let request = || SaveReviewRequest {
+            special_tags: None,
             source_path: f.root.to_string_lossy().into(),
             source_name: None,
             source_hash: state.source_hash.clone(),

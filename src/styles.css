@@ -1700,3 +1700,29 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .update-source-choice { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 16px 0; font-size: 13px; }
 .update-source-choice select { flex: 1; min-width: 0; max-width: 320px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: inherit; font: inherit; }
 .update-source-note { overflow-wrap: anywhere; }
+
+/* Episode-level notes stay beside playback, separate from action descriptions. */
+.episode-special-tags { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); font-size: 12px; min-width: 0; }
+.episode-special-tags header, .episode-special-tags header > div { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.episode-special-tags header { justify-content: space-between; }
+.episode-special-tags header span, .special-tag-hint { color: var(--muted); font-size: 11px; }
+.special-tag-add { display: inline-flex; align-items: center; gap: 4px; background: transparent; border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px; color: var(--ink); }
+.episode-special-tags ul { display: flex; flex-wrap: wrap; gap: 7px; list-style: none; margin: 9px 0 0; padding: 0; }
+.episode-special-tags li { display: flex; align-items: center; gap: 6px; max-width: 100%; padding: 5px 7px; background: #fff8e9; border: 1px solid #e5d2a4; border-radius: 5px; color: #70511a; }
+.special-tag-camera { font-weight: 600; flex-shrink: 0; }
+.special-tag-text { overflow-wrap: anywhere; min-width: 0; }
+.episode-special-tags li button { display: inline-flex; flex: 0 0 auto; border: 0; background: transparent; color: inherit; padding: 3px; }
+.special-tag-form { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.special-tag-form label { display: grid; gap: 4px; min-width: 0; max-width: 100%; }
+.special-tag-form input, .special-tag-form select { width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font-size: 12px; box-sizing: border-box; }
+.special-tag-description { flex: 1 1 260px; }
+.special-tag-form .button { min-height: 32px; padding: 6px 10px; }
+.special-tag-form p { margin: 0; flex-basis: 100%; color: #a13024; }
+.special-tag-hint { margin: 7px 0 0; }
+
+/* Reserve room for the tag entry while retaining the desktop chart and QC controls. */
+@media (min-width: 1241px) {
+  .review-main-grid:has(.episode-special-tags) .camera-grid,
+  .review-main-grid:has(.episode-special-tags) .skeleton-side-panel > .skeleton-viewer { height: clamp(208px, calc(40vh - 52px), 388px); }
+}
+.episode-special-tags ul { max-height: 86px; overflow-y: auto; }

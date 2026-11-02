@@ -447,6 +447,7 @@ mod tests {
         let saved = machine_review::save_for_user(
             &local,
             machine_review::SaveReviewRequest {
+                special_tags: None,
                 source_path: f.root.to_string_lossy().into(),
                 source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
                 source_hash: initial.source_hash,
