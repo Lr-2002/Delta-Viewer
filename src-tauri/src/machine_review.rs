@@ -1232,6 +1232,14 @@ fn technical_review(output: &Path, content_hash: &str) -> AppResult<Option<Revie
         .map_err(Into::into)
 }
 
+fn shared_technical_state(state: &ReviewState) -> AppResult<Value> {
+    let mut value = serde_json::to_value(state)?;
+    // Old viewers strictly decode this shared sidecar. Tags live in the human
+    // deliverable and are overlaid on load, never add a field to this v1 record.
+    value.as_object_mut().unwrap().remove("specialTags");
+    Ok(value)
+}
+
 fn write_technical(output: &Path, content_hash: &str, state: &ReviewState) -> AppResult<()> {
     let path = technical_path(output);
     // Validate an existing reserved file before replacing it.
@@ -1244,7 +1252,7 @@ fn write_technical(output: &Path, content_hash: &str, state: &ReviewState) -> Ap
     atomic_json(
         &path,
         &json!({"schemaVersion":1,"outputName":output.file_name().and_then(|s| s.to_str()).unwrap_or_default(),
-        "contentHash":content_hash,"review":state}),
+        "contentHash":content_hash,"review":shared_technical_state(state)?}),
     )?;
     Ok(())
 }
@@ -1272,7 +1280,7 @@ pub(crate) fn correction_technical(
             review.reviewer_username.clear();
             review.rejection_reason.clear();
         }
-        record["review"] = serde_json::to_value(review)?;
+        record["review"] = shared_technical_state(&review)?;
     }
     atomic_json(&technical_path(output), &record)?;
     Ok(())
@@ -2282,6 +2290,40 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
 
+    // Frozen 1.5.1 shared-sidecar decoder: mixed-version compatibility regression.
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LegacyReviewState151 {
+        #[serde(default)]
+        pub reviewer_username: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub recovery_warnings: Vec<String>,
+        #[serde(default)]
+        pub rejection_reason: String,
+        #[serde(default)]
+        pub change_summary: String,
+        #[serde(default)]
+        pub revision_label: String,
+        #[serde(default)]
+        pub app_version: String,
+        #[serde(default)]
+        pub workflow_version: u32,
+        #[serde(default = "pending_status")]
+        pub status: String,
+        #[serde(default)]
+        pub version_id: String,
+        #[serde(default)]
+        pub previous_version_id: String,
+        pub source_hash: String,
+        pub revision: u64,
+        pub segments: Vec<ReviewSegment>,
+        pub published: bool,
+        pub output_hash: Option<String>,
+        pub updated_at_ms: u64,
+        pub reviewer: String,
+    }
+
     #[test]
     fn special_tags_roundtrip_with_approval_rejection_removal_and_fresh_host() {
         let f = Fixture::new(0, true);
@@ -2312,6 +2354,16 @@ mod tests {
         assert_eq!(state.special_tags, tags);
         assert_eq!(f.output()["special_tags"][0]["camera"], "extension_left");
         assert_eq!(f.output()["_human_review"].as_object().unwrap().len(), 3);
+        let technical: Value =
+            serde_json::from_slice(&fs::read(technical_path(&f.root.join(OUTPUT))).unwrap())
+                .unwrap();
+        assert!(
+            technical["review"].get("specialTags").is_none(),
+            "shared v1 sidecars remain readable by old strict clients"
+        );
+        let legacy: LegacyReviewState151 =
+            serde_json::from_value(technical["review"].clone()).unwrap();
+        assert_eq!(legacy.status, "approved");
         let fresh = f.temp.join("fresh-tag-host");
         assert_eq!(
             load_selected(&fresh, &f.root, None).unwrap().special_tags,
