@@ -1463,25 +1463,36 @@ for (const renderer of ["local", "cloud"]) test(`${renderer} episode special tag
     const add = panel.getByRole("button", { name: "添加标签", exact: true });
     await add.click();
     const camera = panel.getByLabel("特殊标签相机", { exact: true });
-    const name = await camera.locator('option').nth(1).getAttribute('value');
-    await camera.selectOption(name);
+    const choices = camera.getByRole("checkbox");
+    const name = await choices.nth(1).inputValue();
+    const second = await choices.nth(2).inputValue();
+    await choices.nth(1).check();
+    await choices.nth(2).check();
+    assert.equal(await choices.nth(0).isChecked(), false);
     await panel.getByLabel("特殊标签说明", { exact: true }).fill("相机 x123 设备线入镜");
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => !document.querySelector('.special-tag-add').disabled);
     let draft = await saved();
-    assert.deepEqual(draft.specialTags, [{ camera: name, description: "相机 x123 设备线入镜" }]);
+    assert.deepEqual(draft.specialTags, [name, second].map(camera => ({ camera, description: "相机 x123 设备线入镜" })));
+    assert.equal(await panel.getByRole("listitem").count(), 1, "multi-camera note is presented as one editable tag");
     assert.deepEqual(draft.segments, before.segments, "tag typing must not trigger trim or label shortcuts");
     assert.equal(draft.status, "pending");
     await panel.getByRole("button", { name: "修改特殊标签 1", exact: true }).click();
+    assert.equal(await choices.nth(1).isChecked(), true);
+    assert.equal(await choices.nth(2).isChecked(), true);
+    await choices.nth(2).uncheck();
+    await choices.nth(2).focus();
+    await page.keyboard.press("Space");
     await panel.getByLabel("特殊标签说明", { exact: true }).fill("两根设备线入镜");
     await panel.getByRole("button", { name: "保存", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('.special-tag-add').disabled);
     await add.click();
-    await camera.selectOption(name);
+    await choices.nth(1).check();
     await panel.getByLabel("特殊标签说明", { exact: true }).fill("两根设备线入镜");
     await panel.getByRole("button", { name: "添加", exact: true }).click();
-    await panel.getByRole("alert").getByText("这个相机已有相同标签。", { exact: true }).waitFor();
-    await camera.selectOption("");
+    await panel.getByRole("alert").getByText("所选相机已有相同标签，请修改说明或取消重复相机。", { exact: true }).waitFor();
+    await choices.nth(0).check();
+    assert.equal(await choices.nth(1).isChecked(), false);
     await panel.getByLabel("特殊标签说明", { exact: true }).fill("整条数据特殊说明");
     await panel.getByRole("button", { name: "添加", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('.special-tag-add').disabled);
@@ -1489,15 +1500,17 @@ for (const renderer of ["local", "cloud"]) test(`${renderer} episode special tag
     await page.waitForFunction(() => !document.querySelector('.special-tag-add').disabled);
     await page.getByRole("button", { name: "重新读取机标", exact: true }).click();
     await panel.getByText("两根设备线入镜", { exact: true }).waitFor();
-    assert.deepEqual((await saved()).specialTags, [{ camera: name, description: "两根设备线入镜" }]);
+    assert.deepEqual((await saved()).specialTags, [name, second].map(camera => ({ camera, description: "两根设备线入镜" })));
     await add.click();
     for (const width of [1440, 960, 390]) {
-      await page.setViewportSize({ width, height: width === 390 ? 844 : 920 });
+      await page.setViewportSize({ width, height: width === 390 ? 844 : width === 960 ? 680 : 920 });
       for (const control of [add, camera, panel.getByLabel("特殊标签说明", { exact: true }), panel.getByRole("button", { name: "添加", exact: true })]) {
         await control.scrollIntoViewIfNeeded();
         const box = await control.boundingBox();
         assert.ok(box && box.x >= 0 && box.x + box.width <= width + 1, `tag control fits ${width}px`);
       }
+      const cancel = panel.getByRole("button", { name: "取消", exact: true });
+      assert.ok(await cancel.evaluate(element => parseFloat(getComputedStyle(element).fontSize) >= 12), "cancel label remains readable on small screens");
       await page.screenshot({ path: `artifacts/unified-proofreading/special-tags-${width}.png` });
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     }
@@ -1510,7 +1523,7 @@ for (const renderer of ["local", "cloud"]) test(`${renderer} episode special tag
     await page.waitForFunction(() => document.querySelector('.quality-footer')?.textContent.includes('不通过'));
     draft = await saved();
     assert.equal(draft.status, "rejected");
-    assert.deepEqual(draft.specialTags, [{ camera: name, description: "两根设备线入镜" }]);
+    assert.deepEqual(draft.specialTags, [name, second].map(camera => ({ camera, description: "两根设备线入镜" })));
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
