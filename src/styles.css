@@ -1726,3 +1726,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .review-main-grid:has(.episode-special-tags) .skeleton-side-panel > .skeleton-viewer { height: clamp(208px, calc(40vh - 52px), 388px); }
 }
 .episode-special-tags ul { max-height: 86px; overflow-y: auto; }
+/* Legacy standalone proofreading keeps playback and its inspector on the first row. */
+.quality-review:has(> .episode-special-tags) { height: auto; grid-template-rows: max(510px, calc(100dvh - 238px)) auto; }
+.quality-review > .episode-special-tags { grid-column: 1 / -1; grid-row: 2; order: 1; }
