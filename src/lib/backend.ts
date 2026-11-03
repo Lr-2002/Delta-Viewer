@@ -5,6 +5,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import packageInfo from "../../package.json";
 import { createAuditFlusher } from "./audit-flush";
 import { REJECTION_REASONS } from "./rejection-reasons";
+import { findReviewOverlap } from "./machine-annotation";
 import type { TaskIndexResult } from "./task-center";
 import { createTaskIndexReader, taskIndexDeadline } from "./task-index-read";
 
@@ -634,6 +635,9 @@ export async function loadMachineReview(sourcePath: string, sourceName?: string)
 }
 
 export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending", rejectionReason?: string, commitEvent?: [string, number], durable?: { base: import("../types").MachineReview; audit: import("./review-audit-types").ReviewAuditEvent }, specialTags?: import("../types").SpecialTag[]): Promise<import("../types").MachineReview> {
+  if ((status === "approved" || sourceName === "skeleton.description.json") && findReviewOverlap(segments)) {
+    throw new Error("MACHINE_REVIEW_OVERLAP: 片段范围重叠，请核对边界后再保存；本次未提交审核结论或覆盖人工结果");
+  }
   if (isTauriRuntime()) {
     const request = { sourcePath, sourceHash, expectedRevision, segments, sourceName, status, rejectionReason, specialTags };
     const localEntry = durable && sourceName !== "skeleton.description.json" ? { request, outputHash: durable.base.outputHash ?? null, qcContentHash: durable.base.qcContentHash ?? null, audit: durable.audit, error: "", onlyPending: false } : null;

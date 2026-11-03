@@ -3,7 +3,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
 import { deferMachineReview, isTauriRuntime, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
 import { createDeferredReviewEvent, enqueueCommittedReviewEvent, reviewReceiptValue, persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
-import { createReviewBoundaryEditor, addReviewSegment, recoverReviewSegments, reviewVideoIntersection, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
+import { findReviewOverlap, findDeletedReviewOverlap, createReviewBoundaryEditor, addReviewSegment, recoverReviewSegments, reviewVideoIntersection, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
+import { ReviewRangeNotice, RestoreReviewDialog } from "./ReviewRangeNotice";
 import { EpisodeSpecialTags } from "./EpisodeSpecialTags";
 import { ProofreadPlayer } from "./ProofreadPlayer";
 import { ReviewTimeline } from "./ReviewTimeline";
@@ -157,6 +158,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
   const legacyRecovery = useRef(false);
   const legacyRecoveryKey = () => `dohc.machine-review.pending:${root}${!loadedSource.current || loadedSource.current === "bailian_annotation.json" ? "" : loadedSource.current === "bailian_annotation.qwen3.8-flash.json" ? ":qwen3.8-flash" : `:source:${encodeURIComponent(loadedSource.current)}`}`;
   const recoveryKey = () => `${legacyRecoveryKey()}:account:${encodeURIComponent(username)}`;
+  const [restoreConfirm, setRestoreConfirm] = useState(false);
   const [recoveryError, setRecoveryError] = useState("");
   const [recoveryMessages, setRecoveryMessages] = useState<string[]>([]);
   const [auditCompletionError, setAuditCompletionError] = useState("");
@@ -307,7 +309,9 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
         try { recovery = JSON.parse(raw); } catch { recovery = {} as typeof recovery; }
         const restored = recoverReviewSegments(recovery?.segments, videoCount ?? loaded.frameCount, loaded.frameCount);
         const invalidStatus = !["pending", "approved", "rejected"].includes(recovery?.status ?? "pending");
-        if (!restored.segments || restored.repaired || invalidStatus) {
+        const wrongSource = Boolean(recovery?.sourceHash && loaded.sourceHash && recovery.sourceHash !== loaded.sourceHash);
+        const overlap = restored.segments && findReviewOverlap(restored.segments);
+        if (!restored.segments || restored.repaired || invalidStatus || wrongSource || overlap) {
           try {
             const backupKey = `${recoveryKey()}:preserved:${crypto.randomUUID()}`;
             localStorage.setItem(backupKey, raw);
@@ -315,16 +319,19 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
             setRecoveryError("旧应急草稿需要兼容恢复，但本机备份失败；已保留原草稿，请保持此页打开后重试保存。");
             return;
           }
-          setRecoveryMessages([restored.segments
+          setRecoveryMessages([wrongSource
+            ? "应急草稿属于已变化的机标来源，原草稿已在本机备份，未覆盖当前加载结果。"
+            : overlap ? "应急草稿包含重叠片段，原草稿已在本机备份；当前按待审核展示，请修正边界后再通过。"
+            : restored.segments
             ? "旧应急草稿的重复索引或旧状态已兼容修复，动作文字与边界保留，原记录已在本机备份。"
             : "旧应急草稿的片段范围或格式不适用于当前视频，原记录已在本机备份，当前显示已加载的机标或人工结果。"]);
         }
-        if (!restored.segments) return;
+        if (!restored.segments || wrongSource) return;
         if (videoCount && (!loaded.videoFrameCount || loaded.videoFrameCount === videoCount) && loaded.frameCount !== videoCount
           && restored.segments.every(item => item.deleted || item.endFrame < videoCount)) setTimelineAdapted(true);
         setEdits(restored.segments); editsRef.current = restored.segments;
         tagsRef.current = recovery.specialTags ?? state.specialTags ?? []; setSpecialTags(tagsRef.current);
-        const snapshot = { specialTags: tagsRef.current, segments: restored.segments, status: restored.repaired || invalidStatus ? "pending" as const : recovery.status ?? "pending", rejectionReason: recovery.rejectionReason };
+        const snapshot = { specialTags: tagsRef.current, segments: restored.segments, status: restored.repaired || invalidStatus || overlap ? "pending" as const : recovery.status ?? "pending", rejectionReason: recovery.rejectionReason };
         if (ownRaw && !cloudWorkspace) void persist(snapshot);
         else {
           legacyRecovery.current = true;
@@ -363,6 +370,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
     window.addEventListener("cloud-qc-synchronized", refreshQc);
     return () => { alive = false; window.removeEventListener("cloud-qc-synchronized", refreshQc); };
   }, [root, cloudWorkspace]);
+  const rangeOverlap = useMemo(()=>findReviewOverlap(edits),[edits]);
   const active = rows.find((segment) => segment.sourceIndex === selected) ?? rows[0];
   const issueKey = (index: number, description: string, original: string) => JSON.stringify([index,description,original]);
   const descriptionIssues = active ? inspectDescription(active.description, textPolicy).filter(issue => !ignoredText.has(issueKey(active.sourceIndex, active.description, issue.original))) : [];
@@ -548,6 +556,13 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   });
+  function restoreSegments(confirmed = false) {
+    if (!canEdit) return;
+    const eligible = editsRef.current.filter(item=>item.endFrame < editFrameCount);
+    if (!confirmed && findDeletedReviewOverlap(eligible)) { setRestoreConfirm(true); return; }
+    setRestoreConfirm(false);
+    change([...restoreReviewSegments(eligible), ...editsRef.current.filter(item=>item.endFrame >= editFrameCount)]);
+  }
   function addSegment() {
     if (!canEdit || !result) return;
     const next = addReviewSegment(editsRef.current, visibleFrame, editFrameCount);
@@ -586,6 +601,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
     void persist({ segments: next, status: "pending" });
   }
   async function finish(status: "approved" | "rejected", rejectionReason?: string, textConfirmed = false) {
+    if (status === "approved" && findReviewOverlap(editsRef.current)) return;
     if (!canEdit || finishLock.current || running.current) return;
     if (status === "approved" && requiresBoundaryCheck && !boundariesConfirmed) return;
     if (status === "rejected" && !rejectionReason?.trim()) return;
@@ -712,11 +728,12 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
         <label><input type="checkbox" checked={boundariesConfirmed} disabled={!canEdit} onChange={event => setBoundariesConfirmed(event.currentTarget.checked)} />我已人工核对上述片段边界</label>
       </div>}
       {skeletonMode && !loading && !error && !rows.length && <p className="machine-message">暂无骨架片段，点击加号新增，使用标签库或输入自定义描述。</p>}
+      <ReviewRangeNotice segments={edits} onChoose={choose} skeletonMode={skeletonMode} />
       <SegmentList rows={rows} selected={active?.sourceIndex} disabled={!canEdit} selectionDisabled={busy || loading || finishing} onChoose={choose}
         onDelete={deleteSegment} />
       <div className="quality-editor" aria-label="人工复核">
         <header className="machine-heading"><strong>{active ? `片段 ${rows.indexOf(active) + 1}` : "动作描述"}</strong>
-          <button className="icon-button" title="恢复视频范围内删除的片段" aria-label="恢复删除的片段" disabled={!canEdit || !edits.some((item) => item.deleted && item.endFrame < editFrameCount)} onClick={() => change([...restoreReviewSegments(editsRef.current.filter(item => item.endFrame < editFrameCount)), ...editsRef.current.filter(item => item.endFrame >= editFrameCount)])}><Undo2 size={15} /></button>
+          <button className="icon-button" title="恢复视频范围内删除的片段" aria-label="恢复删除的片段" disabled={!canEdit || !edits.some((item) => item.deleted && item.endFrame < editFrameCount)} onClick={() => restoreSegments()}><Undo2 size={15} /></button>
         </header>
         <div className="quality-description-shell">
           <textarea ref={descriptionInput} aria-label="复核动作描述" placeholder="中文动作描述" value={active?.description ?? ""} disabled={!canEdit || !active}
@@ -769,10 +786,11 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
         {!skeletonMode && review?.qcStatus === "rejected" && review.qcRejectionReason && <p className="review-rejection-reason" title={review.qcRejectionReason}>不通过：{review.qcRejectionReason}</p>}
         {!skeletonMode && <div className="quality-decisions">
           <button ref={rejectButton} className="button button-secondary" disabled={!canEdit || saving} onClick={openRejection}><X size={16} />不通过</button>
-          <button className="button button-primary" disabled={!canEdit || saving || !rows.length || (requiresBoundaryCheck && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>
+          <button className="button button-primary" disabled={!canEdit || saving || !rows.length || Boolean(rangeOverlap) || (requiresBoundaryCheck && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>
         </div>}
       </footer>
     </section>
+    {restoreConfirm && <RestoreReviewDialog skeletonMode={skeletonMode} disabled={!canEdit || saving} onCancel={()=>setRestoreConfirm(false)} onConfirm={()=>restoreSegments(true)} />}
     {textCheckOpen && <dialog className="text-quality-dialog" aria-label="通过前文字检查" ref={node=>{if(node&&!node.open)node.showModal();}} onCancel={()=>setTextCheckOpen(false)}><h2>通过前文字检查</h2><p>{allTextIssues.length} 个疑似问题</p><ul className="text-check-summary">{allTextIssues.map((issue,i)=><li key={i}><button className="review-user-link" onClick={()=>{setTextCheckOpen(false);setSelected(issue.row.sourceIndex);seek(issue.row.startFrame);}}>片段 {rows.indexOf(issue.row)+1}：{issue.row.description}</button><p>{issue.original} → {issue.suggestion}（{issue.reason}）</p></li>)}</ul><footer><button className="button button-secondary" autoFocus onClick={()=>setTextCheckOpen(false)}>返回检查</button><button className="button button-primary" disabled={finishing} onClick={()=>{recordReviewInteraction("control",{value:`已核对 ${allTextIssues.length} 项文字提示并继续通过`},root);setTextCheckOpen(false);void finish("approved",undefined,true);}}><Check size={16}/>已核对，继续通过</button></footer></dialog>}
     {rangeRepairOpen && rangeRepair && <dialog className="rejection-dialog video-range-dialog" aria-label="处理机标越界范围" ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setRangeRepairOpen(false)}>
       <header><h2>处理机标越界范围</h2></header>

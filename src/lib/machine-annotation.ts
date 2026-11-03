@@ -109,22 +109,52 @@ export function deleteReviewSegment(segments: ReviewSegment[], sourceIndex: numb
   });
 }
 
+// All ranges here are inclusive; shared JSON uses [start,end). A touching edge
+// is valid, but no playable frame may belong to two live segments.
+export function findReviewOverlap(segments: ReviewSegment[]) {
+  const rows = segments.filter(item => !item.deleted).sort((a,b) => a.startFrame-b.startFrame || a.endFrame-b.endFrame || a.sourceIndex-b.sourceIndex);
+  for (let i=1;i<rows.length;i++) {
+    if (rows[i].startFrame <= rows[i-1].endFrame) return { previous: rows[i-1], current: rows[i] };
+  }
+  return null;
+}
+
+export function findDeletedReviewOverlap(segments: ReviewSegment[]) {
+  return findReviewOverlap(segments.filter(item => item.deleted).map(item => ({...item,deleted:false})));
+}
+
 export function restoreReviewSegments(segments: ReviewSegment[]): ReviewSegment[] {
-  const removed = segments.filter(item => item.deleted).sort((a,b) => a.startFrame - b.startFrame);
+  const removed = segments.filter(item => item.deleted).sort((a,b) => a.startFrame-b.startFrame || a.endFrame-b.endFrame || a.sourceIndex-b.sourceIndex);
   let nextIndex = Math.max(-1, ...segments.map(item => item.sourceIndex)) + 1;
-  return segments.flatMap((item): ReviewSegment[] => {
-    if (item.deleted) return [{ ...item, deleted: false, decision: "pending" }];
+  const restored: ReviewSegment[] = [];
+  function uncovered(item: ReviewSegment, occupied: ReviewSegment[]) {
     let ranges = [[item.startFrame, item.endFrame]];
-    for (const restored of removed) ranges = ranges.flatMap(([start,end]) => {
-      if (end < restored.startFrame || start > restored.endFrame) return [[start,end]];
+    for (const taken of occupied) ranges = ranges.flatMap(([start,end]) => {
+      if (end < taken.startFrame || start > taken.endFrame) return [[start,end]];
       const pieces: number[][] = [];
-      if (start < restored.startFrame) pieces.push([start,restored.startFrame-1]);
-      if (end > restored.endFrame) pieces.push([restored.endFrame+1,end]);
+      if (start < taken.startFrame) pieces.push([start,taken.startFrame-1]);
+      if (end > taken.endFrame) pieces.push([taken.endFrame+1,end]);
       return pieces;
     });
+    return ranges;
+  }
+  function pieces(item: ReviewSegment, ranges: number[][]): ReviewSegment[] {
     if (!ranges.length) return [{ ...item, deleted: true, decision: "pending" }];
-    if (ranges.length === 1 && ranges[0][0] === item.startFrame && ranges[0][1] === item.endFrame) return [item];
-    return ranges.map(([startFrame,endFrame],i) => ({ ...item, sourceIndex:i ? nextIndex++ : item.sourceIndex, startFrame,endFrame,decision:"pending" }));
+    if (!item.deleted && ranges.length === 1 && ranges[0][0] === item.startFrame && ranges[0][1] === item.endFrame) return [item];
+    return ranges.map(([startFrame,endFrame],i) => ({ ...item, sourceIndex:i ? nextIndex++ : item.sourceIndex, startFrame,endFrame,deleted:false,decision:"pending" }));
+  }
+  // Expanded deletion history can overlap itself (e.g. delete first, then the
+  // successor that inherited its range). Restore in a deterministic order and
+  // allocate each frame once, including among deleted rows, not just live rows.
+  const recovered = new Map<number, ReviewSegment[]>();
+  for (const item of removed) {
+    const result = pieces(item,uncovered(item,restored));
+    recovered.set(item.sourceIndex,result);
+    restored.push(...result.filter(row=>!row.deleted));
+  }
+  return segments.flatMap((item): ReviewSegment[] => {
+    if (item.deleted) return recovered.get(item.sourceIndex)!;
+    return pieces(item,uncovered(item,restored));
   });
 }
 

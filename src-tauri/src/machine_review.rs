@@ -883,6 +883,24 @@ fn preserve_recovery_bytes(data_root: &Path, bytes: &[u8]) -> AppResult<PathBuf>
     Ok(destination)
 }
 
+// Keep legacy/draft content readable and editable, but never publish ranges
+// that assign one video frame to multiple actions. Deleted rows are history.
+pub(crate) fn validate_publish_ranges(edits: &[ReviewSegment]) -> AppResult<()> {
+    let mut rows: Vec<_> = edits.iter().filter(|item| !item.deleted).collect();
+    rows.sort_by_key(|item| (item.start_frame, item.end_frame, item.source_index));
+    for pair in rows.windows(2) {
+        let (previous, current) = (pair[0], pair[1]);
+        if current.start_frame <= previous.end_frame {
+            return Err(AppError::Message(format!(
+                "MACHINE_REVIEW_OVERLAP: 片段范围重叠：索引 {} [{}, {}) 与索引 {} [{}, {})。请核对边界后再通过；本机草稿保留，未提交审核结论或覆盖人工结果",
+                previous.source_index, previous.start_frame, previous.end_frame.saturating_add(1),
+                current.source_index, current.start_frame, current.end_frame.saturating_add(1)
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate(annotation: &MachineAnnotation, edits: &[ReviewSegment]) -> AppResult<()> {
     if edits.len() > 2000 {
         return Err(failure("片段数量超过 2000"));
@@ -1870,6 +1888,11 @@ fn save_for_user_mode(
     }
     if request.status.as_deref() != Some("rejected") {
         validate(&annotation, &request.segments)?;
+        if request.status.as_deref() == Some("approved")
+            || annotation.source_name == machine_annotation::SKELETON_SOURCE
+        {
+            validate_publish_ranges(&request.segments)?;
+        }
     }
     let special_tags = request
         .special_tags
@@ -3987,8 +4010,8 @@ mod tests {
             segments[0].description = "目录移动后保留文字".into();
             segments.push(ReviewSegment {
                 source_index: 3,
-                start_frame: 1,
-                end_frame: 2,
+                start_frame: 10,
+                end_frame: 19,
                 description: "新增片段".into(),
                 deleted: false,
                 decision: "pending".into(),
@@ -5571,6 +5594,138 @@ mod tests {
         assert_eq!(
             fs::read(native_root.join("bailian_annotation.json")).unwrap(),
             f.original
+        );
+    }
+
+    #[test]
+    fn legacy_overlapping_queued_approval_is_not_written_or_deleted() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        fs::write(f.root.join("session.json"), r#"{"qc":"待审核"}"#).unwrap();
+        let original = shared_bytes(&f);
+        let state = load(&f.local, &f.root).unwrap();
+        let user = action_user();
+        let mut entry = queue::store(
+            &f.local,
+            "s",
+            &user.username,
+            action_entry(&f, &state, "approved"),
+        )
+        .unwrap();
+        // Model a payload already persisted by an older client, bypassing only
+        // the new insertion check, never the production publication check.
+        entry.request.segments[1].start_frame = 5;
+        let db = crate::review_outbox::open(&f.local).unwrap();
+        db.execute(
+            "UPDATE source_reviews SET payload=? WHERE event_id=?",
+            rusqlite::params![
+                serde_json::to_string(&entry).unwrap(),
+                entry.audit["eventId"].as_str().unwrap()
+            ],
+        )
+        .unwrap();
+        drop(db);
+        let result = queue::publish_with_probe(
+            &f.local,
+            "s",
+            &user,
+            &std::sync::atomic::AtomicBool::new(false),
+            &|_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!((result.written, result.remaining), (0, 1));
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("MACHINE_REVIEW_OVERLAP")));
+        let retained = queue::get(
+            &f.local,
+            "s",
+            &user.username,
+            f.root.to_str().unwrap(),
+            Some(machine_annotation::DEFAULT_SOURCE),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(retained.request.segments, entry.request.segments);
+        assert_eq!(retained.audit["eventId"], entry.audit["eventId"]);
+        assert_eq!(retained.audit["occurredAtMs"], entry.audit["occurredAtMs"]);
+        assert_eq!(shared_bytes(&f), original);
+    }
+
+    #[test]
+    fn overlapping_ranges_stay_recoverable_but_cannot_be_approved_or_queued() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, true);
+        fs::write(f.root.join("session.json"), r#"{"qc":"待审核"}"#).unwrap();
+        let original = shared_bytes(&f);
+        let mut state = load(&f.local, &f.root).unwrap();
+        state.segments[1].start_frame = 5;
+        let expected = state.segments.clone();
+        let user = action_user();
+        let saved = queue::submit_action_with_probe(
+            &f.local,
+            "s",
+            &user,
+            action_entry(&f, &state, "pending"),
+            &|_| panic!("draft must not probe NAS"),
+        )
+        .unwrap();
+        assert_eq!(saved.review.segments, expected);
+        assert!(queue::submit_action_with_probe(
+            &f.local,
+            "s",
+            &user,
+            action_entry(&f, &state, "approved"),
+            &|_| panic!("invalid approval must fail before probing NAS"),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("MACHINE_REVIEW_OVERLAP"));
+        let retained = queue::get(
+            &f.local,
+            "s",
+            &user.username,
+            f.root.to_str().unwrap(),
+            Some(machine_annotation::DEFAULT_SOURCE),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(retained.is_action_draft());
+        assert_eq!(retained.request.segments, expected);
+        assert!(save(
+            &f.local,
+            SaveReviewRequest {
+                source_path: f.root.to_string_lossy().into(),
+                source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+                source_hash: state.source_hash.clone(),
+                expected_revision: state.revision,
+                segments: expected,
+                special_tags: None,
+                status: Some("approved".into()),
+                rejection_reason: None,
+            },
+            "fixture"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("MACHINE_REVIEW_OVERLAP"));
+        assert_eq!(shared_bytes(&f), original);
+        state.segments[1].start_frame = 10;
+        let committed = queue::submit_action_with_probe(
+            &f.local,
+            "s",
+            &user,
+            action_entry(&f, &state, "approved"),
+            &|_| Ok(()),
+        )
+        .unwrap();
+        assert!(!committed.pending_source_write);
+        assert_eq!(
+            load(&f.temp.join("fresh-reader"), &f.root)
+                .unwrap()
+                .segments,
+            committed.review.segments
         );
     }
 

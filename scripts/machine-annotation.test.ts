@@ -3,6 +3,36 @@ import { test } from "node:test";
 import { recoverReviewSegments, reviewVideoIntersection, addReviewSegment, splitReviewSegment, deleteReviewSegment, restoreReviewSegments, adjustReviewBoundary, machineSegmentRange, machineTimelineMapping } from "../src/lib/machine-annotation.ts";
 import type { ReviewSegment } from "../src/types.ts";
 
+test("restoring consecutive deletions never revives overlapping expanded history", () => {
+  const original: ReviewSegment[] = [[0,9],[10,19],[20,29]].map(([startFrame,endFrame],sourceIndex)=>({sourceIndex,startFrame,endFrame,description:`动作 ${sourceIndex}`,deleted:false,decision:"pending"}));
+  const removed = deleteReviewSegment(deleteReviewSegment(original,0),1);
+  const snapshot = structuredClone(removed);
+  const restored = restoreReviewSegments(removed).filter(s=>!s.deleted).sort((a,b)=>a.startFrame-b.startFrame);
+  assert.deepEqual(restored.map(s=>[s.startFrame,s.endFrame,s.description]),original.map(s=>[s.startFrame,s.endFrame,s.description]));
+  assert.deepEqual(removed,snapshot,"restoration must not mutate the saved history");
+});
+
+test("repeated replacement, deletion, split, drag and restoration keep live ranges disjoint", () => {
+  let seed = 42;
+  const random = (max: number) => { seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%max; };
+  let rows: ReviewSegment[] = [];
+  for(let i=0;i<600;i++) {
+    const live=rows.filter(s=>!s.deleted);
+    const selected=live[random(live.length)];
+    switch(random(5)) {
+      case 0: rows=addReviewSegment(rows,random(100),100);break;
+      case 1: if(selected) rows=deleteReviewSegment(rows,selected.sourceIndex);break;
+      case 2: rows=restoreReviewSegments(rows);break;
+      case 3: if(selected) rows=adjustReviewBoundary(rows,selected.sourceIndex,random(2)?"startFrame":"endFrame",random(100),100);break;
+      case 4: if(selected) rows=splitReviewSegment(rows,selected.sourceIndex,random(100));break;
+    }
+    const sorted=rows.filter(s=>!s.deleted).sort((a,b)=>a.startFrame-b.startFrame);
+    for(let j=1;j<sorted.length;j++) assert.ok(sorted[j-1].endFrame<sorted[j].startFrame,`iteration ${i}: no double-assigned frame`);
+    assert.equal(new Set(rows.map(s=>s.sourceIndex)).size,rows.length);
+    assert.ok(rows.every(s=>s.startFrame<=s.endFrame&&s.startFrame>=0&&s.endFrame<100));
+  }
+});
+
 test("explicit video intersection preserves original records and never rescales valid frames", () => {
   const original: ReviewSegment[] = [[0,9],[10,19],[20,29]].map(([startFrame,endFrame],sourceIndex) => ({ sourceIndex,startFrame,endFrame,description:`原动作 ${sourceIndex}`,deleted:false,decision:"approved" }));
   const snapshot = structuredClone(original);

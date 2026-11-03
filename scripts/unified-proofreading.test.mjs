@@ -326,7 +326,9 @@ test("restart restores the batch and current selection despite an older configur
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   await context.route("**/src/App.tsx", async route => {
     const response = await route.fetch();
-    const body = (await response.text()).replace("didAutoLoad.current || isTauriRuntime()", "true || isTauriRuntime()");
+    const original = await response.text();
+    const body = original.replace(/didAutoLoad\.current\s*\|\|\s*isTauriRuntime\(\)/, "true || isTauriRuntime()");
+    assert.notEqual(body, original, "isolate restored-directory loading from browser demo autoload");
     await route.fulfill({ response, body });
   });
   await context.route("**/src/lib/backend.ts", async route => {

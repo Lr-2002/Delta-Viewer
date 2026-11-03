@@ -238,6 +238,11 @@ pub fn store(
     if let Some(tags) = &entry.request.special_tags {
         machine_review::validate_special_tags(tags)?;
     }
+    if entry.request.status.as_deref() == Some("approved")
+        || entry.request.source_name.as_deref() == Some(crate::machine_annotation::SKELETON_SOURCE)
+    {
+        machine_review::validate_publish_ranges(&entry.request.segments)?;
+    }
     if !Path::new(&entry.request.source_path).is_absolute()
         || !["pending", "approved", "rejected"]
             .contains(&entry.request.status.as_deref().unwrap_or("pending"))
