@@ -2198,20 +2198,43 @@ fn align_deleted_segments(previous: &[ReviewSegment], next: &mut [ReviewSegment]
         .collect();
     removed.sort_by_key(|item| (item.start_frame, item.source_index));
     for removed in removed {
-        let following = next
+        // Only a surviving original successor can inherit a manual deletion gap.
+        // Covered originals may have been replaced/split into new identities; never
+        // expand those new ranges or overwrite boundaries already set by the editor.
+        let following = previous
             .iter()
-            .filter(|item| !item.deleted && item.end_frame > removed.end_frame)
-            .min_by_key(|item| (item.end_frame, item.source_index))
-            .map(|item| item.source_index);
-        let Some(following) = following else { continue };
+            .filter(|old| !old.deleted && old.start_frame > removed.end_frame)
+            .filter_map(|old| {
+                next.iter()
+                    .find(|item| item.source_index == old.source_index && !item.deleted)
+                    .map(|item| (old, item))
+            })
+            .min_by_key(|(old, _)| (old.start_frame, old.source_index));
+        let Some((old, following)) = following else {
+            continue;
+        };
+        if following.start_frame != old.start_frame {
+            continue;
+        }
         let boundary = next
             .iter()
             .filter(|item| !item.deleted && item.end_frame < removed.start_frame)
             .map(|item| item.end_frame + 1)
             .max()
             .unwrap_or(removed.start_frame);
-        if let Some(item) = next.iter_mut().find(|item| item.source_index == following) {
-            item.start_frame = item.start_frame.min(boundary);
+        if boundary >= following.start_frame
+            || next.iter().any(|item| {
+                !item.deleted
+                    && item.source_index != following.source_index
+                    && item.end_frame >= boundary
+                    && item.start_frame < following.start_frame
+            })
+        {
+            continue;
+        }
+        let index = following.source_index;
+        if let Some(item) = next.iter_mut().find(|item| item.source_index == index) {
+            item.start_frame = boundary;
         }
     }
 }
@@ -4820,14 +4843,19 @@ mod tests {
     }
     impl Fixture {
         fn new(base: u64, exclusive: bool) -> Self {
-            let temp = std::env::temp_dir().join(format!(
-                "dohc-review-{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
+            static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let temp = loop {
+                let candidate = std::env::temp_dir().join(format!(
+                    "dohc-review-{}-{}",
+                    std::process::id(),
+                    SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ));
+                match fs::create_dir(&candidate) {
+                    Ok(()) => break candidate,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("cannot reserve review fixture: {error}"),
+                }
+            };
             let root = temp.join("sample");
             let local = temp.join("local");
             fs::create_dir_all(&root).unwrap();
@@ -5544,6 +5572,86 @@ mod tests {
             fs::read(native_root.join("bailian_annotation.json")).unwrap(),
             f.original
         );
+    }
+
+    #[test]
+    fn covered_deletions_do_not_expand_a_surviving_successor_over_new_segments() {
+        let f = Fixture::new(0, true);
+        let previous = load(&f.local, &f.root).unwrap().segments;
+        let mut next = previous.clone();
+        next[0].deleted = true;
+        next[1].deleted = true;
+        next.push(ReviewSegment {
+            source_index: 3,
+            start_frame: 0,
+            end_frame: 19,
+            description: "替代动作".into(),
+            deleted: false,
+            decision: "pending".into(),
+        });
+        let expected = next.clone();
+        align_deleted_segments(&previous, &mut next);
+        assert_eq!(next, expected);
+        let mut manual = previous.clone();
+        manual[1].deleted = true;
+        align_deleted_segments(&previous, &mut manual);
+        assert_eq!(
+            manual[2].start_frame, 10,
+            "ordinary manual deletion still joins the next segment"
+        );
+    }
+
+    #[test]
+    fn approval_keeps_replacement_segments_exactly_as_reviewed() {
+        let f = Fixture::new(0, true);
+        let mut state = load(&f.local, &f.root).unwrap();
+        for item in &mut state.segments {
+            item.deleted = true;
+        }
+        for (index, (start, end)) in [(0, 3), (4, 15), (16, 29)].into_iter().enumerate() {
+            state.segments.push(ReviewSegment {
+                source_index: index + 3,
+                start_frame: start,
+                end_frame: end,
+                description: format!("人工动作{index}"),
+                deleted: false,
+                decision: "pending".into(),
+            });
+        }
+        let expected = state.segments.clone();
+        let saved = f.save(&state).unwrap();
+        assert_eq!(
+            saved.segments, expected,
+            "saving must not expand replacement ranges"
+        );
+        let approved = save(
+            &f.local,
+            SaveReviewRequest {
+                special_tags: None,
+                source_path: f.root.to_string_lossy().into(),
+                source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+                source_hash: saved.source_hash.clone(),
+                expected_revision: saved.revision,
+                rejection_reason: None,
+                segments: saved.segments.clone(),
+                status: Some("approved".into()),
+            },
+            "reviewer",
+        )
+        .unwrap();
+        assert_eq!(approved.status, "approved");
+        let reloaded = load(&f.temp.join("fresh-host"), &f.root).unwrap();
+        for expected in expected.iter().filter(|s| !s.deleted) {
+            let actual = reloaded
+                .segments
+                .iter()
+                .find(|s| s.source_index == expected.source_index)
+                .unwrap();
+            assert_eq!(
+                (actual.start_frame, actual.end_frame),
+                (expected.start_frame, expected.end_frame)
+            );
+        }
     }
 
     #[test]
