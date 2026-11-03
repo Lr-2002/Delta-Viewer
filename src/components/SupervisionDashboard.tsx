@@ -42,6 +42,7 @@ import {
 } from "../lib/review-audit-types";
 import type { UserIdentity, ClientVersions } from "../types";
 import "./review-supervision.css";
+import { SourceWritebackAdmin } from "./SourceWritebackAdmin";
 import { TaskCenter } from "./TaskCenter";
 import { currentClientVersion } from "../lib/client-versions";
 
@@ -86,6 +87,7 @@ function eventDetails(event: ReviewEvent) {
 
 export function SupervisionDashboard({
   currentUser,
+  writebackOwner,
   onLogout,
   updateControls,
   updateBusy = false,
@@ -95,6 +97,7 @@ export function SupervisionDashboard({
   beginCloudOperation,
 }: {
   currentUser: UserIdentity;
+  writebackOwner?: import("../lib/source-writeback").WritebackOwner;
   onLogout: () => Promise<void>;
   updateControls?: (busy: boolean) => ReactNode;
   updateBusy?: boolean;
@@ -855,6 +858,7 @@ export function SupervisionDashboard({
       {view === "accounts" && (
         <>
           <h2>审核账号</h2>
+          {writebackOwner && <SourceWritebackAdmin owner={writebackOwner} accounts={versions?.users ?? []} disabled={Boolean(busy)}/>}
           <div className="version-push-toolbar">
             <label>账号筛选<select aria-label="账号筛选" value={username} onChange={event=>setUsername(event.target.value)}><option value="">全部账号</option>{versions?.users.map(user=><option key={user.username} value={user.username}>{user.displayName} (@{user.username})</option>)}</select></label>
             <button className="button button-secondary" disabled={versionsLoading} onClick={()=>setRefreshId(value=>value+1)}>{versionsLoading?"刷新中…":"刷新账号与版本"}</button>

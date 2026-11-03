@@ -53,6 +53,21 @@ test('admin test account retains password and reviewer identity, manager authori
   assert.equal((await req('DELETE','/api/v1/admin/users/admin',null,manager)).status,403,'cannot delete sole manager');
   assert.equal((await req('PUT','/api/v1/admin/users/status',{usernames:['admin'],status:'paused'},manager)).status,404,'cannot pause manager');
   const aliceToken=(await login('alice')).body.token,bobToken=(await login('bob')).body.token;
+  assert.equal((await req('GET','/api/v1/admin/source-writeback',null,aliceToken)).status,403);
+  assert.equal((await req('POST','/api/v1/admin/source-writeback',{all:true},aliceToken)).status,403);
+  assert.equal((await req('POST','/api/v1/client/source-writeback/poll',{})).status,401);
+  assert.equal((await req('POST','/api/v1/admin/source-writeback',{usernames:['absent']},manager)).status,400);
+  const writeback=await req('POST','/api/v1/admin/source-writeback',{usernames:['alice','bob']},manager);
+  assert.equal(writeback.status,200);assert.equal(writeback.body.queued.length,2);
+  const wbId=writeback.body.queued.find(x=>x.username==='alice').id, wbClient=randomUUID();
+  const wbInput={clientId:wbClient,version:'1.5.8',pending:2,skipped:0,availability:'idle'};
+  assert.equal((await req('POST','/api/v1/client/source-writeback/poll',wbInput,aliceToken)).body.request.id,wbId);
+  assert.equal((await req('POST','/api/v1/client/source-writeback/step',{clientId:wbClient,requestId:wbId},bobToken)).status,400);
+  assert.equal((await req('POST','/api/v1/client/source-writeback/step',{clientId:wbClient,requestId:wbId},aliceToken)).body.allowed,true);
+  const wbAll=await req('POST','/api/v1/admin/source-writeback',{all:true},manager);
+  assert.deepEqual(wbAll.body.queued.map(x=>x.username).sort(),['admin','alice','bob']);
+  assert.equal((await req('GET','/api/v1/admin/source-writeback',null,manager)).body.users.find(x=>x.username==='alice').devices[0].pending,2);
+
   assert.equal((await req('POST','/api/v1/client/poll',{clientId:randomUUID(),version:'1.3.3',platform:'windows',acknowledgedIds:[]})).status,401);
   const aid=randomUUID(),report={clientId:aid,version:'1.3.3',platform:'windows',acknowledgedIds:[]};
   assert.equal((await req('POST','/api/v1/client/poll',report,aliceToken)).status,200);

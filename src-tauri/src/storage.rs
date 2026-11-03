@@ -68,6 +68,71 @@ fn remote_source_root(path: &Path) -> Option<String> {
     }
 }
 
+/// Consult the OS mount table only, never query remote free space or stat the source.
+pub(crate) fn network_source_filter() -> impl Fn(&Path) -> bool {
+    #[cfg(windows)]
+    {
+        let cache = std::cell::RefCell::new(std::collections::HashMap::new());
+        move |path: &Path| {
+            let key = path.components().next().map(|p| p.as_os_str().to_owned());
+            *cache
+                .borrow_mut()
+                .entry(key)
+                .or_insert_with(|| remote_source_root(path).is_some())
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mounts = fs::read_to_string("/proc/self/mountinfo")
+            .map(|text| parse_linux_mountinfo(&text))
+            .unwrap_or_default();
+        move |path: &Path| {
+            linux_mount_for_path(path, &mounts).is_some_and(|m| {
+                matches!(
+                    m.filesystem.as_str(),
+                    "cifs" | "smb3" | "nfs" | "nfs4" | "fuse.gvfsd-fuse"
+                )
+            })
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CStr;
+        // Own the mount buffer: getmntinfo exposes process-global mutable memory.
+        let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) }.max(0);
+        let mut mounts: Vec<libc::statfs> = vec![unsafe { std::mem::zeroed() }; count as usize + 8];
+        let found = unsafe {
+            libc::getfsstat(
+                mounts.as_mut_ptr(),
+                std::mem::size_of_val(mounts.as_slice()) as i32,
+                libc::MNT_NOWAIT,
+            )
+        }
+        .max(0);
+        let roots: Vec<_> = mounts
+            .iter()
+            .take((found as usize).min(mounts.len()))
+            .filter_map(|m| {
+                let path = unsafe { CStr::from_ptr(m.f_mntonname.as_ptr()) }
+                    .to_str()
+                    .ok()?;
+                Some((PathBuf::from(path), m.f_flags & libc::MNT_LOCAL as u32 == 0))
+            })
+            .collect();
+        move |path: &Path| {
+            roots
+                .iter()
+                .filter(|(root, _)| path.starts_with(root))
+                .max_by_key(|(root, _)| root.components().count())
+                .is_some_and(|(_, remote)| *remote)
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        |_path: &Path| false
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PartialMarker {

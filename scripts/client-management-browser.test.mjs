@@ -26,6 +26,7 @@ test('admin switches modes in one session, account versions stay truthful, singl
    if(cmd==='get_pending_source_reviews')return {pending:0,items:[],ready:false,storageError:''};
    if(['persist_review_audit','flush_review_audit_queue','get_review_audit_queue_status'].includes(cmd))return {pending:0,blocked:0,error:''};
    if(cmd==='get_review_dashboard'){window.dashboardCalls++;throw Error('REVIEW_STATISTICS_TIMEOUT');}
+   if(cmd==='source_writeback_management')return args.request.kind==='overview'?{generatedAtMs:Date.now(),users:[]}:{request:null,generatedAtMs:Date.now()};
    if(cmd==='client_management') {
     const req=args.request;
     if(req.kind==='poll')return {generatedAtMs:Date.now(),reminder:null};

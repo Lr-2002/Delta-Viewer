@@ -63,7 +63,7 @@ fn failure(error: impl std::fmt::Display) -> AppError {
         "SOURCE_REVIEW_LOCAL_STORAGE: {error}。本机结果未确认保存，请保持当前数据打开并重试"
     ))
 }
-fn open(root: &Path) -> AppResult<rusqlite::Connection> {
+pub(crate) fn open(root: &Path) -> AppResult<rusqlite::Connection> {
     let db = review_outbox::open(root)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS source_reviews(service TEXT NOT NULL, username TEXT NOT NULL, source_path TEXT NOT NULL, source_name TEXT NOT NULL, payload TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY(service, username, source_path, source_name));
     CREATE TABLE IF NOT EXISTS source_review_history(service TEXT NOT NULL, username TEXT NOT NULL, event_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(service,username,event_id));
@@ -804,7 +804,7 @@ pub fn status_for_paths(
     })
 }
 
-fn publish_entry(
+pub(crate) fn publish_entry(
     root: &Path,
     service: &str,
     user: &UserIdentity,

@@ -1739,3 +1739,5 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .special-tag-cameras input { width: 13px; height: 13px; flex: 0 0 auto; margin: 0; padding: 0; accent-color: var(--ink); }
 .special-tag-cameras:disabled label { cursor: default; opacity: .6; }
 .special-tag-cameras label:focus-within { outline: 2px solid var(--ink); outline-offset: 2px; }
+.writeback-client { margin:8px 14px; background:#edf6fb; border-color:#b6d9e9; }
+.writeback-client-error { background:#fff4e5; border-color:#e9bf7a; }

@@ -29,6 +29,7 @@ mod source;
 mod source_index_cache;
 mod source_path_probe;
 mod source_review_queue;
+mod source_writeback;
 mod state_snapshot;
 mod storage;
 pub mod stress;
@@ -45,6 +46,7 @@ mod workspace_mode;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use error::AppError;
 use identity::AuthState;
 use media_stream_server::MediaStreamServer;
 use model::{
@@ -427,6 +429,59 @@ async fn client_management(
     user_center::client_management(&app_data_root(&app)?, auth.inner(), request)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn source_writeback_management(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    username: String,
+    service_id: String,
+    request: source_writeback::Request,
+) -> Result<serde_json::Value, String> {
+    let root = app_data_root(&app)?;
+    if !matches!(
+        &request,
+        source_writeback::Request::Overview | source_writeback::Request::Push { .. }
+    ) {
+        user_center::check_review_owner(&root, auth.inner(), &username, &service_id)
+            .map_err(|e| e.to_string())?;
+    }
+    let state = auth.inner().clone();
+    let result: crate::error::AppResult<serde_json::Value> = async {
+        match request {
+            source_writeback::Request::Overview => user_center::source_writeback_request(&root,&state,"overview",serde_json::Value::Null).await,
+            source_writeback::Request::Push { all, usernames } => user_center::source_writeback_request(&root,&state,"push",serde_json::json!({"all":all,"usernames":usernames})).await,
+            source_writeback::Request::Poll { client_id, busy } => {
+                if !user_center::valid_client_identifier(&client_id) { return Err(AppError::Message("WRITEBACK_CLIENT_INVALID".into())); }
+                let data=root.clone(); let service=service_id.clone(); let user=username.clone(); let client=client_id.clone();
+                let local = tauri::async_runtime::spawn_blocking(move || {
+                    Ok::<_,AppError>((source_writeback::summary(&data,&service,&user)?,source_writeback::report(&data,&service,&user,&client)?))
+                }).await.map_err(|e|AppError::Message(e.to_string()))?;
+                let body = match local {
+                    Ok((summary,report)) => serde_json::json!({"clientId":client_id,"version":env!("CARGO_PKG_VERSION"),"pending":summary.pending,"skipped":summary.skipped,"availability":if busy {"busy"} else {"idle"},"report":report}),
+                    Err(error) => serde_json::json!({"clientId":client_id,"version":env!("CARGO_PKG_VERSION"),"pending":0,"skipped":0,"availability":"busy","localIssue":if source_writeback::error_code(&error.to_string())=="local_storage" {"local_storage"} else {"unknown"}}),
+                };
+                user_center::check_review_owner(&root,&state,&username,&service_id)?;
+                user_center::source_writeback_request(&root,&state,"poll",body).await
+            }
+            source_writeback::Request::Step { client_id, request_id } => {
+                if !user_center::valid_client_identifier(&client_id) || !user_center::valid_client_identifier(&request_id) { return Err(AppError::Message("WRITEBACK_REQUEST_INVALID".into())); }
+                // Acquire serialization BEFORE the network await; the UI also rechecks its idle state.
+                let task = control.start(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64).map_err(AppError::Message)?;
+                let allowed=user_center::source_writeback_request(&root,&state,"step",serde_json::json!({"clientId":client_id,"requestId":request_id})).await?;
+                if allowed["allowed"] != true { return Err(AppError::Message("WRITEBACK_NOT_AUTHORIZED".into())); }
+                user_center::check_review_owner(&root,&state,&username,&service_id)?;
+                let user=state.require_managed_user()?;
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _task=task;
+                    source_writeback::step(&root,&service_id,&user,&client_id,&request_id,&state)
+                }).await.map_err(|e|AppError::Message(e.to_string()))?
+            }
+        }
+    }.await;
+    result.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2566,6 +2621,7 @@ pub fn run() {
             flush_review_audit_queue,
             get_review_audit_queue_status,
             client_management,
+            source_writeback_management,
             get_review_dashboard,
             get_supervision_dashboard,
             batch_create_supervision_accounts,

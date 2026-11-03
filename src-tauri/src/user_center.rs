@@ -1598,6 +1598,55 @@ pub async fn client_management(
     merge_account_versions(versions, accounts)
 }
 
+/// Fixed, authenticated command channel. No source JSON, paths or arbitrary URLs.
+pub(crate) async fn source_writeback_request(
+    root: &Path,
+    state: &AuthState,
+    kind: &str,
+    body: serde_json::Value,
+) -> AppResult<serde_json::Value> {
+    let (user, token) = state.managed_session()?;
+    let config = load_config(root)?;
+    let client = client_for(&config)?;
+    let builder = match kind {
+        "overview" | "push" => {
+            if !user.is_manager() {
+                return Err(AppError::Message("ADMIN_REQUIRED".into()));
+            }
+            let url = endpoint(&config, "api/v1/admin/source-writeback")?;
+            if kind == "overview" {
+                client.get(url)
+            } else {
+                client.post(url).json(&body)
+            }
+        }
+        "poll" | "step" => {
+            if user.role.as_deref() != Some("operator") {
+                return Err(AppError::Message("OPERATOR_REQUIRED".into()));
+            }
+            let suffix = if kind == "poll" {
+                "api/v1/client/source-writeback/poll"
+            } else {
+                "api/v1/client/source-writeback/step"
+            };
+            client.post(endpoint(&config, suffix)?).json(&body)
+        }
+        _ => return Err(AppError::Message("WRITEBACK_REQUEST_INVALID".into())),
+    };
+    let response = builder
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    response
+        .json()
+        .await
+        .map_err(|e| AppError::Message(e.to_string()))
+}
+
 fn merge_account_versions(
     mut versions: serde_json::Value,
     accounts: serde_json::Value,
@@ -1648,7 +1697,7 @@ fn merge_account_versions(
     Ok(versions)
 }
 
-fn valid_client_identifier(id: &str) -> bool {
+pub(crate) fn valid_client_identifier(id: &str) -> bool {
     let bytes = id.as_bytes();
     bytes.len() == 36
         && bytes.iter().enumerate().all(|(index, byte)| {

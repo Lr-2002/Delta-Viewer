@@ -16,6 +16,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { openSourceWriteback, SOURCE_WRITEBACK_CAPABILITY } from "./source-writeback-store.mjs";
 import { openClientPresence, CLIENT_PRESENCE_CAPABILITY } from "./client-presence-store.mjs";
 import { openReviewAuditStore } from "./review-audit-store.mjs";
 import { openTaskClaims, validateBatchKey } from "./task-claims-store.mjs";
@@ -1017,6 +1018,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
   const reviewAudit = openReviewAuditStore(dataRoot);
   const taskClaims = openTaskClaims(dataRoot);
   const clientPresence = openClientPresence(dataRoot);
+  const sourceWriteback = openSourceWriteback(dataRoot);
   let stateMutationTail = Promise.resolve();
 
   async function writeState(state) {
@@ -1075,6 +1077,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             "reviewSupervisionV1",
             "reviewTaskClaimsV1",
             CLIENT_PRESENCE_CAPABILITY,
+            SOURCE_WRITEBACK_CAPABILITY,
           ],
         });
       }
@@ -1301,6 +1304,29 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           qualityReviews: (state.qualityReviews ?? []).slice(-1000).reverse(),
           generatedAtMs: nowMs(),
         });
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/admin/source-writeback") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, {error:"ADMIN_REQUIRED"});
+        const state = await readState(dataRoot);
+        return sendJson(response, 200, sourceWriteback.overview(state.users));
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/admin/source-writeback") {
+        const session = authorize(request, true);
+        if (!session) return sendJson(response, 403, {error:"ADMIN_REQUIRED"});
+        const body = await parseJsonBody(request, 256 * 1024), state = await readState(dataRoot);
+        const eligible = state.users.filter(u=>u.accountStatus!=="paused" && u.role==="operator");
+        const targets = body.all===true ? eligible.map(u=>u.username) : body.usernames;
+        if (!Array.isArray(targets) || !targets.length || targets.length>MAX_USERS || targets.some(name=>!eligible.some(u=>u.username===name))) return sendJson(response,400,{error:"WRITEBACK_TARGET_INVALID: 请选择启用的审核账号"});
+        const known = clientPresence.overview(state.users, new Set()).users.flatMap(u=>u.clients.map(d=>({username:u.username,clientId:d.clientId})));
+        return sendJson(response,200,sourceWriteback.push(session.user.username,[...new Set(targets)],known));
+      }
+      if (request.method === "POST" && ["/api/v1/client/source-writeback/poll","/api/v1/client/source-writeback/step"].includes(url.pathname)) {
+        const session = authorize(request);
+        if (!session) return sendJson(response,401,{error:"AUTH_REQUIRED"});
+        if (session.user.role!=="operator") return sendJson(response,403,{error:"OPERATOR_REQUIRED"});
+        const body=await parseJsonBody(request);
+        return sendJson(response,200,url.pathname.endsWith("/poll") ? sourceWriteback.poll(session.user.username,body) : sourceWriteback.authorizeStep(session.user.username,body.clientId,body.requestId));
       }
       if (request.method === "POST" && url.pathname === "/api/v1/client/poll") {
         const session = authorize(request);
@@ -1732,6 +1758,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       reviewAudit.close();
       taskClaims.close();
       clientPresence.close();
+      sourceWriteback.close();
     },
     configuration,
     clientConfigPath: initialized.clientConfigPath,

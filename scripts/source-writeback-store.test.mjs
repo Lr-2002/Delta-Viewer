@@ -1,0 +1,49 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {randomUUID} from 'node:crypto';
+import {mkdtemp,rm} from 'node:fs/promises';
+import os from 'node:os';import path from 'node:path';
+import {openSourceWriteback} from './source-writeback-store.mjs';
+
+test('durable per-device commands: offline delivery, dedupe, partial failure, unrelated success and restart',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'writeback-store-'));let time=1000,store=openSourceWriteback(root,()=>time);
+ const alice=randomUUID(),second=randomUUID(),bob=randomUUID();
+ const input=(id,report)=>({clientId:id,version:'1.5.8',pending:3,skipped:1,availability:'idle',...(report?{report}:{})});
+ const report=(id,seq,state,written,remaining,errors=[])=>({requestId:id,seq,state,total:written+remaining,written,remaining,errors});
+ const view=()=>store.overview([{username:'alice'},{username:'bob'}]);
+ try {
+  const id=store.push('admin',['alice'],[{username:'alice',clientId:alice},{username:'alice',clientId:second}]).queued[0].id;
+  assert.equal(store.push('admin',['alice']).queued[0].id,id);
+  assert.equal(view().users[0].deliveries.length,2);
+  assert.equal(store.poll('bob',input(bob)).request,null,'other account cannot receive command');
+  assert.throws(()=>store.authorizeStep('bob',alice,id),/STALE/);
+  assert.throws(()=>store.authorizeStep('alice',bob,id),/STALE/);
+  assert.equal(store.poll('alice',{...input(alice),availability:'busy'}).request.id,id);
+  assert.equal(view().users[0].deliveries.find(d=>d.clientId===alice).state,'busy');
+  assert.deepEqual(store.authorizeStep('alice',alice,id),{allowed:true});
+  store.poll('alice',input(alice,report(id,2,'running',1,2)));
+  assert.equal(store.poll('alice',input(alice,report(id,3,'partial',1,2,['conflict']))).request,null);
+  store.poll('alice',input(alice,report(id,4,'complete',3,0)));
+  assert.equal(view().users[0].deliveries.find(d=>d.clientId===alice).state,'partial','unrelated success cannot erase terminal failure');
+  assert.equal(store.poll('alice',input(second)).request.id,id,'first device cannot acknowledge second');
+  store.close();store=openSourceWriteback(root,()=>time);
+  assert.equal(store.poll('alice',input(second)).request.id,id,'offline delivery survives restart');
+  store.poll('alice',input(second,report(id,2,'complete',0,0)));
+  assert.equal(view().users[0].deliveries.find(d=>d.clientId===alice).report.remaining,2);
+  const next=store.push('admin',['alice','bob']);assert.equal(next.queued.length,2);assert.notEqual(next.queued[0].id,id,'explicit retry of failed job creates a fresh snapshot');
+  assert.equal(store.poll('alice',input(alice,report(id,999,'complete',3,0))).request.id,next.queued[0].id,'old request receipts cannot finish current request');
+  assert.throws(()=>store.poll('alice',input(alice,{...report(id,1,'complete',0,2)})),/INVALID/);
+  assert.throws(()=>store.poll('alice',{...input(alice),pending:-1}),/INVALID/);
+  assert.throws(()=>store.poll('alice',input(alice,{...report(id,1,'partial',0,2,['/secret/path'])})),/INVALID/);
+  assert.throws(()=>store.poll('alice',{...input(alice),sourcePath:'/secret'}),/INVALID/);
+  store.poll('alice',{...input(alice),localIssue:'local_storage'});
+  assert.equal(view().users[0].devices.find(d=>d.clientId===alice).issue,'local_storage');
+  assert.throws(()=>store.authorizeStep('alice',alice,next.queued[0].id),/LOCAL_STORAGE/);
+  store.poll('alice',input(alice));
+  assert.equal(store.authorizeStep('alice',alice,next.queued[0].id).allowed,true);
+  store.poll('alice',input(alice,report(next.queued[0].id,2,'complete',3,0)));
+  const more=store.push('admin',['alice']).queued[0].id;
+  assert.notEqual(more,next.queued[0].id,'new pending results on a completed device must be retryable even with another offline device');
+  time+=100000;assert.equal(view().users[0].request.id,more,'commands do not silently expire while offline');
+ }finally{store.close();await rm(root,{recursive:true,force:true});}
+});

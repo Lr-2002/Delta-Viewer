@@ -54,6 +54,7 @@ import { SkeletonViewer } from "./components/SkeletonViewer";
 import { SkeletonModelPicker } from "./components/SkeletonModelPicker";
 import { modelEpisodeCandidate } from "./lib/skeleton-library";
 import type { SkeletonLibraryInfo, SkeletonSeries } from "./types";
+import { SourceWritebackClient } from "./components/SourceWritebackClient";
 import { ClientPresence } from "./components/ClientPresence";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
 import { beginReviewAudit, getReviewSyncStatus, configureReviewAudit, endReviewAudit, observeReviewInteractions, pauseAndPersistReviewAudit, recordReviewInteraction, recordReviewSeek, retryReviewAudit, updateReviewFrame } from "./lib/review-audit";
@@ -216,6 +217,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.5.8": "管理模式新增统一写回 NAS，支持单个、多选、全部账号；各电脑空闲后处理本机已提交结果，独立回执并保留冲突和失败记录。",
   "1.5.7": "修复连续删除后恢复片段产生重叠的问题；通过前校验重复帧，异常历史保留供核对，旧应急草稿不跨机标来源覆盖。",
   "1.5.6": "修复审核保存时覆盖删除旧片段导致新片段边界被再次扩展、回看单段包含相邻动作的问题；保留普通删除衔接，历史已写入异常范围需核对。",
   "1.5.5": "特殊标签对应相机支持多选，同一说明可关联多路画面；支持整体编辑、删除和本机草稿恢复，兼容已保存的单相机标签。",
@@ -2041,7 +2043,8 @@ function App() {
   return (
     <>
       {isManagedWorkspace && currentUser && <ClientPresence key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={`${authStatus.userCenter.serviceId}:${currentUser.username}`} />}
-      {showManagement && currentUser && <SupervisionDashboard currentUser={currentUser} onLogout={logout} updateBusy={busy} updateControls={updateControls}
+      {isManagedWorkspace && currentUser?.role === "operator" && <SourceWritebackClient key={`writeback:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || showManagement || playing} onBusy={setSourcePublishing} onWritten={()=>setBatchReviewRevision(value=>value+1)}/>}
+      {showManagement && currentUser && <SupervisionDashboard writebackOwner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} currentUser={currentUser} onLogout={logout} updateBusy={busy} updateControls={updateControls}
         onTestMode={currentUser.role === "operator" ? () => setManagementMode(false) : undefined} syncNotice={syncNotice} beginCloudOperation={beginCloudOperation} onOpenCloudReview={async root => {
           if (busy || reviewUnsaved.current) throw new Error("当前保存尚未完成");
           await openSource(root, true, [], true); setManagementMode(false); setPersonalTaskOpen(false);

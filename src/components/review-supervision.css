@@ -327,3 +327,21 @@
 .account-version-log-body { padding: 4px 20px 20px; overflow: auto; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .account-version-log-body article { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; border-top: 1px solid #d8e0e3; padding: 12px 0; }
 .account-version-log-body time { grid-column: 1 / -1; color: #657077; }
+
+.writeback-admin { border:1px solid #d2dde1; background:#f8fbfc; border-radius:12px; padding:18px; margin:18px 0 24px; }
+.writeback-admin > header, .writeback-admin > header > div { display:flex; align-items:center; gap:9px; }
+.writeback-admin > header { justify-content:space-between; flex-wrap:wrap; }
+.writeback-admin h3 { margin:0; font-size:17px; color:#183f4b; }
+.writeback-admin p, .writeback-admin > small { font-size:13px; color:#52636c; line-height:1.7; overflow-wrap:anywhere; }
+.writeback-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:14px 0; }
+.writeback-actions > span { color:#647681; font-size:12px; }
+.writeback-list { max-height:320px; overflow:auto; border:1px solid #dce5e9; border-radius:9px; margin:14px 0; background:white; }
+.writeback-row { display:grid; grid-template-columns:minmax(150px,1fr) minmax(180px,1.5fr) auto; gap:12px; padding:12px 14px; align-items:center; border-bottom:1px solid #e5ecef; }
+.writeback-row:last-child { border-bottom:0; }
+.writeback-row label, .writeback-row-actions { display:flex; gap:9px; align-items:center; flex-wrap:wrap; }
+.writeback-row label > span { font-size:12px; color:#61727c; }
+.writeback-row small { display:block; margin-top:4px; color:#697c87; font-size:12px; }
+.writeback-row > div > span { font-size:13px; }
+.writeback-dialog { width:min(680px,calc(100vw - 28px)); max-height:85vh; overflow:auto; }
+.writeback-dialog article { border:1px solid #dae3e7; border-radius:8px; padding:13px; margin:12px 0; }
+@media(max-width:720px) { .writeback-admin { padding:12px; }.writeback-row { grid-template-columns:1fr;gap:8px; }.writeback-row-actions { justify-content:flex-end; } }
