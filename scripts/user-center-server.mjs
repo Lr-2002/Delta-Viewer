@@ -16,6 +16,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { openAuthSessions, DEFAULT_SESSION_IDLE_SECONDS, SESSION_CONTINUITY_CAPABILITY } from "./auth-session-store.mjs";
 import { openSourceWriteback, SOURCE_WRITEBACK_CAPABILITY } from "./source-writeback-store.mjs";
 import { openClientPresence, CLIENT_PRESENCE_CAPABILITY } from "./client-presence-store.mjs";
 import { openReviewAuditStore } from "./review-audit-store.mjs";
@@ -153,6 +154,10 @@ function normalizeConfiguration(raw) {
     || config.sessionTtlSeconds < 300 || config.sessionTtlSeconds > 86_400) {
     throw new Error("sessionTtlSeconds must be between 300 and 86400");
   }
+  const sessionIdleTtlSeconds = config.sessionIdleTtlSeconds ?? DEFAULT_SESSION_IDLE_SECONDS;
+  if (!Number.isInteger(sessionIdleTtlSeconds) || sessionIdleTtlSeconds < 300 || sessionIdleTtlSeconds > 90 * 24 * 3600) {
+    throw new Error("sessionIdleTtlSeconds must be between 300 and 7776000");
+  }
   const tlsAlternativeHosts = config.tlsAlternativeHosts ?? [];
   if (!Array.isArray(tlsAlternativeHosts)
     || tlsAlternativeHosts.some((host) => typeof host !== "string" || !isPrivateLanHost(host))) {
@@ -160,6 +165,7 @@ function normalizeConfiguration(raw) {
   }
   return {
     ...config,
+    sessionIdleTtlSeconds,
     publicBaseUrl: normalizeBaseUrl(config.publicBaseUrl),
     tlsAlternativeHosts: [...new Set(tlsAlternativeHosts.map((host) => host.toLowerCase()))],
   };
@@ -569,16 +575,6 @@ function bearerToken(request) {
   if (typeof value !== "string") return null;
   const match = /^Bearer ([A-Za-z0-9_-]{32,})$/.exec(value);
   return match?.[1] ?? null;
-}
-
-function sessionIdentity(sessions, request) {
-  const token = bearerToken(request);
-  const session = token ? sessions.get(token) : null;
-  if (!session || session.expiresAtMs <= nowMs()) {
-    if (token) sessions.delete(token);
-    return null;
-  }
-  return session;
 }
 
 function canManage(user) { return user.role === "admin" || user.managementAccess === true || user.canManage === true; }
@@ -1008,16 +1004,16 @@ function supervisionPage(serviceId) {
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DOHC 标注监管</title><style>:root{color:#111;background:#f5f5f5;font:14px system-ui,sans-serif}*{box-sizing:border-box}body{margin:0}main{max-width:1280px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #111;padding-bottom:18px}.muted{color:#666}.panel{margin-top:18px;padding:20px;background:#fff;border:1px solid #ccc;border-radius:6px}form{max-width:420px;display:grid;gap:12px}label{display:grid;gap:6px}input,button{font:inherit;padding:9px;border:1px solid #999;border-radius:4px}button{width:max-content;background:#111;color:#fff}table{width:100%;border-collapse:collapse}th,td{padding:10px 8px;border-bottom:1px solid #ddd;text-align:left}#notice{color:#a00}.metrics{font-size:18px;font-weight:700}li{margin:8px 0}</style><main><header><div><small class="muted">ADMIN SUPERVISION</small><h1>标注监管</h1><span class="muted">服务 ID：${escapeHtml(serviceId)}</span></div><button id="logout" hidden>退出</button></header><p id="notice" role="alert"></p><section class="panel" id="login-panel"><h2>管理员登录</h2><form id="login"><label>账号<input name="username" required></label><label>密码<input type="password" name="password" required></label><button>进入监管页</button></form></section><section id="dashboard" hidden><div class="panel"><div class="metrics" id="metrics"></div></div><div class="panel"><h2>用户任务量</h2><table><thead><tr><th>用户</th><th>已保存任务</th><th>操作数</th><th>首次活动</th><th>最近活动</th><th>质量评分</th></tr></thead><tbody id="users"></tbody></table></div><div class="panel"><h2>最近操作</h2><ul id="events"></ul></div></section></main><script>const notice=document.querySelector('#notice');let token=sessionStorage.getItem('dohc-supervision-token')||'';const req=async(path,body,method='POST')=>{const r=await fetch(path,{method,headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw new Error(j.error||'请求失败');return j};const time=v=>v?new Date(v).toLocaleString():'—';const show=e=>notice.textContent=e instanceof Error?e.message:String(e);const refresh=async()=>{const audit=await req('/api/v1/admin/audit',null,'GET');document.querySelector('#metrics').textContent='监管用户 '+audit.users.length+' 人 · 最近事件 '+audit.events.length+' 条';document.querySelector('#users').replaceChildren(...audit.users.map(u=>{const tr=document.createElement('tr');[u.displayName+' (@'+u.username+')',u.completedTasks,u.operationCount,time(u.firstActivityAtMs),time(u.lastActivityAtMs),u.qualityScore??'待检测'].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.append(td)});return tr}));document.querySelector('#events').replaceChildren(...audit.events.slice(0,100).map(e=>{const li=document.createElement('li');li.textContent=time(e.occurredAtMs)+' · '+e.displayName+' · '+e.action+' · '+(e.taskId||'—');return li}));document.querySelector('#login-panel').hidden=true;document.querySelector('#dashboard').hidden=false;document.querySelector('#logout').hidden=false};document.querySelector('#login').onsubmit=async e=>{e.preventDefault();try{const body=Object.fromEntries(new FormData(e.currentTarget));const r=await req('/api/v1/auth/login',body);token=r.token;sessionStorage.setItem('dohc-supervision-token',token);await refresh()}catch(x){show(x)}};document.querySelector('#logout').onclick=()=>{sessionStorage.removeItem('dohc-supervision-token');location.reload()};if(token)refresh().catch(x=>{sessionStorage.removeItem('dohc-supervision-token');show(x)})</script></html>`;
 }
 
-export async function createUserCenter(inputConfiguration, dataRoot, logger = console) {
+export async function createUserCenter(inputConfiguration, dataRoot, logger = console, { clock = Date.now } = {}) {
   const configuration = normalizeConfiguration(inputConfiguration);
   const initialized = await initializeUserCenter(configuration, dataRoot);
-  const sessions = new Map();
+  const sessions = openAuthSessions(dataRoot, { idleTtlSeconds: configuration.sessionIdleTtlSeconds, clock });
   const attempts = new Map();
   const registrations = new Map();
   const auditEventIds = new Set((await readAuditEvents(dataRoot)).map((event) => event.eventId));
   const reviewAudit = openReviewAuditStore(dataRoot);
   const taskClaims = openTaskClaims(dataRoot);
-  const clientPresence = openClientPresence(dataRoot);
+  const clientPresence = openClientPresence(dataRoot, clock);
   const sourceWriteback = openSourceWriteback(dataRoot);
   let stateMutationTail = Promise.resolve();
 
@@ -1031,10 +1027,11 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
     return mutation;
   }
 
-  function authorize(request, requireAdmin = false) {
-    const session = sessionIdentity(sessions, request);
+  async function authorize(request, requireAdmin = false) {
+    const state = await readState(dataRoot);
+    const session = sessions.authenticate(bearerToken(request), state.users);
     if (!session || (requireAdmin && !canManage(session.user))) return null;
-    return session;
+    return { ...session, user: publicUser(session.user) };
   }
 
   function canAttempt(request) {
@@ -1078,6 +1075,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             "reviewTaskClaimsV1",
             CLIENT_PRESENCE_CAPABILITY,
             SOURCE_WRITEBACK_CAPABILITY,
+            SESSION_CONTINUITY_CAPABILITY,
           ],
         });
       }
@@ -1130,10 +1128,8 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           }
           user.lastLoginAtMs = nowMs();
           await writeState(state);
-          const token = randomBytes(32).toString("base64url");
-          const identity = publicUser(user);
-          sessions.set(token, { user: identity, expiresAtMs: nowMs() + configuration.sessionTtlSeconds * 1000 });
-          return sendJson(response, 200, { token, user: identity, expiresAtMs: sessions.get(token).expiresAtMs });
+          const session = sessions.create(user);
+          return sendJson(response, 200, { ...session, user: publicUser(user) });
         });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/auth/register") {
@@ -1168,14 +1164,12 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           };
           state.users.push(user);
           await writeState(state);
-          const token = randomBytes(32).toString("base64url");
-          const session = { user: publicUser(user), expiresAtMs: nowMs() + configuration.sessionTtlSeconds * 1000 };
-          sessions.set(token, session);
-          return sendJson(response, 201, { token, user: session.user, expiresAtMs: session.expiresAtMs });
+          const session = sessions.create(user);
+          return sendJson(response, 201, { ...session, user: publicUser(user) });
         });
       }
       if (request.method === "PUT" && url.pathname === "/api/v1/auth/profile") {
-        const session = authorize(request);
+        const session = await authorize(request);
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         if (session.user.role !== "operator") {
           return sendJson(response, 403, { error: "OPERATOR_REQUIRED: 只有标注员可以修改自己的显示名称" });
@@ -1195,23 +1189,20 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           user.displayName = displayName;
           await writeState(state);
           const identity = publicUser(user);
-          for (const activeSession of sessions.values()) {
-            if (activeSession.user.username === user.username) activeSession.user = identity;
-          }
           return sendJson(response, 200, { user: identity });
         });
       }
       if (request.method === "GET" && url.pathname === "/api/v1/auth/me") {
-        const session = authorize(request);
+        const session = await authorize(request);
         return session ? sendJson(response, 200, { user: session.user, expiresAtMs: session.expiresAtMs }) : sendJson(response, 401, { error: "AUTH_REQUIRED" });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/auth/logout") {
         const token = bearerToken(request);
-        if (token) sessions.delete(token);
+        if (token) sessions.revoke(token);
         return sendJson(response, 204, {});
       }
       if (request.method === "GET" && url.pathname === "/api/v1/tasks/assigned") {
-        const session = authorize(request);
+        const session = await authorize(request);
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         const state = await readState(dataRoot);
         const user = state.users.find((candidate) => candidate.username === session.user.username);
@@ -1229,7 +1220,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         return sendJson(response, 200, { tasks });
       }
       if (request.method === "GET" && url.pathname === "/api/v1/tasks/assigned/activity") {
-        const session = authorize(request);
+        const session = await authorize(request);
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         const range = requestedLocalDay(url.searchParams.get("date"));
         const events = (await readAuditEvents(dataRoot))
@@ -1239,7 +1230,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         return sendJson(response, 200, { date: range.date, events });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/tasks/claims/lookup") {
-        const session = authorize(request);
+        const session = await authorize(request);
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         const body = await parseJsonBody(request, 80 * 1024);
         return sendJson(response, 200, { claims: taskClaims.lookup(body.keys) });
@@ -1249,7 +1240,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const key = validateBatchKey(body.batchKey);
         const action = url.pathname.split("/").at(-1);
         return await serializeStateMutation(async () => {
-          const session = authorize(request, action === "transfer");
+          const session = await authorize(request, action === "transfer");
           if (!session) return sendJson(response, 403, { error: action === "transfer" ? "ADMIN_REQUIRED" : "AUTH_REQUIRED" });
           if (action === "claim" && session.user.role !== "operator") return sendJson(response, 403, { error: "REVIEWER_REQUIRED" });
           let result;
@@ -1266,20 +1257,20 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/review/events") {
-        const session = authorize(request);
+        const session = await authorize(request);
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         if (session.user.role !== "operator") return sendJson(response, 403, { error: "REVIEWER_REQUIRED" });
         const body = await parseJsonBody(request, 256 * 1024);
         return sendJson(response, 200, reviewAudit.append(session.user, body.events));
       }
       if (request.method === "GET" && url.pathname === "/api/v1/admin/reviews") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const state = await readState(dataRoot);
         return sendJson(response, 200, reviewAudit.query(Object.fromEntries(url.searchParams), reservedUsers(state)));
       }
       if (request.method === "POST" && url.pathname === "/api/v1/audit/events") {
-        const session = authorize(request);
+        const session = await authorize(request);
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         const event = auditEvent(await parseJsonBody(request), session.user);
         return await serializeStateMutation(async () => {
@@ -1292,7 +1283,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         });
       }
       if (request.method === "GET" && url.pathname === "/api/v1/admin/audit") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "SUPERVISOR_REQUIRED" });
         const events = await readAuditEvents(dataRoot);
         const state = await readState(dataRoot);
@@ -1306,13 +1297,13 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         });
       }
       if (request.method === "GET" && url.pathname === "/api/v1/admin/source-writeback") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, {error:"ADMIN_REQUIRED"});
         const state = await readState(dataRoot);
         return sendJson(response, 200, sourceWriteback.overview(state.users));
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/source-writeback") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, {error:"ADMIN_REQUIRED"});
         const body = await parseJsonBody(request, 256 * 1024), state = await readState(dataRoot);
         const eligible = state.users.filter(u=>u.accountStatus!=="paused" && u.role==="operator");
@@ -1322,26 +1313,26 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         return sendJson(response,200,sourceWriteback.push(session.user.username,[...new Set(targets)],known));
       }
       if (request.method === "POST" && ["/api/v1/client/source-writeback/poll","/api/v1/client/source-writeback/step"].includes(url.pathname)) {
-        const session = authorize(request);
+        const session = await authorize(request);
         if (!session) return sendJson(response,401,{error:"AUTH_REQUIRED"});
         if (session.user.role!=="operator") return sendJson(response,403,{error:"OPERATOR_REQUIRED"});
         const body=await parseJsonBody(request);
         return sendJson(response,200,url.pathname.endsWith("/poll") ? sourceWriteback.poll(session.user.username,body) : sourceWriteback.authorizeStep(session.user.username,body.clientId,body.requestId));
       }
       if (request.method === "POST" && url.pathname === "/api/v1/client/poll") {
-        const session = authorize(request);
+        const session = await authorize(request);
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         return sendJson(response, 200, clientPresence.poll(session.user.username, await parseJsonBody(request), bearerToken(request)));
       }
       if (request.method === "GET" && url.pathname === "/api/v1/admin/client-versions") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const state = await readState(dataRoot);
-        const activeTokens = new Set([...sessions].filter(([,s])=>s.expiresAtMs>nowMs()).map(([token])=>token));
+        const activeTokens = sessions.activeTokens(state.users);
         return sendJson(response, 200, clientPresence.overview(state.users, activeTokens));
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/update-reminders") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const body = await parseJsonBody(request, 256 * 1024);
         const state = await readState(dataRoot);
@@ -1355,14 +1346,14 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         return sendJson(response, 200, clientPresence.push(session.user.username,[...new Set(targets)]));
       }
       if (request.method === "GET" && url.pathname === "/api/v1/admin/users") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const state = await readState(dataRoot);
         return sendJson(response, 200, { users: state.users.map(publicUser) });
       }
       const deleteAccountMatch = /^\/api\/v1\/admin\/users\/([^/]+)$/.exec(url.pathname);
       if (request.method === "DELETE" && deleteAccountMatch) {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const username = normalizeUsername(decodeURIComponent(deleteAccountMatch[1]));
         return await serializeStateMutation(async () => {
@@ -1382,14 +1373,12 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             deletedAtMs: nowMs(), deletedBy: session.user.username });
           state.users = state.users.filter((entry) => entry.username !== username);
           await writeState(state);
-          for (const [token, active] of sessions) {
-            if (active.user.username === username) sessions.delete(token);
-          }
+          sessions.revokeUsers([username]);
           return sendJson(response, 200, { username, deleted: true });
         });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/users/batch") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const body = await parseJsonBody(request);
         if (!Array.isArray(body.users) || !body.users.length || body.users.length > 100) {
@@ -1426,7 +1415,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         });
       }
       if (request.method === "PUT" && url.pathname === "/api/v1/admin/users/status") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const body = await parseJsonBody(request);
         const usernames = Array.isArray(body.usernames) ? body.usernames.map(normalizeUsername) : [];
@@ -1442,16 +1431,14 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           }
           for (const user of selected) user.accountStatus = status;
           if (status === "paused") {
-            for (const [token, active] of sessions) {
-              if (usernames.includes(active.user.username)) sessions.delete(token);
-            }
+            sessions.revokeUsers(usernames);
           }
           await writeState(state);
           return sendJson(response, 200, { users: selected.map(publicUser) });
         });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/users") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const body = await parseJsonBody(request);
         const username = normalizeUsername(body.username);
@@ -1478,7 +1465,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       }
       const assignmentMatch = /^\/api\/v1\/admin\/users\/([^/]+)\/assignment$/.exec(url.pathname);
       if (request.method === "PUT" && assignmentMatch) {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const username = normalizeUsername(decodeURIComponent(assignmentMatch[1]));
         const body = await parseJsonBody(request);
@@ -1563,7 +1550,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/assignments/transfer") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const body = await parseJsonBody(request);
         const fromUsername = normalizeUsername(body.fromUsername);
@@ -1600,7 +1587,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       }
       const alertMatch = /^\/api\/v1\/admin\/alerts\/([^/]+)$/.exec(url.pathname);
       if (request.method === "PUT" && alertMatch) {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const alertId = normalizeTaskDetailText(decodeURIComponent(alertMatch[1]), "预警编号", 200);
         const body = await parseJsonBody(request);
@@ -1626,7 +1613,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/quality-reviews") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const body = await parseJsonBody(request);
         const taskId = normalizeTaskDetailText(body.taskId, "任务名称", 100);
@@ -1706,7 +1693,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         });
       }
       if (request.method === "PUT" && url.pathname === "/api/v1/admin/task-details") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const body = await parseJsonBody(request);
         return await serializeStateMutation(async () => {
@@ -1717,7 +1704,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/task-details/import") {
-        const session = authorize(request, true);
+        const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const body = await parseJsonBody(request);
         if (!Array.isArray(body.tasks) || !body.tasks.length || body.tasks.length > MAX_TASK_DETAILS) {
@@ -1759,6 +1746,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       taskClaims.close();
       clientPresence.close();
       sourceWriteback.close();
+      sessions.close();
     },
     configuration,
     clientConfigPath: initialized.clientConfigPath,

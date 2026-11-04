@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.5.8",
+  "version": "1.5.9",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -23,7 +23,7 @@
     "test:playback": "node --test --experimental-strip-types scripts/frame-cache.test.mjs scripts/playback-clock.test.mjs scripts/playback-rendering.test.mjs scripts/capture-timeline.test.ts scripts/preview-priority.test.ts scripts/skeleton-frame.test.ts scripts/skeleton-catchup.test.ts scripts/skeleton-orientation.test.ts scripts/skeleton-catchup-browser.test.mjs",
     "test:issue-locate": "node --test --experimental-strip-types scripts/issue-locate.test.mjs",
     "test:update-mirror": "node --test scripts/update-mirror-server.test.mjs",
-    "test:user-center": "node --test scripts/user-center-server.test.mjs scripts/client-presence-store.test.mjs scripts/source-writeback-store.test.mjs scripts/client-management.test.mjs && node --test --experimental-strip-types scripts/review-audit.test.mjs",
+    "test:user-center": "node --test scripts/user-center-server.test.mjs scripts/auth-session-store.test.mjs scripts/session-continuity.test.mjs scripts/client-presence-store.test.mjs scripts/source-writeback-store.test.mjs scripts/client-management.test.mjs && node --test --experimental-strip-types scripts/review-audit.test.mjs",
     "test:supervision-assignment": "node --test --experimental-strip-types scripts/supervision-assignment.test.ts",
     "test:task-center": "node --test --experimental-strip-types --test-concurrency=1 scripts/task-index-read.test.ts scripts/task-center-filter.test.ts scripts/task-center.test.mjs scripts/batch-rejection.test.mjs",
     "test:review-audit:browser": "node --test --test-concurrency=1 scripts/review-audit-browser.test.mjs scripts/review-audit-durability-browser.test.mjs scripts/review-audit-notice-browser.test.mjs scripts/audit-layout-browser.test.mjs",

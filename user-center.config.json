@@ -3,5 +3,6 @@
   "listenHost": "0.0.0.0",
   "listenPort": 17880,
   "publicBaseUrl": "https://10.1.11.200:17880",
-  "sessionTtlSeconds": 28800
+  "sessionTtlSeconds": 28800,
+  "sessionIdleTtlSeconds": 2592000
 }
