@@ -7,7 +7,7 @@ export const SOURCE_WRITEBACK_CAPABILITY = 'sourceWritebackV1';
 const validId = id => typeof id === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id);
 const integer = n => Number.isSafeInteger(n) && n >= 0 && n <= 10_000_000;
 const fields = (value, allowed) => value && Object.keys(value).every(key=>allowed.includes(key));
-const codes = new Set(['storage_full','storage_unavailable','conflict','invalid_result','changed','local_storage','unknown']);
+const codes = new Set(['storage_full','storage_unavailable','source_missing','storage_timeout','conflict','invalid_result','changed','local_storage','unknown']);
 export function openSourceWriteback(dataRoot, clock = Date.now) {
   const file=path.join(dataRoot,'source-writeback.sqlite'), db=new DatabaseSync(file);
   chmodSync(file,0o600);
@@ -23,7 +23,9 @@ export function openSourceWriteback(dataRoot, clock = Date.now) {
   function validate(input){
     if(!fields(input,['clientId','version','pending','skipped','availability','report','localIssue']) || !validId(input.clientId) || !/^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(input.version??'') || !integer(input.pending) || !integer(input.skipped) || !['idle','busy'].includes(input.availability) || (input.localIssue!==undefined && !['local_storage','unknown'].includes(input.localIssue)))throw Error('WRITEBACK_REPORT_INVALID');
     const r=input.report;
-    if(r && (!fields(r,['requestId','seq','state','total','written','remaining','errors']) || !validId(r.requestId) || !integer(r.seq) || !['running','complete','partial'].includes(r.state) || !integer(r.total) || !integer(r.written) || !integer(r.remaining) || r.written+r.remaining!==r.total || !Array.isArray(r.errors) || r.errors.length>codes.size || r.errors.some(c=>!codes.has(c)) || new Set(r.errors).size!==r.errors.length || (r.state==='complete' && (r.remaining!==0 || r.errors.length)) || (r.state==='partial' && (!r.remaining || !r.errors.length))))throw Error('WRITEBACK_REPORT_INVALID');
+    if(r && (!fields(r,['requestId','seq','state','total','written','remaining','attempted','failed','unattempted','errors']) || !validId(r.requestId) || !integer(r.seq) || !['running','complete','partial'].includes(r.state) || !integer(r.total) || !integer(r.written) || !integer(r.remaining) || r.written+r.remaining!==r.total || !Array.isArray(r.errors) || r.errors.length>codes.size || r.errors.some(c=>!codes.has(c)) || new Set(r.errors).size!==r.errors.length || (r.state==='complete' && (r.remaining!==0 || r.errors.length)) || (r.state==='partial' && (!r.remaining || !r.errors.length))))throw Error('WRITEBACK_REPORT_INVALID');
+    if(r && ['attempted','failed','unattempted'].some(key=>r[key]!==undefined) &&
+      (!integer(r.attempted)||!integer(r.failed)||!integer(r.unattempted)||r.attempted!==r.written+r.failed||r.total!==r.attempted+r.unattempted||r.failed+r.unattempted!==r.remaining||(r.failed>0&&!r.errors.length)))throw Error('WRITEBACK_REPORT_INVALID');
   }
   return {
     push(sender,usernames,knownDevices=[]){return tx(()=>({queued:usernames.map(username=>{

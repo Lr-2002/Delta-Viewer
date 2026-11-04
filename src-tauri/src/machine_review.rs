@@ -1787,14 +1787,21 @@ fn save_for_user_mode(
     let output = output_name(&annotation, &write_root);
     let lock_path = write_root.join(".description.lock");
     let _output_lock = lock_file(&lock_path)?;
+    let current = load_inner(data_root, &root, &annotation)?;
     if let Some(snapshot) = pending_snapshot.as_ref().filter(|snapshot| {
         !snapshot.only_pending && annotation.source_name != machine_annotation::SKELETON_SOURCE
     }) {
         let current_qc = machine_annotation::read_bytes(&write_root.join("session.json"))?
             .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
-        if annotation.source_name != machine_annotation::SKELETON_SOURCE
-            && snapshot.qc_content_hash != current_qc
-        {
+        // Old clients did not retain a QC hash. They can only publish into an
+        // untouched, unreviewed destination, with exactly the original model.
+        // Never use this compatibility case to replace an existing human result.
+        let legacy_unreviewed = snapshot.qc_content_hash.is_none()
+            && snapshot.output_hash.is_none()
+            && current.output_hash.is_none()
+            && request.source_hash == annotation.source_hash
+            && pending_qc(&write_root)?;
+        if snapshot.qc_content_hash != current_qc && !legacy_unreviewed {
             return Err(failure(
                 "共享目录 QC 或采集记录已改变，本机待写结果已保留，请打开数据核对；未覆盖",
             ));
@@ -1803,7 +1810,6 @@ fn save_for_user_mode(
     if only_pending && !pending_qc(&write_root)? {
         return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
     }
-    let current = load_inner(data_root, &root, &annotation)?;
     if (machine_annotation::read_bytes(&write_root.join(output))?
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .is_some_and(|doc| doc.get("_text_correction").is_some())
@@ -1831,8 +1837,14 @@ fn save_for_user_mode(
         Err(_) if !current.recovery_warnings.is_empty() => None,
         Err(error) => return Err(error.into()),
     };
+    // A local revision counter is not a shared-file identity. Registered moves,
+    // another installation, and local draft saves can change it while the exact
+    // source and human-result bytes remain unchanged. Deferred writes have an
+    // independent output hash and QC guard, including the final locked CAS.
+    let revision_changed =
+        request.expected_revision != current.revision && pending_snapshot.is_none();
     let rebased = request.source_hash != annotation.source_hash
-        || request.expected_revision != current.revision
+        || revision_changed
         || match &pending_snapshot {
             // Batch preflight just loaded the current shared result. A stale
             // local draft is not a concurrent edit; compare that fresh snapshot
@@ -2292,9 +2304,30 @@ pub(crate) fn lock_file(path: &Path) -> AppResult<fs::File> {
             return Err(failure("复核锁不能是符号链接"));
         }
     }
-    file.try_lock()
-        .map_err(|_| failure("另一进程正在保存复核结果，请稍后重试"))?;
-    Ok(file)
+    // A previous operation (or a concurrently spawned child before exec) may
+    // retain the OS lock briefly after its caller returns. Wait only a short,
+    // bounded interval; never bypass an actual competing writer's lock.
+    let started = std::time::Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(error) => {
+                let transient = match &error {
+                    fs::TryLockError::WouldBlock => true,
+                    fs::TryLockError::Error(error) => {
+                        error.kind() == std::io::ErrorKind::Interrupted
+                    }
+                };
+                if !transient {
+                    return Err(failure(&format!("无法取得复核保存锁：{error}")));
+                }
+                if started.elapsed() >= std::time::Duration::from_millis(100) {
+                    return Err(failure("另一进程正在保存复核结果，请稍后重试"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
 }
 
 pub fn is_review_path(root: &Path, path: &Path) -> bool {
@@ -3599,6 +3632,125 @@ mod tests {
     }
 
     #[test]
+    fn deferred_local_revision_and_legacy_qc_do_not_block_an_untouched_destination() {
+        for legacy in [false, true] {
+            let f = Fixture::new(0, true);
+            fs::write(
+                f.root.join("session.json"),
+                r#"{"qc":"待审核","capture":"keep"}"#,
+            )
+            .unwrap();
+            let state = load(&f.local, &f.root).unwrap();
+            let qc = view_for_root(&f.root, state.clone()).qc_content_hash;
+            let request = SaveReviewRequest {
+                special_tags: None,
+                source_path: f.root.to_string_lossy().into(),
+                source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+                source_hash: state.source_hash.clone(),
+                expected_revision: 81,
+                segments: state.segments.clone(),
+                status: Some("approved".into()),
+                rejection_reason: None,
+            };
+            let saved = publish_deferred_for_user(
+                &f.local,
+                request.clone(),
+                None,
+                if legacy { None } else { qc.clone() },
+                "原审核人",
+                "alice",
+                ("11111111-1111-4111-8111-111111111111".into(), 1792548000000),
+            )
+            .unwrap();
+            assert_eq!(saved.status, "approved");
+            assert_eq!(saved.updated_at_ms, 1792548000000);
+            assert_eq!(f.output()["_human_review"]["reviewer"], "原审核人");
+            let before = fs::read(f.root.join(OUTPUT)).unwrap();
+            // Same original event after a restart must only acknowledge its own
+            // durable source result. A competing event must never replace it.
+            let replay = publish_deferred_for_user(
+                &f.local,
+                request.clone(),
+                None,
+                if legacy { None } else { qc.clone() },
+                "原审核人",
+                "alice",
+                ("11111111-1111-4111-8111-111111111111".into(), 1792548000000),
+            )
+            .unwrap();
+            assert_eq!(replay.version_id, saved.version_id);
+            assert!(publish_deferred_for_user(
+                &f.local,
+                request,
+                None,
+                None,
+                "其他人",
+                "bob",
+                ("22222222-2222-4222-8222-222222222222".into(), 1792548001000)
+            )
+            .is_err());
+            assert_eq!(fs::read(f.root.join(OUTPUT)).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn deferred_snapshot_still_rejects_changed_capture_model_and_human_content() {
+        for changed in ["capture", "model", "human"] {
+            let f = Fixture::new(0, true);
+            fs::write(
+                f.root.join("session.json"),
+                r#"{"qc":"待审核","capture":"keep"}"#,
+            )
+            .unwrap();
+            let state = load(&f.local, &f.root).unwrap();
+            let qc = view_for_root(&f.root, state.clone()).qc_content_hash;
+            let request = SaveReviewRequest {
+                special_tags: None,
+                source_path: f.root.to_string_lossy().into(),
+                source_name: Some(machine_annotation::DEFAULT_SOURCE.into()),
+                source_hash: state.source_hash.clone(),
+                expected_revision: 81,
+                segments: state.segments.clone(),
+                status: Some("approved".into()),
+                rejection_reason: None,
+            };
+            match changed {
+                "capture" => fs::write(
+                    f.root.join("session.json"),
+                    r#"{"qc":"待审核","capture":"other"}"#,
+                )
+                .unwrap(),
+                "model" => {
+                    let file = f.root.join(machine_annotation::DEFAULT_SOURCE);
+                    let mut bytes = fs::read(&file).unwrap();
+                    bytes.push(b' ');
+                    fs::write(file, bytes).unwrap();
+                }
+                _ => {
+                    let mut other = request.clone();
+                    other.expected_revision = state.revision;
+                    save_for_user(&f.local, other, "其他审核人", "bob").unwrap();
+                }
+            }
+            let before = fs::read(f.root.join(OUTPUT)).ok();
+            assert!(
+                publish_deferred_for_user(
+                    &f.local,
+                    request,
+                    None,
+                    qc,
+                    "原审核人",
+                    "alice",
+                    ("11111111-1111-4111-8111-111111111111".into(), 1792548000000)
+                )
+                .is_err(),
+                "{changed}"
+            );
+            assert_eq!(fs::read(f.root.join(OUTPUT)).ok(), before);
+        }
+    }
+
+    #[test]
     fn deferred_result_survives_restart_accounts_conflicts_and_idempotent_writeback() {
         use crate::source_review_queue as queue;
         let f = Fixture::new(0, true);
@@ -4856,6 +5008,30 @@ mod tests {
             ("00000000-0000-4000-8000-000000000000".into(), 1)
         )
         .is_err());
+    }
+
+    #[test]
+    fn save_lock_waits_for_a_brief_owner_but_never_bypasses_a_live_writer() {
+        let f = Fixture::new(0, true);
+        let path = f.root.join(".description.lock");
+        let held = lock_file(&path).unwrap();
+        let (ready, received) = std::sync::mpsc::channel();
+        let other_path = path.clone();
+        let other = std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            lock_file(&other_path)
+        });
+        received.recv().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(held);
+        let held = other.join().unwrap().unwrap();
+        let started = std::time::Instant::now();
+        assert!(lock_file(&path).is_err());
+        assert!(started.elapsed() >= std::time::Duration::from_millis(100));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        drop(held);
+        assert!(lock_file(&path).is_ok());
+        assert!(!f.root.join(OUTPUT).exists());
     }
 
     struct Fixture {

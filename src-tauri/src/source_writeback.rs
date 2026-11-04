@@ -38,7 +38,8 @@ fn fail(e: impl std::fmt::Display) -> AppError {
 fn open(root: &Path) -> AppResult<rusqlite::Connection> {
     let db = queue::open(root)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS writeback_jobs(service TEXT NOT NULL,username TEXT NOT NULL,client_id TEXT NOT NULL,request_id TEXT NOT NULL,finished INTEGER NOT NULL DEFAULT 0,seq INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(service,username,client_id,request_id));
-        CREATE TABLE IF NOT EXISTS writeback_items(service TEXT NOT NULL,username TEXT NOT NULL,client_id TEXT NOT NULL,request_id TEXT NOT NULL,source_path TEXT NOT NULL,source_name TEXT NOT NULL,event_id TEXT NOT NULL,state TEXT NOT NULL,error TEXT NOT NULL,PRIMARY KEY(service,username,client_id,request_id,source_path,source_name));").map_err(fail)?;
+        CREATE TABLE IF NOT EXISTS writeback_items(service TEXT NOT NULL,username TEXT NOT NULL,client_id TEXT NOT NULL,request_id TEXT NOT NULL,source_path TEXT NOT NULL,source_name TEXT NOT NULL,event_id TEXT NOT NULL,state TEXT NOT NULL,error TEXT NOT NULL,PRIMARY KEY(service,username,client_id,request_id,source_path,source_name));
+        CREATE TABLE IF NOT EXISTS writeback_progress_v2(service TEXT NOT NULL,username TEXT NOT NULL,client_id TEXT NOT NULL,request_id TEXT NOT NULL,PRIMARY KEY(service,username,client_id,request_id));").map_err(fail)?;
     Ok(db)
 }
 #[derive(Serialize)]
@@ -84,6 +85,11 @@ fn begin(root: &Path, service: &str, user: &str, client: &str, id: &str) -> AppR
         params![service, user, client, id],
     )
     .map_err(fail)?;
+    tx.execute(
+        "INSERT INTO writeback_progress_v2 VALUES(?,?,?,?)",
+        params![service, user, client, id],
+    )
+    .map_err(fail)?;
     for (p, s, event) in rows {
         if eligible(root, &p, &network) {
             tx.execute(
@@ -98,11 +104,11 @@ fn begin(root: &Path, service: &str, user: &str, client: &str, id: &str) -> AppR
 }
 pub fn report(root: &Path, service: &str, user: &str, client: &str) -> AppResult<Option<Value>> {
     let db = open(root)?;
-    let job:Option<(String,bool,i64)>=db.query_row("SELECT request_id,finished,seq FROM writeback_jobs WHERE service=? AND username=? AND client_id=? ORDER BY rowid DESC LIMIT 1",params![service,user,client],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(fail)?;
-    let Some((id, finished, seq)) = job else {
+    let job:Option<(String,bool,i64,i64)>=db.query_row("SELECT j.request_id,j.finished,j.seq,EXISTS(SELECT 1 FROM writeback_progress_v2 p WHERE p.service=j.service AND p.username=j.username AND p.client_id=j.client_id AND p.request_id=j.request_id) FROM writeback_jobs j WHERE service=? AND username=? AND client_id=? ORDER BY rowid DESC LIMIT 1",params![service,user,client],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(fail)?;
+    let Some((id, finished, seq, progress_version)) = job else {
         return Ok(None);
     };
-    let (total,written):(i64,i64)=db.query_row("SELECT count(*),coalesce(sum(state='written'),0) FROM writeback_items WHERE service=? AND username=? AND client_id=? AND request_id=?",params![service,user,client,id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(fail)?;
+    let (total,written,failed,unattempted):(i64,i64,i64,i64)=db.query_row("SELECT count(*),coalesce(sum(state='written'),0),coalesce(sum(state='failed'),0),coalesce(sum(state IN ('waiting','blocked')),0) FROM writeback_items WHERE service=? AND username=? AND client_id=? AND request_id=?",params![service,user,client,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(fail)?;
     let mut q=db.prepare("SELECT DISTINCT error FROM writeback_items WHERE service=? AND username=? AND client_id=? AND request_id=? AND error!=''").map_err(fail)?;
     let errors = q
         .query_map(params![service, user, client, id], |r| {
@@ -118,13 +124,23 @@ pub fn report(root: &Path, service: &str, user: &str, client: &str) -> AppResult
     } else {
         "partial"
     };
-    Ok(Some(
-        json!({"requestId":id,"seq":seq,"state":state,"total":total,"written":written,"remaining":total-written,"errors":errors}),
-    ))
+    let mut value = json!({"requestId":id,"seq":seq,"state":state,"total":total,"written":written,"remaining":total-written,"errors":errors});
+    // Older passes marked unvisited items failed. Their real attempted count is
+    // unknown; never turn that historical status into invented progress.
+    if progress_version == 1 {
+        value["attempted"] = json!(written + failed);
+        value["failed"] = json!(failed);
+        value["unattempted"] = json!(unattempted);
+    }
+    Ok(Some(value))
 }
 pub fn error_code(message: &str) -> &'static str {
     if message.contains("REVIEW_STORAGE_FULL") {
         "storage_full"
+    } else if message.contains("SOURCE_UNAVAILABLE") {
+        "source_missing"
+    } else if message.contains("REVIEW_STORAGE_UNRESPONSIVE") {
+        "storage_timeout"
     } else if message.contains("CONFLICT")
         || message.contains("已有审核结论")
         || message.contains("已改变")
@@ -135,7 +151,6 @@ pub fn error_code(message: &str) -> &'static str {
     } else if message.contains("LOCAL_STORAGE") || message.contains("OUTBOX_STORAGE") {
         "local_storage"
     } else if message.contains("REVIEW_STORAGE_")
-        || message.contains("SOURCE_UNAVAILABLE")
         || message.contains("I/O")
         || message.contains("路径")
     {
@@ -211,11 +226,15 @@ fn step_with(
         let mut db = open(root)?;
         let tx = db.transaction().map_err(fail)?;
         tx.execute("UPDATE writeback_items SET state=?,error=? WHERE service=? AND username=? AND client_id=? AND request_id=? AND source_path=? AND source_name=?",params![if code.is_none(){"written"}else{"failed"},code.unwrap_or(""),service,user.username,client,id,path,source]).map_err(fail)?;
-        if matches!(
-            code,
-            Some("storage_full" | "storage_unavailable" | "local_storage")
-        ) {
-            tx.execute("UPDATE writeback_items SET state='failed',error=? WHERE service=? AND username=? AND client_id=? AND request_id=? AND state='waiting'",params![code.unwrap(),service,user.username,client,id]).map_err(fail)?;
+        // A missing/moved directory or permission error belongs to this item,
+        // not every item in the queue. Only a capacity/local-queue failure or
+        // three consecutive bounded timeouts stops this pass. Unvisited items
+        // stay distinguishable from failures actually checked on this device.
+        let timeout_streak: i64 = tx.query_row("SELECT count(*) FROM (SELECT error FROM writeback_items WHERE service=? AND username=? AND client_id=? AND request_id=? AND state IN ('written','failed') ORDER BY rowid DESC LIMIT 3) WHERE error='storage_timeout'",params![service,user.username,client,id],|r|r.get(0)).map_err(fail)?;
+        if matches!(code, Some("storage_full" | "local_storage"))
+            || (code == Some("storage_timeout") && timeout_streak == 3)
+        {
+            tx.execute("UPDATE writeback_items SET state='blocked',error=? WHERE service=? AND username=? AND client_id=? AND request_id=? AND state='waiting'",params![code.unwrap(),service,user.username,client,id]).map_err(fail)?;
         }
         tx.execute("UPDATE writeback_jobs SET seq=seq+1 WHERE service=? AND username=? AND client_id=? AND request_id=?",params![service,user.username,client,id]).map_err(fail)?;
         tx.commit().map_err(fail)?;
@@ -289,10 +308,32 @@ mod tests {
         fn queue(&self, entry: queue::DeferredReview) {
             queue::store(&self.root, "s", &self.user.username, entry).unwrap();
         }
+        fn queue_copies(&self, count: usize) {
+            for i in 0..count {
+                let mut entry =
+                    self.entry("approved", &format!("{i:08x}-1111-4111-8111-111111111111"));
+                if i > 0 {
+                    let path = self.root.join(format!("sample-{i}"));
+                    std::fs::create_dir(&path).unwrap();
+                    std::fs::copy(
+                        self.source.join("bailian_annotation.json"),
+                        path.join("bailian_annotation.json"),
+                    )
+                    .unwrap();
+                    entry.request.source_path = path.to_string_lossy().into();
+                }
+                self.queue(entry);
+            }
+        }
         fn snapshot(&self, id: &str) {
             let db = open(&self.root).unwrap();
             db.execute(
                 "INSERT INTO writeback_jobs VALUES('s','alice','client',?,0,1)",
+                params![id],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO writeback_progress_v2 VALUES('s','alice','client',?)",
                 params![id],
             )
             .unwrap();
@@ -321,6 +362,80 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+    #[test]
+    fn one_unavailable_path_does_not_block_healthy_results_or_erase_its_failure() {
+        let f = Fixture::new();
+        f.queue_copies(2);
+        f.snapshot("job");
+        let first = f.run("job", |_| {
+            Err(AppError::Message("SOURCE_UNAVAILABLE".into()))
+        });
+        assert_eq!(first["state"], "running");
+        assert_eq!(first["attempted"], 1);
+        assert_eq!(first["failed"], 1);
+        assert_eq!(first["unattempted"], 1);
+        let result = f.run("job", |_| Ok(()));
+        assert_eq!(result["state"], "partial");
+        assert_eq!(result["written"], 1);
+        assert_eq!(result["attempted"], 2);
+        assert_eq!(result["failed"], 1);
+        assert_eq!(result["unattempted"], 0);
+        assert_eq!(result["errors"], json!(["source_missing"]));
+        assert_eq!(keys(&f.root, "s", "alice").unwrap().len(), 1);
+        assert_eq!(
+            f.run("job", |_| panic!("terminal job must not repeat writes")),
+            result
+        );
+        f.snapshot("retry");
+        assert_eq!(f.run("retry", |_| Ok(()))["written"], 1);
+    }
+    #[test]
+    fn whole_storage_failure_is_bounded_and_unvisited_items_are_not_failed_checks() {
+        for (error, attempts) in [
+            ("REVIEW_STORAGE_FULL", 1),
+            ("REVIEW_STORAGE_UNRESPONSIVE", 3),
+        ] {
+            let f = Fixture::new();
+            f.queue_copies(4);
+            f.snapshot("job");
+            let mut result = Value::Null;
+            for _ in 0..attempts {
+                result = f.run("job", |_| Err(AppError::Message(error.into())));
+            }
+            assert_eq!(result["state"], "partial");
+            assert_eq!(result["written"], 0);
+            assert_eq!(result["attempted"], attempts);
+            assert_eq!(result["failed"], attempts);
+            assert_eq!(result["unattempted"], 4 - attempts);
+            assert_eq!(keys(&f.root, "s", "alice").unwrap().len(), 4);
+            assert_eq!(
+                f.run("job", |_| panic!("outage must stop this pass")),
+                result
+            );
+            f.snapshot("retry");
+            for _ in 0..4 {
+                result = f.run("retry", |_| Ok(()));
+            }
+            assert_eq!(result["state"], "complete");
+            assert_eq!(result["written"], 4);
+        }
+    }
+    #[test]
+    fn legacy_jobs_do_not_invent_historical_attempted_counts_after_upgrade() {
+        let f = Fixture::new();
+        let db = queue::open(&f.root).unwrap();
+        db.execute_batch("CREATE TABLE writeback_jobs(service TEXT NOT NULL,username TEXT NOT NULL,client_id TEXT NOT NULL,request_id TEXT NOT NULL,finished INTEGER NOT NULL DEFAULT 0,seq INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(service,username,client_id,request_id)); INSERT INTO writeback_jobs VALUES('s','alice','client','old',1,2);").unwrap();
+        let old = report(&f.root, "s", "alice", "client").unwrap().unwrap();
+        assert_eq!(old["state"], "complete");
+        assert!(old.get("attempted").is_none());
+        assert!(old.get("failed").is_none());
+        // Older clients can still start their original six-column jobs after
+        // upgrade; the progress marker must not change their table layout.
+        db.execute_batch(
+            "INSERT INTO writeback_jobs VALUES('s','alice','client','legacy-after-upgrade',0,1)",
+        )
+        .unwrap();
     }
     #[test]
     fn remote_job_restarts_after_source_commit_without_losing_provenance_or_republishing() {

@@ -50,3 +50,22 @@ test('durable per-device commands: offline delivery, dedupe, partial failure, un
   time+=100000;assert.equal(view().users[0].request.id,more,'commands do not silently expire while offline');
  }finally{store.close();await rm(root,{recursive:true,force:true});}
 });
+
+test('new per-item progress survives restart; legacy reports remain accepted; inconsistent counts rejected',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'writeback-progress-'));let store=openSourceWriteback(root);
+ const clientId=randomUUID();const id=store.push('admin',['alice']).queued[0].id;
+ const poll=report=>({clientId,version:'1.6.1',pending:4,skipped:0,availability:'idle',report});
+ const report={requestId:id,seq:2,state:'running',total:4,written:0,remaining:4,attempted:1,failed:1,unattempted:3,errors:['source_missing']};
+ try{
+  assert.deepEqual(store.poll('alice',poll(report)).receipt,report);
+  const progress={...report,seq:3,written:1,remaining:3,attempted:2,unattempted:2};
+  assert.deepEqual(store.poll('alice',poll(progress)).receipt,progress,'one healthy write does not erase failed items');
+  for(const patch of [{attempted:3},{failed:-1},{unattempted:0},{failed:undefined},{errors:[]}])assert.throws(()=>store.poll('alice',poll({...progress,...patch})),/INVALID/);
+  store.close();store=openSourceWriteback(root);
+  assert.deepEqual(store.overview([{username:'alice'}]).users[0].deliveries[0].report,progress);
+  const stopped={...progress,seq:4,state:'partial',errors:['source_missing','storage_timeout']};
+  assert.deepEqual(store.poll('alice',poll(stopped)).receipt,stopped);
+  store.poll('alice',poll({...report,seq:5,state:'complete',written:4,remaining:0,attempted:4,failed:0,unattempted:0,errors:[]}));
+  assert.deepEqual(store.overview([{username:'alice'}]).users[0].deliveries[0].report,stopped,'unrelated success must not clear terminal errors');
+ }finally{store.close();await rm(root,{recursive:true,force:true});}
+});

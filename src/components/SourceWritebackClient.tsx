@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { APP_VERSION } from '../lib/backend';
 import { clientInstallationId } from '../lib/client-versions';
-import { writebackCall, writebackErrors, type WritebackOwner, type WritebackPoll, type WritebackReport } from '../lib/source-writeback';
+import { writebackCall, writebackErrors, writebackProgress, type WritebackOwner, type WritebackPoll, type WritebackReport } from '../lib/source-writeback';
 
 // Account-keyed by the parent. Every native operation revalidates the original owner.
 export function SourceWritebackClient({owner,disabled,onBusy,onWritten,call=writebackCall}: {
@@ -18,13 +18,13 @@ export function SourceWritebackClient({owner,disabled,onBusy,onWritten,call=writ
     const protect=(event:BeforeUnloadEvent)=>event.preventDefault();
     let lastReport:WritebackReport|null=null,receiptPending=false;
     let transportFailed=false;
-    const describe=(report:WritebackReport)=>report.state==='complete'?`管理员统一写回完成：${report.written} 条结果已写入 NAS。`:report.state==='partial'?`统一写回：${report.written} 条已写入，${report.remaining} 条保留本机。${report.errors.map(c=>writebackErrors[c]??writebackErrors.unknown).join('；')}`:`管理员统一写回中：${report.written} / ${report.total} 条。`;
+    const describe=(report:WritebackReport)=>report.state==='complete'?`管理员统一写回完成：${report.written} 条结果已写入 NAS。`:`${report.state==='partial'?'统一写回结束':'管理员统一写回中'}：${writebackProgress(report)}${report.errors.map(c=>writebackErrors[c]??writebackErrors.unknown).join('；')}`;
     function confirmReceipt(poll:WritebackPoll){
       const ack=poll.receipt;
       if(!lastReport || !ack || ack.requestId!==lastReport.requestId || ack.seq<lastReport.seq)return false;
       const changed=receiptPending||transportFailed;
       lastReport=ack;receiptPending=false;transportFailed=false;
-      if(changed){setMessage(describe(ack));setFailure(ack.state==='partial');}return true;
+      if(changed){setMessage(describe(ack));setFailure(ack.state==='partial'||ack.errors.length>0);}return true;
     }
     async function tick(){
       if(!alive || flight)return;flight=true;
@@ -35,15 +35,15 @@ export function SourceWritebackClient({owner,disabled,onBusy,onWritten,call=writ
         if(!alive)return;
         const confirmed=confirmReceipt(poll);
         if(receiptPending && lastReport && !confirmed){
-          setMessage(`${describe(lastReport)} 执行回执等待用户中心确认。`);setFailure(lastReport.state==='partial');
+          setMessage(`${describe(lastReport)} 执行回执等待用户中心确认。`);setFailure(lastReport.state==='partial'||lastReport.errors.length>0);
         }
         if(transportFailed && !receiptPending && !confirmed){
-          transportFailed=false;setFailure(Boolean(lastReport?.state==='partial'));
+          transportFailed=false;setFailure(Boolean(lastReport&&(lastReport.state==='partial'||lastReport.errors.length>0)));
           setMessage(lastReport?describe(lastReport):'');
         }
         if(!poll.request)return;
         messageStarted=true;
-        if(blocked()){setMessage('管理员已安排统一写回，等待当前操作结束后执行。');setFailure(false);return;}
+        if(blocked()){setMessage(`${lastReport?describe(lastReport)+' ':''}管理员已安排统一写回，等待当前操作结束后执行。`);setFailure(Boolean(lastReport?.errors.length));return;}
         holding=true;latest.current.onBusy(true);window.addEventListener("beforeunload",protect);
         if(!alive)return;
         const report=await call<WritebackReport>(owner,{kind:'step',clientId,requestId:poll.request.id});
@@ -52,14 +52,14 @@ export function SourceWritebackClient({owner,disabled,onBusy,onWritten,call=writ
         writtenByRequest.set(report.requestId,report.written);
         window.dispatchEvent(new Event('source-review-pending'));
         lastReport=report;receiptPending=true;
-        setFailure(report.state==='partial');
+        setFailure(report.state==='partial'||report.errors.length>0);
         setMessage(`${describe(report)} 执行回执等待用户中心确认。`);
         // Send the durable receipt now, including when this was the last item.
         confirmReceipt(await call<WritebackPoll>(owner,{kind:'poll',clientId,busy:true}));
         if(report.state==='running')nextDelay=250;
       } catch(error){
         // An unrelated normal heartbeat must not erase a persistent writeback failure.
-        if(alive && messageStarted){transportFailed=true;setFailure(true);setMessage(`${receiptPending?'本机写回已有结果，执行回执待用户中心确认':lastReport?.state==='complete'?'本次写回已确认完成；当前用户中心连接异常':lastReport?.state==='partial'?describe(lastReport)+' 当前用户中心连接异常':'写回指令连接异常，本机待写结果保留'}：${String(error)}`);}
+        if(alive && messageStarted){transportFailed=true;setFailure(true);setMessage(`${receiptPending?'本机写回已有结果，执行回执待用户中心确认':lastReport?.state==='complete'?'本次写回已确认完成；当前用户中心连接异常':lastReport?.errors.length?describe(lastReport)+' 当前用户中心连接异常':'写回指令连接异常，本机待写结果保留'}：${String(error)}`);}
       } finally {
         if(holding){window.removeEventListener("beforeunload",protect);latest.current.onBusy(false);}
         flight=false;
