@@ -20,6 +20,7 @@ import { openAuthSessions, DEFAULT_SESSION_IDLE_SECONDS, SESSION_CONTINUITY_CAPA
 import { openSourceWriteback, SOURCE_WRITEBACK_CAPABILITY } from "./source-writeback-store.mjs";
 import { openClientPresence, CLIENT_PRESENCE_CAPABILITY } from "./client-presence-store.mjs";
 import { openReviewAuditStore } from "./review-audit-store.mjs";
+import { openReviewQueries } from "./review-query-service.mjs";
 import { openTaskClaims, validateBatchKey } from "./task-claims-store.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -1004,7 +1005,7 @@ function supervisionPage(serviceId) {
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DOHC 标注监管</title><style>:root{color:#111;background:#f5f5f5;font:14px system-ui,sans-serif}*{box-sizing:border-box}body{margin:0}main{max-width:1280px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #111;padding-bottom:18px}.muted{color:#666}.panel{margin-top:18px;padding:20px;background:#fff;border:1px solid #ccc;border-radius:6px}form{max-width:420px;display:grid;gap:12px}label{display:grid;gap:6px}input,button{font:inherit;padding:9px;border:1px solid #999;border-radius:4px}button{width:max-content;background:#111;color:#fff}table{width:100%;border-collapse:collapse}th,td{padding:10px 8px;border-bottom:1px solid #ddd;text-align:left}#notice{color:#a00}.metrics{font-size:18px;font-weight:700}li{margin:8px 0}</style><main><header><div><small class="muted">ADMIN SUPERVISION</small><h1>标注监管</h1><span class="muted">服务 ID：${escapeHtml(serviceId)}</span></div><button id="logout" hidden>退出</button></header><p id="notice" role="alert"></p><section class="panel" id="login-panel"><h2>管理员登录</h2><form id="login"><label>账号<input name="username" required></label><label>密码<input type="password" name="password" required></label><button>进入监管页</button></form></section><section id="dashboard" hidden><div class="panel"><div class="metrics" id="metrics"></div></div><div class="panel"><h2>用户任务量</h2><table><thead><tr><th>用户</th><th>已保存任务</th><th>操作数</th><th>首次活动</th><th>最近活动</th><th>质量评分</th></tr></thead><tbody id="users"></tbody></table></div><div class="panel"><h2>最近操作</h2><ul id="events"></ul></div></section></main><script>const notice=document.querySelector('#notice');let token=sessionStorage.getItem('dohc-supervision-token')||'';const req=async(path,body,method='POST')=>{const r=await fetch(path,{method,headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw new Error(j.error||'请求失败');return j};const time=v=>v?new Date(v).toLocaleString():'—';const show=e=>notice.textContent=e instanceof Error?e.message:String(e);const refresh=async()=>{const audit=await req('/api/v1/admin/audit',null,'GET');document.querySelector('#metrics').textContent='监管用户 '+audit.users.length+' 人 · 最近事件 '+audit.events.length+' 条';document.querySelector('#users').replaceChildren(...audit.users.map(u=>{const tr=document.createElement('tr');[u.displayName+' (@'+u.username+')',u.completedTasks,u.operationCount,time(u.firstActivityAtMs),time(u.lastActivityAtMs),u.qualityScore??'待检测'].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.append(td)});return tr}));document.querySelector('#events').replaceChildren(...audit.events.slice(0,100).map(e=>{const li=document.createElement('li');li.textContent=time(e.occurredAtMs)+' · '+e.displayName+' · '+e.action+' · '+(e.taskId||'—');return li}));document.querySelector('#login-panel').hidden=true;document.querySelector('#dashboard').hidden=false;document.querySelector('#logout').hidden=false};document.querySelector('#login').onsubmit=async e=>{e.preventDefault();try{const body=Object.fromEntries(new FormData(e.currentTarget));const r=await req('/api/v1/auth/login',body);token=r.token;sessionStorage.setItem('dohc-supervision-token',token);await refresh()}catch(x){show(x)}};document.querySelector('#logout').onclick=()=>{sessionStorage.removeItem('dohc-supervision-token');location.reload()};if(token)refresh().catch(x=>{sessionStorage.removeItem('dohc-supervision-token');show(x)})</script></html>`;
 }
 
-export async function createUserCenter(inputConfiguration, dataRoot, logger = console, { clock = Date.now } = {}) {
+export async function createUserCenter(inputConfiguration, dataRoot, logger = console, { clock = Date.now, reviewQueryOptions = {} } = {}) {
   const configuration = normalizeConfiguration(inputConfiguration);
   const initialized = await initializeUserCenter(configuration, dataRoot);
   const sessions = openAuthSessions(dataRoot, { idleTtlSeconds: configuration.sessionIdleTtlSeconds, clock });
@@ -1012,6 +1013,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
   const registrations = new Map();
   const auditEventIds = new Set((await readAuditEvents(dataRoot)).map((event) => event.eventId));
   const reviewAudit = openReviewAuditStore(dataRoot);
+  const reviewQueries = openReviewQueries(dataRoot, reviewQueryOptions);
   const taskClaims = openTaskClaims(dataRoot);
   const clientPresence = openClientPresence(dataRoot, clock);
   const sourceWriteback = openSourceWriteback(dataRoot);
@@ -1267,7 +1269,21 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, { error: "ADMIN_REQUIRED" });
         const state = await readState(dataRoot);
-        return sendJson(response, 200, reviewAudit.query(Object.fromEntries(url.searchParams), reservedUsers(state)));
+        try {
+          const result=await reviewQueries.query(Object.fromEntries(url.searchParams), reservedUsers(state));
+          if(!await authorize(request,true))return sendJson(response,403,{error:"ADMIN_REQUIRED"});
+          const current=await readState(dataRoot), accounts=reservedUsers(current);
+          const online=clientPresence.overview(current.users,sessions.activeTokens(current.users));
+          const users=result.users.map(summary=>{
+            const user=accounts.find(u=>u.username===summary.username);
+            if(!user)return {...summary,accountStatus:"deleted",online:false};
+            return {...summary,displayName:user.displayName,accountStatus:user.accountStatus??"active",online:(user.accountStatus??"active")==="active" && (summary.online || online.users.find(u=>u.username===summary.username)?.clients.some(c=>c.online)===true)};
+          });
+          return sendJson(response,200,{...result,users});
+        }
+        catch (error) {
+          return sendJson(response, /^REVIEW_QUERY_(PENDING|BUSY)/.test(error.message)?503:400, {error:error.message});
+        }
       }
       if (request.method === "POST" && url.pathname === "/api/v1/audit/events") {
         const session = await authorize(request);
@@ -1300,7 +1316,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const session = await authorize(request, true);
         if (!session) return sendJson(response, 403, {error:"ADMIN_REQUIRED"});
         const state = await readState(dataRoot);
-        return sendJson(response, 200, sourceWriteback.overview(state.users));
+        return sendJson(response, 200, sourceWriteback.overview(state.users,clientPresence.overview(state.users,sessions.activeTokens(state.users))));
       }
       if (request.method === "POST" && url.pathname === "/api/v1/admin/source-writeback") {
         const session = await authorize(request, true);
@@ -1742,6 +1758,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       if (!server) return;
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       server = undefined;
+      await reviewQueries.close();
       reviewAudit.close();
       taskClaims.close();
       clientPresence.close();

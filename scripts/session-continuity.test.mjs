@@ -43,7 +43,9 @@ test("idle app stays authenticated, service restart/reconnect retains original a
     assert.equal((await req("POST", "/api/v1/client/poll", poll, a.token)).status, 200, "idle beyond old absolute expiry");
     let versions = (await req("GET", "/api/v1/admin/client-versions", null, admin)).body;
     assert.equal(versions.users.find(u => u.username === "alice").clients[0].online, true);
-    assert.equal((await req("GET", "/api/v1/admin/reviews", null, admin)).body.total, 0, "presence must not create audit work");
+    const emptyAudit=(await req("GET", "/api/v1/admin/reviews", null, admin)).body;
+    assert.equal(emptyAudit.total,0,"presence must not create audit work");
+    assert.equal(emptyAudit.users.find(u=>u.username==="alice").online,true,"app presence is observable before loading a review");
     const event = { eventId: randomUUID(), sessionId: randomUUID(), episodeKey: "a".repeat(64),
       episodeName: "isolated", action: "approved", occurredAtMs: Date.now(), elapsedMs: 6000, details: {} };
     await service.stop(); service = null;

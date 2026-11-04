@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync } from "node:fs";
 import path from "node:path";
+import { openReviewSummary } from "./review-summary-store.mjs";
 
 export const REVIEW_ACTIONS = new Set([
   "loaded",
@@ -146,9 +147,11 @@ export function validateReviewEvent(raw, now = Date.now()) {
   return { ...raw, details };
 }
 
-export function openReviewAuditStore(dataRoot) {
+export function openReviewAuditStore(dataRoot, { readOnly = false } = {}) {
   const filename = path.join(dataRoot, "review-audit.sqlite");
-  const db = new DatabaseSync(filename);
+  const db = new DatabaseSync(filename, { readOnly });
+  let summary;
+  if (!readOnly) {
   chmodSync(filename, 0o600);
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
     CREATE TABLE IF NOT EXISTS events (
@@ -159,10 +162,12 @@ export function openReviewAuditStore(dataRoot) {
     CREATE INDEX IF NOT EXISTS events_user_time ON events(username,occurred_ms,id);
     CREATE INDEX IF NOT EXISTS events_session ON events(username,session_id,id);
     CREATE INDEX IF NOT EXISTS events_time ON events(occurred_ms,id);`);
-  const insert = db.prepare(
+  } else db.exec("PRAGMA query_only=ON; PRAGMA busy_timeout=1000;");
+  const insert = readOnly ? null : db.prepare(
     `INSERT OR IGNORE INTO events(event_id,username,display_name,session_id,episode_key,episode_name,action,occurred_ms,received_ms,elapsed_ms,details) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
   );
   function append(user, batch) {
+    if (readOnly) throw Error("REVIEW_READ_ONLY");
     if (!Array.isArray(batch) || !batch.length || batch.length > 20)
       throw new Error("REVIEW_EVENT_INVALID: 批次需为 1 至 20 项");
     const now = Date.now();
@@ -229,6 +234,12 @@ export function openReviewAuditStore(dataRoot) {
       .all(...args, before, limit + 1);
     const more = rows.length > limit;
     const events = rows.slice(0, limit).map(eventValue);
+    if (readOnly && terms.length === 1) {
+      const sessionBefore = Number(input.sessionBefore) || Number.MAX_SAFE_INTEGER;
+      if (!Number.isSafeInteger(sessionBefore) || sessionBefore < 1) throw Error("REVIEW_QUERY_INVALID: 分页无效");
+      summary ??= openReviewSummary(dataRoot, db);
+      return { events, ...summary.query(input, accounts), nextBefore:more?events.at(-1).id:null,generatedAtMs:Date.now() };
+    }
     const stats = db
       .prepare(
         `SELECT username, count(*) operations,
@@ -307,7 +318,7 @@ export function openReviewAuditStore(dataRoot) {
       generatedAtMs: Date.now(),
     };
   }
-  return { append, query, close: () => db.close() };
+  return { append, query, close: () => { summary?.close(); db.close(); } };
 }
 function eventValue(row) {
   return {

@@ -22,7 +22,9 @@ test('durable per-device commands: offline delivery, dedupe, partial failure, un
   assert.equal(view().users[0].deliveries.find(d=>d.clientId===alice).state,'busy');
   assert.deepEqual(store.authorizeStep('alice',alice,id),{allowed:true});
   store.poll('alice',input(alice,report(id,2,'running',1,2)));
-  assert.equal(store.poll('alice',input(alice,report(id,3,'partial',1,2,['conflict']))).request,null);
+  const accepted=store.poll('alice',input(alice,report(id,3,'partial',1,2,['conflict'])));
+  assert.equal(accepted.request,null);assert.equal(accepted.receipt.requestId,id);assert.equal(accepted.receipt.seq,3);assert.equal(accepted.receipt.state,'partial');
+  assert.equal(store.poll('alice',input(alice)).receipt,null,'ordinary poll without a report cannot acknowledge a result');
   store.poll('alice',input(alice,report(id,4,'complete',3,0)));
   assert.equal(view().users[0].deliveries.find(d=>d.clientId===alice).state,'partial','unrelated success cannot erase terminal failure');
   assert.equal(store.poll('alice',input(second)).request.id,id,'first device cannot acknowledge second');
@@ -31,7 +33,8 @@ test('durable per-device commands: offline delivery, dedupe, partial failure, un
   store.poll('alice',input(second,report(id,2,'complete',0,0)));
   assert.equal(view().users[0].deliveries.find(d=>d.clientId===alice).report.remaining,2);
   const next=store.push('admin',['alice','bob']);assert.equal(next.queued.length,2);assert.notEqual(next.queued[0].id,id,'explicit retry of failed job creates a fresh snapshot');
-  assert.equal(store.poll('alice',input(alice,report(id,999,'complete',3,0))).request.id,next.queued[0].id,'old request receipts cannot finish current request');
+  const oldReceipt=store.poll('alice',input(alice,report(id,999,'complete',3,0)));
+  assert.equal(oldReceipt.request.id,next.queued[0].id,'old request receipts cannot finish current request');assert.equal(oldReceipt.receipt,null);
   assert.throws(()=>store.poll('alice',input(alice,{...report(id,1,'complete',0,2)})),/INVALID/);
   assert.throws(()=>store.poll('alice',{...input(alice),pending:-1}),/INVALID/);
   assert.throws(()=>store.poll('alice',input(alice,{...report(id,1,'partial',0,2,['/secret/path'])})),/INVALID/);

@@ -32,7 +32,7 @@ test('admin switches modes in one session, account versions stay truthful, singl
     if(req.kind==='poll')return {generatedAtMs:Date.now(),reminder:null};
     if(req.kind==='versions') {
      if(window.versionFail)throw Error('SERVICE_UNAVAILABLE: 统计连接超时');
-     return {generatedAtMs:Date.now(),users:users.map(u=>({username:u.username,displayName:u.displayName,role:"operator",accountStatus:u.accountStatus,canManage:u.username==="admin",pendingReminder:null,clients:u.username==='alice'?[{clientId:'one',version:'1.3.2',platform:'windows',online:true,lastSeenAtMs:Date.now()},{clientId:'two',version,platform:'linux',online:false,lastSeenAtMs:1699999999000}]:[]}))};
+     window.versionReads=(window.versionReads??0)+1;return {generatedAtMs:Date.now()+(window.serverSkew??0),users:users.map(u=>({username:u.username,displayName:u.displayName,role:"operator",accountStatus:u.accountStatus,canManage:u.username==="admin",pendingReminder:null,clients:u.username==='alice'?[{clientId:'one',version:'1.3.2',platform:'windows',online:true,lastSeenAtMs:Date.now()+(window.serverSkew??0)},{clientId:'two',version,platform:'linux',online:false,lastSeenAtMs:1699999999000}]:[]}))};
     }
     window.calls.push(req);return {queued:(req.all?['alice','bob','legacy']:req.usernames).map(username=>({username,id:crypto.randomUUID(),reused:false}))};
    }
@@ -47,6 +47,8 @@ test('admin switches modes in one session, account versions stay truthful, singl
  assert.equal(await page.evaluate(()=>window.dashboardCalls),0,'default management account list must not query millions of review events');
  await page.locator('.account-version-cell').getByText('v1.3.2',{exact:true}).waitFor();
  const row=page.getByRole('row').filter({hasText:'@alice'});
+ for(const skew of [-3600000,3600000]){const n=await page.evaluate(()=>window.versionReads);await page.evaluate(x=>window.serverSkew=x,skew);await page.getByRole('button',{name:'刷新账号与版本',exact:true}).click();await page.waitForFunction(n=>window.versionReads>n,n);await row.getByText('v1.3.2',{exact:true}).waitFor();}
+
  assert.match(await row.textContent(),/windows/);
  assert.doesNotMatch(await row.textContent(),/linux|历史上报|2023/);
  assert.equal(await row.locator('strong').count(),1);

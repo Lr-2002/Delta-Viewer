@@ -43,7 +43,7 @@ export function openSourceWriteback(dataRoot, clock = Date.now) {
       const now=clock();
       db.prepare('INSERT OR REPLACE INTO devices VALUES(?,?,?,?,?,?,?)').run(username,input.clientId,now,input.version,input.pending,input.skipped,input.localIssue??'');
       const request=current(username);
-      if(!request)return {request:null,generatedAtMs:now};
+      if(!request)return {request:null,receipt:null,generatedAtMs:now};
       attach(request.id,username,input.clientId);
       const r=input.report,old=delivery(request.id,username,input.clientId);
       if(r?.requestId===request.id && r.seq>old.seq){
@@ -52,7 +52,9 @@ export function openSourceWriteback(dataRoot, clock = Date.now) {
       }
       const next=delivery(request.id,username,input.clientId);
       if(!['complete','partial'].includes(next.state) && (input.localIssue || next.state!=='running'))db.prepare('UPDATE deliveries SET state=?,updated_ms=? WHERE request_id=? AND username=? AND client_id=?').run(input.localIssue?'error':input.availability==='busy'?'busy':'waiting',now,request.id,username,input.clientId);
-      return {request:['complete','partial'].includes(next.state)?null:request,generatedAtMs:now};
+      // A successful unrelated poll is not an acknowledgement of a local result.
+      const receipt=r?.requestId===request.id && next.report && next.seq>=r.seq ? JSON.parse(next.report) : null;
+      return {request:['complete','partial'].includes(next.state)?null:request,receipt,generatedAtMs:now};
     });},
     authorizeStep(username,clientId,requestId){
       if(!validId(clientId)||!validId(requestId))throw Error('WRITEBACK_REQUEST_INVALID');
@@ -63,9 +65,10 @@ export function openSourceWriteback(dataRoot, clock = Date.now) {
       db.prepare("UPDATE deliveries SET state='running',updated_ms=? WHERE request_id=? AND username=? AND client_id=?").run(clock(),requestId,username,clientId);
       return {allowed:true};
     },
-    overview(users){const now=clock();return {generatedAtMs:now,users:users.map(user=>{
+    overview(users,presence){const now=clock();return {generatedAtMs:now,users:users.map(user=>{
       const request=current(user.username);
-      const devices=db.prepare('SELECT client_id AS clientId,seen_ms AS lastSeenAtMs,version,pending,skipped,issue FROM devices WHERE username=? ORDER BY seen_ms DESC').all(user.username);
+      const devices=db.prepare('SELECT client_id AS clientId,seen_ms AS lastSeenAtMs,version,pending,skipped,issue FROM devices WHERE username=? ORDER BY seen_ms DESC').all(user.username)
+        .map(device=>({...device,...(presence?{online:presence.users.find(u=>u.username===user.username)?.clients.some(c=>c.clientId===device.clientId&&c.online)??false}:{})}));
       const deliveries=request?db.prepare('SELECT client_id AS clientId,state,report,updated_ms AS updatedAtMs FROM deliveries WHERE request_id=? AND username=?').all(request.id,user.username).map(d=>({...d,report:d.report?JSON.parse(d.report):null})):[];
       return {username:user.username,request,devices,deliveries};
     })};},

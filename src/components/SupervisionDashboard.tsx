@@ -111,6 +111,10 @@ export function SupervisionDashboard({
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versions, setVersions] = useState<ClientVersions | null>(null);
   const [versionError, setVersionError] = useState("");
+  const versionClock=useRef({server:Date.now(),received:performance.now()});
+  const [clockTick,setClockTick]=useState(0);
+  useEffect(()=>{const timer=setInterval(()=>setClockTick(x=>x+1),15000);return()=>clearInterval(timer);},[]);
+  const versionNow=versionClock.current.server+performance.now()-versionClock.current.received;void clockTick;
   const [checkedAccounts, setCheckedAccounts] = useState<string[]>([]);
   const [versionLogAccount, setVersionLogAccount] = useState<string | null>(null);
   const versionLogDialog = useRef<HTMLDialogElement>(null);
@@ -127,7 +131,7 @@ export function SupervisionDashboard({
     async function refreshVersions() {
       if (inFlight) return;
       inFlight = true;setVersionsLoading(true);
-      try { const next = await getClientVersions(); if(active) {setVersions(next);setVersionError("");} }
+      try { const next = await getClientVersions(); if(active) {versionClock.current={server:next.generatedAtMs,received:performance.now()};setVersions(next);setVersionError("");} }
       catch(reason) {if(active)setVersionError(String(reason));}
       finally {inFlight=false;if(active)setVersionsLoading(false);}
     }
@@ -435,7 +439,7 @@ export function SupervisionDashboard({
       const result=await pushUpdateReminders(usernames,all);
       setNotice(`已为 ${result.queued.length} 个账号安排更新提醒；在线且支持此功能的客户端将在约 15 秒内收到弹窗，离线账号重新连接后接收。重复待处理提醒会合并。旧版客户端需先手动更新。`);
       setCheckedAccounts([]);
-      try {setVersions(await getClientVersions());setVersionError("");} catch(reason) {setVersionError(String(reason));}
+      try {const next=await getClientVersions();versionClock.current={server:next.generatedAtMs,received:performance.now()};setVersions(next);setVersionError("");} catch(reason) {setVersionError(String(reason));}
     } catch(reason) {setNotice(`推送失败：${String(reason)}`);}
     finally {setBusy("");}
   }
@@ -595,7 +599,7 @@ export function SupervisionDashboard({
       </div>
       {view !== "accounts" && error && (
         <p role="alert" className="review-audit-error">
-          {error}
+          {data?"统计刷新失败，下面保留上次结果；":"统计尚未获取，数字暂不显示；"}{error}
         </p>
       )}
       {notice && <p role="status">{notice}</p>}
@@ -606,25 +610,25 @@ export function SupervisionDashboard({
             <div>
               <Activity />
               <span>
-                在线审核员<strong>{totals.online}</strong>
+                在线审核员<strong>{data?totals.online:"—"}</strong>
               </span>
             </div>
             <div>
               <CheckCircle2 />
               <span>
-                通过操作<strong>{totals.approved}</strong>
+                通过操作<strong>{data?totals.approved:"—"}</strong>
               </span>
             </div>
             <div>
               <XCircle />
               <span>
-                不通过操作<strong>{totals.rejected}</strong>
+                不通过操作<strong>{data?totals.rejected:"—"}</strong>
               </span>
             </div>
             <div>
               <Activity />
               <span>
-                交互操作<strong>{totals.operations}</strong>
+                交互操作<strong>{data?totals.operations:"—"}</strong>
               </span>
             </div>
           </section>
@@ -886,7 +890,7 @@ export function SupervisionDashboard({
               </thead>
               <tbody>
                 {accountUsers.map((user) => {
-                  const clientState = currentClientVersion(user.clients, versions?.generatedAtMs ?? 0);
+                  const clientState = currentClientVersion(user.clients, versions?.generatedAtMs ?? 0,versionNow);
                   return (
                   <tr key={user.username}>
                     <td><input type="checkbox" aria-label={`选择账号 @${user.username}`} disabled={!eligibleAccounts.some(item=>item.username===user.username)} checked={checkedEligible.includes(user.username)} onChange={event=>setCheckedAccounts(previous=>event.target.checked?[...new Set([...previous,user.username])]:previous.filter(name=>name!==user.username))} /></td>
@@ -894,7 +898,7 @@ export function SupervisionDashboard({
                     <td>{user.displayName}</td>
                     <td>{user.accountStatus === "active" ? "启用" : "暂停"}</td>
                     <td className="account-version-cell">
-                      <div>{!versionError && clientState.current ? <><strong>v{clientState.current.version}</strong><span className="account-platform">{clientState.current.platform}</span></> : <span>当前版本未确认</span>}</div>
+                      <div>{!versionError && clientState.current ? <><strong>v{clientState.current.version}</strong><span className="account-platform">{clientState.current.platform}</span></> : <span>当前版本未确认 · {versionError?'连接异常':user.clients.length?'设备未在线':'尚未收到上报'}</span>}</div>
                       {!versionError && clientState.otherVersions > 0 && <small>另有 {clientState.otherVersions} 个在线版本</small>}
                       <button className="text-button account-version-log" onClick={() => setVersionLogAccount(user.username)} aria-label={`版本日志 @${user.username}`}>版本日志</button>
                     </td>
@@ -1000,7 +1004,7 @@ export function SupervisionDashboard({
           {versionError && <p role="alert">查询失败，以下为缓存记录，在线状态未知：{versionError}</p>}
           {(versions?.users.find(user => user.username === versionLogAccount)?.clients ?? []).length ?
             [...versions!.users.find(user => user.username === versionLogAccount)!.clients].sort((a,b) => b.lastSeenAtMs-a.lastSeenAtMs).map(client => <article key={client.clientId}>
-              <strong>v{client.version}</strong><span>{client.platform} · {versionError ? "状态未知" : currentClientVersion([client], versions!.generatedAtMs).current ? "在线" : "离线 / 历史上报"}</span>
+              <strong>v{client.version}</strong><span>{client.platform} · {versionError ? "状态未知" : currentClientVersion([client], versions!.generatedAtMs,versionNow).current ? "在线" : "离线 / 历史上报"}</span>
               <time>{time(client.lastSeenAtMs)}</time>
             </article>) : <p>暂无版本上报。可能使用早于 1.3.3 的客户端，或版本上报连接尚未成功；具体原因需核对该电脑。旧客户端需先手动安装新版，之后才能接收推送。</p>}
         </div>
