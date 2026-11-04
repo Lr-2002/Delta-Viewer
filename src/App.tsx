@@ -217,6 +217,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.6.2": "修复存储恢复自动弹窗挡住管理员统一写回，收到有效指令后自动继续；手动核对窗口、播放和未存修改保护保持。",
   "1.6.1": "修复统一写回被单条目录异常中断及本机修订误冲突；管理端展示已检查、失败和尚未处理数量，保留真实共享冲突与原审核人日期。",
   "1.6.0": "修复大规模审核统计阻塞用户中心，统计改为独立线程和增量摘要；NAS 写回按对应回执确认，离线待写数量和版本状态明确区分并自动恢复。",
   "1.5.9": "修复登录满 8 小时失效：软件在线自动续期，断网或休眠恢复后自动补传，用户中心重启保留会话；空闲在线不计有效审核耗时。",
@@ -2282,7 +2283,7 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} disabled={busy || reviewHasUnsaved || showManagement} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录；联网工作区的操作记录后台补传，任务中心等待服务器读取 QC 更新。"); }} />}
+          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || showManagement} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录；联网工作区的操作记录后台补传，任务中心等待服务器读取 QC 更新。"); }} />}
 
           {data || view === "batch" ? (
             <>

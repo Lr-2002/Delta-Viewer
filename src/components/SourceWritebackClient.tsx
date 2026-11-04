@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { APP_VERSION } from '../lib/backend';
 import { clientInstallationId } from '../lib/client-versions';
+import { announceWriteback } from '../lib/writeback-coordination';
 import { writebackCall, writebackErrors, writebackProgress, type WritebackOwner, type WritebackPoll, type WritebackReport } from '../lib/source-writeback';
 
 // Account-keyed by the parent. Every native operation revalidates the original owner.
@@ -18,6 +19,8 @@ export function SourceWritebackClient({owner,disabled,onBusy,onWritten,call=writ
     const protect=(event:BeforeUnloadEvent)=>event.preventDefault();
     let lastReport:WritebackReport|null=null,receiptPending=false;
     let transportFailed=false;
+    let managedActive=false;
+    function coordinate(active:boolean){if(managedActive!==active){managedActive=active;announceWriteback(owner,active);}}
     const describe=(report:WritebackReport)=>report.state==='complete'?`管理员统一写回完成：${report.written} 条结果已写入 NAS。`:`${report.state==='partial'?'统一写回结束':'管理员统一写回中'}：${writebackProgress(report)}${report.errors.map(c=>writebackErrors[c]??writebackErrors.unknown).join('；')}`;
     function confirmReceipt(poll:WritebackPoll){
       const ack=poll.receipt;
@@ -33,6 +36,9 @@ export function SourceWritebackClient({owner,disabled,onBusy,onWritten,call=writ
       try {
         const poll=await call<WritebackPoll>(owner,{kind:'poll',clientId,busy:blocked()});
         if(!alive)return;
+        // An automatic local recovery prompt must not require a second person
+        // to confirm an already-authorized manager request. Manual dialogs stay.
+        coordinate(Boolean(poll.request));
         const confirmed=confirmReceipt(poll);
         if(receiptPending && lastReport && !confirmed){
           setMessage(`${describe(lastReport)} 执行回执等待用户中心确认。`);setFailure(lastReport.state==='partial'||lastReport.errors.length>0);
@@ -73,7 +79,7 @@ export function SourceWritebackClient({owner,disabled,onBusy,onWritten,call=writ
     window.addEventListener('pointerdown',interact);window.addEventListener('keydown',interact);
     window.addEventListener('online',wake);
     void tick();
-    return()=>{alive=false;clearTimeout(timer);window.removeEventListener('pointerdown',interact);window.removeEventListener('keydown',interact);window.removeEventListener('online',wake);};
+    return()=>{alive=false;coordinate(false);clearTimeout(timer);window.removeEventListener('pointerdown',interact);window.removeEventListener('keydown',interact);window.removeEventListener('online',wake);};
   },[owner.username,owner.serviceId,clientId,call]);
   return message?<div className={`source-review-notice writeback-client ${failure?'writeback-client-error':''}`} role={failure?'alert':'status'}><span>{message}</span><button className="button button-secondary" onClick={()=>setMessage('')}>收起提示</button></div>:null;
 }

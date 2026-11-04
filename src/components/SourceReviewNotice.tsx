@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw, X } from "lucide-react";
 import { getPendingSourceReviews, publishPendingSourceReviews } from "../lib/backend";
 import type { PendingSourceReviewStatus } from "../types";
+import { WRITEBACK_ACTIVITY, type WritebackActivity } from "../lib/writeback-coordination";
 
-export function SourceReviewNotice({ disabled, onBusy, onWritten }: { disabled: boolean; onBusy: (busy: boolean) => void; onWritten: () => void }) {
+export function SourceReviewNotice({ disabled, onBusy, onWritten, owner }: { disabled: boolean; onBusy: (busy: boolean) => void; onWritten: () => void; owner?: {username:string;serviceId:string} }) {
   const [status, setStatus] = useState<PendingSourceReviewStatus | null>(null);
   const [error, setError] = useState("");
   const [queryError, setQueryError] = useState("");
@@ -13,6 +14,8 @@ export function SourceReviewNotice({ disabled, onBusy, onWritten }: { disabled: 
   const dismissed = useRef(false);
   const alive = useRef(true);
   const blocked = useRef(disabled);
+  const managed = useRef(false), manual = useRef(false), publishing = useRef(false);
+  const dialog = useRef<HTMLDialogElement | null>(null);
   blocked.current = disabled;
   async function refresh(checkStorage = true) {
     if (running.current) return;
@@ -21,11 +24,25 @@ export function SourceReviewNotice({ disabled, onBusy, onWritten }: { disabled: 
       const next = await getPendingSourceReviews(checkStorage);
       if (!alive.current) return;
       setStatus(next); setQueryError("");
-      if (next.ready && next.pending && !dismissed.current && !blocked.current && !document.querySelector("dialog[open]")) setOpen(true);
-      if (checkStorage && !next.ready) dismissed.current = false;
+      if (next.ready && next.pending && !dismissed.current && !blocked.current && !managed.current && !document.querySelector("dialog[open]")) { manual.current=false; setOpen(true); }
+      if (checkStorage && !next.ready && !managed.current) dismissed.current = false;
     } catch (cause) { if (alive.current) setQueryError(`本机待写结果查询失败：${String(cause)}`); }
     finally { running.current = false; }
   }
+  useEffect(() => {
+    const coordinate = (event: Event) => {
+      const activity = (event as CustomEvent<WritebackActivity>).detail;
+      if (!owner || !activity || activity.username!==owner.username || activity.serviceId!==owner.serviceId) return;
+      managed.current=activity.active;
+      if (activity.active && !manual.current && !publishing.current) {
+        dismissed.current=true;
+        // Close synchronously so the manager executor's modal check can proceed.
+        dialog.current?.close(); setOpen(false);
+      }
+    };
+    window.addEventListener(WRITEBACK_ACTIVITY,coordinate);
+    return()=>window.removeEventListener(WRITEBACK_ACTIVITY,coordinate);
+  }, [owner?.username,owner?.serviceId]);
   useEffect(() => {
     alive.current = true;
     void refresh();
@@ -43,7 +60,7 @@ export function SourceReviewNotice({ disabled, onBusy, onWritten }: { disabled: 
   }, [busy]);
   async function publish() {
     if (busy || disabled || running.current) return;
-    running.current = true; setBusy(true); onBusy(true); setError("");
+    running.current = true; publishing.current=true; setBusy(true); onBusy(true); setError("");
     try {
       const result = await publishPendingSourceReviews();
       setError(result.errors.length ? `${result.written} 条已写回，${result.remaining} 条仍在本机。${result.errors.join("；")}` : "");
@@ -51,14 +68,14 @@ export function SourceReviewNotice({ disabled, onBusy, onWritten }: { disabled: 
       if (!result.remaining) setOpen(false);
       dismissed.current = true;
     } catch (cause) { setError(`待写结果仍保留在本机：${String(cause)}`); }
-    finally { running.current = false; setBusy(false); onBusy(false); void refresh(false); }
+    finally { running.current = false; publishing.current=false; setBusy(false); onBusy(false); void refresh(false); }
   }
   const issue = [error, queryError].filter(Boolean).join("；");
   if (!status?.pending && !issue) return null;
   return <>
-    <div className="source-review-notice" role="status"><AlertTriangle size={17} /><span><strong>{status?.pending ? `${status.pending} 条结果已保存本机，待写回数据目录` : "本机待写结果状态未知，请重新检查"}</strong><br />{status?.ready ? "存储检查已通过，可确认写回。" : "后台每 30 秒检查存储恢复；恢复后提醒确认写回。"}任务进度以 NAS 已写入 QC 为准。</span><button className="button button-secondary" onClick={() => { setOpen(true); void refresh(); }}>查看待写结果</button></div>
+    <div className="source-review-notice" role="status"><AlertTriangle size={17} /><span><strong>{status?.pending ? `${status.pending} 条结果已保存本机，待写回数据目录` : "本机待写结果状态未知，请重新检查"}</strong><br />{status?.ready ? "存储检查已通过，可确认写回。" : "后台每 30 秒检查存储恢复；恢复后提醒确认写回。"}任务进度以 NAS 已写入 QC 为准。</span><button className="button button-secondary" onClick={() => { manual.current=true; setOpen(true); void refresh(); }}>查看待写结果</button></div>
     {issue && !open && <p role="alert" className="machine-message">{issue}</p>}
-    {open && <dialog className="rejection-dialog source-review-dialog" aria-label="本机审核结果待写回" ref={node => { if (node && !node.open) node.showModal(); }} onCancel={event => { event.preventDefault(); if (!busy) { dismissed.current = true; setOpen(false); } }}>
+    {open && <dialog className="rejection-dialog source-review-dialog" aria-label="本机审核结果待写回" ref={node => { dialog.current=node; if (node && !node.open) node.showModal(); }} onPointerDown={()=>{manual.current=true;}} onKeyDown={()=>{manual.current=true;}} onWheel={()=>{manual.current=true;}} onCancel={event => { event.preventDefault(); if (!busy) { dismissed.current = true; setOpen(false); } }}>
       <header><h2>本机审核结果待写回</h2><button className="icon-button" title="稍后写回" aria-label="关闭待写回提示" disabled={busy} onClick={() => { dismissed.current = true; setOpen(false); }}><X size={18} /></button></header>
       <p>{status?.ready ? "数据目录容量和连接检查已通过。" : "数据目录尚未确认恢复。"}共有 {status?.pending ?? "未知"} 条本机结果，包含已提交的审核结论或骨架描述；未通过审核的动作草稿不在写回范围。</p>
       <p>点击写回后才会更新共享目录；审核结论写回后更新任务进度，骨架描述不计审核进度。若其他人已修改结果，会保留本机记录并提示冲突。请勿卸载软件或清理应用数据。</p>
