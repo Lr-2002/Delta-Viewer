@@ -5,6 +5,7 @@ mod annotations;
 mod assigned_source;
 mod batch_rename;
 mod cloud_qc;
+mod d1;
 mod dataset_layout;
 mod episode_metadata;
 mod error;
@@ -209,6 +210,103 @@ async fn ensure_review_storage_responsive(path: &str) -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
+fn d1_owner(auth: &AuthState) -> Result<String, String> {
+    let user = auth.require_user().map_err(|error| error.to_string())?;
+    match auth.workspace_mode().map_err(|error| error.to_string())? {
+        Some(WorkspaceMode::Offline) => Ok("offline-local".into()),
+        Some(WorkspaceMode::Managed) => {
+            // Session-specific hash is memory-only; no token enters a report/log/config.
+            use sha2::{Digest, Sha256};
+            let token = auth.managed_token().map_err(|error| error.to_string())?;
+            Ok(format!(
+                "{}:{:x}",
+                user.username,
+                Sha256::digest(token.as_bytes())
+            ))
+        }
+        None => Err("WORKSPACE_MODE_REQUIRED".into()),
+    }
+}
+
+#[tauri::command]
+fn d1_availability(auth: State<'_, AuthState>) -> Result<serde_json::Value, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    d1::availability().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn d1_run_simulation(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    devices: State<'_, d1::DeviceState>,
+    request: d1::RunRequest,
+    operation_id: u64,
+) -> Result<d1::DiagnosticRun, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let result = tauri::async_runtime::spawn_blocking(move || d1::run(request, &cancelled))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    devices
+        .remember(&owner, result.clone())
+        .map_err(|error| error.to_string())?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn d1_clear_simulation(
+    auth: State<'_, AuthState>,
+    devices: State<'_, d1::DeviceState>,
+) -> Result<(), String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    devices.clear();
+    Ok(())
+}
+
+#[tauri::command]
+fn d1_preview_bundle(
+    auth: State<'_, AuthState>,
+    devices: State<'_, d1::DeviceState>,
+    request: d1::BundleRequest,
+) -> Result<d1::BundlePreview, String> {
+    let owner = d1_owner(&auth)?;
+    d1::preview(&devices, &owner, &request).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn d1_export_bundle(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    devices: State<'_, d1::DeviceState>,
+    request: d1::BundleRequest,
+    destination_parent: String,
+    preview_hash: String,
+    operation_id: u64,
+) -> Result<String, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let devices = devices.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        d1::export(
+            &devices,
+            &owner,
+            &request,
+            Path::new(&destination_parent),
+            &preview_hash,
+            &cancelled,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn check_for_app_update(
     app: AppHandle,
@@ -294,11 +392,13 @@ async fn get_auth_status(app: AppHandle, auth: State<'_, AuthState>) -> Result<A
 async fn select_workspace_mode(
     app: AppHandle,
     auth: State<'_, AuthState>,
+    devices: State<'_, d1::DeviceState>,
     mode: WorkspaceMode,
 ) -> Result<AuthStatus, String> {
     let data_root = base_app_data_root(&app)?;
     workspace_mode::select(&data_root, auth.inner(), Some(mode))
         .map_err(|error| error.to_string())?;
+    devices.clear();
     user_center::auth_status(&data_root, auth.inner()).map_err(|error| error.to_string())
 }
 
@@ -306,9 +406,11 @@ async fn select_workspace_mode(
 async fn clear_workspace_mode(
     app: AppHandle,
     auth: State<'_, AuthState>,
+    devices: State<'_, d1::DeviceState>,
 ) -> Result<AuthStatus, String> {
     let data_root = base_app_data_root(&app)?;
     workspace_mode::select(&data_root, auth.inner(), None).map_err(|error| error.to_string())?;
+    devices.clear();
     user_center::auth_status(&data_root, auth.inner()).map_err(|error| error.to_string())
 }
 
@@ -366,8 +468,13 @@ async fn update_current_display_name(
 }
 
 #[tauri::command]
-fn logout_account(auth: State<'_, AuthState>) -> Result<(), String> {
-    identity::logout_account(auth.inner()).map_err(|error| error.to_string())
+fn logout_account(
+    auth: State<'_, AuthState>,
+    devices: State<'_, d1::DeviceState>,
+) -> Result<(), String> {
+    identity::logout_account(auth.inner()).map_err(|error| error.to_string())?;
+    devices.clear();
+    Ok(())
 }
 
 #[tauri::command]
@@ -2594,6 +2701,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AuthState::default())
+        .manage(d1::DeviceState::default())
         .manage(TaskControl::default())
         .manage(updater::UpdateState::default())
         .manage(review_outbox::OutboxState::default())
@@ -2604,6 +2712,11 @@ pub fn run() {
         .manage(media_stream_server)
         .manage(review_catalog::ReviewCatalogCache::default())
         .invoke_handler(tauri::generate_handler![
+            d1_availability,
+            d1_run_simulation,
+            d1_clear_simulation,
+            d1_preview_bundle,
+            d1_export_bundle,
             get_auth_status,
             select_workspace_mode,
             clear_workspace_mode,

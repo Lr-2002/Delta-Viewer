@@ -35,6 +35,8 @@ import {
   Workflow,
   X,
 } from "lucide-react";
+import { ManagerWorkspace } from "./components/ManagerWorkspace";
+import { managerSections, type ManagerSection } from "./lib/d1";
 import { AppUpdates } from "./components/AppUpdates";
 import { MachineAnnotationPanel, flushMachineReviewSaves } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
@@ -67,6 +69,7 @@ import {
   IS_DEVELOPMENT_EDITION,
   DEMO_ROOT,
   cancelTask,
+  clearDeviceSimulation,
   downloadAppUpdate,
   chooseDirectory,
   clearWorkspaceMode,
@@ -217,6 +220,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.6.3": "D1 Manager 新增设备导航、本地模拟检测与诊断包；原 Viewer 数据工作区完整保留。真实设备及固件更新等待接入。",
   "1.6.2": "修复存储恢复自动弹窗挡住管理员统一写回，收到有效指令后自动继续；手动核对窗口、播放和未存修改保护保持。",
   "1.6.1": "修复统一写回被单条目录异常中断及本机修订误冲突；管理端展示已检查、失败和尚未处理数量，保留真实共享冲突与原审核人日期。",
   "1.6.0": "修复大规模审核统计阻塞用户中心，统计改为独立线程和增量摘要；NAS 写回按对应回执确认，离线待写数量和版本状态明确区分并自动恢复。",
@@ -382,6 +386,10 @@ function parseReleaseHistory(markdown: string): ReleaseHistoryEntry[] {
 function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [managementMode, setManagementMode] = useState(false);
+  const [managerSection, setManagerSection] = useState<ManagerSection>("home");
+  const [managerAdminHome, setManagerAdminHome] = useState(false);
+  const [managerNavigationBusy, setManagerNavigationBusy] = useState(false);
+  const managerNavigationLock = useRef(false);
   useEffect(() => setManagementMode(false), [authStatus?.currentUser?.username]);
   const [authStartupError, setAuthStartupError] = useState("");
   const [tasks, setTasks] = useState<TaskDefinition[]>([]);
@@ -436,7 +444,7 @@ function App() {
   const [modelParentAliases, setModelParentAliases] = useState<{scan: ScanResult | null; paths: Record<string, string>}>({scan:null, paths:{}});
   const [modelSelection, setModelSelection] = useState<{root: string; series: SkeletonSeries} | null>(null);
   const selectedSkeleton = modelSelection?.root === data?.summary.root ? modelSelection?.series : null;
-  const busy = operationBusy || Boolean(batchRejection) || sourcePublishing || modelBusy;
+  const busy = operationBusy || Boolean(batchRejection) || sourcePublishing || modelBusy || managerNavigationBusy;
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -767,12 +775,13 @@ function App() {
     if (
       didAutoLoad.current
       || isTauriRuntime()
+      || managerSection !== "data"
       || !workspaceActive
       || (isManagedWorkspace && !authStatus?.currentUser)
     ) return;
     didAutoLoad.current = true;
     void openSource(DEMO_ROOT, true);
-  }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive]);
+  }, [authStatus?.currentUser?.username, isManagedWorkspace, workspaceActive, managerSection]);
 
   useEffect(() => {
     if (!queuedEpisodeRoot || busy) return;
@@ -784,7 +793,7 @@ function App() {
   }, [busy, queuedEpisodeRoot, scan, skippedEpisodeRoots]);
 
   useEffect(() => {
-    if (!data || authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
+    if (managerSection !== "data" || !data || authStatus?.workspaceMode !== "managed" || !authStatus.currentUser) return;
     const taskId = selectedTaskId ?? annotation?.taskId ?? "";
     const trajectoryCode = annotation?.trajectoryCode ?? "";
     void recordAnnotationAudit({ taskId, trajectoryCode, action: "annotation_started", occurredAtMs: Date.now() })
@@ -792,7 +801,7 @@ function App() {
     return () => {
       void recordAnnotationAudit({ taskId, trajectoryCode, action: "annotation_ended", occurredAtMs: Date.now() });
     };
-  }, [data?.summary.root, authStatus?.workspaceMode, authStatus?.currentUser?.username]);
+  }, [data?.summary.root, authStatus?.workspaceMode, authStatus?.currentUser?.username, managerSection]);
 
   useEffect(() => {
     if (!playing || !data) return;
@@ -860,6 +869,7 @@ function App() {
     }
     sourceNavigationVersion.current += 1;
     setPendingSourceRestore(null);
+    setManagerSection("data");
     resetOperationFeedback(owner);
     let operation = "scan_source";
     let loadingEpisode: EpisodeSummary | null = null;
@@ -1314,6 +1324,9 @@ function App() {
   }
 
   function resetWorkspaceData() {
+    setManagerSection("home");
+    setManagerAdminHome(false);
+    void clearDeviceSimulation().catch(() => undefined);
     setReviewedEpisodes({});
     setBatchRejectionSelection({});
     setBatchRenamePath(null);
@@ -1446,7 +1459,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (!data || managementMode) return;
+    if (!data || managementMode || managerSection !== "data") return;
     const handleShortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
@@ -1470,7 +1483,7 @@ function App() {
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [data, clipStartFrame, clipEndFrame, machinePreviewRange, playing, view, managementMode]);
+  }, [data, clipStartFrame, clipEndFrame, machinePreviewRange, playing, view, managementMode, managerSection]);
 
   function exitMachinePreview() {
     setMachinePreviewRange(null);
@@ -1932,9 +1945,9 @@ function App() {
     return configureReviewAudit(user.username, isOfflineWorkspace ? "offline-local-v1" : authStatus?.userCenter.serviceId ?? "demo", isOfflineWorkspace);
   }, [authStatus?.currentUser?.username, authStatus?.userCenter.serviceId, isOfflineWorkspace]);
   useEffect(() => {
-    if (managementMode || !data || !authStatus?.currentUser || authStatus.currentUser.role === "admin") return;
+    if (managementMode || managerSection !== "data" || !data || !authStatus?.currentUser || authStatus.currentUser.role === "admin") return;
     return beginReviewAudit(data.summary.root, data.summary.name);
-  }, [data?.summary.root, authStatus?.currentUser?.username, managementMode]);
+  }, [data?.summary.root, authStatus?.currentUser?.username, managementMode, managerSection]);
   useEffect(() => observeReviewInteractions(), []);
   useEffect(() => { updateReviewFrame(currentFrame); }, [currentFrame]);
   useEffect(() => { recordReviewInteraction(playing ? "play" : "pause", { frameTo: currentFrame }); }, [playing]);
@@ -1996,7 +2009,7 @@ function App() {
     currentNotes={releaseHistory.find(item => item.version === APP_VERSION)?.notes ?? []} busy={taskBusy}
     onDownload={downloadAvailableUpdate} onInstall={installAvailableUpdate} onViewHistory={() => setReleaseHistoryOpen(true)} /> : null;
   const canManage = currentUser?.canManage || currentUser?.role === "admin";
-  const showManagement = Boolean(canManage && (managementMode || currentUser?.role === "admin"));
+  const showManagement = Boolean(canManage && !managerAdminHome && (managementMode || currentUser?.role === "admin"));
   const ownedSyncStatus = reviewSyncStatus?.owner === `${authStatus.userCenter.serviceId ?? "demo"}:${currentUser?.username}` ? reviewSyncStatus : undefined;
   const workspaceAuthError = /^(?:Error:\s*)?(?:(?:无法加载已分配任务|无法恢复数据目录|无法加载任务目录)：\s*)?(?:AUTH_REQUIRED|AUTH_EXPIRED|TOKEN_EXPIRED|REVIEWER_REQUIRED)(?::|\s|$)/i.test(error) ? error : "";
   const syncNotice = isManagedWorkspace && currentUser && (ownedSyncStatus || reviewAuditError || auditUploadPending || workspaceAuthError) ? <AuditSyncNotice
@@ -2021,7 +2034,38 @@ function App() {
     setPlaying(false);
     setPersonalTaskOpen(false);
     setProfileEditorOpen(false);
+    setManagerAdminHome(false);
     setManagementMode(true);
+  }
+  async function navigateManager(next: ManagerSection) {
+    if (next === managerSection || managerNavigationLock.current) return;
+    if (busy || document.querySelector("dialog[open]")) {setNotice("请先完成当前任务或关闭窗口。"); return;}
+    if (next === "data" && currentUser?.role === "admin") {openManagement();return;}
+    managerNavigationLock.current = true; setManagerNavigationBusy(true);
+    let resumeAudit: (() => void) | undefined;
+    try {
+      if (managerSection === "data") {
+        await flushMachineReviewSaves(data?.summary.root);
+        await flushCloudMachineReviewSaves(data?.summary.root);
+        if (reviewUnsaved.current) throw new Error("当前修改尚未保存，请先重试保存。");
+        setPlaying(false);
+        recordReviewInteraction("closed");
+        resumeAudit = await pauseAndPersistReviewAudit();
+        endReviewAudit();
+      }
+      sourceNavigationVersion.current += 1; setPendingSourceRestore(null);
+      setPersonalTaskOpen(false); setProfileEditorOpen(false); setHistoryOpen(false);
+      setManagerSection(next);
+    } catch (cause) {
+      setNotice(toMessage(cause));
+    } finally {resumeAudit?.();managerNavigationLock.current=false;setManagerNavigationBusy(false);}
+  }
+  function beginManagerOperation() {
+    if (busy || managerSection === "data" || reviewUnsaved.current) return null;
+    const owner=beginOperation();
+    if (!owner) return null;
+    sourceNavigationVersion.current += 1; setPendingSourceRestore(null);
+    return {id:owner.id,finish:()=>finishOperation(owner)};
   }
   const playbackControls = data ? <>
                           <div className="transport-buttons">
@@ -2047,9 +2091,9 @@ function App() {
   return (
     <>
       {isManagedWorkspace && currentUser && <ClientPresence key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={`${authStatus.userCenter.serviceId}:${currentUser.username}`} />}
-      {isManagedWorkspace && currentUser?.role === "operator" && <SourceWritebackClient key={`writeback:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || showManagement || playing} onBusy={setSourcePublishing} onWritten={()=>setBatchReviewRevision(value=>value+1)}/>}
-      {showManagement && currentUser && <SupervisionDashboard writebackOwner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} currentUser={currentUser} onLogout={logout} updateBusy={busy} updateControls={updateControls}
-        onTestMode={currentUser.role === "operator" ? () => setManagementMode(false) : undefined} syncNotice={syncNotice} beginCloudOperation={beginCloudOperation} onOpenCloudReview={async root => {
+      {isManagedWorkspace && currentUser?.role === "operator" && <SourceWritebackClient key={`writeback:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || playing} onBusy={setSourcePublishing} onWritten={()=>setBatchReviewRevision(value=>value+1)}/>}
+      {showManagement && currentUser && <SupervisionDashboard writebackOwner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} currentUser={currentUser} onLogout={logout} onManagerHome={() => {setManagerSection("home");setManagerAdminHome(true);setManagementMode(false);}} updateBusy={busy} updateControls={updateControls}
+        onTestMode={currentUser.role === "operator" ? () => {setManagerSection("data");setManagementMode(false);} : undefined} syncNotice={syncNotice} beginCloudOperation={beginCloudOperation} onOpenCloudReview={async root => {
           if (busy || reviewUnsaved.current) throw new Error("当前保存尚未完成");
           await openSource(root, true, [], true); setManagementMode(false); setPersonalTaskOpen(false);
         }} />}
@@ -2066,8 +2110,8 @@ function App() {
         <div className="brand-lockup">
           <span className="brand-mark">D</span>
           <div>
-            <strong>Delta Viewer</strong>
-            <span>v{DISPLAY_VERSION}</span>
+            <strong>D1 Manager</strong>
+            <span>上位机设备管理与诊断 · v{DISPLAY_VERSION}</span>
           </div>
           <button
             className="version-history-trigger"
@@ -2087,12 +2131,12 @@ function App() {
         </div>
         <div className="topbar-actions">
           {canManage && <button className="button button-secondary management-mode-button" disabled={busy || reviewHasUnsaved} onClick={openManagement}>管理模式</button>}
-          <StatusBadge status={status} />
+          {managerSection === "data" && <StatusBadge status={status} />}
           {isManagedWorkspace && currentUser && !showManagement ? updateControls(busy) : null}
-          <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy}>
+          {currentUser?.role !== "admin" && <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy} aria-label={isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}>
             <FolderOpen size={16} />
             {isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}
-          </button>
+          </button>}
           {isManagedWorkspace && currentUser ? (
             <button className="button button-secondary workbench-trigger" type="button" onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`审核总览打开失败：${toMessage(reason)}`))} title="打开审核总览">
               <Activity size={16} />审核总览
@@ -2145,6 +2189,11 @@ function App() {
           </button>
         </div>
       </header>
+      <nav className="manager-navigation" aria-label="主导航">
+        {managerSections.map(item => <button type="button" key={item.id} aria-current={managerSection === item.id ? "page" : undefined}
+          disabled={busy} onClick={() => void navigateManager(item.id)}>{item.label}</button>)}
+        <span className="manager-nav-caption">D1 上位机 · 设备管理与诊断</span>
+      </nav>
       <div id={showManagement ? undefined : "app-update-notices"} />
 
       {isManagedWorkspace && currentUser?.role === "operator" && personalTaskOpen ? (
@@ -2208,7 +2257,9 @@ function App() {
         </div>
       ) : null}
 
-      <div className={`workspace${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`}>
+      <ManagerWorkspace key={`${workspaceMode}:${currentUser?.username ?? "local"}:${authStatus.userCenter.serviceId ?? "local"}`}
+        section={managerSection} busy={busy} beginOperation={beginManagerOperation} onNavigate={next => void navigateManager(next)} />
+      <div className={`workspace${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`} hidden={managerSection !== "data"} inert={managerSection !== "data"}>
         <aside className="sidebar" style={{ "--sidebar-scale": sidebarScale } as CSSProperties}>
           <div className="sidebar-heading">
             <div>
@@ -2272,7 +2323,7 @@ function App() {
               </div>
             )}
           </div>
-          <SkeletonModelPicker root={data?.summary.root} disabled={operationBusy || sourcePublishing || reviewHasUnsaved || Boolean(batchRejection) || showManagement}
+          <SkeletonModelPicker root={data?.summary.root} disabled={operationBusy || sourcePublishing || reviewHasUnsaved || Boolean(batchRejection) || showManagement || managerSection !== "data"}
             onLibrary={info => { setModelLibrary(info); setBatchRejectionSelection({}); }} onModel={series => setModelSelection(series && data ? {root:data.summary.root,series}:null)} onBusy={setModelBusy} />
           <div className="sidebar-footer">
             <div><span>文件</span><strong>{selectedEpisode?.indexed ? selectedEpisode.totalFiles : "—"}</strong></div>
@@ -2283,7 +2334,7 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || showManagement} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录；联网工作区的操作记录后台补传，任务中心等待服务器读取 QC 更新。"); }} />}
+          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || showManagement || managerSection !== "data"} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录；联网工作区的操作记录后台补传，任务中心等待服务器读取 QC 更新。"); }} />}
 
           {data || view === "batch" ? (
             <>
@@ -2428,7 +2479,7 @@ function App() {
                           onChange={event => seekFrame(event.currentTarget.valueAsNumber)} />
                         <p role="status">正在读取视频并检查完整数据；画面出现后可预览，检查完成后开放片段编辑和审核。</p>
                       </section>
-                    </div> : <ReviewPanel username={reviewStorageUsername} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement} busy={busy || showManagement || annotationReadyRoot !== data.summary.root}
+                    </div> : <ReviewPanel username={reviewStorageUsername} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement || managerSection !== "data"} busy={busy || showManagement || managerSection !== "data" || annotationReadyRoot !== data.summary.root}
                       playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onPlay: playSegment, onToggle: togglePlayback, controls: (
 <>
                           {playbackControls}
@@ -2762,7 +2813,7 @@ function presentOperationError(message: string): string {
     || message.includes("权限")
     || message.includes("不允许")
   ) {
-    return `系统拒绝访问所选卷或目录。请确认当前账号和 Delta Viewer 可以读取该卷，并允许写入本机应用数据目录。原始错误：${message}`;
+    return `系统拒绝访问所选卷或目录。请确认当前账号和 D1 Manager 可以读取该卷，并允许写入本机应用数据目录。原始错误：${message}`;
   }
   return message;
 }

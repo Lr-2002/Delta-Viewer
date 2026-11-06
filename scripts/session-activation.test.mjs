@@ -145,6 +145,7 @@ async function openActivationScenario() {
   await inputs.nth(2).fill("Passphrase123");
   await inputs.nth(3).fill("Passphrase123");
   await page.locator("form button[type=submit]").click();
+  await page.getByRole("navigation", {name:"主导航"}).getByRole("button", {name:"数据工作区",exact:true}).click();
   await page.locator(sessionSelector("session-a")).waitFor();
   await page.waitForFunction(() => document.querySelector(".loaded-label")?.textContent?.includes("session-a"));
   await waitForEnabled(page, "session-b");

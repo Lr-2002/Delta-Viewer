@@ -430,6 +430,7 @@ try {
   });
 
   await page.goto(url, { waitUntil: "networkidle" });
+  await page.getByRole("navigation", {name:"主导航"}).getByRole("button", {name:"数据工作区",exact:true}).click();
   await page.locator(".app-shell").waitFor();
   await page.waitForFunction(() => window.__concurrencyMock.listenerCount("task-progress") >= 1);
   console.log("browser-smoke: app and progress listener loaded");

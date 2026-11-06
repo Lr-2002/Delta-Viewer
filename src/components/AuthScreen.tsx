@@ -107,8 +107,8 @@ export function AuthScreen({
         <header className="auth-brand">
           <span className="brand-mark">D</span>
           <div>
-            <strong>Delta Viewer</strong>
-            <span>recording workspace</span>
+            <strong>D1 Manager</strong>
+            <span>上位机设备管理与诊断</span>
           </div>
         </header>
         <section className="auth-panel workspace-mode-panel" aria-labelledby="workspace-mode-title">
@@ -141,8 +141,8 @@ export function AuthScreen({
       <header className="auth-brand">
         <span className="brand-mark">D</span>
         <div>
-          <strong>Delta Viewer</strong>
-          <span>recording workspace</span>
+          <strong>D1 Manager</strong>
+          <span>上位机设备管理与诊断</span>
         </div>
       </header>
       <section className="auth-panel" aria-labelledby="auth-title">

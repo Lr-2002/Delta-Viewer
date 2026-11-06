@@ -186,6 +186,7 @@ test('real workspace saves before install and audit disk failure preserves the a
   await page.getByLabel('显示名称').fill('Update Test');await page.locator('input[autocomplete="username"]').fill('update-test');
   await page.locator('input[type="password"]').nth(0).fill('demo-password-123');await page.locator('input[type="password"]').nth(1).fill('demo-password-123');
   await page.getByRole('button',{name:'创建并登录'}).click();
+  await page.getByRole("navigation", {name:"主导航"}).getByRole("button", {name:"数据工作区",exact:true}).click();
   await page.getByRole('navigation',{name:'工作区视图'}).waitFor();
   await page.waitForFunction(()=>document.querySelector('[aria-label="复核动作描述"]')?.disabled===false);
   await page.getByRole('button',{name:'版本与更新',exact:true}).click();const dialog=page.getByRole('dialog',{name:'版本与更新详情'});

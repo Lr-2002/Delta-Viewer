@@ -66,19 +66,19 @@ if (!browserExecutable) {
     await new Promise((resolveExit) => server.once("exit", resolveExit));
   });
 
-  test("Delta Viewer login and reviewer registration use the renamed product", async () => {
+  test("D1 Manager login and reviewer registration use the renamed product", async () => {
     for (const viewport of [{ width: 1440, height: 920 }, { width: 390, height: 844 }]) {
       const context = await browser.newContext({ viewport });
       try {
         const page = await context.newPage();
         await page.goto(baseUrl, { waitUntil: "networkidle" });
         await page.getByRole("button", { name: "登录工作区" }).click();
-        assert.equal(await page.title(), "Delta Viewer");
+        assert.equal(await page.title(), "D1 Manager");
         await page.getByRole("heading", { name: "审核员注册", exact: true }).waitFor();
         await page.getByRole("button", { name: "返回登录", exact: true }).click();
         await page.getByRole("button", { name: "注册审核员账号", exact: true }).click();
         await page.getByRole("heading", { name: "审核员注册", exact: true }).waitFor();
-        assert.equal(await page.locator(".auth-brand strong").innerText(), "Delta Viewer");
+        assert.equal(await page.locator(".auth-brand strong").innerText(), "D1 Manager");
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
         mkdirSync(resolve(root, "artifacts/branding"), { recursive: true });
         await page.screenshot({ path: resolve(root, `artifacts/branding/registration-${viewport.width}.png`), fullPage: true });
@@ -526,6 +526,7 @@ if (!browserExecutable) {
       await page.goto(`${baseUrl}/?machineAnnotation=present`, { waitUntil:"networkidle" });
       await page.getByRole("button", { name:"离线模式", exact:false }).click();
       await page.getByText("离线模式 · 仅本机", {exact:true}).waitFor();
+      await page.getByRole("navigation", {name:"主导航"}).getByRole("button", {name:"数据工作区",exact:true}).click();
       await page.locator('.quality-workspace textarea[aria-label="复核动作描述"]').waitFor();
       assert.equal(await page.getByRole("button", { name:"任务中心", exact:true }).count(), 0);
       assert.equal(await page.getByRole("button", { name:"管理模式", exact:true }).count(), 0);
@@ -1132,6 +1133,7 @@ async function registerDemoAccount(page, url, suffix, acknowledgeWarnings = true
   await passwords.nth(0).fill("demo-password-123");
   await passwords.nth(1).fill("demo-password-123");
   await page.getByRole("button", { name: "创建并登录" }).click();
+  await page.getByRole("navigation", {name:"主导航"}).getByRole("button", {name:"数据工作区",exact:true}).click();
   if (acknowledgeWarnings) await page.getByRole("button", { name: "仍要标注" }).click({ timeout: 2_000 }).catch(() => undefined);
   if (acknowledgeWarnings) {
     await page.getByRole("button", { name: "校对", exact: true }).waitFor();

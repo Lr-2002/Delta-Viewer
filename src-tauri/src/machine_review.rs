@@ -1224,30 +1224,83 @@ fn public_review(state: &ReviewState) -> AppResult<Value> {
 }
 
 pub(crate) fn technical_path(output: &Path) -> PathBuf {
+    let file_name = format!(
+        ".{}.review-state.json",
+        output.file_stem().unwrap_or_default().to_string_lossy()
+    );
+    if output.file_name().and_then(|name| name.to_str())
+        == Some(machine_annotation::SKELETON_SOURCE)
+    {
+        return output
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(".session_meta")
+            .join(".d1-manager")
+            .join(file_name);
+    }
+    output.with_file_name(file_name)
+}
+
+fn legacy_technical_path(output: &Path) -> PathBuf {
     output.with_file_name(format!(
         ".{}.review-state.json",
         output.file_stem().unwrap_or_default().to_string_lossy()
     ))
 }
 
-fn technical_review(output: &Path, content_hash: &str) -> AppResult<Option<ReviewState>> {
-    let Some(bytes) = machine_annotation::read_bytes(&technical_path(output))? else {
-        return Ok(None);
-    };
-    let record: Value = serde_json::from_slice(&bytes)?;
-    if record["schemaVersion"] != 1
-        || record["contentHash"].as_str() != Some(content_hash)
-        || record["outputName"].as_str() != output.file_name().and_then(|s| s.to_str())
+fn ensure_technical_parent(output: &Path) -> AppResult<()> {
+    if output.file_name().and_then(|name| name.to_str())
+        != Some(machine_annotation::SKELETON_SOURCE)
     {
-        return Ok(None);
+        return Ok(());
     }
-    record
-        .get("review")
-        .filter(|value| !value.is_null())
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(Into::into)
+    let root = output.parent().unwrap_or_else(|| Path::new("."));
+    for directory in [
+        root.join(".session_meta"),
+        root.join(".session_meta/.d1-manager"),
+    ] {
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(failure("D1 Manager 元数据目录不是普通目录，未写入")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&directory)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn technical_review(output: &Path, content_hash: &str) -> AppResult<Option<ReviewState>> {
+    let preferred = technical_path(output);
+    let legacy = legacy_technical_path(output);
+    let paths = if preferred == legacy {
+        vec![preferred]
+    } else {
+        vec![preferred, legacy]
+    };
+    for path in paths {
+        let Some(bytes) = machine_annotation::read_bytes(&path)? else {
+            continue;
+        };
+        let record: Value = serde_json::from_slice(&bytes)?;
+        if record["schemaVersion"] != 1
+            || record["contentHash"].as_str() != Some(content_hash)
+            || record["outputName"].as_str() != output.file_name().and_then(|s| s.to_str())
+        {
+            continue;
+        }
+        if let Some(review) = record
+            .get("review")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+        {
+            return Ok(Some(review));
+        }
+    }
+    Ok(None)
 }
 
 fn shared_technical_state(state: &ReviewState) -> AppResult<Value> {
@@ -1260,6 +1313,7 @@ fn shared_technical_state(state: &ReviewState) -> AppResult<Value> {
 
 fn write_technical(output: &Path, content_hash: &str, state: &ReviewState) -> AppResult<()> {
     let path = technical_path(output);
+    ensure_technical_parent(output)?;
     // Validate an existing reserved file before replacing it.
     if let Some(bytes) = machine_annotation::read_bytes(&path)? {
         let old: Value = serde_json::from_slice(&bytes)?;
@@ -1281,6 +1335,7 @@ pub(crate) fn correction_technical(
     document: &Value,
     correction: Value,
 ) -> AppResult<()> {
+    ensure_technical_parent(output)?;
     let after = blake3::hash(&serde_json::to_vec_pretty(document)?)
         .to_hex()
         .to_string();
@@ -2331,6 +2386,18 @@ pub(crate) fn lock_file(path: &Path) -> AppResult<fs::File> {
 }
 
 pub fn is_review_path(root: &Path, path: &Path) -> bool {
+    let manager_metadata = root.join(".session_meta/.d1-manager");
+    if path.parent() == Some(manager_metadata.as_path())
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name == ".skeleton.description.review-state.json"
+                    || name.starts_with("..skeleton.description.review-state.json.partial-")
+            })
+    {
+        return true;
+    }
     path.parent() == Some(root)
         && path
             .file_name()
@@ -2621,6 +2688,13 @@ mod tests {
         let output = f.root.join(machine_annotation::SKELETON_SOURCE);
         let doc: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
         assert!(doc.get("_human_review").is_none());
+        assert!(
+            !f.root
+                .join(".skeleton.description.review-state.json")
+                .exists(),
+            "skeleton review state must not be emitted beside user data"
+        );
+        assert!(technical_path(&output).exists());
         assert_eq!(
             doc["episode_results"][0]["annotations"]
                 .as_array()
@@ -2648,8 +2722,31 @@ mod tests {
             fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
             machine_before
         );
+        let legacy_sidecar = legacy_technical_path(&output);
+        fs::copy(technical_path(&output), &legacy_sidecar).unwrap();
+        fs::remove_file(technical_path(&output)).unwrap();
+        let legacy_host = f.temp.join("skeleton-legacy-sidecar-host");
+        let legacy_state = load_selected(&legacy_host, &f.root, source).unwrap();
+        assert_eq!(legacy_state.segments, state.segments);
+        let migrated = save_for_user(
+            &legacy_host,
+            request(&legacy_state, legacy_state.segments.clone()),
+            "Human",
+            "alice",
+        )
+        .unwrap();
+        assert!(
+            legacy_sidecar.exists(),
+            "old Viewer metadata remains readable"
+        );
+        assert!(
+            technical_path(&output).exists(),
+            "new writes use internal metadata"
+        );
+        assert_eq!(migrated.segments, legacy_state.segments);
         // A missing technical sidecar still reloads actual annotations.
         fs::remove_file(technical_path(&output)).unwrap();
+        fs::remove_file(legacy_sidecar).unwrap();
         let bare_host = f.temp.join("skeleton-without-sidecar");
         let bare = load_selected(&bare_host, &f.root, source).unwrap();
         assert_eq!(bare.segments.iter().filter(|s| !s.deleted).count(), 1);

@@ -1,6 +1,7 @@
-# Delta Viewer
+# D1 Manager
 
 - [首页](Home)
+- [设备管理与诊断](Device-Management)
 - [安装与升级](Installation)
 - [macOS 读取 ext4 SD 卡](Paragon-extFS-macOS)
 - [快速开始](Quick-Start)

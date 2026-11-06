@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "deviceOta": {
+    "reservedAddress": "deltadevice.cn:4174/ota/latest",
+    "scheme": null,
+    "enabled": false,
+    "status": "waiting_interface"
+  },
+  "productionOperations": []
+}

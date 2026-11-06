@@ -95,6 +95,7 @@ test("keeps decoded tiles visible through delayed playback and retains the works
     await page.locator('input[autocomplete="new-password"]').nth(0).fill("password-123");
     await page.locator('input[autocomplete="new-password"]').nth(1).fill("password-123");
     await page.getByRole("button", { name: "创建并登录" }).click();
+  await page.getByRole("navigation", {name:"主导航"}).getByRole("button", {name:"数据工作区",exact:true}).click();
     await page.getByRole("button", { name: "校对", exact: true }).waitFor();
 
     await page.waitForFunction(() => {

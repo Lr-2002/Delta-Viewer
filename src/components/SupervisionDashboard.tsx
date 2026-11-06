@@ -92,6 +92,7 @@ export function SupervisionDashboard({
   updateControls,
   updateBusy = false,
   onTestMode,
+  onManagerHome,
   syncNotice,
   onOpenCloudReview,
   beginCloudOperation,
@@ -102,6 +103,7 @@ export function SupervisionDashboard({
   updateControls?: (busy: boolean) => ReactNode;
   updateBusy?: boolean;
   onTestMode?: () => void;
+  onManagerHome?: () => void;
   syncNotice?: ReactNode;
   onOpenCloudReview?: (root: string) => Promise<void>;
   beginCloudOperation?: () => CloudOperationHandle | null;
@@ -457,6 +459,7 @@ export function SupervisionDashboard({
           <span>
             {currentUser.displayName} · @{currentUser.username}
           </span>
+          {onManagerHome && <button className="button button-secondary" type="button" disabled={Boolean(busy) || Boolean(catalogOperation.current) || updateBusy} onClick={onManagerHome}>D1 Manager 首页</button>}
           {onTestMode && <button className="button button-secondary" type="button" disabled={Boolean(busy) || Boolean(catalogOperation.current)} onClick={onTestMode}>测试模式</button>}
           {updateControls?.(Boolean(busy))}
           <button

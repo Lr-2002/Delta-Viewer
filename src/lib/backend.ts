@@ -3,6 +3,27 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import packageInfo from "../../package.json";
+import d1Configuration from "../../config/d1-manager.json";
+import { cancelBrowserDeviceTask, runBrowserDeviceSimulation } from "./d1-browser-simulation";
+import type { DeviceAvailability, DeviceBundlePreview, DeviceBundleRequest, DeviceRun, DeviceScenario } from "./d1";
+
+export async function getDeviceAvailability(): Promise<DeviceAvailability> {
+  if (isTauriRuntime()) return invoke("d1_availability");
+  return {connection:"not_connected",identity:null,realDeviceEnabled:false,configuration:d1Configuration} as DeviceAvailability;
+}
+export async function runDeviceSimulation(scenario: DeviceScenario, operationId:number): Promise<DeviceRun> {
+  if (isTauriRuntime()) return invoke("d1_run_simulation", {request:{target:{kind:"simulation",scenario},timeoutMs:1500},operationId});
+  return runBrowserDeviceSimulation(scenario,operationId,1500);
+}
+export async function clearDeviceSimulation(): Promise<void> { if(isTauriRuntime()) await invoke("d1_clear_simulation"); }
+export async function previewDeviceBundle(request:DeviceBundleRequest): Promise<DeviceBundlePreview> {
+  if(!isTauriRuntime()) throw new Error("请在桌面客户端预览并导出诊断包。");
+  return invoke("d1_preview_bundle", {request});
+}
+export async function exportDeviceBundle(request:DeviceBundleRequest,destinationParent:string,previewHash:string,operationId:number):Promise<string> {
+  if(!isTauriRuntime()) throw new Error("请在桌面客户端导出诊断包。");
+  return invoke("d1_export_bundle",{request,destinationParent,previewHash,operationId});
+}
 import { createAuditFlusher } from "./audit-flush";
 import { REJECTION_REASONS } from "./rejection-reasons";
 import { findReviewOverlap } from "./machine-annotation";
@@ -91,7 +112,7 @@ export async function openCaptureWorkbench(): Promise<void> {
   }
   const workbench = new WebviewWindow("capture-workbench", {
     url: CAPTURE_WORKBENCH_URL,
-    title: "审核总览 · Delta Viewer",
+    title: "审核总览 · D1 Manager",
     width: 1600,
     height: 1000,
     minWidth: 1120,
@@ -1508,7 +1529,7 @@ export async function setPreviewLocation(location: { sourceRoot: string; preview
 
 export async function cancelTask(operationId: number): Promise<boolean> {
   if (isTauriRuntime()) return invoke<boolean>("cancel_task", { operationId });
-  return false;
+  return cancelBrowserDeviceTask(operationId);
 }
 
 export async function onTaskProgress(

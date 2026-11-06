@@ -139,6 +139,7 @@ jobs:
           test -x "$PLAYWRIGHT_BROWSER_EXECUTABLE"
           "$PLAYWRIGHT_BROWSER_EXECUTABLE" --version
           pnpm test:demo-flow
+          pnpm test:d1-manager
           pnpm test:session-activation
           pnpm test:loading-progress
           pnpm test:dialog-recovery

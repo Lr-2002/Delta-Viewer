@@ -24,7 +24,7 @@ Release 正文，并在公开前回读确认版本标题存在。
 - `SHA256SUMS.txt` 和 `release-manifest.json`。
 - GitHub build provenance attestations。
 
-Release 标题、说明、安装器文件名、verification report 和 manifest 都必须显示 `UNSIGNED`，不得宣称 Authenticode、Developer ID、Apple notarization 或可信 Linux 包签名已完成。macOS app/main/FFmpeg 必须有本地 ad-hoc seal，但报告必须同时记录 `trustedPublisher:false`。三个构建产物全部成功后，publish job 才创建或更新 draft；远端资产名称与本地集合一致后才解除 draft。已经公开的相同 tag 不允许覆盖。
+Release 标题采用 `D1 Manager vX.Y.Z (UNSIGNED)`；说明、安装器文件名、verification report 和 manifest 都必须显示 `UNSIGNED`，不得宣称 Authenticode、Developer ID、Apple notarization 或可信 Linux 包签名已完成。安装器和更新资产仍使用 `Delta-Viewer_*` 文件名，以兼容现有更新器与安装身份。macOS app/main/FFmpeg 必须有本地 ad-hoc seal，但报告必须同时记录 `trustedPublisher:false`。三个构建产物全部成功后，publish job 才创建或更新 draft；远端资产名称与本地集合一致后才解除 draft。已经公开的相同 tag 不允许覆盖。
 
 `main` 允许直接推送，但禁止删除和 force-push。Release controller 和 publish job
 只为当前运行申请 `contents: write`，其他 job 保持只读；当前 unsigned 通道不使用

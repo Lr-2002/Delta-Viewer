@@ -108,7 +108,7 @@ jobs:
               exit 1
             fi
           else
-            git tag -a "$tag" "$release_commit" -m "Delta Viewer $tag"
+            git tag -a "$tag" "$release_commit" -m "D1 Manager $tag"
             tag_needs_push=true
           fi
 
@@ -878,9 +878,9 @@ jobs:
             while IFS= read -r existing_asset; do
               [[ -z "$existing_asset" ]] || gh release delete-asset "$TAG" "$existing_asset" --yes
             done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
-            gh release edit "$TAG" --title "Delta Viewer $TAG (UNSIGNED)" --notes-file "$notes_file"
+            gh release edit "$TAG" --title "D1 Manager $TAG (UNSIGNED)" --notes-file "$notes_file"
           else
-            create_args=("$TAG" --verify-tag --draft --title "Delta Viewer $TAG (UNSIGNED)" --notes-file "$notes_file")
+            create_args=("$TAG" --verify-tag --draft --title "D1 Manager $TAG (UNSIGNED)" --notes-file "$notes_file")
             if [[ "$PRERELEASE" == "true" ]]; then create_args+=(--prerelease); fi
             gh release create "${create_args[@]}"
           fi

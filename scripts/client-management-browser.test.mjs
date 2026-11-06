@@ -12,7 +12,7 @@ test('admin switches modes in one session, account versions stay truthful, singl
  page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
  await page.addInitScript(({version})=>{
   localStorage.setItem('delta.updates.release-notes.seen',version);
-  window.calls=[];window.versionFail=false;window.dashboardCalls=0;
+  window.calls=[];window.versionFail=false;window.dashboardCalls=0;window.writebackCommand=false;window.writebackSteps=0;
   window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
   const users=['admin','alice','bob','legacy'].map(username=>({username,displayName:username,accountStatus:'active',operations:0,approved:0,rejected:0,seeks:0,labelsAdded:0,labelsDeleted:0,averageMs:null,lastActivityAtMs:null,online:false}));
   window.__TAURI_INTERNALS__={transformCallback:()=>1,unregisterCallback(){},invoke:async(cmd,args={})=>{
@@ -26,7 +26,12 @@ test('admin switches modes in one session, account versions stay truthful, singl
    if(cmd==='get_pending_source_reviews')return {pending:0,items:[],ready:false,storageError:''};
    if(['persist_review_audit','flush_review_audit_queue','get_review_audit_queue_status'].includes(cmd))return {pending:0,blocked:0,error:''};
    if(cmd==='get_review_dashboard'){window.dashboardCalls++;throw Error('REVIEW_STATISTICS_TIMEOUT');}
-   if(cmd==='source_writeback_management')return args.request.kind==='overview'?{generatedAtMs:Date.now(),users:[]}:{request:null,generatedAtMs:Date.now()};
+   if(cmd==='source_writeback_management') {
+    if(args.request.kind==='overview')return {generatedAtMs:Date.now(),users:[]};
+    if(args.request.kind==='poll')return {generatedAtMs:Date.now(),request:window.writebackCommand?{id:'fixture-writeback',sender:'admin',createdAtMs:Date.now()}:null,receipt:window.writebackSteps?{requestId:'fixture-writeback',seq:2,state:'complete',total:1,written:1,remaining:0,attempted:1,failed:0,unattempted:0,errors:[]}:null};
+    if(args.request.kind==='step'){window.writebackSteps++;return {requestId:'fixture-writeback',seq:1,state:'complete',total:1,written:1,remaining:0,attempted:1,failed:0,unattempted:0,errors:[]};}
+    throw Error('Unexpected writeback request '+args.request.kind);
+   }
    if(cmd==='client_management') {
     const req=args.request;
     if(req.kind==='poll')return {generatedAtMs:Date.now(),reminder:null};
@@ -43,6 +48,10 @@ test('admin switches modes in one session, account versions stay truthful, singl
  await page.getByRole('button',{name:'管理模式',exact:true}).click();
  await page.getByRole('button',{name:'测试模式',exact:true}).waitFor();
  assert.equal(await page.locator('.app-shell').isVisible(),false);
+ await page.waitForTimeout(2100);
+ await page.evaluate(()=>{window.writebackCommand=true;window.dispatchEvent(new Event('online'));});
+ await page.waitForFunction(()=>window.writebackSteps===1);
+ await page.getByRole('status').filter({hasText:'管理员统一写回完成'}).waitFor();
  await page.getByRole('button',{name:'审核账号',exact:true}).click();
  assert.equal(await page.evaluate(()=>window.dashboardCalls),0,'default management account list must not query millions of review events');
  await page.locator('.account-version-cell').getByText('v1.3.2',{exact:true}).waitFor();

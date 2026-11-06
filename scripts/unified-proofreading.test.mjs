@@ -483,6 +483,7 @@ async function open(page, query, username = "review-test") {
   await page.locator('input[type="password"]').nth(0).fill("demo-password-123");
   await page.locator('input[type="password"]').nth(1).fill("demo-password-123");
   await page.getByRole("button", { name: "创建并登录" }).click();
+  await page.getByRole("navigation", {name:"主导航"}).getByRole("button", {name:"数据工作区",exact:true}).click();
   await page.getByRole("navigation", { name: "工作区视图" }).waitFor();
   // The new one-time release summary has its own update-flow coverage. Keep
   // playback layout assertions focused on the regular, acknowledged workspace.

@@ -1527,7 +1527,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .review-main-grid > .quality-workspace { grid-area: editor; min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid var(--line); padding: 0 0 0 14px; background: linear-gradient(90deg, rgba(0,0,0,.018), transparent 18px); }
 .review-main-grid .compact-heading { margin-bottom: 7px; flex-wrap: wrap; gap: 6px; }
 .review-main-grid .telemetry-chart { height: clamp(220px, 25vh, 300px); min-height: 220px; border-color: #d5d9d9; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
-.review-main-grid .camera-grid, .review-main-grid .skeleton-side-panel > .skeleton-viewer { height: clamp(260px, 40vh, 440px); min-height: 0; }
+.review-main-grid .camera-grid, .review-main-grid .skeleton-side-panel > .skeleton-viewer { height: clamp(260px, calc(40vh - var(--manager-navigation-height, 0px)), 440px); min-height: 0; }
 .review-main-grid .replay-visual-row.with-skeleton { grid-template-columns: minmax(0, 1fr) minmax(120px, .25fr); }
 .review-main-grid .skeleton-heading { min-height: 34px; padding: 5px 7px; flex-wrap: wrap; gap: 3px; }
 .review-main-grid .skeleton-heading .section-kicker, .review-main-grid .skeleton-viewer footer { display: none; }
@@ -1535,7 +1535,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .review-main-grid .skeleton-heading > span { font-size: 9px; }
 .review-main-grid .frame-render-progress { min-height: 22px; margin-top: 4px; padding: 3px 6px; }
 .review-main-grid .quality-inspector { display: flex; flex-direction: column; gap: 7px; min-height: 0; }
-.review-main-grid .quality-inspector .machine-segment-list { flex: 0 1 auto; width: 100%; height: auto; max-height: clamp(120px, calc(100vh - 740px), 360px); min-height: 100px; overflow-y: scroll; overscroll-behavior: contain; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); scrollbar-gutter: stable; scrollbar-color: #89969b #edf0f1; }
+.review-main-grid .quality-inspector .machine-segment-list { flex: 0 1 auto; width: 100%; height: auto; max-height: clamp(120px, calc(100vh - 740px - var(--manager-navigation-height, 0px)), 360px); min-height: 100px; overflow-y: scroll; overscroll-behavior: contain; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); scrollbar-gutter: stable; scrollbar-color: #89969b #edf0f1; }
 .review-main-grid .machine-segment-list::-webkit-scrollbar { width: 10px; }
 .review-main-grid .machine-segment-list::-webkit-scrollbar-track { background: #edf0f1; }
 .review-main-grid .machine-segment-list::-webkit-scrollbar-thumb { background: #89969b; border: 2px solid #edf0f1; border-radius: 5px; }
@@ -1723,7 +1723,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* Reserve room for the tag entry while retaining the desktop chart and QC controls. */
 @media (min-width: 1241px) {
   .review-main-grid:has(.episode-special-tags) .camera-grid,
-  .review-main-grid:has(.episode-special-tags) .skeleton-side-panel > .skeleton-viewer { height: clamp(208px, calc(40vh - 52px), 388px); }
+  .review-main-grid:has(.episode-special-tags) .skeleton-side-panel > .skeleton-viewer { height: clamp(208px, calc(40vh - 52px - var(--manager-navigation-height, 0px)), 388px); }
 }
 .episode-special-tags ul { max-height: 86px; overflow-y: auto; }
 /* Legacy standalone proofreading keeps playback and its inspector on the first row. */
@@ -1741,3 +1741,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .special-tag-cameras label:focus-within { outline: 2px solid var(--ink); outline-offset: 2px; }
 .writeback-client { margin:8px 14px; background:#edf6fb; border-color:#b6d9e9; }
 .writeback-client-error { background:#fff4e5; border-color:#e9bf7a; }
+
+/* Manager shell retains every data-workspace control at narrow widths. */
+.app-shell {--manager-navigation-height:56px;}
+.app-shell[hidden] { display:none; }
+.topbar {flex-wrap:wrap;flex:0 0 auto;gap:10px 18px;padding-top:10px;padding-bottom:10px;}
+.topbar-actions {flex-wrap:wrap;margin-left:auto;max-width:100%;}
+.brand-lockup {min-width:215px;}
+@media(max-width:760px) {.topbar .button-secondary{width:auto;padding:0 9px;font-size:11px}.topbar-actions{gap:6px}.topbar .brand-lockup{min-width:0}.topbar .management-mode-button{font-size:12px}}
