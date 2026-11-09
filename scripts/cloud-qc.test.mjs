@@ -29,7 +29,7 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
         if (command === "review_identity_path") return args.path;
         window.calls.push([command,args]);
         if(command==='cloud_qc_call'){
-          if(args.action==='identity')return {account_id:'alice',role:window.cloudRole==='admin'?'admin':'reviewer'};
+          if(args.action==='identity')return {account_id:'alice',role:window.cloudRole==='admin'?'admin':'reviewer',companies:['fixture-company']};
           if(args.action==='tasks'){
             const plan=structuredClone(window.plan);
             if(window.cloudRole!=='admin')delete plan.audit;
@@ -93,6 +93,8 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     await page.getByRole('status').filter({hasText:'已同步 Viewer 保存的真实审核结论'}).waitFor();
     await page.evaluate(()=>window.show('admin'));
     await page.getByText('公司抽样策略',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'连接设置',exact:true}).count(),0);
+    await page.getByText('云端任务沿用当前 Manager 登录账号，无需单独配置。',{exact:false}).waitFor();
     await page.getByLabel('变更原因').fill('管理员更新后续批次');
     await page.getByRole('button',{name:'保存策略'}).click();
     await page.getByRole('status').filter({hasText:'策略已保存'}).waitFor();
@@ -100,7 +102,7 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     page.once('dialog',dialog=>dialog.accept());
     await page.getByRole('button',{name:'抽检已处理订单（5%）'}).click();
     await page.getByRole('status').filter({hasText:'历史订单抽检回填完成：新建 3 个计划，跳过 2 个订单'}).waitFor();
-    assert.deepEqual(await page.evaluate(()=>window.backfillArgs),{reason:'隔离测试回填历史订单'});
+    assert.deepEqual(await page.evaluate(()=>window.backfillArgs),{company_id:'fixture-company',reason:'隔离测试回填历史订单'});
     await page.getByText('批次详情',{exact:true}).first().click();
     await page.getByText('历史订单抽检回填',{exact:true}).waitFor();
     await page.getByText('qc-admin',{exact:true}).waitFor();

@@ -22,6 +22,7 @@ import { openClientPresence, CLIENT_PRESENCE_CAPABILITY } from "./client-presenc
 import { openReviewAuditStore } from "./review-audit-store.mjs";
 import { openReviewQueries } from "./review-query-service.mjs";
 import { openTaskClaims, validateBatchKey } from "./task-claims-store.mjs";
+import { createCloudQcBridge } from "./cloud-qc-bridge.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CONFIG_PATH = path.join(repositoryRoot, "user-center.config.json");
@@ -1008,6 +1009,7 @@ function supervisionPage(serviceId) {
 export async function createUserCenter(inputConfiguration, dataRoot, logger = console, { clock = Date.now, reviewQueryOptions = {} } = {}) {
   const configuration = normalizeConfiguration(inputConfiguration);
   const initialized = await initializeUserCenter(configuration, dataRoot);
+  const cloudQc = await createCloudQcBridge(configuration.cloudQc, (await readState(dataRoot)).serviceId, clock);
   const sessions = openAuthSessions(dataRoot, { idleTtlSeconds: configuration.sessionIdleTtlSeconds, clock });
   const attempts = new Map();
   const registrations = new Map();
@@ -1078,6 +1080,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             CLIENT_PRESENCE_CAPABILITY,
             SOURCE_WRITEBACK_CAPABILITY,
             SESSION_CONTINUITY_CAPABILITY,
+            ...(cloudQc ? ["cloudQcManagedSessionV1"] : []),
           ],
         });
       }
@@ -1197,6 +1200,32 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       if (request.method === "GET" && url.pathname === "/api/v1/auth/me") {
         const session = await authorize(request);
         return session ? sendJson(response, 200, { user: session.user, expiresAtMs: session.expiresAtMs }) : sendJson(response, 401, { error: "AUTH_REQUIRED" });
+      }
+      if (url.pathname === "/api/v1/cloud-qc/connection" || url.pathname === "/api/v1/cloud-qc/proxy") {
+        const session = await authorize(request);
+        if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        if (!cloudQc) return sendJson(response, 503, { error: "CLOUD_QC_NOT_CONFIGURED" });
+        if (request.method === "GET" && url.pathname.endsWith("/connection")) {
+          return sendJson(response, 200, cloudQc.metadata);
+        }
+        if (request.method !== "POST" || !url.pathname.endsWith("/proxy")) {
+          return sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+        }
+        const input = await parseJsonBody(request, 4 * 1024 * 1024);
+        // Parsing may wait on the socket; recheck logout, pause, role and name before forwarding.
+        const latest = await authorize(request);
+        if (!latest) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        try {
+          const result = await cloudQc.request(latest.user, input);
+          const final = await authorize(request);
+          if (!final) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+          if (final.user.canManage !== latest.user.canManage || final.user.displayName !== latest.user.displayName) {
+            return sendJson(response, 409, { error: "CLOUD_QC_ACCOUNT_CHANGED" });
+          }
+          return sendJson(response, 200, result);
+        } catch (error) {
+          return sendJson(response, error.status ?? 502, { error: /^[A-Z0-9_]+$/.test(error.message) ? error.message : "CLOUD_QC_NETWORK_UNAVAILABLE" });
+        }
       }
       if (request.method === "POST" && url.pathname === "/api/v1/auth/logout") {
         const token = bearerToken(request);
@@ -1764,6 +1793,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       clientPresence.close();
       sourceWriteback.close();
       sessions.close();
+      cloudQc?.close();
     },
     configuration,
     clientConfigPath: initialized.clientConfigPath,

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Cloud, Download, Folder, LoaderCircle, RefreshCw, Settings2, UserRound } from "lucide-react";
-import { cloudBatchName, cloudBatchNumber, cloudQcCall, cancelCloudQc, configureCloudQc, fetchCloudQc, syncCloudQc, type CloudPlan, type CloudPolicy, type CloudOperationHandle } from "../lib/cloud-qc";
+import { Check, ChevronDown, Cloud, Download, Folder, LoaderCircle, RefreshCw, UserRound } from "lucide-react";
+import { cloudBatchName, cloudBatchNumber, cloudQcCall, cancelCloudQc, fetchCloudQc, syncCloudQc, type CloudPlan, type CloudPolicy, type CloudOperationHandle } from "../lib/cloud-qc";
 import type { UserIdentity } from "../types";
 
 const planStates: Record<string, string> = { sampling: "抽检中", sample_passed: "抽检通过", blocked: "审核不通过", full_review: "全量审查中", full_review_complete: "全量审查通过", invalidated: "标注已变化 · 暂停" };
@@ -8,6 +8,9 @@ const dateLabel = (value?: string) => value && Number.isFinite(Date.parse(value)
 
 export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, beginOperation }: { currentUser: UserIdentity; onOpen?: (directory: string) => Promise<void>; workspaceBusy?: boolean; beginOperation?: () => CloudOperationHandle | null }) {
   const [admin, setAdmin] = useState(false);
+  const [companies, setCompanies] = useState<string[]>([]);
+  const [company, setCompany] = useState("");
+  const companyRef = useRef("");
   const [plans, setPlans] = useState<CloudPlan[]>([]);
   const [error, setError] = useState("");
   const [refreshError, setRefreshError] = useState("");
@@ -30,14 +33,18 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
     refreshing.current = true;
     if (alive.current) setFetching(true);
     try {
-      const identity = await cloudQcCall<{ account_id: string; role: string }>("identity");
+      const identity = await cloudQcCall<{ account_id: string; role: string; companies?: string[] }>("identity");
       if (identity.account_id !== currentUser.username) throw Error("CLOUD_QC_ACCOUNT_MISMATCH");
       const isAdmin = identity.role === "admin";
       if (alive.current) setAdmin(isAdmin);
       const result = await cloudQcCall<{ plans: CloudPlan[] }>("tasks");
       if (alive.current) { setPlans(result.plans); setRefreshError(""); setCheckedAt(Date.now()); }
       if (isAdmin) {
-        const value = await cloudQcCall<{ version: number; policy: CloudPolicy }>("policy");
+        const available = identity.companies ?? [];
+        const selected = available.includes(companyRef.current) ? companyRef.current : available[0] ?? "";
+        companyRef.current = selected;
+        if (alive.current) { setCompanies(available); setCompany(selected); }
+        const value = await cloudQcCall<{ version: number; policy: CloudPolicy }>("policy", { company_id: selected });
         if (alive.current) { setPolicy(value); setDraft(previous => previous ?? value.policy); }
       }
     } catch (reason) { if (alive.current) setRefreshError(String(reason)); }
@@ -81,10 +88,13 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
     <div className="cloud-qc-toolbar">
       <div className="cloud-qc-toolbar-copy"><Cloud size={17} /><span><strong>云端审核任务</strong><small>独立下载副本 · {admin ? "管理员审查" : "批次抽检"}</small></span></div>
       <div className="cloud-qc-toolbar-actions">
-        <button type="button" className="button button-secondary" disabled={Boolean(busy)} onClick={() => void run("configure", async () => { await configureCloudQc(); })}><Settings2 size={14} />连接设置</button>
         <button type="button" className="button button-secondary" disabled={Boolean(busy) || fetching} onClick={() => void run("refresh", refresh)}><RefreshCw size={14} className={fetching ? "spin" : ""} />刷新云端任务</button>
       </div>
     </div>
+    <p className="cloud-qc-notice">云端任务沿用当前 Manager 登录账号，无需单独配置。云端预抽 5% 后进入此列表，正常账号均可领取待审样本。</p>
+    {admin && companies.length > 1 && <label>抽样策略公司 <select aria-label="抽样策略公司" value={company} disabled={Boolean(busy) || fetching} onChange={event => {
+      companyRef.current = event.target.value; setCompany(event.target.value); setPolicy(null); setDraft(null); setReason(""); setBackfillReason(""); void refresh();
+    }}>{companies.map(id => <option key={id} value={id}>{id}</option>)}</select></label>}
     <div className="cloud-qc-sync-line"><span>{plans.length} 个批次</span><span>{checkedAt ? `已同步 ${new Date(checkedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : "正在连接"} · 每 5 秒自动刷新</span></div>
     {workspaceBusy && !busy && <p role="status" className="cloud-qc-notice">正在恢复或处理数据，完成后可打开云端任务。</p>}
     {busy && operation && <div className="cloud-qc-notice" role="status"><LoaderCircle size={15} className="spin" /><span>正在下载并核验文件，完成后自动打开…</span><button className="button button-secondary" type="button" onClick={() => void cancelCloudQc(operation!)}>取消下载</button></div>}
@@ -92,7 +102,7 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
     {notice && <p role="status" className="cloud-qc-notice"><Check size={15} />{notice}</p>}
     <div className="cloud-qc-list" aria-label="云端批次列表" aria-busy={Boolean(busy) || (!checkedAt && fetching)}>
     {admin && draft && policy && <form className="cloud-qc-policy" onSubmit={event => { event.preventDefault(); void run("policy", async () => {
-      const result = await cloudQcCall<{ version: number; policy: CloudPolicy }>("set_policy", { base_version: policy.version, policy: draft, reason });
+      const result = await cloudQcCall<{ version: number; policy: CloudPolicy }>("set_policy", { company_id: company, base_version: policy.version, policy: draft, reason });
       setPolicy(result); setDraft(result.policy); setReason(""); setNotice("策略已保存，仅对后续新订单生效；已有批次的名单保持固定。");
     }); }}>
       <strong>公司抽样策略</strong>
@@ -108,7 +118,7 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
       if (!backfillReason.trim() || !backfillReady || busy) return;
       if (!window.confirm("将按当前 5% 策略为本公司尚无抽检计划、且全部完成标注并具备审核材料的历史订单建立抽检任务。计划会冻结样本；不完整订单和已有计划会跳过。继续？")) return;
       void run("backfill", async () => {
-        const result = await cloudQcCall<{ created: number; skipped: number; policy_version: number; sample_percent: number }>("backfill", { reason: backfillReason.trim() });
+        const result = await cloudQcCall<{ created: number; skipped: number; policy_version: number; sample_percent: number }>("backfill", { company_id: company, reason: backfillReason.trim() });
         setBackfillReason("");
         setNotice(`历史订单抽检回填完成：新建 ${result.created} 个计划，跳过 ${result.skipped} 个订单。`);
       });
