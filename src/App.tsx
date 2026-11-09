@@ -220,6 +220,8 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.6.6": "云端 QC 沿用当前 Manager 登录，正常账号无需绑定即可领取；修复 Windows 依赖下载遇上游 504 时中断发布，保留原文件校验。",
+  "1.6.5": "云端 QC 沿用现有 Manager 登录，正常账号无需单独配置即可领取各公司的云端预抽样任务。",
   "1.6.4": "云端 QC 支持管理员将符合条件的历史订单按 5% 策略回填到 Manager，并保留回填审计和既有人工审核证据。",
   "1.6.2": "修复存储恢复自动弹窗挡住管理员统一写回，收到有效指令后自动继续；手动核对窗口、播放和未存修改保护保持。",
   "1.6.1": "修复统一写回被单条目录异常中断及本机修订误冲突；管理端展示已检查、失败和尚未处理数量，保留真实共享冲突与原审核人日期。",
