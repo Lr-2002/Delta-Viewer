@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.6.5",
+  "version": "1.6.6",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -16,7 +16,7 @@
     "test:d1-manager": "node --test scripts/d1-manager.test.mjs",
     "test:demo-flow": "node --test scripts/demo-flow.test.mjs",
     "check:linux": "node scripts/check-linux-package.mjs",
-    "check:release-scripts": "node --test scripts/release-scripts.test.mjs",
+    "check:release-scripts": "node --test scripts/download-reviewed-ffmpeg.test.mjs scripts/release-scripts.test.mjs",
     "test:session-activation": "node --test scripts/session-activation.test.mjs",
     "test:native-playback": "node --test scripts/native-playback.test.mjs",
     "test:source-review:browser": "node --test --test-concurrency=1 scripts/source-review-notice.test.mjs scripts/source-writeback-browser.test.mjs",

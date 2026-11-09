@@ -332,9 +332,8 @@ jobs:
           $binary = Join-Path $dependencyRoot "ffmpeg.exe"
           $license = Join-Path $dependencyRoot "FFmpeg-LICENSE.txt"
           $notice = Join-Path $dependencyRoot "FFmpeg-BUILD-README.txt"
-          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile $binary
-          Invoke-WebRequest -Uri $env:FFMPEG_LICENSE_URL -OutFile $license
-          Invoke-WebRequest -Uri $env:FFMPEG_NOTICE_URL -OutFile $notice
+          node scripts/download-reviewed-ffmpeg.mjs $dependencyRoot
+          if ($LASTEXITCODE -ne 0) { throw "Reviewed FFmpeg dependency download failed" }
           $licenseHash = (Get-FileHash -LiteralPath $license -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($licenseHash -ne $env:FFMPEG_LICENSE_SHA256.ToLowerInvariant()) {
             throw "Reviewed FFmpeg license SHA-256 mismatch"
