@@ -119,6 +119,8 @@
 .cloud-qc-decision-rejected, .cloud-qc-recording > .cloud-qc-rejection { color: #a14c40; }
 .cloud-qc-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; flex: 0 1 auto; }
 .cloud-qc-policy { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; padding: 14px; border: 1px solid var(--line, #ddd); border-radius: 9px; }
+.cloud-qc-backfill { background: #f7fafb; }
+.cloud-qc-backfill > small { flex: 1 1 100%; color: var(--muted); line-height: 1.5; }
 .cloud-qc-policy label { display: grid; gap: 4px; max-width: 100%; }
 .cloud-qc-policy input[type=number] { width: 80px; }
 @media (max-width: 600px) {

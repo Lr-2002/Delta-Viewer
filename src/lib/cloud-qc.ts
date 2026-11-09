@@ -9,6 +9,7 @@ export interface CloudPlan {
   id: string; job_id: string; company_id: string; external_order_id: string; source_revision: string;
   batch_path: string; created_at?: string; version: number; state: string; sample_count: number; population_count: number;
   sample_approved: number; sample_rejected: number; full_review: boolean; tasks: CloudTask[];
+  audit?: { actor: string; action: string; reason: string; occurred_at: string }[];
 }
 export interface CloudPolicy {
   enabled: boolean; sample_percent: number; batch_scope: "sealed_order" | "recording_parent";

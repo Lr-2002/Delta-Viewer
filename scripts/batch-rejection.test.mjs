@@ -6,7 +6,7 @@ import { createServer } from 'vite';
 import { chromium } from 'playwright-core';
 
 test('batch rejection requires warning confirmation and reason, skips reviewed data, reports failures and stops between saves', async () => {
-  const server = await createServer({logLevel:'error',server:{host:'127.0.0.1',port:0},plugins:[{name:'batch-fixture',configureServer(server) {
+  const server = await createServer({logLevel:'error',server:{host:'127.0.0.1',port:0,strictPort:false},plugins:[{name:'batch-fixture',configureServer(server) {
     server.middlewares.use(async (req,res,next) => {
       if (req.url !== '/__batch-test') return next();
       res.setHeader('content-type','text/html');

@@ -226,6 +226,8 @@ pub async fn call(data: &Path, auth: &AuthState, action: &str, payload: Value) -
             }
         }
         "policy" | "set_policy" if admin => "/api/review/v1/admin/policy".into(),
+        "backfill" if admin => "/api/review/v1/admin/batches/backfill".into(),
+        "backfill" => return Err(fail("QC_ADMIN_REQUIRED")),
         "claim" | "full_review" => {
             if action == "full_review" && !admin {
                 return Err(fail("QC_ADMIN_REQUIRED"));
@@ -251,6 +253,7 @@ pub async fn call(data: &Path, auth: &AuthState, action: &str, payload: Value) -
     let body = match action {
         "tasks" | "policy" | "identity" => None,
         "claim" | "full_review" => Some(payload["body"].clone()),
+        "backfill" => Some(payload),
         _ => Some(payload),
     };
     request(&http, &config, &path, body).await

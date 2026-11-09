@@ -6,7 +6,7 @@ import { createServer } from "vite";
 import { chromium } from "playwright-core";
 
 test("task center shows QC tree, enforces claim states, refreshes without collapsing and fits small screens", async () => {
-  const server = await createServer({ server: { host: "127.0.0.1", port: 0 }, logLevel: "error", plugins: [{ name: "task-center-fixture", configureServer(server) {
+  const server = await createServer({ server: { host: "127.0.0.1", port: 0, strictPort: false }, logLevel: "error", plugins: [{ name: "task-center-fixture", configureServer(server) {
     server.middlewares.use(async (request, response, next) => {
     if (request.url !== "/__task-center-test") return next();
     response.setHeader("content-type", "text/html");
