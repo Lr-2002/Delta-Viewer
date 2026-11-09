@@ -42,11 +42,12 @@ export interface CloudAccess { cloud: boolean; canEdit: boolean; claimable: bool
 export const cloudQcAccess = (directory: string, claim = false) => cloudQcInvoke<CloudAccess>("cloud_qc_access", { directory, claim });
 export function cloudQcError(error: unknown): string {
   const raw = String(error);
+  if (/CLOUD_QC_NOT_CONFIGURED|NOT_FOUND/.test(raw)) return "管理员尚未开通云端任务连接，请联系管理员；无需单独绑定审核账号。";
   if (raw.includes("QC_TASK_NOT_CLAIMED")) return "任务尚未领取，云端未接收；请领取后补传，本机结论保持不变。";
   if (raw.includes("SESSION_IDENTITY_CHANGED")) return "云端校验会话信息不一致，尚未接收；本机原提交保留，请联系管理员核对。";
   if (raw.includes("REVIEWER_MISMATCH")) return "审核人信息与云端身份不一致，尚未接收；本机原提交保留，请联系管理员核对。";
   if (raw.includes("CLOUD_QC_NETWORK_UNAVAILABLE")) return "暂时无法连接云端，本机记录保留，网络恢复后会重试。";
-  if (/ACCOUNT_MISMATCH|TOKEN_INVALID|UNAUTHORIZED|AUTH_REQUIRED/.test(raw)) return "云端登录或账号校验失败，请重新登录并核对云端连接账号；本机记录保留。";
+  if (/ACCOUNT_MISMATCH|ACCOUNT_CHANGED|TOKEN_INVALID|UNAUTHENTICATED|UNAUTHORIZED|AUTH_REQUIRED/.test(raw)) return "登录已失效或账号信息发生变化，请重新登录；本机记录保留。";
   return `云端尚未确认，原因：${raw}`;
 }
 

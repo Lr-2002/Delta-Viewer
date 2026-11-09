@@ -20,6 +20,14 @@ struct Config {
     token_file: PathBuf,
     certificate_pem: String,
     download_hosts: Vec<String>,
+    #[serde(skip)]
+    managed: Option<ManagedConnection>,
+}
+
+#[derive(Clone)]
+struct ManagedConnection {
+    proxy: String,
+    token: String,
 }
 
 fn fail(code: &str) -> AppError {
@@ -129,22 +137,31 @@ async fn request(
     path: &str,
     payload: Option<Value>,
 ) -> AppResult<Value> {
-    let token = String::from_utf8(bounded(&config.token_file)?)
-        .map_err(|_| fail("CLOUD_QC_TOKEN_INVALID"))?;
-    if token.trim().len() < 32 {
-        return Err(fail("CLOUD_QC_TOKEN_INVALID"));
-    }
-    let mut url = reqwest::Url::parse(&format!("{}{}", config.origin.trim_end_matches('/'), path))
-        .map_err(|_| fail("CLOUD_QC_PATH_INVALID"))?;
-    url.query_pairs_mut()
-        .append_pair("tenant", &config.company_id);
-    let request = if let Some(body) = payload {
-        client.post(url).json(&body)
+    let request = if let Some(managed) = &config.managed {
+        client
+            .post(&managed.proxy)
+            .bearer_auth(&managed.token)
+            .timeout(Duration::from_secs(30))
+            .json(&json!({"path":path,"tenant":config.company_id,"payload":payload}))
     } else {
-        client.get(url)
+        let token = String::from_utf8(bounded(&config.token_file)?)
+            .map_err(|_| fail("CLOUD_QC_TOKEN_INVALID"))?;
+        if token.trim().len() < 32 {
+            return Err(fail("CLOUD_QC_TOKEN_INVALID"));
+        }
+        let mut url =
+            reqwest::Url::parse(&format!("{}{}", config.origin.trim_end_matches('/'), path))
+                .map_err(|_| fail("CLOUD_QC_PATH_INVALID"))?;
+        url.query_pairs_mut()
+            .append_pair("tenant", &config.company_id);
+        (if let Some(body) = payload {
+            client.post(url).json(&body)
+        } else {
+            client.get(url)
+        })
+        .bearer_auth(token.trim())
     };
     let response = request
-        .bearer_auth(token.trim())
         .send()
         .await
         .map_err(|_| fail("CLOUD_QC_NETWORK_UNAVAILABLE"))?;
@@ -163,8 +180,9 @@ async fn request(
     }
     let value: Value = serde_json::from_slice(&bytes)?;
     if !status.is_success() {
-        let code = value["error"]["code"]
+        let code = value["error"]
             .as_str()
+            .or_else(|| value["error"]["code"].as_str())
             .unwrap_or("CLOUD_QC_REQUEST_FAILED");
         return Err(fail(
             if code
@@ -181,12 +199,32 @@ async fn request(
 }
 async fn context(data: &Path, auth: &AuthState) -> AppResult<(Config, Client, Value)> {
     let user = auth.require_managed_user()?;
-    let config: Config = serde_json::from_slice(&bounded(&config_path(data, &user.username))?)?;
-    let http = client(&config)?;
+    let (metadata, http, proxy, token) =
+        crate::user_center::cloud_qc_connection(data, auth).await?;
+    let origin = metadata["origin"]
+        .as_str()
+        .ok_or_else(|| fail("CLOUD_QC_CONFIG_INVALID"))?;
+    let url = reqwest::Url::parse(origin).map_err(|_| fail("CLOUD_QC_CONFIG_INVALID"))?;
+    if url.scheme() != "https" || url.origin().ascii_serialization() != origin {
+        return Err(fail("CLOUD_QC_CONFIG_INVALID"));
+    }
+    let download_hosts: Vec<String> = serde_json::from_value(metadata["download_hosts"].clone())?;
+    if download_hosts.is_empty() {
+        return Err(fail("CLOUD_QC_CONFIG_INVALID"));
+    }
+    let config = Config {
+        schema_version: 1,
+        origin: origin.into(),
+        company_id: "_all".into(),
+        token_file: PathBuf::new(),
+        certificate_pem: String::new(),
+        download_hosts,
+        managed: Some(ManagedConnection { proxy, token }),
+    };
     let identity = request(&http, &config, "/api/review/v1/identity", None).await?;
     if identity["account_id"] != user.username
         || identity["display_name"] != user.display_name
-        || (identity["role"] == "admin") != (user.role.as_deref() == Some("admin"))
+        || (identity["role"] == "admin") != user.is_manager()
     {
         return Err(fail("CLOUD_QC_ACCOUNT_MISMATCH"));
     }
@@ -214,8 +252,20 @@ pub async fn configure(data: &Path, auth: &AuthState, file: &Path) -> AppResult<
     Ok(identity)
 }
 pub async fn call(data: &Path, auth: &AuthState, action: &str, payload: Value) -> AppResult<Value> {
-    let (config, http, identity) = context(data, auth).await?;
+    let (mut config, http, identity) = context(data, auth).await?;
     let admin = identity["role"] == "admin";
+    if matches!(action, "policy" | "set_policy" | "backfill") {
+        let company = payload["company_id"]
+            .as_str()
+            .ok_or_else(|| fail("QC_COMPANY_REQUIRED"))?;
+        if !identity["companies"]
+            .as_array()
+            .is_some_and(|companies| companies.iter().any(|c| c == company))
+        {
+            return Err(fail("REVIEW_TENANT_FORBIDDEN"));
+        }
+        config.company_id = company.into();
+    }
     let path = match action {
         "identity" => "/api/review/v1/identity".into(),
         "tasks" => {
@@ -250,6 +300,10 @@ pub async fn call(data: &Path, auth: &AuthState, action: &str, payload: Value) -
         }
         _ => return Err(fail("CLOUD_QC_ACTION_INVALID")),
     };
+    let mut payload = payload;
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("company_id");
+    }
     let body = match action {
         "tasks" | "policy" | "identity" => None,
         "claim" | "full_review" => Some(payload["body"].clone()),
@@ -267,6 +321,23 @@ fn identifier(value: &Value) -> AppResult<&str> {
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         })
         .ok_or_else(|| fail("CLOUD_QC_ID_INVALID"))
+}
+
+fn select_bound_company(config: &mut Config, identity: &Value, binding: &Value) -> AppResult<()> {
+    if config.managed.is_none() {
+        return Ok(());
+    }
+    let company = binding["company_id"]
+        .as_str()
+        .ok_or_else(|| fail("CLOUD_QC_BINDING_INVALID"))?;
+    if !identity["companies"]
+        .as_array()
+        .is_some_and(|companies| companies.iter().any(|c| c == company))
+    {
+        return Err(fail("REVIEW_TENANT_FORBIDDEN"));
+    }
+    config.company_id = company.into();
+    Ok(())
 }
 
 // Preview bindings prove downloaded bytes, never ownership. Resolve ownership
@@ -333,7 +404,8 @@ pub async fn access(
     let Some(binding) = directory_binding(data, &user.username, directory)? else {
         return Ok(json!({"cloud":false,"canEdit":true,"claimable":false}));
     };
-    let (config, http, identity) = context(data, auth).await?;
+    let (mut config, http, identity) = context(data, auth).await?;
+    select_bound_company(&mut config, &identity, &binding)?;
     if binding["origin"] != config.origin || binding["company_id"] != config.company_id {
         return Err(fail("CLOUD_QC_BINDING_INVALID"));
     }
@@ -471,7 +543,7 @@ pub async fn fetch(
     let _guard = SyncGuard;
     identifier(&json!(job))?;
     identifier(&json!(recording))?;
-    let (config, http, identity) = context(data, auth).await?;
+    let (mut config, http, identity) = context(data, auth).await?;
     // Signed BOS URLs use normal public trust and never receive the review token.
     let downloads = Client::builder()
         .tls_backend_rustls()
@@ -482,6 +554,7 @@ pub async fn fetch(
         .map_err(|_| fail("CLOUD_QC_NETWORK_UNAVAILABLE"))?;
     let route = format!("/api/review/v1/jobs/{job}/recordings/{recording}");
     let mut binding = request(&http, &config, &route, None).await?;
+    select_bound_company(&mut config, &identity, &binding)?;
     let root = data
         .join("cloud-qc")
         .join("data")
@@ -806,13 +879,14 @@ fn published_changed(binding: &Value, payload: &Value) -> AppResult<bool> {
 }
 pub fn pending(data: &Path, auth: &AuthState) -> AppResult<Value> {
     let user = auth.require_managed_user()?;
-    if !config_path(data, &user.username).exists() {
+    let saved = bindings(data, &user.username)?;
+    if saved.is_empty() {
         return Ok(json!({"items":[]}));
     }
     let (_, service) = crate::user_center::source_review_owner(data, auth)?;
     let _lock = crate::source_review_queue::owner_lock(data, &service, &user.username)?;
     let mut items = Vec::new();
-    for holder in bindings(data, &user.username)? {
+    for holder in saved {
         let binding: Value = serde_json::from_slice(&bounded(&holder.join("binding.json"))?)?;
         let directory = Path::new(
             binding["local_directory"]
@@ -833,7 +907,7 @@ pub async fn sync(data: &Path, auth: &AuthState, directory: &Path) -> AppResult<
         return Err(fail("CLOUD_QC_SYNC_BUSY"));
     }
     let _guard = SyncGuard;
-    let (config, http, identity) = context(data, auth).await?;
+    let (mut config, http, identity) = context(data, auth).await?;
     let user = auth.require_managed_user()?;
     let (_, service) = crate::user_center::source_review_owner(data, auth)?;
     let directory = directory.canonicalize()?;
@@ -845,6 +919,7 @@ pub async fn sync(data: &Path, auth: &AuthState, directory: &Path) -> AppResult<
         .find(|p| p.join("binding.json").is_file())
         .ok_or_else(|| fail("CLOUD_QC_BINDING_INVALID"))?;
     let mut binding: Value = serde_json::from_slice(&bounded(&holder.join("binding.json"))?)?;
+    select_bound_company(&mut config, &identity, &binding)?;
     if binding["company_id"] != config.company_id
         || binding["account_id"] != identity["account_id"]
         || binding["origin"] != config.origin

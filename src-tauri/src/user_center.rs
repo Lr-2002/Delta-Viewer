@@ -1291,6 +1291,39 @@ fn endpoint(config: &UserCenterClientConfig, suffix: &str) -> AppResult<Url> {
         .map_err(|_| AppError::Message("用户中心 API 地址无效".into()))
 }
 
+/// Cloud QC uses the already trusted user center; the Manager login token never
+/// goes to the delivery gateway or a downloadable connection file.
+pub(crate) async fn cloud_qc_connection(
+    data_root: &Path,
+    state: &AuthState,
+) -> AppResult<(serde_json::Value, Client, String, String)> {
+    let (user, token) = state.managed_session()?;
+    let config = load_config(data_root)?;
+    let client = client_for(&config)?;
+    let response = client
+        .get(endpoint(&config, "api/v1/cloud-qc/connection")?)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(user_center_request_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(remote_error(response).await));
+    }
+    let metadata: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|_| AppError::Message("CLOUD_QC_RESPONSE_INVALID".into()))?;
+    if state.managed_session()? != (user, token.clone()) {
+        return Err(AppError::Message("CLOUD_QC_ACCOUNT_MISMATCH".into()));
+    }
+    Ok((
+        metadata,
+        client,
+        endpoint(&config, "api/v1/cloud-qc/proxy")?.into(),
+        token,
+    ))
+}
+
 fn read_client_config(path: &Path) -> AppResult<UserCenterClientConfig> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.file_type().is_file() || metadata.len() > MAX_CONFIG_BYTES {
