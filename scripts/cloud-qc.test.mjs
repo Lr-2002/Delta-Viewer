@@ -5,7 +5,7 @@ import {createServer} from 'vite';
 import {chromium} from 'playwright-core';
 
 test('cloud QC distinguishes reviewer claims, admin policy and full review; failed fetch never opens', async () => {
-  const server=await createServer({server:{host:'127.0.0.1',port:0},logLevel:'error',plugins:[{name:'cloud-qc-fixture',configureServer(server){
+  const server=await createServer({server:{host:'127.0.0.1',port:0,strictPort:false},logLevel:'error',plugins:[{name:'cloud-qc-fixture',configureServer(server){
     server.middlewares.use(async(request,response,next)=>{
       if(request.url!='/__cloud-qc')return next();
       response.setHeader('content-type','text/html');
@@ -30,10 +30,19 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
         window.calls.push([command,args]);
         if(command==='cloud_qc_call'){
           if(args.action==='identity')return {account_id:'alice',role:window.cloudRole==='admin'?'admin':'reviewer'};
-          if(args.action==='tasks')return {plans:[structuredClone(window.plan)]};
+          if(args.action==='tasks'){
+            const plan=structuredClone(window.plan);
+            if(window.cloudRole!=='admin')delete plan.audit;
+            return {plans:[plan]};
+          }
           if(args.action==='policy')return structuredClone(window.policy);
           if(args.action==='claim'){window.plan.tasks[0].assignee='alice';window.plan.version++;return {plan:structuredClone(window.plan)};}
           if(args.action==='set_policy'){window.policy={version:2,policy:args.payload.policy};return structuredClone(window.policy);}
+          if(args.action==='backfill'){
+            window.backfillArgs=args.payload;
+            window.plan.audit=[{actor:'qc-admin',action:'historical_backfill',reason:args.payload.reason,occurred_at:'2026-11-09T04:00:00Z'}];
+            return {created:3,skipped:2,policy_version:2,sample_percent:5};
+          }
           if(args.action==='full_review'){window.plan.full_review=true;window.plan.version++;return {plan:structuredClone(window.plan)};}
         }
         if(command==='cloud_qc_fetch'){if(window.failFetch)throw Error('CLOUD_QC_DOWNLOAD_HASH_INVALID');return '/isolated/cloud-qc/recording_001';}
@@ -87,6 +96,20 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     await page.getByLabel('变更原因').fill('管理员更新后续批次');
     await page.getByRole('button',{name:'保存策略'}).click();
     await page.getByRole('status').filter({hasText:'策略已保存'}).waitFor();
+    await page.getByLabel('历史抽检回填原因').fill('隔离测试回填历史订单');
+    page.once('dialog',dialog=>dialog.accept());
+    await page.getByRole('button',{name:'抽检已处理订单（5%）'}).click();
+    await page.getByRole('status').filter({hasText:'历史订单抽检回填完成：新建 3 个计划，跳过 2 个订单'}).waitFor();
+    assert.deepEqual(await page.evaluate(()=>window.backfillArgs),{reason:'隔离测试回填历史订单'});
+    await page.getByText('批次详情',{exact:true}).first().click();
+    await page.getByText('历史订单抽检回填',{exact:true}).waitFor();
+    await page.getByText('qc-admin',{exact:true}).waitFor();
+    await page.getByText('隔离测试回填历史订单',{exact:true}).waitFor();
+    assert.match(await page.locator('.cloud-qc-details dl').innerText(),/12:00/);
+    await page.evaluate(()=>window.show('operator'));
+    await page.getByText('历史订单抽检回填',{exact:true}).waitFor({state:'detached'});
+    await page.evaluate(()=>window.show('admin'));
+    await page.getByRole('button',{name:'转全量审查'}).waitFor();
     page.once('dialog',dialog=>dialog.accept('升级全量复查'));
     await page.getByRole('button',{name:'转全量审查'}).click();
     await page.waitForFunction(()=>window.plan.full_review);
@@ -147,7 +170,7 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
 });
 
 test('App cloud download owns the operation, invalidates delayed login restore and cancels with the native owner ID', async () => {
-  const server=await createServer({logLevel:'error',server:{host:'127.0.0.1',port:0}});await server.listen();
+  const server=await createServer({logLevel:'error',server:{host:'127.0.0.1',port:0,strictPort:false}});await server.listen();
   const executablePath=process.env.PLAYWRIGHT_CHROMIUM??chromium.executablePath();
   let browser;
   try {

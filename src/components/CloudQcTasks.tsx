@@ -17,6 +17,7 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
   const [policy, setPolicy] = useState<{ version: number; policy: CloudPolicy } | null>(null);
   const [draft, setDraft] = useState<CloudPolicy | null>(null);
   const [reason, setReason] = useState("");
+  const [backfillReason, setBackfillReason] = useState("");
   const [directories, setDirectories] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState("");
   const [operation, setOperation] = useState<number | null>(null);
@@ -74,6 +75,8 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
     catch (reason) { if (alive.current) setError(String(reason)); }
     finally { locked.current = false; if (alive.current) setBusy(""); }
   }
+  const backfillReady = Boolean(policy?.policy.enabled && policy.policy.sample_percent === 5
+    && draft && JSON.stringify(draft) === JSON.stringify(policy.policy));
   return <div className="cloud-qc-tasks" aria-label="云端任务">
     <div className="cloud-qc-toolbar">
       <div className="cloud-qc-toolbar-copy"><Cloud size={17} /><span><strong>云端审核任务</strong><small>独立下载副本 · {admin ? "管理员审查" : "批次抽检"}</small></span></div>
@@ -101,8 +104,26 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
       <label>变更原因 <input value={reason} onChange={event => setReason(event.target.value)} maxLength={500} required /></label>
       <button className="button button-primary" disabled={Boolean(busy) || !reason.trim()}>保存策略</button>
     </form>}
+    {admin && policy && <form className="cloud-qc-policy cloud-qc-backfill" onSubmit={event => { event.preventDefault();
+      if (!backfillReason.trim() || !backfillReady || busy) return;
+      if (!window.confirm("将按当前 5% 策略为本公司尚无抽检计划、且全部完成标注并具备审核材料的历史订单建立抽检任务。计划会冻结样本；不完整订单和已有计划会跳过。继续？")) return;
+      void run("backfill", async () => {
+        const result = await cloudQcCall<{ created: number; skipped: number; policy_version: number; sample_percent: number }>("backfill", { reason: backfillReason.trim() });
+        setBackfillReason("");
+        setNotice(`历史订单抽检回填完成：新建 ${result.created} 个计划，跳过 ${result.skipped} 个订单。`);
+      });
+    }}>
+      <strong>已处理订单抽检</strong>
+      <label>回填原因 <input aria-label="历史抽检回填原因" value={backfillReason} onChange={event => setBackfillReason(event.target.value)} maxLength={500} required /></label>
+      <small>仅对未创建抽检计划且标注与审核材料完整的历史订单抽样；既有人工结论和订单策略快照保留。</small>
+      <button className="button button-primary" disabled={Boolean(busy) || !backfillReason.trim() || !backfillReady}>
+        {backfillReady ? "抽检已处理订单（5%）" : "先保存启用的 5% 策略"}
+      </button>
+    </form>}
     {!plans.length && !error && !refreshError && <p className="task-empty">{fetching ? "正在读取云端批次…" : "暂无已完成处理和标注的云端 QC 批次。"}</p>}
-    {[...plans].sort((a, b) => (Date.parse(b.created_at ?? "") || 0) - (Date.parse(a.created_at ?? "") || 0)).map(plan => <section className="cloud-qc-plan" key={plan.id} aria-label={`${cloudBatchName(plan)} · ${cloudBatchNumber(plan)}`}>
+    {[...plans].sort((a, b) => (Date.parse(b.created_at ?? "") || 0) - (Date.parse(a.created_at ?? "") || 0)).map(plan => {
+      const backfill = plan.audit?.find(item => item.action === "historical_backfill");
+      return <section className="cloud-qc-plan" key={plan.id} aria-label={`${cloudBatchName(plan)} · ${cloudBatchNumber(plan)}`}>
       <header>
         <div className="cloud-qc-plan-title"><Folder size={17} /><div><h3>{cloudBatchName(plan)}</h3><small>{!plan.batch_path?.trim() ? "抽检目录 · " : ""}创建 {dateLabel(plan.created_at)} · #{cloudBatchNumber(plan)}</small></div></div>
         <span className={`cloud-qc-badge cloud-qc-state-${plan.state}`}>{planStates[plan.state] ?? plan.state}</span>
@@ -111,7 +132,7 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
           void run(plan.id, async () => { await cloudQcCall("full_review", { job_id: plan.job_id, plan_id: plan.id, body: { base_version: plan.version, reason: cause.trim() } }); });
         }}>转全量审查</button>}
       </header>
-      <div className="cloud-qc-plan-summary"><span>抽检 <b>{plan.sample_count}</b> / {plan.population_count}</span><span>通过 <b>{plan.sample_approved}</b></span><span>不通过 <b>{plan.sample_rejected}</b></span><details className="cloud-qc-details"><summary>批次详情<ChevronDown size={13} /></summary><dl><dt>名称依据</dt><dd>{plan.batch_path?.trim() ? "服务端批次目录" : "已抽中数据的共同父目录，不代表整批全部目录"}</dd><dt>完整订单号</dt><dd>{plan.external_order_id}</dd><dt>上传版本</dt><dd>{plan.source_revision}</dd><dt>任务编号</dt><dd>{plan.job_id}</dd><dt>创建时间（北京时间）</dt><dd>{plan.created_at && Number.isFinite(Date.parse(plan.created_at)) ? new Date(plan.created_at).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai",hour12:false}) : "未提供"}</dd></dl></details></div>
+      <div className="cloud-qc-plan-summary"><span>抽检 <b>{plan.sample_count}</b> / {plan.population_count}</span><span>通过 <b>{plan.sample_approved}</b></span><span>不通过 <b>{plan.sample_rejected}</b></span><details className="cloud-qc-details"><summary>批次详情<ChevronDown size={13} /></summary><dl><dt>计划来源</dt><dd>{backfill ? "历史订单抽检回填" : "订单处理策略"}</dd>{backfill && <><dt>回填账号</dt><dd>{backfill.actor}</dd><dt>回填原因</dt><dd>{backfill.reason}</dd><dt>回填时间（北京时间）</dt><dd>{dateLabel(backfill.occurred_at)}</dd></>}<dt>名称依据</dt><dd>{plan.batch_path?.trim() ? "服务端批次目录" : "已抽中数据的共同父目录，不代表整批全部目录"}</dd><dt>完整订单号</dt><dd>{plan.external_order_id}</dd><dt>上传版本</dt><dd>{plan.source_revision}</dd><dt>任务编号</dt><dd>{plan.job_id}</dd><dt>创建时间（北京时间）</dt><dd>{plan.created_at && Number.isFinite(Date.parse(plan.created_at)) ? new Date(plan.created_at).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai",hour12:false}) : "未提供"}</dd></dl></details></div>
       <div className="cloud-qc-scroll">{plan.tasks.map(task => {
         const directory = directories[task.recording_id];
         const mine = task.assignee === currentUser.username;
@@ -125,6 +146,7 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
           </div>
         </div>;
       })}</div>
-    </section>)}</div>
+    </section>;
+    })}</div>
   </div>;
 }
