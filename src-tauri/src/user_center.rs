@@ -1298,30 +1298,39 @@ pub(crate) async fn cloud_qc_connection(
     state: &AuthState,
 ) -> AppResult<(serde_json::Value, Client, String, String)> {
     let (user, token) = state.managed_session()?;
-    let config = load_config(data_root)?;
-    let client = client_for(&config)?;
+    let config = load_config(data_root)
+        .map_err(|error| AppError::Message(format!("CLOUD_QC_MANAGER_CONFIG_FAILED: {error}")))?;
+    let client = client_for(&config)
+        .map_err(|error| AppError::Message(format!("CLOUD_QC_MANAGER_TLS_FAILED: {error}")))?;
+    let connection_endpoint = endpoint(&config, "api/v1/cloud-qc/connection")
+        .map_err(|error| AppError::Message(format!("CLOUD_QC_MANAGER_ENDPOINT_FAILED: {error}")))?;
     let response = client
-        .get(endpoint(&config, "api/v1/cloud-qc/connection")?)
+        .get(connection_endpoint)
         .bearer_auth(&token)
         .send()
         .await
-        .map_err(user_center_request_error)?;
+        .map_err(|error| {
+            AppError::Message(format!(
+                "CLOUD_QC_USER_CENTER_UNREACHABLE: {}",
+                user_center_request_error(error)
+            ))
+        })?;
     if !response.status().is_success() {
-        return Err(AppError::Message(remote_error(response).await));
+        return Err(AppError::Message(format!(
+            "CLOUD_QC_USER_CENTER_REJECTED: {}",
+            remote_error(response).await
+        )));
     }
     let metadata: serde_json::Value = response
         .json()
         .await
-        .map_err(|_| AppError::Message("CLOUD_QC_RESPONSE_INVALID".into()))?;
+        .map_err(|_| AppError::Message("CLOUD_QC_USER_CENTER_RESPONSE_INVALID".into()))?;
     if state.managed_session()? != (user, token.clone()) {
         return Err(AppError::Message("CLOUD_QC_ACCOUNT_MISMATCH".into()));
     }
-    Ok((
-        metadata,
-        client,
-        endpoint(&config, "api/v1/cloud-qc/proxy")?.into(),
-        token,
-    ))
+    let proxy = endpoint(&config, "api/v1/cloud-qc/proxy")
+        .map_err(|error| AppError::Message(format!("CLOUD_QC_MANAGER_ENDPOINT_FAILED: {error}")))?;
+    Ok((metadata, client, proxy.into(), token))
 }
 
 fn read_client_config(path: &Path) -> AppResult<UserCenterClientConfig> {

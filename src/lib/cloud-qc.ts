@@ -42,6 +42,23 @@ export interface CloudAccess { cloud: boolean; canEdit: boolean; claimable: bool
 export const cloudQcAccess = (directory: string, claim = false) => cloudQcInvoke<CloudAccess>("cloud_qc_access", { directory, claim });
 export function cloudQcError(error: unknown): string {
   const raw = String(error);
+  if (raw.includes("CLOUD_QC_MANAGER_CONFIG_FAILED")) return `Manager 本机读取用户中心配置失败，尚未请求用户中心或交付端：${raw}`;
+  if (raw.includes("CLOUD_QC_MANAGER_TLS_FAILED")) return `Manager 本机建立安全连接失败，尚未请求交付端：${raw}`;
+  if (raw.includes("CLOUD_QC_MANAGER_ENDPOINT_FAILED")) return `Manager 本机解析用户中心地址失败：${raw}`;
+  if (raw.includes("CLOUD_QC_USER_CENTER_UNREACHABLE")) return `Manager 无法连接用户中心；请求尚未到达交付端：${raw}`;
+  if (raw.includes("CLOUD_QC_USER_CENTER_REJECTED: AUTH_REQUIRED")) return "用户中心登录会话已失效，请重新登录后再刷新云端 QC。";
+  if (raw.includes("CLOUD_QC_USER_CENTER_REJECTED: CLOUD_QC_NOT_CONFIGURED")) return "用户中心服务尚未启用云端 QC 桥接，交付端没有收到请求。";
+  if (raw.includes("CLOUD_QC_USER_CENTER_REJECTED")) return `用户中心的云端 QC 连接接口拒绝了请求：${raw}`;
+  if (raw.includes("CLOUD_QC_USER_CENTER_RESPONSE_INVALID")) return "用户中心的云端 QC 连接响应格式无效，请检查用户中心服务版本。";
+  if (raw.includes("CLOUD_QC_USER_CENTER_PROXY_UNREACHABLE")) return `Manager 无法连接用户中心的 QC 代理，请求尚未到达交付端：${raw}`;
+  if (raw.includes("CLOUD_QC_PROXY_RESPONSE_INTERRUPTED")) return `用户中心 QC 代理响应中断：${raw}`;
+  if (raw.includes("CLOUD_QC_PROXY_RESPONSE_INVALID")) return `用户中心 QC 代理返回了无效响应：${raw}`;
+  if (/CLOUD_QC_PROXY_REJECTED:(AUTH_REQUIRED|UNAUTHENTICATED|UNAUTHORIZED)/.test(raw)) return "用户中心登录会话已失效，请重新登录后再刷新云端 QC。";
+  if (raw.includes("CLOUD_QC_PROXY_REJECTED:CLOUD_QC_BRIDGE_BUSY")) return "用户中心 QC 代理正忙，请稍后重试。";
+  if (raw.includes("CLOUD_QC_PROXY_REJECTED:CLOUD_QC_BRIDGE_CONFIGURATION_INVALID")) return "用户中心 QC 代理配置无效，交付端尚未收到请求，请联系管理员检查桥接配置。";
+  if (raw.includes("CLOUD_QC_PROXY_REJECTED:CLOUD_QC_NETWORK_UNAVAILABLE")) return `用户中心代理已接收请求，但连接交付 QC 失败：${raw}`;
+  if (raw.includes("CLOUD_QC_PROXY_REJECTED:CLOUD_QC_NOT_CONFIGURED")) return `用户中心没有配置交付 QC 桥接：${raw}`;
+  if (raw.includes("CLOUD_QC_PROXY_REJECTED")) return `用户中心 QC 代理拒绝了交付请求：${raw}`;
   if (/CLOUD_QC_NOT_CONFIGURED|NOT_FOUND/.test(raw)) return "管理员尚未开通云端任务连接，请联系管理员；无需单独绑定审核账号。";
   if (raw.includes("QC_TASK_NOT_CLAIMED")) return "任务尚未领取，云端未接收；请领取后补传，本机结论保持不变。";
   if (raw.includes("SESSION_IDENTITY_CHANGED")) return "云端校验会话信息不一致，尚未接收；本机原提交保留，请联系管理员核对。";

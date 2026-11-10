@@ -220,6 +220,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.6.7": "云端 QC 刷新错误标明 Manager、用户中心或 QC 代理阶段，帮助定位断连来源；保留现有会话与审核记录。",
   "1.6.6": "云端 QC 沿用当前 Manager 登录，正常账号无需绑定即可领取；修复 Windows 依赖下载遇上游 504 时中断发布，保留原文件校验。",
   "1.6.5": "云端 QC 沿用现有 Manager 登录，正常账号无需单独配置即可领取各公司的云端预抽样任务。",
   "1.6.4": "云端 QC 支持管理员将符合条件的历史订单按 5% 策略回填到 Manager，并保留回填审计和既有人工审核证据。",

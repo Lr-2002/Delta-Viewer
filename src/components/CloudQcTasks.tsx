@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Cloud, Download, Folder, LoaderCircle, RefreshCw, UserRound } from "lucide-react";
-import { cloudBatchName, cloudBatchNumber, cloudQcCall, cancelCloudQc, fetchCloudQc, syncCloudQc, type CloudPlan, type CloudPolicy, type CloudOperationHandle } from "../lib/cloud-qc";
+import { cloudBatchName, cloudBatchNumber, cloudQcCall, cloudQcError, cancelCloudQc, fetchCloudQc, syncCloudQc, type CloudPlan, type CloudPolicy, type CloudOperationHandle } from "../lib/cloud-qc";
 import type { UserIdentity } from "../types";
 
 const planStates: Record<string, string> = { sampling: "抽检中", sample_passed: "抽检通过", blocked: "审核不通过", full_review: "全量审查中", full_review_complete: "全量审查通过", invalidated: "标注已变化 · 暂停" };
@@ -47,7 +47,7 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
         const value = await cloudQcCall<{ version: number; policy: CloudPolicy }>("policy", { company_id: selected });
         if (alive.current) { setPolicy(value); setDraft(previous => previous ?? value.policy); }
       }
-    } catch (reason) { if (alive.current) setRefreshError(String(reason)); }
+    } catch (reason) { if (alive.current) setRefreshError(cloudQcError(reason)); }
     finally { refreshing.current = false; if (alive.current) setFetching(false); }
   }
   useEffect(() => {

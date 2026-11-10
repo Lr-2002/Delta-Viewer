@@ -22,13 +22,14 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     browser=await chromium.launch({executablePath,headless:true});
     const page=await browser.newPage();
     await page.addInitScript(()=>{
-      window.opened=[];window.calls=[];window.failFetch=false;
+      window.opened=[];window.calls=[];window.failFetch=false;window.cloudError=null;
       window.plan={id:'a'.repeat(32),job_id:'b'.repeat(32),company_id:'company-a',external_order_id:'upload_'+ 'e'.repeat(32),source_revision:'f'.repeat(64),batch_path:'',created_at:'2026-10-27T08:44:17Z',version:1,state:'sampling',sample_count:1,population_count:20,sample_approved:0,sample_rejected:0,full_review:false,tasks:[{recording_id:'c'.repeat(32),path:'采集批次/recording_001',kind:'sample',assignee:null,qc:{decision:'pending',reason:null},claim_version:0}]};
       window.policy={version:1,policy:{enabled:true,sample_percent:5,batch_scope:'sealed_order',rounding:'ceil_min_one',release_mode:'sampled_only',failure_action:'hold'}};
       window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
         if (command === "review_identity_path") return args.path;
         window.calls.push([command,args]);
         if(command==='cloud_qc_call'){
+          if(window.cloudError)throw Error(window.cloudError);
           if(args.action==='identity')return {account_id:'alice',role:window.cloudRole==='admin'?'admin':'reviewer',companies:['fixture-company']};
           if(args.action==='tasks'){
             const plan=structuredClone(window.plan);
@@ -159,6 +160,15 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     await page.evaluate(()=>window.failSync=false);
     await page.evaluate(()=>window.show('admin'));
     await page.getByText('公司抽样策略',{exact:true}).waitFor();
+    await page.evaluate(()=>window.cloudError='CLOUD_QC_MANAGER_CONFIG_FAILED: I/O 错误: 系统找不到指定的路径');
+    await page.getByRole('button',{name:'刷新云端任务'}).click();
+    await page.getByRole('alert').filter({hasText:'尚未请求用户中心或交付端'}).waitFor();
+    await page.evaluate(()=>window.cloudError='CLOUD_QC_PROXY_REJECTED:CLOUD_QC_NETWORK_UNAVAILABLE');
+    await page.getByRole('button',{name:'刷新云端任务'}).click();
+    await page.getByRole('alert').filter({hasText:'连接交付 QC 失败'}).waitFor();
+    await page.evaluate(()=>window.cloudError=null);
+    await page.getByRole('button',{name:'刷新云端任务'}).click();
+    await page.getByText('公司抽样策略',{exact:true}).waitFor();
     mkdirSync('artifacts/cloud-qc',{recursive:true});
     for(const width of [1440,960,390]){
       await page.setViewportSize({width,height:900});
@@ -166,7 +176,7 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
       await page.getByRole('button',{name:'下载预览',exact:true}).scrollIntoViewIfNeeded();
       const button=await page.getByRole('button',{name:'下载预览',exact:true}).boundingBox();
       assert.ok(button.x>=0 && button.x+button.width<=width);
-      await page.screenshot({path:`artifacts/cloud-qc/rc3-cloud-layout-${width}.png`});
+      await page.screenshot({path:`artifacts/cloud-qc/manager-cloud-qc-stage-${width}.png`});
     }
   }finally{await browser?.close();await server.close();}
 });
