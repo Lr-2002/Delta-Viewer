@@ -161,39 +161,53 @@ async fn request(
         })
         .bearer_auth(token.trim())
     };
-    let response = request
-        .send()
-        .await
-        .map_err(|_| fail("CLOUD_QC_NETWORK_UNAVAILABLE"))?;
+    let response = request.send().await.map_err(|_| {
+        fail(if config.managed.is_some() {
+            "CLOUD_QC_USER_CENTER_PROXY_UNREACHABLE"
+        } else {
+            "CLOUD_QC_NETWORK_UNAVAILABLE"
+        })
+    })?;
     let status = response.status();
     let mut response = response;
     let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| fail("CLOUD_QC_NETWORK_UNAVAILABLE"))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|_| {
+        fail(if config.managed.is_some() {
+            "CLOUD_QC_PROXY_RESPONSE_INTERRUPTED"
+        } else {
+            "CLOUD_QC_NETWORK_UNAVAILABLE"
+        })
+    })? {
         if bytes.len() + chunk.len() > 4 * 1024 * 1024 {
             return Err(fail("CLOUD_QC_RESPONSE_TOO_LARGE"));
         }
         bytes.extend_from_slice(&chunk);
     }
-    let value: Value = serde_json::from_slice(&bytes)?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
+        fail(if config.managed.is_some() {
+            "CLOUD_QC_PROXY_RESPONSE_INVALID"
+        } else {
+            "CLOUD_QC_RESPONSE_INVALID"
+        })
+    })?;
     if !status.is_success() {
         let code = value["error"]
             .as_str()
             .or_else(|| value["error"]["code"].as_str())
             .unwrap_or("CLOUD_QC_REQUEST_FAILED");
-        return Err(fail(
-            if code
-                .bytes()
-                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-            {
-                code
-            } else {
-                "CLOUD_QC_REQUEST_FAILED"
-            },
-        ));
+        let code = if code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        {
+            code
+        } else {
+            "CLOUD_QC_REQUEST_FAILED"
+        };
+        return Err(if config.managed.is_some() {
+            fail(&format!("CLOUD_QC_PROXY_REJECTED:{code}"))
+        } else {
+            fail(code)
+        });
     }
     Ok(value)
 }
