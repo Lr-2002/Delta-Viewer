@@ -45,6 +45,7 @@ test('admin switches modes in one session, account versions stay truthful, singl
   }};
  },{version});
  await page.goto(server.resolvedUrls.local[0]);
+ await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'数据工作区',exact:true}).click();
  await page.getByRole('button',{name:'管理模式',exact:true}).click();
  await page.getByRole('button',{name:'测试模式',exact:true}).waitFor();
  assert.equal(await page.locator('.app-shell').isVisible(),false);
