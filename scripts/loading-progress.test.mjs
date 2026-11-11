@@ -37,5 +37,8 @@ test('slow source reads explain the wait, retain cancel and clear on progress', 
  await page.clock.runFor(9000);await page.getByRole('alert').waitFor();
  await page.evaluate(()=>window.change({operationId:2,task:'export',phase:'正在导出'}));
  await page.clock.runFor(9000);assert.equal(await page.getByRole('alert').count(),0);
+ await page.evaluate(()=>window.change({operationId:3,task:'playback-cache',phase:'缓存当前录制的视频'}));
+ await page.clock.runFor(9000);await page.getByRole('alert').getByText(/NAS 磁盘负载/).waitFor();
+ await page.evaluate(()=>window.change({bytesDone:1048576,totalBytes:8388608}));await page.getByRole('alert').waitFor({state:'detached'});
  assert.deepEqual(errors,[]);
 });

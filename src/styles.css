@@ -1169,6 +1169,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .frame-camera-name { min-width: 0; overflow-wrap: anywhere; }
 .frame-resolution { color: #b5b5b5; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .video-playback-status { margin-left: auto; color: #d8d8d8; }
+.local-playback-button { flex-shrink: 0; min-height: 30px; padding: 5px 9px; font-size: 12px; gap: 5px; }
+@media (max-width: 700px) { .compact-heading:has(.local-playback-button) { flex-wrap: wrap; } }
 .frame-loading, .frame-error { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; align-content: center; gap: 6px; color: #b5b5b5; font-size: 12.32px; }
 .frame-error { color: #eeeeee; }
 

@@ -741,7 +741,7 @@ export const FramePanel = memo(function FramePanel({
         {(nativeVideo?.previewError || adaptiveFailed) && <span className="preview-warning" title={nativeVideo?.previewError ?? "预览播放失败，已回退原片"}>{nativeVideo?.previewError ? "预览校验失败" : "预览回退原片"}</span>}
         {nativeVideo ? (
           <span className="video-playback-status">
-            {nativeVideoFailed || videoStatus === "fallback" ? "逐帧回退" : playbackHeld && nativePlaybackEnabled && videoStatus !== "buffering" ? "等待其他相机" : videoStatus === "playing" ? "原生播放" : videoStatus === "buffering" ? "缓冲中" : "原生就绪"}
+            {nativeVideoFailed || videoStatus === "fallback" ? "逐帧回退" : playbackHeld && nativePlaybackEnabled && videoStatus !== "buffering" ? "等待其他相机" : videoStatus === "buffering" ? "缓冲中" : nativeVideo.localPlayback ? (videoStatus === "playing" ? "本地播放" : "本地就绪") : videoStatus === "playing" ? "原生播放" : "原生就绪"}
           </span>
         ) : null}
       </figcaption>

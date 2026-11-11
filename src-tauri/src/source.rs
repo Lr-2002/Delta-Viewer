@@ -1015,6 +1015,7 @@ pub(crate) fn video_source(
             (None, None)
         };
     Ok(VideoSource {
+        local_playback: false,
         capture_timeline,
         timing_error,
         adaptive_paths: None,

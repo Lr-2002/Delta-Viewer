@@ -1546,6 +1546,11 @@ export async function videoSource(root: string, stream: string): Promise<VideoSo
   }
 }
 
+export async function prepareLocalPlayback(root: string, streams: string[], operationId: number): Promise<{files: number; bytes: number}> {
+  if (!isTauriRuntime()) throw new Error("请在桌面客户端准备本地播放。");
+  return invoke("prepare_local_playback", {root, streams, operationId});
+}
+
 export async function getPreviewLocation(): Promise<{ sourceRoot: string; previewRoot: string }> {
   if (!isTauriRuntime()) return { sourceRoot: "", previewRoot: "" };
   return invoke("get_preview_location");

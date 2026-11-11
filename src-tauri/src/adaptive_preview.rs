@@ -438,6 +438,7 @@ mod automatic_tests {
         )
         .unwrap();
         let source = VideoSource {
+            local_playback: false,
             capture_timeline: None,
             timing_error: None,
             adaptive_paths: None,

@@ -11,7 +11,7 @@ export function ProgressStrip({ progress, onCancel }: ProgressStripProps) {
   const [waitingSeconds, setWaitingSeconds] = useState(0);
   useEffect(() => {
     setWaitingSeconds(0);
-    if (progress.task !== "scan" && progress.task !== "validate") return;
+    if (progress.task !== "scan" && progress.task !== "validate" && progress.task !== "playback-cache") return;
     const started = Date.now();
     const timer = window.setInterval(() => setWaitingSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
     return () => clearInterval(timer);

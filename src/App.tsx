@@ -88,6 +88,7 @@ import {
   listAssignedTaskDefinitions,
   loadEpisodeAnnotation,
   loadEpisode,
+  prepareLocalPlayback,
   logoutLocalAccount,
   openCaptureWorkbench,
   recordOperationError,
@@ -216,6 +217,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.9.2": "共享目录新增本地流畅播放：主动缓存并校验当前录制的视频，支持取消；原始数据、审核写回位置和多路同步保持。",
   "1.9.1": "修复 NAS 视频尚有缓冲时被反复主动暂停的卡顿；启动和断流恢复仍等待足够缓冲，多路相机继续同步播放。",
   "1.9.0": "修复 NAS 多路视频缓冲恢复时的时间回跳和重复定位；保留按相机分段播放的星炬外发审核及交付平台有效率统计。",
   "1.8.9": "修复 NAS 七路回放与星炬外发审核；发布构建会检测并选择可达的 Ubuntu 镜像，继续完成正式三平台发布。",
@@ -643,6 +645,23 @@ function App() {
     if (!operationScopeRef.current.finish(operation)) return;
     setBusy(false);
     setProgress(null);
+  }
+
+  async function enableLocalPlayback() {
+    if (!data || busy || reviewHasUnsaved) return;
+    const root = data.summary.root;
+    const owner = beginOperation();
+    if (!owner) return;
+    setPlaying(false);
+    resetOperationFeedback(owner);
+    try {
+      const result = await prepareLocalPlayback(root, availableStreams.map(stream => stream.name), owner.id);
+      ensureOperationActive(owner);
+      window.dispatchEvent(new Event("delta-preview-location"));
+      setNotice(`已就绪：${result.files} 个视频（${formatBytes(result.bytes)}）。本地播放，审核结果仍写回原目录。`);
+    } catch (cause) {
+      if (isCurrentOperation(owner)) setError(toMessage(cause));
+    } finally { finishOperation(owner); }
   }
 
   async function downloadAvailableUpdate() {
@@ -2384,6 +2403,11 @@ function App() {
                         <h2>多路回放</h2>
                       </div>
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
+                      {isTauriRuntime() && scan?.volume.driveType === "remote" && <button type="button" className="button local-playback-button"
+                        disabled={busy || reviewHasUnsaved} onClick={() => void enableLocalPlayback()}
+                        title="将当前录制的视频临时缓存到本机，缓解 NAS 波动；审核结果仍写回原目录。退出后清理缓存。">
+                        <HardDrive size={15} />本地流畅播放
+                      </button>}
                       <PreviewSettings />
                     </div>
                     <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>

@@ -25,6 +25,7 @@ mod mp4_clock;
 mod mp4_preview_cache;
 mod operation_history;
 mod outbound_review;
+mod playback_cache;
 mod recording_timing;
 mod review_catalog;
 mod review_outbox;
@@ -2686,16 +2687,24 @@ async fn get_video_source(
     app: AppHandle,
     auth: State<'_, AuthState>,
     media_stream_server: State<'_, Option<MediaStreamServer>>,
+    playback_cache: State<'_, playback_cache::PlaybackCache>,
     root: String,
     stream: String,
 ) -> Result<VideoSource, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
     let media_stream_server = media_stream_server.inner().clone();
+    let playback_cache = playback_cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut source = source::video_source(Path::new(&root), &stream, Some(&app))
             .map_err(|error| error.to_string())?;
-        if let Some(server) = media_stream_server.as_ref() {
+        source.local_playback = playback_cache
+            .resolve(Path::new(&root), &mut source.paths)
+            .map_err(|error| error.to_string())?;
+        if let Some(server) = media_stream_server
+            .as_ref()
+            .filter(|_| !source.local_playback)
+        {
             match adaptive_preview::register_preview(
                 &data_root,
                 Path::new(&root),
@@ -2727,6 +2736,76 @@ async fn get_video_source(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn prepare_local_playback(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    playback_cache: State<'_, playback_cache::PlaybackCache>,
+    root: String,
+    streams: Vec<String>,
+    operation_id: u64,
+) -> Result<playback_cache::CacheResult, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    if streams.is_empty() || streams.len() > 7 {
+        return Err("请选择当前录制中可用的相机".into());
+    }
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let cache = playback_cache.inner().clone();
+    let data_root = app_data_root(&app)?;
+    emit_task_start(
+        &app,
+        operation_id,
+        "playback-cache",
+        "准备本地流畅播放",
+        &root,
+    );
+    tauri::async_runtime::spawn_blocking(
+        move || -> error::AppResult<playback_cache::CacheResult> {
+            let _task = task;
+            let _progress = source::enter_operation_progress(operation_id);
+            let started = std::time::Instant::now();
+            let mut paths = Vec::new();
+            for stream in streams {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(error::AppError::Cancelled);
+                }
+                paths.extend(
+                    source::video_source(Path::new(&root), &stream, Some(&app))?
+                        .paths
+                        .into_iter()
+                        .map(PathBuf::from),
+                );
+            }
+            cache.prepare(
+                &data_root,
+                Path::new(&root),
+                paths,
+                &cancelled,
+                |phase, done, total, path| {
+                    source::emit_progress(
+                        Some(&app),
+                        ProgressPayload {
+                            task: "playback-cache".into(),
+                            phase: phase.into(),
+                            current: done,
+                            total,
+                            bytes_done: done,
+                            total_bytes: total,
+                            current_path: path.display().to_string(),
+                            elapsed_ms: started.elapsed().as_millis(),
+                        },
+                    );
+                },
+            )
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2849,6 +2928,7 @@ pub fn run() {
         .manage(SourceIndexCache::default())
         .manage(Mp4PreviewCache::default())
         .manage(media_stream_server)
+        .manage(playback_cache::PlaybackCache::default())
         .manage(review_catalog::ReviewCatalogCache::default())
         .invoke_handler(tauri::generate_handler![
             d1_availability,
@@ -2959,6 +3039,7 @@ pub fn run() {
             export_validation_report,
             cancel_task,
             get_video_source,
+            prepare_local_playback,
             get_jpeg_stream_source,
             read_frame,
             diagnose_video_failure,

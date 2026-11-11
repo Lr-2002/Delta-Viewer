@@ -174,6 +174,7 @@ try {
       loadEpisode: 0,
       validateEpisode: 0,
       cancelOperationIds: [],
+      localPlayback: [],
     };
     const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JrJ4AAAAASUVORK5CYII=";
     const streams = ["cam0", "cam1", "cam2", "t265_left", "t265_right", ...(location.search === '?task-center' ? ['extension_right', 't265_pose', 'extension_left'] : [])].map((name) => ({
@@ -222,7 +223,7 @@ try {
       volume: {
         root: "/source",
         filesystem: "exFAT",
-        driveType: "removable",
+        driveType: taskCenterMode ? "remote" : "removable",
         totalBytes: 10_000,
         availableBytes: 5_000,
       },
@@ -430,6 +431,9 @@ try {
             return { report, summary: indexedEpisode };
           case "load_episode_annotation":
             return null;
+          case "prepare_local_playback":
+            calls.localPlayback.push(args);
+            return beginTask("playback-cache", args.operationId);
           case "read_frame":
             return { mimeType: "image/png", data: png };
           case "cancel_task": {
@@ -614,6 +618,30 @@ try {
   assert.equal(await page.locator('.camera-placeholder').count(), 0);
   assert.equal(await page.locator('.camera-grid .frame-panel').count(), 7);
   assert.equal(await page.locator('.camera-grid').getByText('t265_pose', {exact:true}).count(), 0);
+  const localPlayback = page.getByRole('button', {name:'本地流畅播放',exact:true});
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.localPlayback.length),0,'source loading never starts a local copy automatically');
+  await localPlayback.click();
+  await page.waitForFunction(() => window.__concurrencyMock.activeTask()?.kind === 'playback-cache');
+  const cacheTask = await page.evaluate(() => window.__concurrencyMock.activeTask());
+  const cacheRequest = await page.evaluate(() => window.__concurrencyMock.calls.localPlayback.at(-1));
+  assert.equal(cacheRequest.root,'/source/batch/episode-1');
+  assert.deepEqual(cacheRequest.streams,['cam0','cam1','cam2','t265_left','t265_right','extension_right','extension_left']);
+  assert.equal(await localPlayback.isDisabled(),true);
+  await page.evaluate(operationId => window.__concurrencyMock.emitProgress({operationId,task:'playback-cache',phase:'缓存当前录制的视频',current:1,total:10,bytesDone:1,totalBytes:10,currentPath:'/source/batch/episode-1/cam0.mp4',elapsedMs:10}),cacheTask.operationId);
+  await page.locator('.progress-strip').getByText('缓存当前录制的视频',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'取消任务',exact:true}).click();
+  await page.waitForFunction(() => !window.__concurrencyMock.activeTask());
+  await page.waitForFunction(() => document.querySelector('.local-playback-button')?.disabled === false);
+  await localPlayback.click();await page.waitForFunction(() => window.__concurrencyMock.activeTask()?.kind === 'playback-cache');
+  await page.evaluate(() => window.__concurrencyMock.rejectActiveTask('本机视频校验失败，缓存未启用'));
+  await page.getByText('本机视频校验失败，缓存未启用',{exact:false}).waitFor();
+  await page.waitForFunction(() => document.querySelector('.local-playback-button')?.disabled === false);
+  await localPlayback.click();await page.waitForFunction(() => window.__concurrencyMock.activeTask()?.kind === 'playback-cache');
+  await page.evaluate(() => window.__concurrencyMock.resolveActiveTask({files:7,bytes:7}));
+  await page.getByText(/本地播放，审核结果仍写回原目录/).waitFor();
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.lastEpisodeRoot),'/source/batch/episode-1');
+  assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.importEpisode),0);
+  console.log('browser-smoke: explicit local playback preserves review root, progress ownership, cancel and failure recovery');
   await page.waitForFunction(() => document.querySelector('.frame-render-progress-count')?.textContent.includes('7/7'));
   for (const [index, name] of [[5, 'extension_left'], [6, 'extension_right']]) {
     assert.equal(await page.locator(`.camera-${index} .frame-camera-name`).textContent(), name);
