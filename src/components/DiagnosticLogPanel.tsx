@@ -58,7 +58,7 @@ export function DiagnosticLogPanel({busy,beginOperation,onError}:Props){
       <button className="button button-secondary" disabled={busy||working!==null||!enabled} onClick={()=>void pick()}>
         {working==="preview"?<LoaderCircle size={17} className="spin"/>:<FileSearch size={17}/>}预览包内容
       </button>
-      {preview&&<button className="button button-primary" disabled={busy||working!==null||!enabled} onClick={()=>void upload()}>{working==="upload"?<LoaderCircle size={17} className="spin"/>:<Upload size={17}/>}上传诊断包</button>}
+      <button className="button button-primary" disabled={busy||working!==null||!enabled||!preview} onClick={()=>void upload()}>{working==="upload"?<LoaderCircle size={17} className="spin"/>:<Upload size={17}/>}上传诊断包</button>
     </div>
     {source&&<p className="manager-upload-state" title={source}>来源：{source.split(/[\\/]/).filter(Boolean).pop()}</p>}
     {preview&&<div className="manager-log-preview" aria-label="日志预览">
