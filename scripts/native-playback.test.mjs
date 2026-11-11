@@ -98,6 +98,12 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
   await server.listen();
   browser = await chromium.launch({ executablePath: browserPath, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  if (!sampleRoot) {
+    // Exercise the commit/passive-effect gap on constrained WebViews: an old
+    // media callback must not replace an explicit seek during a slow render.
+    const timing = await page.context().newCDPSession(page);
+    await timing.send("Emulation.setCPUThrottlingRate", { rate: 6 });
+  }
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
@@ -236,7 +242,17 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
       await page.evaluate(() => window.__nativePlayback.speed(1.25));
       await page.waitForTimeout(250);
       assert.equal(await page.evaluate(() => window.__nativeStats.events.filter((e) => e.event === "seeking" && e.stream === "cam0").length), before);
-      await page.evaluate(() => window.__nativePlayback.seek(30));
+      await page.evaluate(() => {
+        const video = document.querySelector("video");
+        const pending = window.__pendingPresentations?.get(video);
+        window.__nativePlayback.seek(30);
+        // The already queued callback may arrive before React even commits
+        // the seek. Synchronous user intent must reject that old clock too.
+        if (pending) {
+          video.cancelVideoFrameCallback(pending.id);
+          pending.callback(performance.now(), { mediaTime: video.currentTime });
+        }
+      });
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => !v.seeking && Math.abs(v.currentTime - 1) < .05));
       await page.evaluate(() => window.__nativePlayback.play(true));
       await page.waitForFunction(() => document.getElementById("position").textContent === "180", null, { timeout: 15000 });

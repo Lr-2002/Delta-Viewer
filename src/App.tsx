@@ -1,4 +1,5 @@
 import { PreviewPriority } from "./lib/preview-priority";
+import { usePlaybackIntent } from "./lib/use-playback-intent";
 import { BrandMark } from "./components/BrandMark";
 import { CloudMachineAnnotationPanel, flushCloudMachineReviewSaves } from "./components/CloudMachineAnnotationPanel";
 import { cloudWorkspaceNumber } from "./lib/cloud-qc";
@@ -217,6 +218,8 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.9.4": "修复拖动后旧回调覆盖定位；保留 NAS 本地流畅播放、正常退出缓存清理和星炬外发审核。",
+  "1.9.3": "正常退出时清理本窗口的临时视频缓存，保留其他窗口及原 NAS 数据；保留本地流畅播放和外发审核。",
   "1.9.2": "共享目录新增本地流畅播放：主动缓存并校验当前录制的视频，支持取消；原始数据、审核写回位置和多路同步保持。",
   "1.9.1": "修复 NAS 视频尚有缓冲时被反复主动暂停的卡顿；启动和断流恢复仍等待足够缓冲，多路相机继续同步播放。",
   "1.9.0": "修复 NAS 多路视频缓冲恢复时的时间回跳和重复定位；保留按相机分段播放的星炬外发审核及交付平台有效率统计。",
@@ -452,7 +455,7 @@ function App() {
   const [machinePreviewRange, setMachinePreviewRange] = useState<ExportRange | null>(null);
   const [speed, setSpeed] = useState(1);
   const [fpsOverride, setFpsOverride] = useState<number | null>(null);
-  const [playing, setPlaying] = useState(false);
+  const { playing, setPlaying, requested: playbackRequested } = usePlaybackIntent();
   const [operationBusy, setBusy] = useState(false);
   const [sourcePublishing, setSourcePublishing] = useState(false);
   const busy = operationBusy || Boolean(batchRejection) || sourcePublishing || managerNavigationBusy;
@@ -588,7 +591,7 @@ function App() {
     frameId: number,
     timelinePosition: number,
   ) => {
-    if (streamName !== primaryStreamName || !primaryNativeClockRef.current) return;
+    if (!playbackRequested.current || streamName !== primaryStreamName || !primaryNativeClockRef.current) return;
     const next = Math.max(playbackStart, Math.min(primaryPlaybackEndFrame, frameId));
     const presentedPosition = Math.max(playbackStart, Math.min(primaryPlaybackEndFrame, timelinePosition));
     skeletonFramePresenterRef.current?.(presentedPosition);

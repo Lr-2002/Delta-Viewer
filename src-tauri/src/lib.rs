@@ -3046,8 +3046,15 @@ pub fn run() {
             get_preview_location,
             set_preview_location
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Delta Viewer");
+        .build(tauri::generate_context!())
+        .expect("error while building Delta Viewer")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                // Tauri exits the process directly, so managed-state Drop is
+                // insufficient for normal-exit cleanup.
+                app.state::<playback_cache::PlaybackCache>().clear();
+            }
+        });
 }
 
 #[cfg(test)]

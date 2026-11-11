@@ -187,6 +187,12 @@ fn cleanup_unused(root: &Path) -> AppResult<u64> {
 }
 
 impl PlaybackCache {
+    pub fn clear(&self) {
+        if let Ok(mut active) = self.0.lock() {
+            active.take();
+        }
+    }
+
     pub fn prepare(
         &self,
         data: &Path,
@@ -552,6 +558,12 @@ mod tests {
         drop(second);
         assert!(Path::new(&paths[0]).is_file());
         assert!(first
+            .resolve(&root, &mut vec![file.display().to_string()])
+            .unwrap());
+        first.clear();
+        first.clear();
+        assert!(!Path::new(&paths[0]).exists());
+        assert!(!first
             .resolve(&root, &mut vec![file.display().to_string()])
             .unwrap());
     }

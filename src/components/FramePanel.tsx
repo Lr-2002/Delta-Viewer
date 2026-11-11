@@ -425,11 +425,13 @@ export const FramePanel = memo(function FramePanel({
     };
   }, [frameId, isPrimary, nativePlaybackEnabled, nativeVideoActive, onFrameSettled, playing, stream.name, videoUrl]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isPrimary || !nativePlaybackEnabled || !nativeVideoActive || !nativeVideo) return undefined;
     const video = videoRef.current;
     if (!video) return undefined;
 
+    // Invalidate the old clock during commit, before passive media/seek
+    // effects can report a pre-seek time over an explicit user position.
     let active = true;
     let callbackId = 0;
     let lastReportedMediaTime = -Infinity;
