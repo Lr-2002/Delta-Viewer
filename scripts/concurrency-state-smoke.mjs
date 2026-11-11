@@ -321,6 +321,23 @@ try {
         if (command.startsWith("plugin:dialog|")) return true;
 
         switch (command) {
+          case "d1_availability":
+            return {
+              attemptedAddress: null,
+              connection: "not_connected",
+              identity: null,
+              observation: null,
+              error: null,
+              selectedInterfaceId: null,
+              realDeviceEnabled: false,
+              configuration: {
+                diagnosticUpload: { enabled: false, endpoint: null, status: "waiting_interface" },
+                schemaVersion: 1,
+                deviceOta: { reservedAddress: "", scheme: null, enabled: false, status: "waiting_interface" },
+                productionOperations: [],
+              },
+              linkDiscovery: { status: "no_candidates", platform: "linux", observedAtMs: Date.now(), candidates: [], error: null },
+            };
           case "resolve_source_path": return args.batchRoot ? "" : args.path;
           case "review_identity_path": return args.path;
           case "get_pending_source_reviews": return {pending:0,items:[],ready:false,storageError:""};
@@ -568,6 +585,7 @@ try {
 
   await page.setViewportSize({ width: 1440, height: 920 });
   await page.goto(`${url}?task-center`, { waitUntil: 'networkidle' });
+  await page.getByRole("navigation", {name:"主导航"}).getByRole("button", {name:"数据工作区",exact:true}).click();
   await page.getByRole('button', { name: '任务中心', exact: true }).click();
   const taskDialogBeforeClaim = page.getByRole('dialog', { name: '任务中心' });
   assert.equal(await taskDialogBeforeClaim.getByRole('button', { name: '批量不通过', exact: true }).count(), 0);
