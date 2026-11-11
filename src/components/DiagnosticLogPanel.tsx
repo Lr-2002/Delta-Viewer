@@ -56,10 +56,10 @@ export function DiagnosticLogPanel({busy,beginOperation,onError}:Props){
     <p>选择设备采集会话目录，读取 session.json 与 session 日志，上传最近 200 条到设备档案，协助售后定位问题。</p>
     <div className="manager-actions">
       <button className="button button-secondary" disabled={busy||working!==null} onClick={()=>void pick()}>
-        {working==="preview"?<LoaderCircle size={17} className="spin"/>:<FileSearch size={17}/>}选择采集会话
+        {working==="preview"?<LoaderCircle size={17} className="spin"/>:<FileSearch size={17}/>}预览包内容
       </button>
       {preview&&<button className="button button-primary" disabled={busy||working!==null||!enabled} onClick={()=>void upload()}>
-        {working==="upload"?<LoaderCircle size={17} className="spin"/>:<Upload size={17}/>}上传日志
+        {working==="upload"?<LoaderCircle size={17} className="spin"/>:<Upload size={17}/>}上传诊断包
       </button>}
     </div>
     {source&&<p className="manager-upload-state" title={source}>来源：{source.split(/[\\/]/).filter(Boolean).pop()}</p>}
