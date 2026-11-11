@@ -211,3 +211,37 @@
 @media(prefers-reduced-motion:reduce) {.manager-progress-indeterminate::after {animation:none;width:100%}.manager-provisioning .spin{animation:none}}
 @media(max-width:760px) {.manager-runtime-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.manager-summary-grid{grid-template-columns:1fr}.manager-summary-lines{grid-template-columns:1fr}.manager-provisioning{padding:28px 16px}}
 @media(max-width:760px) {.manager-wifi-recommend{display:none}.manager-wifi-form input{flex:1}.manager-device-page>header{padding:10px 14px;flex-wrap:wrap;gap:8px}.manager-device-page>header>div{order:-1;flex-basis:100%}.manager-connection-guide{padding:10px 12px;}}
+
+/* Application OTA relay and diagnostic log upload (D1 Manager). */
+.manager-ota {display:flex;flex-direction:column;gap:12px;padding:18px 20px;margin-top:14px;border:1px solid #e2e2e7;border-radius:12px;background:#fff;}
+.manager-ota-heading {display:flex;align-items:center;gap:12px;}
+.manager-ota-heading>svg {color:#596d7d;flex:0 0 auto;}
+.manager-ota-heading>div {min-width:0;}
+.manager-ota-heading h2 {font-size:16px;}
+.manager-ota-heading p {font-size:13px;color:#677480;margin-top:2px;overflow-wrap:anywhere;}
+.manager-ota-heading .manager-chip {margin-left:auto;}
+.manager-chip.is-ready {background:#e7f4ec;border-color:#b8ddc6;color:#1f6b3d;}
+.manager-ota-status {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;}
+.manager-ota-status>div {display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid #eceef2;border-radius:8px;background:#fafbfc;min-width:0;}
+.manager-ota-status span {font-size:12px;color:#677480;}
+.manager-ota-status strong {font-size:14px;font-weight:600;overflow-wrap:anywhere;}
+.manager-ota-note {font-size:13px;color:#5b6874;line-height:1.5;}
+.manager-ota-error {display:flex;align-items:flex-start;gap:6px;font-size:13px;color:#a12a2a;line-height:1.5;}
+.manager-ota-error svg {flex:0 0 auto;margin-top:2px;}
+.manager-ota-success {display:flex;align-items:flex-start;gap:6px;font-size:13px;color:#1f6b3d;line-height:1.5;}
+.manager-ota-success svg {flex:0 0 auto;margin-top:2px;}
+.manager-ota-release {display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid #eceef2;border-radius:8px;background:#fafbfc;}
+.manager-ota-release header {display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+.manager-ota-release header strong {font-size:15px;}
+.manager-ota-release header span {font-size:12px;color:#677480;overflow-wrap:anywhere;}
+.manager-ota-release dl {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0;}
+.manager-ota-release dl>div {display:flex;flex-direction:column;gap:2px;min-width:0;}
+.manager-ota-release dt {font-size:12px;color:#677480;}
+.manager-ota-release dd {font-size:13px;font-weight:600;overflow-wrap:anywhere;}
+.manager-ota-release ul {display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none;}
+.manager-ota-release li {display:flex;align-items:center;gap:8px;font-size:13px;color:#3d4b58;}
+.manager-ota-release li small {margin-left:auto;color:#677480;}
+.manager-log-preview {display:flex;flex-direction:column;gap:8px;}
+.manager-log-levels {display:flex;flex-wrap:wrap;gap:10px;font-size:13px;color:#3d4b58;}
+.manager-log-levels span {padding:3px 8px;border:1px solid #e2e2e7;border-radius:5px;background:#f6f7f9;}
+@media(max-width:760px) {.manager-ota-status,.manager-ota-release dl {grid-template-columns:repeat(2,minmax(0,1fr));}.manager-ota {padding:16px;}}

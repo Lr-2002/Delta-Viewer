@@ -8,7 +8,10 @@ mod cloud_qc;
 mod d1;
 mod d1_device;
 pub mod d1_link;
+mod d1_logs;
+mod d1_ota;
 mod d1_page;
+mod d1_services;
 mod d1_wifi;
 mod dataset_layout;
 mod episode_metadata;
@@ -231,6 +234,101 @@ fn d1_owner(auth: &AuthState) -> Result<String, String> {
         }
         None => Err("WORKSPACE_MODE_REQUIRED".into()),
     }
+}
+
+#[tauri::command]
+async fn d1_ota_service(
+    auth: State<'_, AuthState>,
+) -> Result<d1_services::OtaServiceStatus, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    d1_ota::service_status()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn d1_ota_preview(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    operation_id: u64,
+) -> Result<d1_ota::OtaPreview, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let result = d1_ota::preview(&task.cancelled()).await;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_ota_submit(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    request: d1_device::DeviceRequest,
+    operation_id: u64,
+) -> Result<d1_ota::OtaSubmitResult, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let result = d1_ota::submit(&request, operation_id, &task.cancelled()).await;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_ota_status(
+    auth: State<'_, AuthState>,
+    request: d1_device::DeviceRequest,
+) -> Result<d1_ota::DeviceOtaStatus, String> {
+    let owner = d1_owner(&auth)?;
+    let result = d1_ota::status(&request).await;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_logs_service(
+    auth: State<'_, AuthState>,
+) -> Result<d1_services::DiagnosticServiceStatus, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    d1_logs::service_status()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn d1_logs_preview(
+    auth: State<'_, AuthState>,
+    source: String,
+) -> Result<d1_logs::LogPreview, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    d1_logs::preview_source(&source).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn d1_logs_upload(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    request: d1_logs::UploadRequest,
+    operation_id: u64,
+) -> Result<d1_logs::UploadReceipt, String> {
+    let owner = d1_owner(&auth)?;
+    let _task = control.start(operation_id)?;
+    let result = d1_logs::upload(request).await?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    let data_root = base_app_data_root(&app)?;
+    if let Err(error) = d1_logs::remember(&data_root, &result) {
+        // A local receipt is a convenience; the report itself already uploaded.
+        eprintln!("diagnostic upload receipt not persisted: {error}");
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2859,6 +2957,13 @@ pub fn run() {
             d1_device_page_request,
             d1_device_page_read_batch,
             d1_run_diagnostics,
+            d1_ota_service,
+            d1_ota_preview,
+            d1_ota_submit,
+            d1_ota_status,
+            d1_logs_service,
+            d1_logs_preview,
+            d1_logs_upload,
             d1_clear_session,
             d1_preview_bundle,
             d1_export_bundle,

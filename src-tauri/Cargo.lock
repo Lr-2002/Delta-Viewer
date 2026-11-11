@@ -1095,6 +1095,7 @@ dependencies = [
  "prost",
  "rayon",
  "reqwest",
+ "ring",
  "rusqlite",
  "rustls",
  "semver",

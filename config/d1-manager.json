@@ -1,17 +1,27 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "deviceOta": {
-    "reservedAddress": "deltadevice.cn:4174/ota/latest",
-    "scheme": null,
-    "enabled": false,
-    "status": "waiting_interface"
+    "origin": "http://deltadevice.cn:4174",
+    "channel": "factory",
+    "enabled": true,
+    "trustRoot": {
+      "keyId": "dohc-release-lab-2026-01",
+      "publicKeyPem": null
+    },
+    "reservedAddress": "deltadevice.cn:4174/ota/v1",
+    "scheme": "http",
+    "status": "relay_ready"
   },
   "productionOperations": [
-    "read_health"
+    "read_health",
+    "download_ota_release",
+    "relay_ota_bundle",
+    "upload_diagnostic_logs"
   ],
   "diagnosticUpload": {
-    "enabled": false,
-    "status": "waiting_interface",
-    "endpoint": null
+    "origin": "http://deltadevice.cn:4174",
+    "enabled": true,
+    "status": "ready",
+    "endpoint": "/api/v1/device-enrollment/diagnostic-reports"
   }
 }
