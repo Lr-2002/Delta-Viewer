@@ -1,14 +1,18 @@
 # D1 Manager 开发指南
 
+### 2026-11-11 runner 镜像可达性探测（1.8.9）
+
+1.8.7 的 Azure archive 在 GitHub runner DNS 不可达；1.8.8 已改写 `/etc/apt/apt-mirrors.txt`，但完整日志确认 `archive.ubuntu.com` 同样 DNS 失败，依赖安装在 30 分钟门禁内超时，两版均无 tag/Release。1.8.9 在改写 Ubuntu archive 主机前，使用 HTTPS HEAD 读取 `dists/noble/InRelease`，按固定候选顺序选第一个可达站点；Ubuntu archive、security 和 Azure 主机都统一到所选镜像，保留 suites、components、Signed-By、APT Release/包签名和原子文件更新。所有站点不可达时快速失败，禁止长时间重试后伪装通过。回归使用固定候选、无网络 fixture 验证候选回退、源改写和幂等；不修改目标用户或业务服务的软件源。
+
 ### 2026-11-11 构建机镜像列表恢复（1.8.8）
 
-1.8.7 的 CI 两次停在 Ubuntu 依赖下载，首轮日志确认 `mirror+file:/etc/apt/apt-mirrors.txt` 仍将包请求发往不可达的 Azure archive；原脚本仅处理 sources.list/.list/.sources，漏掉镜像列表。两次均在应用测试前取消，未生成 tag 或 Release，不复用版本、不移动历史。脚本现在一并精确处理 apt-mirrors.txt，仅把 Azure Ubuntu archive 改为官方 HTTPS archive，保留其他源、suite、Signed-By、包签名、文件权限和原子写入。回归覆盖 mirror+file 及重复运行不改写；本版 1.8.8 包含全部已验证 NAS/外发行为，重新完整门禁和自动三平台发布，不重复激活已上线服务。
+1.8.7 的 CI 仍把 apt-mirrors.txt 中的 Azure host 用于包下载；1.8.8 补上该文件改写，但 runner 也无法解析 `archive.ubuntu.com`，未进入测试且未创建 tag/Release。更完整日志与 1.8.9 处理见下一条。本版本号仅作未发布失败恢复历史，不复用、不手动移动 tag；已验证 NAS/外发服务不重复激活。
 
-### 2026-11-11 外发审核已开通与发布候选（1.8.8）
+### 2026-11-11 外发审核已开通与发布候选（1.8.9）
 
 平台 PR #93 已经用户授权合并；外发接口、独立 HMAC、HTTPS/CA、媒体票据免日志代理和用户中心转发已经启用。只读生产核对 14 批次、198 条；生产原结论保持，禁止为验收代领/代审。兼容覆盖保留其他任务的运行修复，私有证据记录来源提交、完整交付包、覆盖文件 hash、备份及受影响服务；不可把覆盖版冒称为精确 main 部署，不再重复激活本次服务。
 
-1.8.6 已在目标 Windows 交付并验证七路 NAS 回放；1.8.7 main 提交因 CI runner 未改写 `apt-mirrors.txt` 而在依赖安装前取消，未创建 tag 或 Release。1.8.8 修复后继续正式 CI、自动 annotated tag、完整三平台 Release 和目标 Windows 打开，不覆盖或关闭旧 Viewer 窗口。公开报告仅保留脱敏测试结论；真实清单、账号库、服务配置和密钥留在私有证据目录。生产列表可用与隔离审核写入闭环分别陈述。
+1.8.6 已在目标 Windows 交付并验证七路 NAS 回放；1.8.7 因 Azure host DNS 故障取消；1.8.8 补改 mirrorlist 后又确认 runner 无法解析 official archive。两版均无 tag/Release。1.8.9 增加 HTTPS InRelease 探测及固定 Ubuntu signed mirror 回退，需继续正式 CI、自动 annotated tag、完整三平台 Release 和目标 Windows 打开；不覆盖或关闭旧 Viewer 窗口。公开报告仅保留脱敏测试结论；真实清单、账号库、服务配置和密钥留在私有证据目录。生产列表可用与隔离审核写入闭环分别陈述。
 
 ### 2026-11-11 NAS 播放检查完成不中断（1.8.6）
 

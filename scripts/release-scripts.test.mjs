@@ -823,7 +823,7 @@ test("assemble-release rejects partial sets and emits checksums for a complete t
   assert.match(tampered.stderr, /updater signature does not verify/);
 });
 
-test("ephemeral Ubuntu runners use the primary archive without weakening package trust", async () => {
+test("ephemeral Ubuntu runners select a reachable signed archive mirror", async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), "delta-apt-archive-"));
   await mkdir(path.join(fixture, "sources.list.d"));
   const legacy = "deb http://azure.archive.ubuntu.com/ubuntu jammy main\ndeb http://security.ubuntu.com/ubuntu jammy-security main\n";
@@ -834,10 +834,29 @@ test("ephemeral Ubuntu runners use the primary archive without weakening package
   const files = [["sources.list", legacy], ["sources.list.d/ubuntu.sources", deb822], ["sources.list.d/custom.list", custom], ["apt-mirrors.txt", mirrors], ["sources.list.d/mirror.sources", mirrorSource]];
   for (const [name,contents] of files) await writeFile(path.join(fixture,name),contents);
   const script = path.join(root,"scripts/configure-ubuntu-archive.py");
-  const run = () => execFileSync("python3",[script,"--apt-root",fixture],{encoding:"utf8"});
+  const selectedArchive = "https://us.archive.ubuntu.com/ubuntu";
+  const run = () => execFileSync("python3",[script,"--apt-root",fixture,"--archive-url",selectedArchive],{encoding:"utf8"});
   run();
-  for (const [name,contents] of files) assert.equal(await readFile(path.join(fixture,name),"utf8"),contents.replaceAll(/https?:\/\/azure\.archive\.ubuntu\.com/g,"https://archive.ubuntu.com"));
+  const expected = contents => contents.replaceAll(/https?:\/\/(?:azure\.archive|archive|security)\.ubuntu\.com\/ubuntu/g,selectedArchive);
+  for (const [name,contents] of files) assert.equal(await readFile(path.join(fixture,name),"utf8"),expected(contents));
   assert.equal(run(),"","already configured sources are untouched");
+
+  const selection = [
+    "import importlib.util",
+    "from pathlib import Path",
+    `spec=importlib.util.spec_from_file_location('ubuntu_archive',${JSON.stringify(script)})`,
+    "module=importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "candidates=['first','second','third']",
+    "attempted=[]",
+    "def probe(url):",
+    "    attempted.append(url)",
+    "    return url == 'second'",
+    "assert module.select_archive(probe,candidates) == 'second'",
+    "assert attempted == ['first','second']",
+  ].join("\n");
+  execFileSync("python3",["-c",selection],{encoding:"utf8"});
+
   for (const name of ["ci.yml","release.yml"]) {
     const workflow=await readFile(path.join(root,".github/workflows",name),"utf8");
     assert.match(workflow,/sudo python3 scripts\/configure-ubuntu-archive\.py\n\s+sudo apt-get update/);

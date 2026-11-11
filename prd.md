@@ -1,8 +1,12 @@
 # D1 Manager 产品需求文档
 
+### 2026-11-11 完整发布门禁的 Ubuntu 镜像回退（1.8.9）
+
+GitHub runner 的 Ubuntu archive DNS 失败时，构建脚本会以 HTTPS HEAD 验证固定 Ubuntu 镜像的 noble `InRelease`，再选择第一个可达镜像；只修改临时 runner 的 archive host，保留原 suite/component/签名要求。没有候选可达就快速失败。1.8.7、1.8.8 均未生成 tag 或公开 Release；本版须由既有 main CI 自动创建 annotated tag，并完成三个原生平台 Release 后方算发布。
+
 ### 2026-11-11 完整发布恢复（1.8.8）
 
-保留下述 NAS 回放及已启用外发审核能力。1.8.7 因构建机镜像列表仍指向不可达 Azure 软件源而未进入应用测试、未生成 tag/Release；1.8.8 补齐 mirror+file 列表处理，沿用 Ubuntu 原签名校验并重新执行完整自动三平台发布。正式产物与 Windows 打开/回放结果以实际完成后的证据为准，不用本地构建替代发布门禁。
+保留下述 NAS 回放及已启用外发审核能力。1.8.7 因 Azure archive DNS 不可达，1.8.8 改写镜像列表后仍因官方 archive DNS 不可达而未进入应用测试；两版均未生成 tag/Release。1.8.9 增加固定 signed Ubuntu mirror 的 HTTPS 可达探测和回退，正式产物与 Windows 打开/回放结果仍以实际完成后的证据为准。
 
 ### 2026-11-11 NAS 回放与外发审核生产接入（1.8.7）
 

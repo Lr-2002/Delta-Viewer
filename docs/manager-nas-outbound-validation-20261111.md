@@ -41,6 +41,6 @@
 
 `pnpm check:full` 已在 1.8.6 和正式候选 1.8.7 通过（退出码 0）；1.8.7 报告为 `artifacts/release-check/2026-11-11T14-24-38-041Z-linux-x64.json`。此外外发审核、原生播放、完整校对 47 项以及 HTTP Range socket 回归通过。1.8.7 仍须通过其 GitHub CI、三平台完整 Release 和目标 Windows 发布产物启动核对。现有正式 identifier、用户数据目录、NAS 文件、原上传内容及旧窗口保持。
 
-1.8.7 的两轮 CI 随后在依赖安装阶段取消：首轮日志显示 runner 的 `apt-mirrors.txt` 继续访问不可达 Azure archive，尚未进入应用测试，未生成 tag 或公开 Release。恢复版本为 1.8.8，补齐该镜像列表的精确切源及回归；不重复部署已启用的外发服务。后续正式 Release 和目标 Windows 证据继续记录到私有交付目录。
+1.8.7 的 CI 因 Azure archive DNS 不可达，在 30 分钟门禁前未进入应用测试。1.8.8 补改 `apt-mirrors.txt` 后，runner 仍无法解析 `archive.ubuntu.com`，同样未生成 tag/Release。1.8.9 改为对固定 HTTPS 候选检查 noble `InRelease` 并选择可达镜像，按 Ubuntu 原签名策略安装；不重复部署已启用的外发服务。正式 Release 和 Windows 证据继续记录到私有交付目录。
 
 1.8.8 的 `pnpm check:full` 重跑通过（退出码 0，报告 `artifacts/release-check/2026-11-11T15-05-36-536Z-linux-x64.json`），发布脚本回归通过。首轮完整检查仅在最后构建阶段因本机空间不足失败，清理本工作树四份可重建的过期增量编译缓存后重新执行全部门禁成功；未删除源码、业务数据或测试证据。

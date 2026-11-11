@@ -1,5 +1,10 @@
 # D1 Manager Changelog
 
+## 1.8.9 - 2026-11-11
+
+- GitHub runner 的 Ubuntu archive DNS 不可用时，自动探测固定 HTTPS 镜像候选并选择首个可达站点；Ubuntu InRelease/软件包签名校验继续由 APT 执行。
+- 包含 NAS 七路分块回放、检查完成不中断和已启用的星炬外发审核生产链路；1.8.7/1.8.8 未生成 tag 或公开 Release，本版重新执行自动完整三平台发布。
+
 ## 1.8.8 - 2026-11-11
 
 - 修正 GitHub Ubuntu 构建机通过镜像列表访问不可用 Azure 软件源时的依赖下载阻塞；同时覆盖传统源、deb822 和 mirror+file 列表，保留 Ubuntu 包签名与其他源设置。

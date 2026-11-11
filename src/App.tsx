@@ -216,6 +216,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.8.9": "修复 NAS 七路回放与星炬外发审核；发布构建会检测并选择可达的 Ubuntu 镜像，继续完成正式三平台发布。",
   "1.8.8": "保留 NAS 七路回放和星炬外发审核修复；修正构建机镜像列表的下载阻塞，恢复完整三平台发布。",
   "1.8.7": "修复 NAS 七路预览在检查完成时中断；开通星炬外发审核，按相机分段看原始视频，结论写入描述副本并同步交付平台最终有效率。",
   "1.8.6": "完整检查完成时保留正在进行的视频播放；减少 NAS 七路抢读，外发审核按相机与分段加载原始视频并核对保存结果。",
