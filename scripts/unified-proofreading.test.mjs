@@ -666,7 +666,8 @@ test("unified layout fits desktop and mobile with a visible interactive skeleton
       assert.ok(timeline.x >= replay.x + replay.width, "timeline stays in right column");
       assert.ok(editor.y >= timeline.y + timeline.height, "segments stay below timeline");
       assert.ok(editor.y + editor.height <= height, "approval buttons fit the window");
-      assert.ok(telemetry.y + telemetry.height <= height, "compact state chart fits the window");
+      await page.screenshot({ path: `artifacts/unified-proofreading/geometry-${width}.png`, fullPage: true });
+      assert.ok(telemetry.y + telemetry.height <= height, `compact state chart fits the window: ${JSON.stringify({width,height,telemetry,replay})}`);
     }
     await page.screenshot({ path: `artifacts/unified-proofreading/layout-${width}.png`, fullPage: true });
     await page.locator(".quality-inspector").scrollIntoViewIfNeeded();

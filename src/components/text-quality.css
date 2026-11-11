@@ -1,6 +1,6 @@
 .text-corrections { min-width: 0; padding: 18px 0; }
 .text-quality-toolbar { display:flex; flex-wrap:wrap; align-items:flex-end; gap:12px; margin:12px 0; }
-.text-quality-toolbar label { display:flex; flex-direction:column; gap:5px; min-width:0; font-size:12px; }
+.text-quality-toolbar label { display:flex; flex-direction:column; gap:5px; min-width:0; font-size: 13.44px; }
 .text-quality-toolbar input, .text-quality-toolbar select { min-height:34px; max-width:100%; }
 .text-quality-toolbar .text-quality-check { flex-direction:row; align-items:center; align-self:center; }
 .text-quality-root { flex:1; min-width:200px!important; }
@@ -12,10 +12,10 @@
 .text-quality-rules li { display:flex; justify-content:space-between; align-items:center; gap:16px; border-bottom:1px solid #d8dfe0; padding:6px 0; }
 .text-quality-dialog { width:min(600px,calc(100vw - 36px)); max-height:80vh; overflow:auto; box-sizing:border-box; border:1px solid #a7adae; border-radius:6px; padding:20px; }
 .text-quality-dialog header, .text-quality-dialog footer { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-.text-quality-dialog h2 { font-size:18px; }
+.text-quality-dialog h2 { font-size: 20.16px; }
 .text-quality-dialog::backdrop { background:#0005; }
 .segment-restore-dialog footer { flex-wrap:wrap; justify-content:flex-end; }
-.segment-restore-dialog .button { width:auto; min-width:64px; padding:0 12px; font-size:13px; white-space:normal; height:auto; min-height:36px; }
+.segment-restore-dialog .button { width:auto; min-width:64px; padding:0 12px; font-size: 14.56px; white-space:normal; height:auto; min-height:36px; }
 .description-issues button { display:inline-flex; align-items:center; gap:4px; }
 .text-check-summary { max-height:40vh; overflow:auto; padding:0; list-style:none; }
 .text-check-summary li { padding:8px 0; border-bottom:1px solid #ddd; }

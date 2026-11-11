@@ -1073,7 +1073,7 @@ dependencies = [
 
 [[package]]
 name = "dohc-viewer"
-version = "1.6.7"
+version = "1.8.0"
 dependencies = [
  "arrow-array",
  "base64 0.22.1",
@@ -1111,6 +1111,7 @@ dependencies = [
  "tokio",
  "walkdir",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

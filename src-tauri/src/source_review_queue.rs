@@ -108,8 +108,10 @@ fn path_aliases(root: &Path, path: &str) -> AppResult<Vec<String>> {
     let mut paths = vec![path.to_owned(), plain.clone(), verbatim_path(&plain)];
     for historical in crate::dataset_layout::historical_paths_cached(root, Path::new(&plain))? {
         let value = historical.to_string_lossy().into_owned();
-        paths.push(value.clone());
-        paths.push(verbatim_path(&value));
+        let plain = plain_path(&value);
+        paths.push(value);
+        paths.push(plain.clone());
+        paths.push(verbatim_path(&plain));
     }
     paths.sort();
     paths.dedup();

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { ArrowLeft, FolderOpen, KeyRound, LogIn, Network, UserPlus, WifiOff } from "lucide-react";
+import { BrandMark } from "./BrandMark";
+import { ArrowLeft, ChevronRight, Eye, EyeOff, FolderOpen, KeyRound, LogIn, Network, UserPlus, WifiOff } from "lucide-react";
 import {
   configureUserCenter,
   loginLocalAccount,
@@ -30,6 +31,7 @@ export function AuthScreen({
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -99,26 +101,25 @@ export function AuthScreen({
     setError("");
     setPassword("");
     setConfirmation("");
+    setPasswordVisible(false);
   }
 
   if (workspaceMode === null) {
     return (
       <main className="auth-shell">
         <header className="auth-brand">
-          <span className="brand-mark">D</span>
-          <div>
-            <strong>D1 Manager</strong>
-            <span>上位机设备管理与诊断</span>
-          </div>
+          <BrandMark />
+          <div><strong>D1 Manager</strong></div>
         </header>
         <section className="auth-panel workspace-mode-panel" aria-labelledby="workspace-mode-title">
           <div className="auth-heading">
             <span className="auth-icon"><Network size={20} /></span>
             <div>
-              <span className="section-kicker">WORKSPACE MODE</span>
+              <span className="section-kicker">开始使用</span>
               <h1 id="workspace-mode-title">选择工作模式</h1>
             </div>
           </div>
+          <p className="auth-intro">连接设备，或进入你的数据工作区。</p>
           <div className="workspace-mode-options">
             <button className="workspace-mode-option" type="button" onClick={() => void selectMode("offline")} disabled={busy}>
               <WifiOff size={18} />
@@ -139,20 +140,18 @@ export function AuthScreen({
   return (
     <main className="auth-shell">
       <header className="auth-brand">
-        <span className="brand-mark">D</span>
-        <div>
-          <strong>D1 Manager</strong>
-          <span>上位机设备管理与诊断</span>
-        </div>
+        <BrandMark />
+        <div><strong>D1 Manager</strong></div>
       </header>
       <section className="auth-panel" aria-labelledby="auth-title">
         <div className="auth-heading">
           <span className="auth-icon"><KeyRound size={20} /></span>
           <div>
-            <span className="section-kicker">USER CENTER</span>
-            <h1 id="auth-title">{userCenter.configured ? mode === "login" ? "登录" : "审核员注册" : "连接用户中心"}</h1>
+            <span className="section-kicker">数据工作区</span>
+            <h1 id="auth-title">{userCenter.configured ? mode === "login" ? "欢迎回来" : "创建审核员账号" : "连接用户中心"}</h1>
           </div>
         </div>
+        <p className="auth-intro">{userCenter.configured ? mode === "login" ? "使用工作账号登录，继续标注与审核。" : "填写账号信息，即可进入工作区。" : "导入配置后，即可使用工作账号登录。"}</p>
         {!userCenter.configured ? (
           <div className="auth-connect">
             <p>请导入管理员在局域网服务主机生成的用户中心配置文件。</p>
@@ -172,6 +171,7 @@ export function AuthScreen({
                   autoComplete="name"
                   maxLength={40}
                   required
+                  disabled={busy || configuring}
                   autoFocus
                 />
               </label>
@@ -187,21 +187,37 @@ export function AuthScreen({
                 maxLength={32}
                 pattern="[A-Za-z0-9](?:[A-Za-z0-9._]|-)*[A-Za-z0-9]"
                 required
+                disabled={busy || configuring}
                 autoFocus={mode === "login"}
               />
             </label>
-            <label>
+            <label className="auth-password-label" htmlFor="auth-password">
               <span>密码</span>
+            </label>
+            <div className="auth-password-field">
               <input
-                type="password"
+                id="auth-password"
+                type={passwordVisible ? "text" : "password"}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 autoComplete={mode === "login" ? "current-password" : "new-password"}
                 minLength={8}
                 maxLength={128}
                 required
+                disabled={busy || configuring}
               />
-            </label>
+              <button
+                className="auth-password-toggle"
+                type="button"
+                aria-label={passwordVisible ? "隐藏密码" : "显示密码"}
+                aria-pressed={passwordVisible}
+                title={passwordVisible ? "隐藏密码" : "显示密码"}
+                disabled={busy || configuring}
+                onClick={() => setPasswordVisible((visible) => !visible)}
+              >
+                {passwordVisible ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
             {mode === "register" ? (
               <label>
                 <span>确认密码</span>
@@ -213,6 +229,7 @@ export function AuthScreen({
                   minLength={8}
                   maxLength={128}
                   required
+                  disabled={busy || configuring}
                 />
               </label>
             ) : null}
@@ -223,18 +240,22 @@ export function AuthScreen({
           </form>}
         {error ? <div className="auth-error" role="alert">{error}</div> : null}
         <div className="auth-switch">
-          <button type="button" className="text-button" onClick={() => void selectMode("offline")} disabled={busy || configuring}><WifiOff size={14} />离线模式 · 直接进入</button>
-          <button type="button" className="text-button" onClick={() => void returnToModeChoice()} disabled={busy || configuring}>
-            <ArrowLeft size={14} />
-            选择工作模式
+          <button type="button" className="auth-offline-entry" onClick={() => void selectMode("offline")} disabled={busy || configuring}>
+            <WifiOff size={16} /><span>离线模式 · 直接进入</span><ChevronRight size={15} />
           </button>
-          {userCenter.configured && mode === "login" ? (
-            <button type="button" className="text-button" onClick={() => switchLoginMode("register")}>注册审核员账号</button>
-          ) : userCenter.configured && mode === "register" ? (
-            <button type="button" className="text-button" onClick={() => switchLoginMode("login")}>返回登录</button>
-          ) : null}
+          <div className="auth-utilities">
+            <button type="button" className="text-button" onClick={() => void returnToModeChoice()} disabled={busy || configuring}>
+              <ArrowLeft size={14} />选择工作模式
+            </button>
+            {userCenter.configured ? (
+              <button type="button" className="text-button" onClick={() => switchLoginMode(mode === "login" ? "register" : "login")} disabled={busy || configuring}>
+                {mode === "login" ? <UserPlus size={14} /> : <LogIn size={14} />}
+                {mode === "login" ? "注册审核员账号" : "返回登录"}
+              </button>
+            ) : null}
+          </div>
           {userCenter.configured ? (
-            <button type="button" className="text-button" onClick={() => void importUserCenter()} disabled={busy || configuring}>
+            <button type="button" className="text-button auth-config-entry" onClick={() => void importUserCenter()} disabled={busy || configuring}>
               <FolderOpen size={14} />
               {configuring ? "验证并更新中" : "重新导入用户中心配置"}
             </button>

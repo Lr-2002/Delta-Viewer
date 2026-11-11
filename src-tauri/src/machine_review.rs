@@ -1383,6 +1383,7 @@ pub(crate) fn atomic_json(path: &Path, document: &Value) -> AppResult<String> {
             .unwrap_or_default()
             .as_nanos()
     ));
+    let mut operation = "创建临时文件";
     let result = (|| -> AppResult<()> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -1392,20 +1393,27 @@ pub(crate) fn atomic_json(path: &Path, document: &Value) -> AppResult<String> {
             options.mode(0o600);
         }
         let mut file = options.open(&partial)?;
+        operation = "写入临时文件";
         file.write_all(&bytes)?;
+        operation = "同步临时文件";
         file.sync_all()?;
         drop(file);
+        operation = "回读临时文件";
         if machine_annotation::read_bytes(&partial)?.as_deref() != Some(bytes.as_slice()) {
             return Err(failure("复核文件回读失败"));
         }
+        operation = "原子替换目标文件";
         storage::replace_file_atomic(&partial, path)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&partial);
     }
-    result.map_err(|error| match error {
-        AppError::Io(error) => review_write_error(path, error),
-        error => error,
+    result.map_err(|error| {
+        let error = match error {
+            AppError::Io(error) => review_write_error(path, error),
+            error => error,
+        };
+        AppError::Message(format!("{error} 保存步骤：{operation}。"))
     })?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
@@ -1418,7 +1426,7 @@ fn review_write_error(path: &Path, error: std::io::Error) -> AppError {
         ),
         std::io::ErrorKind::PermissionDenied => (
             "REVIEW_STORAGE_PERMISSION_DENIED",
-            "保存目标拒绝写入，请检查共享目录写权限后重试",
+            "系统拒绝本次文件操作，请检查原电脑的存储权限、文件占用和安全软件限制后重试",
         ),
         std::io::ErrorKind::TimedOut => (
             "REVIEW_STORAGE_TIMEOUT",
@@ -3104,6 +3112,7 @@ mod tests {
         let moved = f.temp.join("Delta-D1/D1 daily/2026-09-16-Test/sample");
         fs::create_dir_all(old.parent().unwrap()).unwrap();
         fs::rename(&f.root, &old).unwrap();
+        let old = old.canonicalize().unwrap();
         let state = load(&f.local, &old).unwrap();
         let id = "44444444-4444-4444-8444-444444444444";
         let at = 1792548000000u64;
@@ -3133,6 +3142,7 @@ mod tests {
         .unwrap();
         fs::create_dir_all(moved.parent().unwrap()).unwrap();
         fs::rename(&old, &moved).unwrap();
+        let moved = moved.canonicalize().unwrap();
         let registry = f.temp.join("Delta-Viewer-TaskIndex/Delta-D1/layout.json");
         fs::create_dir_all(registry.parent().unwrap()).unwrap();
         let config = json!({"moves":[{"source":"Delta-D1/2026-09-16-Test","destination":"Delta-D1/D1 daily/2026-09-16-Test","state":"completed"}]});
@@ -3193,6 +3203,35 @@ mod tests {
             assert!(error.contains("test/description.json"));
             assert!(error.contains("未确认审核保存成功"));
         }
+    }
+
+    #[test]
+    fn atomic_save_failure_identifies_the_step_and_preserves_the_destination() {
+        let f = Fixture::new(0, true);
+        let missing = f.temp.join("missing-parent/session.json");
+        let error = atomic_json(&missing, &json!({"fixture": true}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("REVIEW_STORAGE_WRITE_FAILED"));
+        assert!(error.contains("保存步骤：创建临时文件"));
+        assert!(!missing.exists());
+
+        let directory = f.temp.join("not-a-file.json");
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("preserved"), b"unchanged").unwrap();
+        let error = atomic_json(&directory, &json!({"fixture": true}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ATOMIC_REPLACE_DESTINATION_INVALID"));
+        assert!(error.contains("保存步骤：原子替换目标文件"));
+        assert_eq!(fs::read(directory.join("preserved")).unwrap(), b"unchanged");
+        assert!(fs::read_dir(&f.temp).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".partial-")
+        }));
     }
 
     #[test]
@@ -4387,7 +4426,7 @@ mod tests {
                 .join("Delta-D1/D1-Daily/2026-10-28-Batch/sample");
             fs::create_dir_all(root.parent().unwrap()).unwrap();
             fs::rename(&f.root, &root).unwrap();
-            f.root = root;
+            f.root = root.canonicalize().unwrap();
             fs::create_dir_all(&f.local).unwrap();
             let mut state = load(&f.local, &f.root).unwrap();
             state.segments[0].description = "更名之前的人工草稿".into();
@@ -5152,6 +5191,8 @@ mod tests {
                     Err(error) => panic!("cannot reserve review fixture: {error}"),
                 }
             };
+            // Keep fixture paths consistent with canonical runtime paths on Windows.
+            let temp = temp.canonicalize().unwrap();
             let root = temp.join("sample");
             let local = temp.join("local");
             fs::create_dir_all(&root).unwrap();

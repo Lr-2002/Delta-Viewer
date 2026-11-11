@@ -1,4 +1,5 @@
 import { PreviewPriority } from "./lib/preview-priority";
+import { BrandMark } from "./components/BrandMark";
 import { CloudMachineAnnotationPanel, flushCloudMachineReviewSaves } from "./components/CloudMachineAnnotationPanel";
 import { cloudWorkspaceNumber } from "./lib/cloud-qc";
 import { CloudQcSyncStatus } from "./components/CloudQcSyncStatus";
@@ -36,7 +37,7 @@ import {
   X,
 } from "lucide-react";
 import { ManagerWorkspace } from "./components/ManagerWorkspace";
-import { managerSections, type ManagerSection } from "./lib/d1";
+import { deviceSections, type ManagerSection } from "./lib/d1";
 import { AppUpdates } from "./components/AppUpdates";
 import { MachineAnnotationPanel, flushMachineReviewSaves } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
@@ -53,9 +54,6 @@ import { PreviewSettings } from "./components/PreviewSettings";
 import { ProgressStrip } from "./components/ProgressStrip";
 import { TaskCenter } from "./components/TaskCenter";
 import { SkeletonViewer } from "./components/SkeletonViewer";
-import { SkeletonModelPicker } from "./components/SkeletonModelPicker";
-import { modelEpisodeCandidate } from "./lib/skeleton-library";
-import type { SkeletonLibraryInfo, SkeletonSeries } from "./types";
 import { SourceWritebackClient } from "./components/SourceWritebackClient";
 import { ClientPresence } from "./components/ClientPresence";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
@@ -63,13 +61,12 @@ import { beginReviewAudit, getReviewSyncStatus, configureReviewAudit, endReviewA
 import { TelemetryChart } from "./components/TelemetryChart";
 import {
   APP_VERSION,
-  DISPLAY_VERSION,
   resolveSourcePath,
   renameBatchFolder,
   IS_DEVELOPMENT_EDITION,
   DEMO_ROOT,
   cancelTask,
-  clearDeviceSimulation,
+  clearDeviceSession,
   downloadAppUpdate,
   chooseDirectory,
   clearWorkspaceMode,
@@ -97,7 +94,6 @@ import {
   recordAnnotationAudit,
   onTaskProgress,
   revealOutput,
-  reviewIdentityPath,
   scanSource,
   setAssignedSourceRoot,
   selectWorkspaceMode,
@@ -220,10 +216,17 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.7.7": "登录密码默认隐藏，可用密码框旁的按钮临时显示；切换状态保留已输入内容。AP页刷新Wi-Fi与手动密码采用统一按钮样式。",
+  "1.7.6": "修复设备页面初始化等待及运行配置加载，支持批量读取和页面往返；使用设备真实状态展示中文检测卡片；D1 热点默认密码连接并保留手动输入，配网增加等待与结果核对；移除首页重复入口。",
+  "1.7.5": "修复 Windows 云端 QC 下载时缺少 TLS 初始化导致的崩溃；管理员 NAS 写回通知按指令记忆，完成或收起后不重复弹出，新指令继续自动执行。",
+  "1.7.4": "统一最新设备界面与云端 QC 会话修复，保留登录卡片、模型库入口移除、设备配置交互和任务索引优化；兼容 Windows 历史待写结果查询。",
   "1.6.7": "云端 QC 刷新错误标明 Manager、用户中心或 QC 代理阶段，帮助定位断连来源；保留现有会话与审核记录。",
   "1.6.6": "云端 QC 沿用当前 Manager 登录，正常账号无需绑定即可领取；修复 Windows 依赖下载遇上游 504 时中断发布，保留原文件校验。",
   "1.6.5": "云端 QC 沿用现有 Manager 登录，正常账号无需单独配置即可领取各公司的云端预抽样任务。",
   "1.6.4": "云端 QC 支持管理员将符合条件的历史订单按 5% 策略回填到 Manager，并保留回填审计和既有人工审核证据。",
+  "1.7.1": "按D1操作手册区分设备热点、局域网IP与Type-C连接，增加AP操作指引；热点固定地址与语音播报IP各自展示，避免使用USB网卡误判热点连接。",
+  "1.7.0": "收简品牌与导航，优化页面层级；移除连接详情，将实际 Type-C 连接 IP 收进设备信息，联网 IP 未取得时不以 USB 地址替代。",
+  "1.6.3": "D1 Manager 新增设备导航、本地模拟检测与诊断包；原 Viewer 数据工作区完整保留。真实设备及固件更新等待接入。",
   "1.6.2": "修复存储恢复自动弹窗挡住管理员统一写回，收到有效指令后自动继续；手动核对窗口、播放和未存修改保护保持。",
   "1.6.1": "修复统一写回被单条目录异常中断及本机修订误冲突；管理端展示已检查、失败和尚未处理数量，保留真实共享冲突与原审核人日期。",
   "1.6.0": "修复大规模审核统计阻塞用户中心，统计改为独立线程和增量摘要；NAS 写回按对应回执确认，离线待写数量和版本状态明确区分并自动恢复。",
@@ -393,6 +396,8 @@ function App() {
   const [managerAdminHome, setManagerAdminHome] = useState(false);
   const [managerNavigationBusy, setManagerNavigationBusy] = useState(false);
   const managerNavigationLock = useRef(false);
+  const lastDeviceSection = useRef<Exclude<ManagerSection,"data">>("home");
+  const [managerNavigationError,setManagerNavigationError] = useState("");
   useEffect(() => setManagementMode(false), [authStatus?.currentUser?.username]);
   const [authStartupError, setAuthStartupError] = useState("");
   const [tasks, setTasks] = useState<TaskDefinition[]>([]);
@@ -441,13 +446,7 @@ function App() {
   const [playing, setPlaying] = useState(false);
   const [operationBusy, setBusy] = useState(false);
   const [sourcePublishing, setSourcePublishing] = useState(false);
-  const [modelBusy, setModelBusy] = useState(false);
-  const [onlyModelEpisodes, setOnlyModelEpisodes] = useState(false);
-  const [modelLibrary, setModelLibrary] = useState<SkeletonLibraryInfo | null>(null);
-  const [modelParentAliases, setModelParentAliases] = useState<{scan: ScanResult | null; paths: Record<string, string>}>({scan:null, paths:{}});
-  const [modelSelection, setModelSelection] = useState<{root: string; series: SkeletonSeries} | null>(null);
-  const selectedSkeleton = modelSelection?.root === data?.summary.root ? modelSelection?.series : null;
-  const busy = operationBusy || Boolean(batchRejection) || sourcePublishing || modelBusy || managerNavigationBusy;
+  const busy = operationBusy || Boolean(batchRejection) || sourcePublishing || managerNavigationBusy;
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -1329,7 +1328,7 @@ function App() {
   function resetWorkspaceData() {
     setManagerSection("home");
     setManagerAdminHome(false);
-    void clearDeviceSimulation().catch(() => undefined);
+    void clearDeviceSession().catch(() => undefined);
     setReviewedEpisodes({});
     setBatchRejectionSelection({});
     setBatchRenamePath(null);
@@ -1872,19 +1871,7 @@ function App() {
     () => scan?.episodes.filter((episode) => (!skippedEpisodeRoots[episode.root] || Boolean(reviewedEpisodes[episode.root]))) ?? [],
     [scan?.episodes, skippedEpisodeRoots, reviewedEpisodes],
   );
-  useEffect(() => {
-    let active = true;
-    if (!scan || !modelLibrary) return;
-    const parents = [...new Set(scan.episodes.map(episode => episode.root.replaceAll('\\', '/').replace(/\/[^/]+$/, '')))];
-    void Promise.all(parents.map(async parent => {
-      try { return [parent, await reviewIdentityPath(parent)] as const; }
-      catch { return [parent, parent] as const; }
-    })).then(rows => { if (active) setModelParentAliases({scan, paths:Object.fromEntries(rows)}); });
-    return () => { active = false; };
-  }, [scan, modelLibrary, authStatus?.currentUser?.username]);
-  const modelAliases = modelParentAliases.scan === scan ? modelParentAliases.paths : {};
-  const displayedEpisodes = useMemo(() => visibleEpisodes.filter(episode => !onlyModelEpisodes || modelEpisodeCandidate(episode.root, modelLibrary, modelAliases)), [visibleEpisodes, onlyModelEpisodes, modelLibrary, modelAliases]);
-  function changeModelFilter(value: boolean) { setOnlyModelEpisodes(value); setBatchRejectionSelection({}); }
+  const displayedEpisodes = visibleEpisodes;
   function toggleRejection(episode: EpisodeSummary, checked: boolean) {
     setBatchRejectionSelection(previous => {
       const next = { ...previous };
@@ -2042,9 +2029,10 @@ function App() {
   }
   async function navigateManager(next: ManagerSection) {
     if (next === managerSection || managerNavigationLock.current) return;
-    if (busy || document.querySelector("dialog[open]")) {setNotice("请先完成当前任务或关闭窗口。"); return;}
+    if (busy || document.querySelector("dialog[open]")) {setManagerNavigationError("请先完成当前任务或关闭窗口。"); return;}
     if (next === "data" && currentUser?.role === "admin") {openManagement();return;}
     managerNavigationLock.current = true; setManagerNavigationBusy(true);
+    setManagerNavigationError("");
     let resumeAudit: (() => void) | undefined;
     try {
       if (managerSection === "data") {
@@ -2058,9 +2046,10 @@ function App() {
       }
       sourceNavigationVersion.current += 1; setPendingSourceRestore(null);
       setPersonalTaskOpen(false); setProfileEditorOpen(false); setHistoryOpen(false);
+      if(next!=="data")lastDeviceSection.current=next;
       setManagerSection(next);
     } catch (cause) {
-      setNotice(toMessage(cause));
+      setManagerNavigationError(toMessage(cause));
     } finally {resumeAudit?.();managerNavigationLock.current=false;setManagerNavigationBusy(false);}
   }
   function beginManagerOperation() {
@@ -2108,44 +2097,39 @@ function App() {
         />
       ) : null}
       {isManagedWorkspace && currentUser && isTauriRuntime() && <CloudQcSyncStatus key={`cloud:${authStatus.userCenter.serviceId}:${currentUser.username}`} username={currentUser.username} />}
-      <div className="app-shell" hidden={showManagement} inert={showManagement}>
+      <div className={`app-shell${managerSection === "data" ? " is-data-workspace" : ""}`} hidden={showManagement} inert={showManagement}>
       <header className="topbar">
         <div className="brand-lockup">
-          <span className="brand-mark">D</span>
+          <BrandMark />
           <div>
             <strong>D1 Manager</strong>
-            <span>上位机设备管理与诊断 · v{DISPLAY_VERSION}</span>
           </div>
-          <button
-            className="version-history-trigger"
-            type="button"
-            onClick={() => setReleaseHistoryOpen(true)}
-            title="查看历史版本"
-            aria-label="查看历史版本"
-          >
-            <BookOpenText size={14} />
-            <span>历史版本</span>
-          </button>
+
         </div>
-        <div className="source-display">
+        <nav className="workspace-navigation" aria-label="主导航">
+          <button type="button" aria-current={managerSection!=="data"?"page":undefined} disabled={busy} onClick={()=>void navigateManager(lastDeviceSection.current)}>设备管理区</button>
+          <button type="button" aria-current={managerSection==="data"?"page":undefined} disabled={busy} onClick={()=>void navigateManager("data")}>数据工作区</button>
+        </nav>
+        {managerSection === "data" && <div className="source-display">
           <HardDrive size={16} />
           <span title={sourcePath}>{sourcePath ? shortPath(sourcePath, 58) : isManagedWorkspace && currentUser?.role === "operator" ? "首次使用请配置本机 NAS 目录" : "未选择 SD 卡"}</span>
           {sourcePath ? <span className="source-dot" /> : null}
-        </div>
+        </div>}
         <div className="topbar-actions">
-          {canManage && <button className="button button-secondary management-mode-button" disabled={busy || reviewHasUnsaved} onClick={openManagement}>管理模式</button>}
+          <button className="icon-button version-history-trigger" type="button" onClick={() => setReleaseHistoryOpen(true)} title="查看历史版本" aria-label="查看历史版本"><BookOpenText size={16}/></button>
+          {managerSection === "data" && canManage && <button className="button button-secondary management-mode-button" disabled={busy || reviewHasUnsaved} onClick={openManagement}>管理模式</button>}
           {managerSection === "data" && <StatusBadge status={status} />}
           {isManagedWorkspace && currentUser && !showManagement ? updateControls(busy) : null}
-          {currentUser?.role !== "admin" && <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy} aria-label={isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}>
+          {managerSection === "data" && currentUser?.role !== "admin" && <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy} aria-label={isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}>
             <FolderOpen size={16} />
             {isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}
           </button>}
-          {isManagedWorkspace && currentUser ? (
+          {managerSection === "data" && isManagedWorkspace && currentUser ? (
             <button className="button button-secondary workbench-trigger" type="button" onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`审核总览打开失败：${toMessage(reason)}`))} title="打开审核总览">
               <Activity size={16} />审核总览
             </button>
           ) : null}
-          <button
+          {managerSection === "data" && <button
             className="icon-button history-trigger"
             type="button"
             onClick={() => setHistoryOpen((current) => !current)}
@@ -2155,7 +2139,7 @@ function App() {
           >
             <History size={16} />
             {operationErrors.length ? <span>{Math.min(operationErrors.length, 99)}</span> : null}
-          </button>
+          </button>}
           {isOfflineWorkspace ? <span className="workspace-mode-indicator" title="本地回放、编辑、审核与导出可用；不连接用户中心，不参与公司统计">离线模式 · 仅本机</span> : null}
           {isManagedWorkspace && currentUser ? (
             <>
@@ -2177,7 +2161,7 @@ function App() {
                   <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
                 </div>
               )}
-              {currentUser.role === "operator" ? (
+              {managerSection === "data" && currentUser.role === "operator" ? (
                 <button className="button button-secondary personal-task-trigger" type="button" onClick={() => setPersonalTaskOpen((open) => !open)} title="任务中心" aria-label="任务中心" aria-expanded={personalTaskOpen}>
                   <ListChecks size={16} />任务中心
                 </button>
@@ -2192,11 +2176,10 @@ function App() {
           </button>
         </div>
       </header>
-      <nav className="manager-navigation" aria-label="主导航">
-        {managerSections.map(item => <button type="button" key={item.id} aria-current={managerSection === item.id ? "page" : undefined}
+      {managerSection!=="data" && <nav className="manager-navigation" aria-label="设备功能">
+        {deviceSections.map(item => <button type="button" key={item.id} aria-current={managerSection === item.id ? "page" : undefined}
           disabled={busy} onClick={() => void navigateManager(item.id)}>{item.label}</button>)}
-        <span className="manager-nav-caption">D1 上位机 · 设备管理与诊断</span>
-      </nav>
+      </nav>}
       <div id={showManagement ? undefined : "app-update-notices"} />
 
       {isManagedWorkspace && currentUser?.role === "operator" && personalTaskOpen ? (
@@ -2232,7 +2215,7 @@ function App() {
       ) : null}
 
 
-      {historyOpen ? (
+      {managerSection === "data" && historyOpen ? (
         <OperationHistoryPanel
           records={operationErrors}
           onClose={() => setHistoryOpen(false)}
@@ -2241,8 +2224,8 @@ function App() {
 
       {batchRenamePath && <BatchRenameDialog path={batchRenamePath} onRename={renameCurrentBatch} onClose={() => setBatchRenamePath(null)} />}
 
-      {!showManagement && syncNotice}
-      {error && !workspaceAuthError ? (
+      {!showManagement && managerSection === "data" && syncNotice}
+      {managerSection === "data" && error && !workspaceAuthError ? (
         <div className="alert-banner alert-error" role="alert">
           <CircleAlert size={17} />
           <span>{error}</span>
@@ -2252,7 +2235,7 @@ function App() {
           </span>
         </div>
       ) : null}
-      {notice ? (
+      {managerSection === "data" && notice ? (
         <div className="alert-banner alert-notice" role="status">
           <Check size={17} />
           <span>{notice}</span>
@@ -2260,6 +2243,7 @@ function App() {
         </div>
       ) : null}
 
+      {managerNavigationError && <div className="alert-banner alert-error" role="alert"><CircleAlert size={17}/><span>{managerNavigationError}</span><button className="text-button" onClick={()=>setManagerNavigationError("")}>关闭</button></div>}
       <ManagerWorkspace key={`${workspaceMode}:${currentUser?.username ?? "local"}:${authStatus.userCenter.serviceId ?? "local"}`}
         section={managerSection} busy={busy} beginOperation={beginManagerOperation} onNavigate={next => void navigateManager(next)} />
       <div className={`workspace${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`} hidden={managerSection !== "data"} inert={managerSection !== "data"}>
@@ -2301,7 +2285,6 @@ function App() {
             <label><input type="checkbox" aria-label="全选当前目录列表" disabled={busy || !displayedEpisodes.length} checked={displayedEpisodes.length > 0 && displayedEpisodes.every(episode => Boolean(batchRejectionSelection[episode.root]))} onChange={event => setBatchRejectionSelection(event.target.checked ? Object.fromEntries(displayedEpisodes.map(episode => [episode.root, { path: episode.root, name: episode.name }])) : {})} />全选<span>已选 {Object.keys(batchRejectionSelection).length} 条</span></label>
           </div>}
           {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
-          {modelLibrary?.relatives.length ? <label className="episode-model-filter"><input type="checkbox" checked={onlyModelEpisodes} disabled={busy} onChange={event=>changeModelFilter(event.target.checked)} />仅看有新模型</label> : null}
           <div className="episode-list">
             {displayedEpisodes.length ? (
               displayedEpisodes.map((episode) => <EpisodeListRow
@@ -2310,10 +2293,9 @@ function App() {
                 savedAnnotation={annotationTags[episode.root]} reviewStatus={reviewedEpisodes[episode.root]} pendingReviewStatus={pendingReviewEpisodes[episode.root]} busy={busy}
                 rejectionSelectable={currentUser?.role === "operator"}
                 rejectionSelected={Boolean(batchRejectionSelection[episode.root])}
-                modelAvailable={modelEpisodeCandidate(episode.root, modelLibrary, modelAliases)}
                 actions={episodeActions} buttonRefs={episodeButtonRefs}
               />)
-            ) : onlyModelEpisodes ? (<div className="sidebar-empty"><span>当前列表没有新模型条目</span><button className="text-button" type="button" onClick={()=>changeModelFilter(false)}>显示全部</button></div>) : skippedEpisodeCount ? (
+            ) : skippedEpisodeCount ? (
               <div className="sidebar-empty sidebar-skipped">
                 <EyeOff size={23} />
                 <span>已跳过 {skippedEpisodeCount} 条数据</span>
@@ -2326,8 +2308,6 @@ function App() {
               </div>
             )}
           </div>
-          <SkeletonModelPicker root={data?.summary.root} disabled={operationBusy || sourcePublishing || reviewHasUnsaved || Boolean(batchRejection) || showManagement || managerSection !== "data"}
-            onLibrary={info => { setModelLibrary(info); setBatchRejectionSelection({}); }} onModel={series => setModelSelection(series && data ? {root:data.summary.root,series}:null)} onBusy={setModelBusy} />
           <div className="sidebar-footer">
             <div><span>文件</span><strong>{selectedEpisode?.indexed ? selectedEpisode.totalFiles : "—"}</strong></div>
             <div><span>容量</span><strong>{selectedEpisode?.indexed ? formatBytes(selectedEpisode.totalBytes) : "—"}</strong></div>
@@ -2395,7 +2375,7 @@ function App() {
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
                       <PreviewSettings />
                     </div>
-                    <div className={`replay-visual-row${selectedSkeleton || data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
+                    <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
                       <div className="camera-grid camera-grid-expanded">
                         {cameraSlots.map((name, index) => {
                           const stream = availableStreams.find((stream) => stream.name === name);
@@ -2442,9 +2422,9 @@ function App() {
                         );})}
                       </div>
                       <div className="skeleton-side-panel">
-                        {selectedSkeleton || data.skeleton ? (
+                        {data.skeleton ? (
                           <SkeletonViewer
-                            skeleton={(selectedSkeleton ?? data.skeleton)!}
+                            skeleton={data.skeleton}
                             frameId={currentFrame}
                             timelineStartFrame={primaryStream?.firstFrame ?? minFrame}
                             timelineEndFrame={primaryStream?.lastFrame ?? maxFrame}
@@ -2456,7 +2436,7 @@ function App() {
                             onFramePresenterChange={handleSkeletonFramePresenterChange}
                           />
                         ) : null}
-                        {!selectedSkeleton && !data.skeleton && data.skeletonError ? (
+                        {!data.skeleton && data.skeletonError ? (
                           <section className="skeleton-load-error" aria-label="骨架数据">
                             <strong>骨架数据不可用</strong>
                             <span>{data.skeletonError}</span>
@@ -2635,7 +2615,7 @@ function EmptyWorkspace({
 // Keep the NAS catalog out of the per-frame video render work. Action refs
 // retain current application state without invalidating every row on a tick.
 const EpisodeListRow = memo(function EpisodeListRow({
-  episode, selected, sourceState, savedAnnotation, reviewStatus, pendingReviewStatus, busy, actions, buttonRefs, rejectionSelectable, rejectionSelected, modelAvailable,
+  episode, selected, sourceState, savedAnnotation, reviewStatus, pendingReviewStatus, busy, actions, buttonRefs, rejectionSelectable, rejectionSelected,
 }: {
   episode: EpisodeSummary;
   selected: boolean;
@@ -2646,7 +2626,6 @@ const EpisodeListRow = memo(function EpisodeListRow({
   busy: boolean;
   rejectionSelectable: boolean;
   rejectionSelected: boolean;
-  modelAvailable?: boolean;
   actions: RefObject<{
     select: (episode: EpisodeSummary) => void;
     load: (episode: EpisodeSummary, imported: boolean, focus: boolean) => Promise<void>;
@@ -2690,7 +2669,6 @@ const EpisodeListRow = memo(function EpisodeListRow({
       <span className="episode-item-meta">{episode.indexed
         ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
         : episode.stateCount ? `${episode.stateCount} states · 快速预览` : "待读取"}</span>
-      {modelAvailable && <span className="episode-model-hint" title="该完整相对路径列有新模型，选择时还需核对 session 和文件校验值">新骨架可选 · 1080p 实验</span>}
       <span className="stream-dots">{episode.streams.map((stream) => <i
         className={episode.indexed ? stream.frameCount ? "dot-ok" : "dot-error" : stream.frameCount ? "dot-ok" : ""}
         key={stream.name} title={stream.label} />)}</span>

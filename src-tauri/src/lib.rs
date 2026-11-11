@@ -6,6 +6,10 @@ mod assigned_source;
 mod batch_rename;
 mod cloud_qc;
 mod d1;
+mod d1_device;
+pub mod d1_link;
+mod d1_page;
+mod d1_wifi;
 mod dataset_layout;
 mod episode_metadata;
 mod error;
@@ -20,6 +24,7 @@ mod model;
 mod mp4_clock;
 mod mp4_preview_cache;
 mod operation_history;
+mod outbound_review;
 mod recording_timing;
 mod review_catalog;
 mod review_outbox;
@@ -229,25 +234,149 @@ fn d1_owner(auth: &AuthState) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn d1_availability(auth: State<'_, AuthState>) -> Result<serde_json::Value, String> {
-    auth.require_user().map_err(|error| error.to_string())?;
-    d1::availability().map_err(|error| error.to_string())
+async fn d1_wifi_inventory(
+    auth: State<'_, AuthState>,
+    refresh: bool,
+) -> Result<d1_wifi::Snapshot, String> {
+    let owner = d1_owner(&auth)?;
+    let result = tauri::async_runtime::spawn_blocking(move || d1_wifi::inventory(refresh))
+        .await
+        .map_err(|_| "Wi-Fi 列表读取失败。")??;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    Ok(result)
+}
+#[tauri::command]
+async fn d1_wifi_connect(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    request: d1_wifi::ConnectRequest,
+    operation_id: u64,
+) -> Result<d1_wifi::Network, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let worker_auth = auth.inner().clone();
+    let worker_owner = owner.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = task;
+        if d1_owner(&worker_auth)? != worker_owner {
+            return Err("D1_SESSION_CHANGED".into());
+        }
+        d1_wifi::connect(request, &cancelled)
+    })
+    .await
+    .map_err(|_| "热点连接未完成。")??;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    Ok(result)
+}
+#[tauri::command]
+async fn d1_read_page(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    request: d1_device::DeviceRequest,
+    operation_id: u64,
+) -> Result<d1_page::DevicePage, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let result = d1_page::read(request, &task.cancelled()).await?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    Ok(result)
+}
+#[tauri::command]
+async fn d1_device_page_read_batch(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    request: d1_device::DeviceRequest,
+    apis: Vec<d1_page::PageApiRequest>,
+    operation_id: u64,
+) -> Result<Vec<d1_page::PageApiResponse>, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let result = d1_page::read_batch(request, apis, &task.cancelled()).await?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    Ok(result)
+}
+#[tauri::command]
+async fn d1_device_page_request(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    request: d1_device::DeviceRequest,
+    api: d1_page::PageApiRequest,
+    operation_id: u64,
+) -> Result<d1_page::PageApiResponse, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let result = d1_page::api_request(request, api, &task.cancelled()).await?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    Ok(result)
+}
+#[tauri::command]
+async fn d1_renew_usb_address(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    interface_id: String,
+    operation_id: u64,
+) -> Result<(), String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let worker_auth = auth.inner().clone();
+    let worker_owner = owner.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = task;
+        if d1_owner(&worker_auth)? != worker_owner {
+            return Err("D1_SESSION_CHANGED".into());
+        }
+        d1_link::renew_usb_address(&interface_id, &cancelled)
+    })
+    .await
+    .map_err(|_| "USB 地址恢复未完成。")??;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
-async fn d1_run_simulation(
+async fn d1_availability(
+    auth: State<'_, AuthState>,
+    interface_id: Option<String>,
+    ap_address: Option<String>,
+    connection_mode: Option<d1_device::ConnectionMode>,
+) -> Result<serde_json::Value, String> {
+    let owner = d1_owner(&auth)?;
+    let result = d1::availability(interface_id, ap_address, connection_mode)
+        .await
+        .map_err(|error| error.to_string())?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn d1_run_diagnostics(
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
     devices: State<'_, d1::DeviceState>,
-    request: d1::RunRequest,
+    request: d1_device::DeviceRequest,
     operation_id: u64,
 ) -> Result<d1::DiagnosticRun, String> {
     let owner = d1_owner(&auth)?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
-    let result = tauri::async_runtime::spawn_blocking(move || d1::run(request, &cancelled))
+    let result = d1::run(request, &cancelled)
         .await
-        .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())?;
     if d1_owner(&auth)? != owner {
         return Err("D1_SESSION_CHANGED".into());
@@ -259,7 +388,7 @@ async fn d1_run_simulation(
 }
 
 #[tauri::command]
-fn d1_clear_simulation(
+fn d1_clear_session(
     auth: State<'_, AuthState>,
     devices: State<'_, d1::DeviceState>,
 ) -> Result<(), String> {
@@ -1182,6 +1311,17 @@ async fn cloud_qc_call(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     cloud_qc::call(&app_data_root(&app)?, auth.inner(), &action, payload)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn outbound_review_call(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    outbound_review::call(&app_data_root(&app)?, auth.inner(), input)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2691,7 +2831,6 @@ async fn read_frame(
 }
 
 pub fn run() {
-    #[cfg(not(target_os = "windows"))]
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let media_stream_server = MediaStreamServer::start().ok();
@@ -2713,8 +2852,14 @@ pub fn run() {
         .manage(review_catalog::ReviewCatalogCache::default())
         .invoke_handler(tauri::generate_handler![
             d1_availability,
-            d1_run_simulation,
-            d1_clear_simulation,
+            d1_renew_usb_address,
+            d1_wifi_inventory,
+            d1_wifi_connect,
+            d1_read_page,
+            d1_device_page_request,
+            d1_device_page_read_batch,
+            d1_run_diagnostics,
+            d1_clear_session,
             d1_preview_bundle,
             d1_export_bundle,
             get_auth_status,
@@ -2765,6 +2910,7 @@ pub fn run() {
             task_center_claims,
             cloud_qc_configure,
             cloud_qc_call,
+            outbound_review_call,
             cloud_qc_fetch,
             cloud_qc_sync,
             cloud_qc_pending,

@@ -54,6 +54,9 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     const port=server.httpServer.address().port;
     await page.goto(`http://127.0.0.1:${port}/__cloud-qc`);
     await page.getByRole('button',{name:'领取并打开'}).waitFor();
+    assert.equal(await page.getByText('云端任务沿用当前 Manager 登录账号',{exact:false}).count(),0);
+    assert.equal(await page.getByText('每 5 秒自动刷新',{exact:false}).count(),0);
+    assert.equal(await page.getByRole('button',{name:/下载预览/}).count(),0);
     assert.equal(await page.getByText('公司抽样策略',{exact:true}).count(),0);
     assert.equal(await page.getByRole('button',{name:'转全量审查'}).count(),0);
     assert.equal(await page.getByRole('heading',{name:'采集批次',exact:true}).isVisible(),true);
@@ -65,16 +68,12 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     // the synchronous App owner before making the claim API call.
     await page.evaluate(()=>{window.workspaceBusy=true;window.reserveCloud=true;window.show();});
     await page.getByRole('status').filter({hasText:'正在恢复或处理数据'}).waitFor();
-    assert.equal(await page.getByRole('button',{name:'下载预览',exact:true}).isDisabled(),true);
     assert.equal(await page.getByRole('button',{name:'领取并打开',exact:true}).isDisabled(),true);
     await page.evaluate(()=>{window.workspaceBusy=false;window.refuseOwner=true;window.show();});
     await page.getByRole('button',{name:'领取并打开',exact:true}).click();
     await page.getByRole('alert').filter({hasText:'请等待完成后'}).waitFor();
     assert.equal(await page.evaluate(()=>window.calls.filter(([c,a])=>c==='cloud_qc_call'&&a.action==='claim').length),0);
     await page.evaluate(()=>{window.refuseOwner=false;window.show();});
-    await page.getByRole('button',{name:'下载预览',exact:true}).click();
-    await page.waitForFunction(()=>window.opened.length===1);
-    assert.equal(await page.evaluate(()=>window.calls.filter(([c,a])=>c==='cloud_qc_call'&&a.action==='claim').length),0);
     await page.evaluate(()=>{window.opened=[];window.failFetch=true});
     await page.getByRole('button',{name:'领取并打开'}).click();
     await page.getByRole('alert').filter({hasText:'CLOUD_QC_DOWNLOAD_HASH_INVALID'}).waitFor();
@@ -89,13 +88,18 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     assert.deepEqual(await page.evaluate(()=>window.opened),['/isolated/cloud-qc/recording_001']);
     assert.equal(await page.evaluate(()=>window.calls.filter(([c,a])=>c==='cloud_qc_call'&&a.action==='claim').length),1,'reopening a claimed task must not claim again');
     assert.equal(await page.evaluate(()=>window.ownerActive),false);
+    const fetchCount=await page.evaluate(()=>window.calls.filter(([c])=>c==='cloud_qc_fetch').length);
     assert.equal(await page.evaluate(()=>window.calls.filter(([c])=>c==='cloud_qc_fetch').every(([,a])=>a.operationId===901)),true);
+    await page.getByRole('button',{name:'打开审核',exact:true}).click();
+    await page.waitForFunction(()=>window.opened.length===2);
+    assert.equal(await page.evaluate(()=>window.calls.filter(([c])=>c==='cloud_qc_fetch').length),fetchCount,'already loaded tasks reopen without another download');
+    await page.getByText('更多',{exact:true}).click();
     await page.getByRole('button',{name:'同步已保存的结论'}).click();
     await page.getByRole('status').filter({hasText:'已同步 Viewer 保存的真实审核结论'}).waitFor();
     await page.evaluate(()=>window.show('admin'));
+    await page.getByText('管理员工具',{exact:true}).click();
     await page.getByText('公司抽样策略',{exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'连接设置',exact:true}).count(),0);
-    await page.getByText('云端任务沿用当前 Manager 登录账号，无需单独配置。',{exact:false}).waitFor();
     await page.getByLabel('变更原因').fill('管理员更新后续批次');
     await page.getByRole('button',{name:'保存策略'}).click();
     await page.getByRole('status').filter({hasText:'策略已保存'}).waitFor();
@@ -112,6 +116,7 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     await page.evaluate(()=>window.show('operator'));
     await page.getByText('历史订单抽检回填',{exact:true}).waitFor({state:'detached'});
     await page.evaluate(()=>window.show('admin'));
+    await page.getByText('管理员操作',{exact:true}).click();
     await page.getByRole('button',{name:'转全量审查'}).waitFor();
     page.once('dialog',dialog=>dialog.accept('升级全量复查'));
     await page.getByRole('button',{name:'转全量审查'}).click();
@@ -159,6 +164,7 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     assert.equal(await page.evaluate(()=>window.explicitClaims),1);
     await page.evaluate(()=>window.failSync=false);
     await page.evaluate(()=>window.show('admin'));
+    await page.getByText('管理员工具',{exact:true}).click();
     await page.getByText('公司抽样策略',{exact:true}).waitFor();
     await page.evaluate(()=>window.cloudError='CLOUD_QC_MANAGER_CONFIG_FAILED: I/O 错误: 系统找不到指定的路径');
     await page.getByRole('button',{name:'刷新云端任务'}).click();
@@ -169,14 +175,18 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     await page.evaluate(()=>window.cloudError=null);
     await page.getByRole('button',{name:'刷新云端任务'}).click();
     await page.getByText('公司抽样策略',{exact:true}).waitFor();
-    mkdirSync('artifacts/cloud-qc',{recursive:true});
+    await page.evaluate(()=>window.show('operator'));
+    await page.getByRole('button',{name:'打开审核',exact:true}).waitFor();
+    const screenshotDir=process.env.CLOUD_QC_SCREENSHOT_DIR??'artifacts/cloud-qc';
+    mkdirSync(screenshotDir,{recursive:true});
     for(const width of [1440,960,390]){
       await page.setViewportSize({width,height:900});
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-      await page.getByRole('button',{name:'下载预览',exact:true}).scrollIntoViewIfNeeded();
-      const button=await page.getByRole('button',{name:'下载预览',exact:true}).boundingBox();
+      const primary=page.locator('.cloud-qc-row-actions > .button-primary');
+      await primary.scrollIntoViewIfNeeded();
+      const button=await primary.boundingBox();
       assert.ok(button.x>=0 && button.x+button.width<=width);
-      await page.screenshot({path:`artifacts/cloud-qc/manager-cloud-qc-stage-${width}.png`});
+      await page.screenshot({path:`${screenshotDir}/manager-cloud-qc-stage-${width}.png`});
     }
   }finally{await browser?.close();await server.close();}
 });
@@ -212,19 +222,20 @@ test('App cloud download owns the operation, invalidates delayed login restore a
       }};
     });
     await page.goto(server.resolvedUrls.local[0]);await page.waitForFunction(()=>window.restoreWaiting);
+    await page.getByRole('button',{name:'数据工作区',exact:true}).click();
     await page.getByRole('button',{name:'任务中心',exact:true}).click();
     await page.getByRole('button',{name:'云端 QC',exact:true}).click();
-    await page.getByRole('button',{name:'下载预览',exact:true}).click();await page.waitForFunction(()=>window.cloudStarted);
+    await page.getByRole('button',{name:'领取并打开',exact:true}).click();await page.waitForFunction(()=>window.cloudStarted);
     assert.equal(await page.getByRole('button',{name:'选择数据目录',exact:true}).isDisabled(),true);
     await page.evaluate(()=>window.resolveRestore('/late-old-recording'));
     await page.waitForFunction(()=>!document.querySelector('.app-shell')?.hidden);
     assert.equal(await page.evaluate(()=>window.calls.filter(([command])=>command==='scan_source').length),0);
-    await page.getByRole('button',{name:'取消下载',exact:true}).click();
+    await page.getByRole('button',{name:'取消',exact:true}).click();
     await page.getByRole('alert').filter({hasText:'CLOUD_QC_CANCELLED'}).waitFor();
     await page.waitForFunction(()=>!document.querySelector('.topbar .button:disabled'));
     assert.equal(await page.evaluate(()=>window.cancelledOperation===window.cloudOperation),true);
     assert.equal(await page.evaluate(()=>window.calls.filter(([command])=>command==='scan_source').length),0);
-    assert.equal(await page.evaluate(()=>window.calls.some(([command,args])=>command==='cloud_qc_call'&&args.action==='claim')),false);
+    assert.equal(await page.evaluate(()=>window.calls.some(([command,args])=>command==='cloud_qc_call'&&args.action==='claim')),true,'claim is retained when a reviewer cancels the subsequent load');
     assert.deepEqual(errors,[]);
   } finally {await browser?.close();await server.close();}
 });

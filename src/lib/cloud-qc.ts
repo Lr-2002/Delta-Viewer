@@ -42,6 +42,7 @@ export interface CloudAccess { cloud: boolean; canEdit: boolean; claimable: bool
 export const cloudQcAccess = (directory: string, claim = false) => cloudQcInvoke<CloudAccess>("cloud_qc_access", { directory, claim });
 export function cloudQcError(error: unknown): string {
   const raw = String(error);
+  if (raw.includes("CLOUD_QC_DOWNLOAD_CLIENT_FAILED")) return "本机无法建立云端下载连接，请重试或联系支持；任务领取状态与本机记录保留。";
   if (raw.includes("CLOUD_QC_MANAGER_CONFIG_FAILED")) return `Manager 本机读取用户中心配置失败，尚未请求用户中心或交付端：${raw}`;
   if (raw.includes("CLOUD_QC_MANAGER_TLS_FAILED")) return `Manager 本机建立安全连接失败，尚未请求交付端：${raw}`;
   if (raw.includes("CLOUD_QC_MANAGER_ENDPOINT_FAILED")) return `Manager 本机解析用户中心地址失败：${raw}`;

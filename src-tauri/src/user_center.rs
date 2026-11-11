@@ -1333,6 +1333,47 @@ pub(crate) async fn cloud_qc_connection(
     Ok((metadata, client, proxy.into(), token))
 }
 
+pub(crate) async fn outbound_review_request(
+    data_root: &Path,
+    state: &AuthState,
+    input: serde_json::Value,
+) -> AppResult<serde_json::Value> {
+    let session = state.managed_session()?;
+    let config = load_config(data_root)?;
+    let client = client_for(&config)?;
+    let url = endpoint(&config, "api/v1/outbound-review/proxy")?;
+    let response = client
+        .post(url)
+        .bearer_auth(&session.1)
+        .json(&input)
+        .send()
+        .await
+        .map_err(|_| AppError::Message("OUTBOUND_USER_CENTER_UNAVAILABLE".into()))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| AppError::Message("OUTBOUND_RESPONSE_INVALID".into()))?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(AppError::Message("OUTBOUND_RESPONSE_TOO_LARGE".into()));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::Message("OUTBOUND_RESPONSE_INVALID".into()))?;
+    if state.managed_session()? != session {
+        return Err(AppError::Message("OUTBOUND_ACCOUNT_CHANGED".into()));
+    }
+    if !status.is_success() {
+        let code = value["error"]
+            .as_str()
+            .or_else(|| value["error"]["code"].as_str())
+            .unwrap_or("OUTBOUND_REQUEST_FAILED");
+        return Err(AppError::Message(format!(
+            "OUTBOUND_REQUEST_FAILED: {code}"
+        )));
+    }
+    Ok(value)
+}
+
 fn read_client_config(path: &Path) -> AppResult<UserCenterClientConfig> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.file_type().is_file() || metadata.len() > MAX_CONFIG_BYTES {

@@ -6,5 +6,12 @@
     "enabled": false,
     "status": "waiting_interface"
   },
-  "productionOperations": []
+  "productionOperations": [
+    "read_health"
+  ],
+  "diagnosticUpload": {
+    "enabled": false,
+    "status": "waiting_interface",
+    "endpoint": null
+  }
 }

@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DOHC 设备状态</title>
+<style>
+:root{color-scheme:light;--bg:#f5f6f7;--surface:#fff;--text:#18202a;--muted:#65707c;--line:#d9dee4;--soft:#eef1f3;--ok:#177245;--warn:#986000;--fail:#b42318;--info:#1769aa}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
+main{width:min(980px,100%);margin:0 auto;padding:28px 24px 48px}
+header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding-bottom:20px;border-bottom:2px solid var(--text)}
+header>div:first-child{width:100%;min-width:0}
+h1{margin:0;font-size:25px;line-height:1.2;letter-spacing:0}
+#identity{max-width:100%;margin-top:6px;color:var(--muted);overflow-wrap:anywhere;word-break:break-all;white-space:normal}
+.badge{display:inline-block;padding:4px 8px;border:1px solid currentColor;border-radius:4px;font-size:12px;font-weight:700}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.fail{color:var(--fail)}.info{color:var(--info)}.muted{color:var(--muted)}
+.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border-bottom:1px solid var(--line)}
+.summary>div{min-width:0;padding:16px;border-right:1px solid var(--line)}
+.summary>div:last-child{border-right:0}
+.label{display:block;color:var(--muted);font-size:12px;margin-bottom:5px}
+.value{display:block;font-size:16px;font-weight:700;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+section{padding:22px 0;border-bottom:1px solid var(--line)}
+section h2{margin:0 0 14px;font-size:15px;letter-spacing:0}
+.kv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 28px}
+.kv>div{min-width:0;padding:9px 0;border-bottom:1px solid var(--soft)}
+.kv dd,.kv dt{margin:0}.kv dt{color:var(--muted);font-size:12px}.kv dd{margin-top:3px;font-weight:600;overflow-wrap:anywhere}
+.camera-row{display:grid;grid-template-columns:90px 130px minmax(0,1fr);gap:14px;align-items:start;padding:11px 0;border-top:1px solid var(--soft)}
+.camera-role{font-weight:700}.camera-meta{color:var(--muted)}.camera-reason{grid-column:2/-1;color:var(--warn)}
+.state{font-weight:700}.state-ok{color:var(--ok)}.state-warn{color:var(--warn)}.state-fail{color:var(--fail)}
+.led-row,.component-row{display:grid;grid-template-columns:140px minmax(0,1fr);gap:14px;padding:9px 0;border-top:1px solid var(--soft)}
+.swatch{display:inline-block;width:12px;height:12px;margin-right:7px;border:1px solid #7a838c;vertical-align:-1px}
+.components{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 24px}
+.component-row{grid-template-columns:minmax(0,1fr) auto}
+.alert-row{padding:12px 0;border-top:1px solid var(--soft)}
+.alert-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.camera-meta,.camera-reason,.component-row,.alert-message,.alert-action{min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.config-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.config-grid{display:grid;grid-template-columns:110px 64px 64px minmax(0,1fr) 110px 72px;gap:8px;align-items:center}
+.config-grid input,.config-grid select{width:100%;min-width:0;padding:7px 6px;border:1px solid var(--line);border-radius:3px;background:var(--surface);color:var(--text);font:inherit}
+.config-grid input[type=checkbox]{width:18px;height:18px;justify-self:center;accent-color:var(--info)}
+.config-grid label{color:var(--muted);font-size:12px}.config-head{padding:4px 0;color:var(--muted);font-size:12px}.config-status{min-height:21px;color:var(--muted)}
+.choice{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.choice>*:not(span){flex:1 1 180px;min-width:0;padding:8px 7px;border:1px solid var(--line);border-radius:3px;background:var(--surface);color:var(--text);font:inherit}
+button{padding:8px 14px;border:1px solid var(--info);border-radius:3px;background:var(--info);color:#fff;font:inherit;font-weight:700;cursor:pointer}button:disabled{opacity:.55;cursor:wait}
+.alert-message{margin-top:5px}.alert-action{margin-top:3px;color:var(--muted)}
+.empty{padding:12px 0;color:var(--ok)}
+.config-link{color:var(--info);font-weight:700;text-decoration:none;white-space:nowrap}
+footer{display:flex;justify-content:space-between;gap:16px;padding-top:16px;color:var(--muted);font-size:12px}
+@media(max-width:720px){main{padding:22px 16px 40px}header{flex-direction:column;gap:12px}.summary{grid-template-columns:repeat(2,minmax(0,1fr))}.summary>div:nth-child(2){border-right:0}.summary>div:nth-child(-n+2){border-bottom:1px solid var(--line)}.summary .value{font-size:15px}.kv,.components{grid-template-columns:1fr}.camera-row{grid-template-columns:72px minmax(0,1fr)}.camera-meta{grid-column:1/-1}.camera-reason{grid-column:1/-1}.led-row{grid-template-columns:110px minmax(0,1fr)}.config-grid{grid-template-columns:92px 52px 52px minmax(0,1fr)}.config-head:nth-child(5),.config-head:nth-child(6){display:none}.config-grid select,.config-grid input[type=number]{grid-column:span 2}footer{display:block}#updated{display:block;margin-top:4px}}
+@media(max-width:420px){.summary{grid-template-columns:1fr}.summary>div{border-right:0;border-bottom:1px solid var(--line)}.summary>div:last-child{border-bottom:0}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div><h1>DOHC 设备状态</h1><div id="identity">正在加载...</div></div>
+<a href="/config" class="config-link">运行配置</a>
+<span id="health" class="badge warn">加载中</span>
+</header>
+<div class="summary">
+<div><span class="label">运行阶段</span><span id="phase" class="value">-</span></div>
+<div><span class="label">采集门禁</span><span id="admission" class="value">-</span></div>
+<div><span class="label">相机</span><span id="cameraSummary" class="value">-</span></div>
+<div><span class="label">告警</span><span id="alertSummary" class="value">-</span></div>
+</div>
+<section>
+<h2>设备与运行</h2>
+<dl class="kv">
+<div><dt>设备 ID</dt><dd id="deviceId">-</dd></div>
+<div><dt>访问地址</dt><dd id="address">-</dd></div>
+<div><dt>Channel</dt><dd id="channel">-</dd></div>
+<div><dt>Workspace</dt><dd id="workspace">-</dd></div>
+<div><dt>Release</dt><dd id="release">-</dd></div>
+<div><dt>Board firmware</dt><dd id="firmware">-</dd></div>
+<div><dt>Runtime uptime</dt><dd id="uptime">-</dd></div>
+<div><dt>Heartbeat</dt><dd id="heartbeat">-</dd></div>
+<div><dt>状态时间（系统本地）</dt><dd id="runtimeTime">-</dd></div>
+<div><dt>当前原因</dt><dd id="reasons">-</dd></div>
+</dl>
+</section>
+<section>
+<h2>相机</h2>
+<div id="cameraRows"></div>
+</section>
+<section>
+<h2>相机配置</h2>
+<div class="config-toolbar"><span id="cameraConfigHash" class="config-status">正在读取配置...</span><button id="saveCameraConfig" type="button">保存并重启采集</button></div>
+<div id="cameraConfigRows" class="config-grid"></div>
+</section>
+<section>
+<h2>用户名字</h2>
+<div class="choice"><select id="deviceName" disabled><option value="">正在读取...</option></select><button id="saveDeviceName">保存</button><input id="newName" placeholder="新增用户名字"><button id="addName">新增</button><span id="deviceNameStatus" class="config-status">正在读取...</span></div>
+</section>
+<section>
+<h2>用户任务</h2>
+<div class="choice"><select id="deviceTask" disabled><option value="">正在读取...</option></select><button id="saveDeviceTask">保存</button><input id="newTask" placeholder="新增用户任务"><button id="addTask">新增</button><span id="deviceTaskStatus" class="config-status">正在读取...</span></div>
+</section>
+<section>
+<h2>存储与采集</h2>
+<dl class="kv">
+<div><dt>SD 卡</dt><dd id="sd">-</dd></div>
+<div><dt>SD 剩余</dt><dd id="sdFree">-</dd></div>
+<div><dt>eMMC</dt><dd id="emmc">-</dd></div>
+<div><dt>采集 session</dt><dd id="session">-</dd></div>
+<div><dt>采集运行时长</dt><dd id="captureDuration">-</dd></div>
+<div><dt>采集质量</dt><dd id="quality">-</dd></div>
+<div><dt>Writer 队列</dt><dd id="queue">-</dd></div>
+</dl>
+</section>
+<section>
+<h2>电源与指示灯</h2>
+<dl class="kv">
+<div><dt>供电电压</dt><dd id="voltage">-</dd></div>
+<div><dt>芯片温度</dt><dd id="temperature">-</dd></div>
+<div><dt>遥测采样</dt><dd id="sampledAt">-</dd></div>
+</dl>
+<div id="ledRows"></div>
+</section>
+<section>
+<h2>QC、压力测试与更新</h2>
+<dl class="kv">
+<div><dt>QC 状态</dt><dd id="qc">-</dd></div>
+<div><dt>QC 进度</dt><dd id="qcProgress">-</dd></div>
+<div><dt>QC 失败项</dt><dd id="qcFailures">-</dd></div>
+<div><dt>压力测试</dt><dd id="stress">-</dd></div>
+<div><dt>压力测试电量</dt><dd id="stressPower">-</dd></div>
+<div><dt>相机读/写/保存</dt><dd id="stressCameras">-</dd></div>
+<div><dt>压力测试报告</dt><dd id="stressReport">-</dd></div>
+<div><dt>Updater</dt><dd id="updater">-</dd></div>
+<div><dt>更新目标</dt><dd id="updateRelease">-</dd></div>
+<div><dt>更新说明</dt><dd id="updateReason">-</dd></div>
+</dl>
+</section>
+<section>
+<h2>运行组件</h2>
+<div id="components" class="components"></div>
+</section>
+<section>
+<h2>活动告警</h2>
+<div id="alerts"></div>
+</section>
+<footer><span id="schema">-</span><span id="updated">尚未更新</span></footer>
+</main>
+<script>
+const byId=id=>document.getElementById(id);
+const text=(value,fallback='-')=>value===null||value===undefined||value===''?fallback:String(value);
+const number=(value,digits=1,suffix='')=>{
+if(value===null||value===undefined||value==='')return '-';
+const parsed=Number(value);
+return Number.isFinite(parsed)?parsed.toFixed(digits)+suffix:'-';
+};
+const bytes=value=>{
+if(value===null||value===undefined||value==='')return '-';
+const parsed=Number(value);
+if(!Number.isFinite(parsed)||parsed<0)return '-';
+const units=['B','KiB','MiB','GiB','TiB'];
+let amount=parsed,index=0;
+while(Math.abs(amount)>=1024&&index<units.length-1){amount/=1024;index++}
+return amount.toFixed(1)+' '+units[index];
+};
+const duration=value=>{
+const seconds=Number(value);
+if(!Number.isFinite(seconds))return '-';
+if(seconds<60)return Math.round(seconds)+' 秒';
+if(seconds<3600)return Math.floor(seconds/60)+' 分 '+Math.round(seconds%60)+' 秒';
+return Math.floor(seconds/3600)+' 小时 '+Math.floor((seconds%3600)/60)+' 分';
+};
+const stateClass=value=>{
+const state=text(value,'UNKNOWN').toUpperCase();
+if(['OK','ONLINE','RUNNING','STREAMING','PASS','SUCCESS','IDLE','SYNCHRONIZED'].includes(state))return 'state-ok';
+if(['FAILED','FAIL','FAULT','STOPPED','STALE','OFFLINE','UNAVAILABLE'].includes(state))return 'state-fail';
+return 'state-warn';
+};
+const node=(tag,className,value)=>{
+const item=document.createElement(tag);
+if(className)item.className=className;
+if(value!==undefined)item.textContent=value;
+return item;
+};
+const setText=(id,value,fallback='-')=>{byId(id).textContent=text(value,fallback)};
+let cameraConfig=null;
+const configField=(tag, type, value, disabled=false)=>{const el=document.createElement(tag);el.type=type;el.value=value??'';el.disabled=disabled;return el};
+function renderCameraConfig(manifest){
+const root=byId('cameraConfigRows');root.replaceChildren();cameraConfig=JSON.parse(JSON.stringify(manifest));
+['角色','启用','必选','设备节点','Profile','FPS'].forEach(label=>root.append(node('div','config-head',label)));
+Object.keys(cameraConfig.cameras).forEach(role=>{
+const spec=cameraConfig.cameras[role]||{};
+root.append(node('strong','',role));
+const enabled=configField('input','checkbox',null,role==='main');enabled.checked=spec.enabled!==false;enabled.onchange=()=>{spec.enabled=enabled.checked;if(!enabled.checked||spec.extension)required.checked=false;required.disabled=role==='main'||spec.extension||!enabled.checked;spec.required=required.checked};root.append(enabled);
+const required=configField('input','checkbox',null,role==='main'||spec.extension||!enabled.checked);required.checked=spec.required===true;required.onchange=()=>{spec.required=required.checked};root.append(required);
+const source=configField('input','text',spec.source||'RealSense T265',role==='t265');source.onchange=()=>{spec.source=source.value};root.append(source);
+const profile=document.createElement('select');['USB','DECXIN','STEREO_USB'].forEach(value=>{const option=node('option','',value);option.value=value;option.selected=spec.profile===value;profile.append(option)});profile.disabled=role==='t265';profile.onchange=()=>{spec.profile=profile.value};root.append(profile);
+const fps=configField('input','number',spec.recording_fps||30,false);fps.min='1';fps.max='120';fps.step='1';fps.onchange=()=>{spec.recording_fps=Number(fps.value);if(spec.minimum_recording_fps>spec.recording_fps)spec.minimum_recording_fps=spec.recording_fps};root.append(fps);
+});
+byId('cameraConfigHash').textContent='SHA-256 '+text(cameraConfig.sha256||cameraConfigHash,'未知');
+}
+let cameraConfigHash='';
+async function loadCameraConfig(){
+try{const response=await fetch('/api/v1/camera-config',{cache:'no-store'});if(!response.ok)throw new Error('HTTP '+response.status);const data=await response.json();cameraConfigHash=data.sha256||'';renderCameraConfig(data.manifest);}
+catch(error){byId('cameraConfigHash').textContent='配置读取失败：'+error.message}
+}
+async function saveCameraConfig(){
+if(!cameraConfig)return;const button=byId('saveCameraConfig');button.disabled=true;
+const payload={version:cameraConfig.version,cameras:cameraConfig.cameras};
+try{const response=await fetch('/api/v1/camera-config',{method:'PUT',headers:{'Content-Type':'application/json','If-Match':cameraConfigHash},body:JSON.stringify(payload)});const data=await response.json();if(!response.ok)throw new Error(data.message||'HTTP '+response.status);cameraConfigHash=data.sha256||cameraConfigHash;byId('cameraConfigHash').textContent='已保存，采集服务正在重启 | SHA-256 '+cameraConfigHash;setTimeout(loadCameraConfig,3000)}
+catch(error){byId('cameraConfigHash').textContent='保存失败：'+error.message}
+finally{button.disabled=false}
+}
+byId('saveCameraConfig').addEventListener('click',saveCameraConfig);
+async function loadDeviceName(){
+try{const r=await fetch('/api/v1/device-name',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.message||'HTTP '+r.status);const s=byId('deviceName'),n=d.choices||[];s.replaceChildren();n.forEach(x=>s.append(new Option(x,x)));s.value=d.name||'';s.disabled=!n.length;byId('deviceNameStatus').textContent=d.name?'当前用户名字：'+d.name:'未配置可选用户名字'}
+catch(error){byId('deviceNameStatus').textContent='用户名字读取失败：'+error.message}
+}
+async function saveDeviceName(){
+const input=byId('deviceName'),button=byId('saveDeviceName'),name=input.value;
+if(!name){byId('deviceNameStatus').textContent='请选择用户名字';return}
+button.disabled=true;
+try{const response=await fetch('/api/v1/device-name',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await response.json();if(!response.ok)throw new Error(data.message||'HTTP '+response.status);input.value=data.name;byId('deviceNameStatus').textContent='已保存；新 session 将记录该名称'}
+catch(error){byId('deviceNameStatus').textContent='用户名字保存失败：'+error.message}
+finally{button.disabled=false}
+}
+byId('saveDeviceName').addEventListener('click',saveDeviceName);
+async function loadDeviceTask(){try{const r=await fetch('/api/v1/device-task',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.message||'HTTP '+r.status);const s=byId('deviceTask');s.replaceChildren();(d.choices||[]).forEach(c=>{const o=new Option(c.label,c.value);s.append(o)});s.value=d.task||'';s.disabled=false;byId('deviceTaskStatus').textContent=d.task?'当前任务：'+s.selectedOptions[0].textContent:'未设置用户任务'}catch(e){byId('deviceTaskStatus').textContent='用户任务读取失败：'+e.message}}
+async function saveDeviceTask(){const s=byId('deviceTask'),b=byId('saveDeviceTask');if(!s.value){byId('deviceTaskStatus').textContent='请选择用户任务';return}b.disabled=true;try{const r=await fetch('/api/v1/device-task',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({task:s.value})}),d=await r.json();if(!r.ok)throw Error(d.message||'HTTP '+r.status);s.value=d.task;byId('deviceTaskStatus').textContent='已保存；新 session 将记录该任务'}catch(e){byId('deviceTaskStatus').textContent='用户任务保存失败：'+e.message}finally{b.disabled=false}}
+byId('saveDeviceTask').addEventListener('click',saveDeviceTask);
+async function addChoice(k){const n=k==='name',i=byId(n?'newName':'newTask'),b=byId(n?'addName':'addTask'),s=byId(n?'deviceNameStatus':'deviceTaskStatus'),v=i.value.trim();if(!v){s.textContent='请输入用户'+(n?'名字':'任务');return}b.disabled=true;try{const r=await fetch('/api/v1/device-'+k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(n?{name:v}:{label:v})}),d=await r.json();if(!r.ok)throw Error(d.message||'HTTP '+r.status);i.value='';await(n?loadDeviceName():loadDeviceTask())}catch(e){s.textContent='新增失败：'+e.message}finally{b.disabled=false}}
+byId('addName').onclick=()=>addChoice('name');byId('addTask').onclick=()=>addChoice('task');
+function renderCameras(cameras){
+const root=byId('cameraRows');
+root.replaceChildren();
+const items=cameras.items||[];
+if(!items.length){root.append(node('div','empty','无相机遥测'));return}
+items.forEach(camera=>{
+const row=node('div','camera-row');
+row.append(node('div','camera-role',text(camera.role)));
+row.append(node('div','state '+stateClass(camera.state),text(camera.state)));
+const policy=camera.extension?'extension':(camera.required?'required':'optional');
+const freshness=camera.fresh?'fresh':'stale';
+const age=number(camera.last_frame_age_seconds,3,' s');
+row.append(node('div','camera-meta',policy+' | '+freshness+' | age '+age+' | reconnects '+text(camera.reconnect_count,0)));
+if(camera.reason)row.append(node('div','camera-reason',camera.reason));
+root.append(row);
+});
+}
+function renderLeds(indicators){
+const root=byId('ledRows');
+root.replaceChildren();
+[['状态灯',indicators.status||{}],['电池灯',indicators.battery||{}]].forEach(([label,led])=>{
+const row=node('div','led-row');
+row.append(node('div','',label));
+const detail=node('div');
+const swatch=node('span','swatch');
+const color=text(led.color_hex,'').replace(/^#/,'');
+if(/^[0-9a-fA-F]{6}$/.test(color))swatch.style.backgroundColor='#'+color;
+detail.append(swatch);
+detail.append(document.createTextNode([
+text(led.color_name,'unknown'),
+text(led.mode,'unknown'),
+text(led.pattern,'unknown'),
+text(led.trigger,'unknown'),
+text(led.write_state,'unknown')
+].join(' | ')));
+row.append(detail);
+root.append(row);
+});
+}
+function renderComponents(items){
+const root=byId('components');
+root.replaceChildren();
+(items||[]).forEach(component=>{
+const row=node('div','component-row');
+row.append(node('span','',text(component.name)));
+row.append(node('span','state '+stateClass(component.state),text(component.state)));
+root.append(row);
+});
+}
+function renderAlerts(alerts){
+const root=byId('alerts');
+root.replaceChildren();
+const items=alerts.items||[];
+if(!items.length){root.append(node('div','empty','无活动告警'));return}
+items.forEach(alert=>{
+const row=node('div','alert-row');
+const head=node('div','alert-head');
+const severity=text(alert.severity,'info').toUpperCase();
+head.append(node('span','badge '+(severity==='CRITICAL'?'fail':severity==='WARNING'?'warn':'info'),severity));
+head.append(node('strong','',text(alert.component,'unknown')));
+head.append(node('span','state '+stateClass(alert.state||alert.code),text(alert.code)));
+row.append(head);
+if(alert.message)row.append(node('div','alert-message',alert.message));
+if(alert.action)row.append(node('div','alert-action',alert.action));
+root.append(row);
+});
+}
+function render(status){
+const device=status.device||{},runtime=status.runtime||{},cameras=status.cameras||{};
+const storage=status.storage||{},emmc=status.emmc_storage||{},telemetry=status.telemetry||{};
+const recording=status.recording||{},indicators=status.indicators||{},qc=status.qc||{},stress=status.stress_test||{};
+const updater=status.updater||{},alerts=status.alerts||{};
+const health=text(status.health,'FAILED').toUpperCase();
+byId('health').textContent=health;
+byId('health').className='badge '+(health==='OK'?'ok':health==='DEGRADED'?'warn':'fail');
+byId('identity').textContent=[device.device_name,device.device_task,device.device_id,device.workspace_version&&('v'+device.workspace_version),device.channel].filter(Boolean).join(' | ')||'未知设备';
+setText('phase',status.phase);
+setText('admission',status.can_stop?'采集中，可停止':status.can_start?'允许开始':'禁止开始');
+setText('cameraSummary',text(cameras.fresh,0)+' / '+text(cameras.configured,0)+' fresh');
+setText('alertSummary','共 '+text(alerts.total,0)+' / 严重 '+text(alerts.critical,0)+' / 警告 '+text(alerts.warning,0));
+setText('deviceId',device.device_id);
+setText('address',location.hostname);
+setText('channel',device.channel);
+setText('workspace',device.workspace_version);
+setText('release',device.release_id);
+setText('firmware',device.firmware_version,device.firmware_version_error||'-');
+setText('uptime',duration(runtime.uptime_seconds));
+setText('heartbeat',status.heartbeat_stale?'超时':number(status.heartbeat_age_seconds,3,' s'));
+setText('runtimeTime',runtime.timestamp);
+setText('reasons',(status.reasons||[]).join('; '),'无');
+renderCameras(cameras);
+setText('sd',(storage.writable?'可写':'不可用')+' | '+text(storage.filesystem_type,'未知')+' | '+number(storage.used_percent,1,'% 已用')+(storage.data_export_required?' | 需要导出':''));
+setText('sdFree',bytes(storage.free_bytes)+' / '+bytes(storage.total_bytes));
+setText('emmc',number(emmc.used_percent,1,'% 已用')+' | 剩余 '+bytes(emmc.free_bytes));
+setText('session',recording.session_active?text(recording.session_id)+' | '+text(recording.storage_mode):'无');
+setText('captureDuration',recording.session_active?duration(recording.elapsed_seconds):'未采集');
+setText('quality',text(recording.quality)+' | drops '+text(recording.dropped_batches,0));
+setText('queue',text(recording.queue_depth,0)+' / '+text(recording.queue_capacity,0)+' | writer '+(recording.writer_alive?'running':'stopped')+(recording.writer_busy?' / busy':''));
+setText('voltage',number(telemetry.vcc_voltage,3,' V'));
+setText('temperature',number(telemetry.chip_temp,1,' C'));
+setText('sampledAt',telemetry.sampled_at);
+renderLeds(indicators);
+setText('qc',text(qc.phase,'IDLE')+' / '+text(qc.result,'not-run'));
+setText('qcProgress',number(qc.progress_percent,1,'%')+(qc.remaining_seconds!==null&&qc.remaining_seconds!==undefined?' | 剩余 '+duration(qc.remaining_seconds):''));
+const qcFailureDetails=(qc.failure_details||[]).map(item=>item.summary+' ('+item.code+')');
+setText('qcFailures',qcFailureDetails.join('；')||(qc.failures||[]).join(', '),'无');
+setText('stress',text(stress.phase,'IDLE')+' / '+text(stress.result,'not-run')+' | '+duration(stress.elapsed_seconds)+' | '+text(stress.sample_count,0)+' samples | '+text(stress.stop_reason,'running'));
+const sb=stress.battery||{};
+setText('stressPower','start '+number(sb.start_voltage,3,' V')+' | now '+number(sb.end_voltage,3,' V')+' | min '+number(sb.minimum_voltage,3,' V')+' | stop '+number(stress.low_voltage_threshold,3,' V'));
+setText('stressCameras',(stress.cameras||[]).map(c=>c.stream+' '+c.read+'/'+c.write+'/'+c.saved+' (+'+c.read_delta+'/'+c.write_delta+'/'+c.saved_delta+')').join(' | '),'无');
+setText('stressReport',stress.summary_path||stress.telemetry_path);
+setText('updater',text(updater.state,'IDLE')+' / '+text(updater.result,'not-run'));
+setText('updateRelease',updater.release_after);
+setText('updateReason',updater.reason);
+renderComponents(status.components||[]);
+renderAlerts(alerts);
+setText('schema',status.schema);
+byId('updated').textContent='更新于 '+new Date().toLocaleTimeString();
+}
+async function refresh(){
+try{
+const response=await fetch('/status',{cache:'no-store'});
+render(await response.json());
+}catch(error){
+byId('health').textContent='离线';
+byId('health').className='badge fail';
+setText('reasons','状态接口不可用');
+byId('updated').textContent='更新失败 '+new Date().toLocaleTimeString();
+}finally{
+setTimeout(refresh,5000);
+}
+}
+refresh();
+loadCameraConfig();
+loadDeviceName();
+loadDeviceTask();
+</script>
+</body>
+</html>

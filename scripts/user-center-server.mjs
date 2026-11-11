@@ -23,6 +23,8 @@ import { openReviewAuditStore } from "./review-audit-store.mjs";
 import { openReviewQueries } from "./review-query-service.mjs";
 import { openTaskClaims, validateBatchKey } from "./task-claims-store.mjs";
 import { createCloudQcBridge } from "./cloud-qc-bridge.mjs";
+import { createOutboundReviewBridge } from "./outbound-review-bridge.mjs";
+import { openAnnotationAuditIndex } from "./annotation-audit-index.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CONFIG_PATH = path.join(repositoryRoot, "user-center.config.json");
@@ -245,6 +247,16 @@ async function readAuditEvents(dataRoot) {
   const lines = (await readFile(auditPath(dataRoot), "utf8")).split("\n").filter(Boolean);
   if (lines.length > MAX_AUDIT_EVENTS) throw new Error("监管事件数量超过安全上限");
   return lines.map((line) => JSON.parse(line));
+}
+
+function assignedTaskProgress(auditEventIds, username, plans) {
+  const progress = new Map(plans.map((plan) => [plan.task.toLowerCase(), { limit: plan.quantity, completed: 0, estimatedCompletionAtMs: null }]));
+  for (const [taskId, task] of progress) {
+    task.completed = Math.min(auditEventIds.completionCount(username, taskId), task.limit);
+    const average = auditEventIds.averageCompletionMs(username, taskId);
+    task.estimatedCompletionAtMs = average === null || task.completed === task.limit ? null : nowMs() + average * (task.limit - task.completed);
+  }
+  return progress;
 }
 
 function certificatePath(dataRoot) {
@@ -1010,10 +1022,11 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
   const configuration = normalizeConfiguration(inputConfiguration);
   const initialized = await initializeUserCenter(configuration, dataRoot);
   const cloudQc = await createCloudQcBridge(configuration.cloudQc, (await readState(dataRoot)).serviceId, clock);
+  const outboundReview = await createOutboundReviewBridge(configuration.outboundReview, (await readState(dataRoot)).serviceId, clock);
   const sessions = openAuthSessions(dataRoot, { idleTtlSeconds: configuration.sessionIdleTtlSeconds, clock });
   const attempts = new Map();
   const registrations = new Map();
-  const auditEventIds = new Set((await readAuditEvents(dataRoot)).map((event) => event.eventId));
+  const auditEventIds = await openAnnotationAuditIndex(dataRoot);
   const reviewAudit = openReviewAuditStore(dataRoot);
   const reviewQueries = openReviewQueries(dataRoot, reviewQueryOptions);
   const taskClaims = openTaskClaims(dataRoot);
@@ -1081,6 +1094,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             SOURCE_WRITEBACK_CAPABILITY,
             SESSION_CONTINUITY_CAPABILITY,
             ...(cloudQc ? ["cloudQcManagedSessionV1"] : []),
+            ...(outboundReview ? ["outboundReviewV1"] : []),
           ],
         });
       }
@@ -1227,6 +1241,24 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
           return sendJson(response, error.status ?? 502, { error: /^[A-Z0-9_]+$/.test(error.message) ? error.message : "CLOUD_QC_NETWORK_UNAVAILABLE" });
         }
       }
+      if (url.pathname === "/api/v1/outbound-review/proxy") {
+        const session = await authorize(request);
+        if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        if (!outboundReview) return sendJson(response, 503, { error: "OUTBOUND_NOT_CONFIGURED" });
+        if (request.method !== "POST") return sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+        const input = await parseJsonBody(request, 4096);
+        const latest = await authorize(request);
+        if (!latest) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        try {
+          const result = await outboundReview.request(latest.user, input);
+          const final = await authorize(request);
+          if (!final || final.user.canManage !== latest.user.canManage || final.user.displayName !== latest.user.displayName)
+            return sendJson(response, 409, { error: "OUTBOUND_ACCOUNT_CHANGED" });
+          return sendJson(response, 200, result);
+        } catch (error) {
+          return sendJson(response, error.status ?? 502, { error: /^[A-Z0-9_]+$/.test(error.message) ? error.message : "OUTBOUND_NETWORK_UNAVAILABLE" });
+        }
+      }
       if (request.method === "POST" && url.pathname === "/api/v1/auth/logout") {
         const token = bearerToken(request);
         if (token) sessions.revoke(token);
@@ -1239,13 +1271,13 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const user = state.users.find((candidate) => candidate.username === session.user.username);
         if (!user) return sendJson(response, 404, { error: "ACCOUNT_NOT_FOUND" });
         const details = new Map((state.taskDetails ?? []).map((entry) => [entry.task.toLowerCase(), entry.detail]));
-        const events = await readAuditEvents(dataRoot);
-        const summary = operationsSummary(events, state.users, state.alertActions ?? []).users
-          .find((candidate) => candidate.username === user.username);
-        const progressByTask = new Map((summary?.assignmentPlans ?? []).map((plan) => [plan.task.toLowerCase(), plan]));
-        const tasks = assignmentPlansFor(user).map((plan) => ({
+        const plans = assignmentPlansFor(user);
+        const progressByTask = assignedTaskProgress(auditEventIds, user.username, plans);
+        const tasks = plans.map((plan) => ({
           ...plan,
-          ...(progressByTask.get(plan.task.toLowerCase()) ?? {}),
+          completed: progressByTask.get(plan.task.toLowerCase())?.completed ?? 0,
+          remaining: Math.max(0, plan.quantity - (progressByTask.get(plan.task.toLowerCase())?.completed ?? 0)),
+          estimatedCompletionAtMs: progressByTask.get(plan.task.toLowerCase())?.estimatedCompletionAtMs ?? null,
           detail: details.get(plan.task.toLowerCase()) ?? plan.task,
         }));
         return sendJson(response, 200, { tasks });
@@ -1254,10 +1286,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const session = await authorize(request);
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         const range = requestedLocalDay(url.searchParams.get("date"));
-        const events = (await readAuditEvents(dataRoot))
-          .filter((event) => event.username === session.user.username
-            && event.occurredAtMs >= range.startMs && event.occurredAtMs < range.endMs)
-          .slice(-500).reverse();
+        const events = auditEventIds.activity(session.user.username, range.startMs, range.endMs);
         return sendJson(response, 200, { date: range.date, events });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/tasks/claims/lookup") {
@@ -1323,7 +1352,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
             return sendJson(response, 200, { eventId: event.eventId, duplicate: true });
           }
           await appendAuditEvent(dataRoot, event);
-          auditEventIds.add(event.eventId);
+          await auditEventIds.add();
           return sendJson(response, 201, { eventId: event.eventId });
         });
       }
@@ -1788,12 +1817,14 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       server = undefined;
       await reviewQueries.close();
+      auditEventIds.close();
       reviewAudit.close();
       taskClaims.close();
       clientPresence.close();
       sourceWriteback.close();
       sessions.close();
       cloudQc?.close();
+      outboundReview?.close();
     },
     configuration,
     clientConfigPath: initialized.clientConfigPath,

@@ -1,4 +1,5 @@
-//! D1 domain skeleton. No transport, shell, host, credentials or production commands.
+//! Real device health observations and local diagnostic snapshot packages.
+use crate::d1_device::{self, DeviceIdentity, DeviceRequest, HealthSnapshot};
 use crate::error::{AppError, AppResult};
 use crate::storage;
 use serde::{Deserialize, Serialize};
@@ -9,41 +10,14 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const RULE_VERSION: &str = "fixture-v1";
+const RULE_VERSION: &str = "dohc-health-v2";
 const MAX_FILE_BYTES: usize = 1024 * 1024;
 const MAX_PACKAGE_BYTES: usize = 4 * MAX_FILE_BYTES;
 const CONFIG: &str = include_str!("../../config/d1-manager.json");
-
 #[derive(Clone, Default)]
 pub struct DeviceState(Arc<Mutex<BTreeMap<String, (String, DiagnosticRun)>>>);
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Scenario {
-    Success,
-    Partial,
-    Failure,
-    Offline,
-    Timeout,
-    Disconnect,
-    ParseFailure,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DeviceTarget {
-    Simulation { scenario: Scenario },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RunRequest {
-    pub target: DeviceTarget,
-    pub timeout_ms: u64,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultStatus {
@@ -53,7 +27,6 @@ pub enum ResultStatus {
     Unsupported,
     NotRun,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -61,9 +34,9 @@ pub enum TaskStatus {
     TimedOut,
     Disconnected,
     Cancelled,
+    Unavailable,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckResult {
     pub id: String,
@@ -76,37 +49,127 @@ pub struct CheckResult {
     pub suggestion: String,
     pub error_kind: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeviceIdentity {
-    pub id: String,
-    pub model: String,
-    pub firmware: String,
-    pub source: String,
-    pub capabilities: Vec<String>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticRun {
     pub id: String,
-    pub source: String,
-    pub device: DeviceIdentity,
-    pub scenario: Scenario,
+    pub source: &'static str,
+    pub device: Option<DeviceIdentity>,
+    pub observation: Option<HealthSnapshot>,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
     pub status: TaskStatus,
     pub checks: Vec<CheckResult>,
 }
-
-pub fn availability() -> AppResult<serde_json::Value> {
-    // Inert registration only: never parsed into an URL or passed to a network client.
-    let configuration = serde_json::from_str::<serde_json::Value>(CONFIG)?;
+pub async fn availability(
+    interface_id: Option<String>,
+    ap_address: Option<String>,
+    connection_mode: Option<d1_device::ConnectionMode>,
+) -> AppResult<serde_json::Value> {
+    let mode = DeviceRequest {
+        interface_id: String::new(),
+        ap_address: ap_address.clone(),
+        connection_mode,
+    }
+    .validated_mode()
+    .map_err(|value| AppError::Message(value.message.into()))?;
+    if mode == d1_device::ConnectionMode::Lan {
+        let request = DeviceRequest {
+            interface_id: "lan".into(),
+            ap_address: ap_address.clone(),
+            connection_mode: Some(mode),
+        };
+        let (observation, query_error) =
+            match d1_device::query(&request, &AtomicBool::new(false)).await {
+                Ok(value) => (Some(value), None),
+                Err(value) => (None, Some(value)),
+            };
+        return Ok(
+            serde_json::json!({"connection":if observation.is_some(){"connected"}else{"query_failed"},
+            "identity":observation.as_ref().map(|value|&value.device),"realDeviceEnabled":observation.is_some(),
+            "observation":observation,"error":query_error,"attemptedAddress":ap_address,"selectedInterfaceId":"lan",
+            "configuration":serde_json::from_str::<serde_json::Value>(CONFIG)?,
+            "linkDiscovery":{"status":"no_candidates","platform":std::env::consts::OS,"observedAtMs":millis(),"candidates":[],"error":null}}),
+        );
+    }
+    let mut links = d1_device::inventory_for(mode != d1_device::ConnectionMode::TypeC)
+        .await
+        .map_err(|value| AppError::Message(value.message.into()))?;
+    if mode == d1_device::ConnectionMode::Ap {
+        links
+            .candidates
+            .retain(|link| d1_device::hotspot_address(link).is_some());
+        if links.candidates.is_empty() {
+            return Ok(
+                serde_json::json!({"connection":"query_failed","identity":null,"observation":null,
+                "attemptedAddress":null,"selectedInterfaceId":null,"realDeviceEnabled":false,
+                "error":{"code":"D1_AP_GATEWAY_UNAVAILABLE","message":"未找到可用的热点连接。请在电脑 Wi-Fi 中连接设备标签对应的 Delta-D1 热点，等待获得地址后重试。"},
+                "linkDiscovery":links,"configuration":serde_json::from_str::<serde_json::Value>(CONFIG)?}),
+            );
+        }
+    }
+    if let Some(address) = ap_address.as_deref() {
+        links
+            .candidates
+            .retain(|link| d1_device::address_matches(link, address));
+        if links.candidates.is_empty() {
+            return Ok(
+                serde_json::json!({"connection":"query_failed","identity":null,"observation":null,
+                "attemptedAddress":null,"error":{"code":"D1_ADDRESS_UNAVAILABLE","message":"设备 IP 无效或不在电脑活动网卡的同一网段，请核对语音播报的地址与电脑网络。"},
+                "selectedInterfaceId":null,"realDeviceEnabled":false,"linkDiscovery":links,
+                "configuration":serde_json::from_str::<serde_json::Value>(CONFIG)?}),
+            );
+        }
+    }
+    let selected = match interface_id {
+        Some(id) => links
+            .candidates
+            .iter()
+            .find(|link| link.interface_id == id)
+            .map(|link| link.interface_id.clone()),
+        None if links.candidates.len() == 1 => Some(links.candidates[0].interface_id.clone()),
+        _ => None,
+    };
+    let mut observation = None;
+    let mut query_error = None;
+    let mut attempted_address = None;
+    if let Some(id) = selected.as_ref() {
+        if let Some(link) = links.candidates.iter().find(|link| {
+            link.interface_id == *id
+                && (ap_address.is_some() || link.state == "identity_unverified")
+        }) {
+            attempted_address = d1_device::attempted_address(
+                link,
+                &DeviceRequest {
+                    interface_id: id.clone(),
+                    ap_address: ap_address.clone(),
+                    connection_mode: Some(mode),
+                },
+            );
+            match d1_device::query(
+                &DeviceRequest {
+                    interface_id: id.clone(),
+                    ap_address: ap_address.clone(),
+                    connection_mode: Some(mode),
+                },
+                &AtomicBool::new(false),
+            )
+            .await
+            {
+                Ok(value) => observation = Some(value),
+                Err(value) => query_error = Some(value),
+            }
+        }
+    }
+    let configuration: serde_json::Value = serde_json::from_str(CONFIG)?;
     Ok(
-        serde_json::json!({"connection":"not_connected", "identity":null,
-        "realDeviceEnabled":false, "configuration":configuration}),
+        serde_json::json!({"connection":if observation.is_some(){"connected"}else if query_error.is_some(){"query_failed"}else{"not_connected"},
+        "realDeviceEnabled":observation.is_some(),"selectedInterfaceId":selected,"attemptedAddress":attempted_address,
+        "identity":observation.as_ref().map(|value|&value.device),"observation":observation,"error":query_error,
+        "configuration":configuration,"linkDiscovery":links}),
     )
 }
-fn millis() -> u64 {
+pub(super) fn millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -118,141 +181,266 @@ fn nonce() -> AppResult<String> {
         .map_err(|_| AppError::Message("D1_RANDOM_UNAVAILABLE: 系统随机源不可用，请重试".into()))?;
     Ok(bytes.iter().map(|value| format!("{value:02x}")).collect())
 }
-fn identity(scenario: &Scenario) -> DeviceIdentity {
-    DeviceIdentity {
-        id: "simulated:local-fixture".into(),
-        model: "D1 模拟设备".into(),
-        firmware: if *scenario == Scenario::Partial {
-            "fixture-legacy"
+fn checks(snapshot: &HealthSnapshot) -> Vec<CheckResult> {
+    let yes_no = |value: Option<bool>| match value {
+        Some(true) => "是",
+        Some(false) => "否",
+        None => "未提供",
+    };
+    let mut result = Vec::new();
+    let mut add =
+        |id: &str, name: &str, status: ResultStatus, evidence: String, suggestion: &str| {
+            result.push(CheckResult {
+                id: id.into(),
+                name: name.into(),
+                status,
+                evidence,
+                observed_at_ms: Some(snapshot.observed_at_ms),
+                rule_version: RULE_VERSION.into(),
+                applicable_firmware: format!(
+                    "dohc.device.health.v1 · DOHC {}",
+                    snapshot
+                        .device
+                        .application_version
+                        .as_deref()
+                        .unwrap_or("未提供版本")
+                ),
+                suggestion: suggestion.into(),
+                error_kind: None,
+            });
+        };
+    let fresh = snapshot.heartbeat_stale == Some(false);
+    add(
+        "heartbeat",
+        "采集状态时效",
+        if fresh {
+            ResultStatus::Normal
         } else {
-            "fixture-current"
-        }
-        .into(),
-        source: "simulated".into(),
-        capabilities: if *scenario == Scenario::Partial {
-            vec!["fixture-link".into(), "fixture-result".into()]
-        } else {
-            vec![
-                "fixture-link".into(),
-                "fixture-result".into(),
-                "fixture-optional".into(),
-            ]
+            ResultStatus::Indeterminate
         },
+        format!(
+            "设备报告采集状态已过期：{}",
+            yes_no(snapshot.heartbeat_stale)
+        ),
+        "状态过期时先恢复设备状态服务再复检，不能据此判断硬件损坏。",
+    );
+    add(
+        "health",
+        "设备总体状态",
+        if !fresh || snapshot.connection_limited_only {
+            ResultStatus::Indeterminate
+        } else {
+            match snapshot.health.as_deref() {
+                Some("OK") => ResultStatus::Normal,
+                Some("FAILED" | "DEGRADED") => ResultStatus::Abnormal,
+                _ => ResultStatus::Indeterminate,
+            }
+        },
+        format!(
+            "{}设备报告 health={}，phase={}；健康查询 HTTP {}",
+            if snapshot.connection_limited_only {
+                "总体报告仅见 Type-C 占用造成的扩展相机限制，不判定硬件故障；"
+            } else {
+                ""
+            },
+            snapshot.health.as_deref().unwrap_or("未提供"),
+            snapshot.phase.as_deref().unwrap_or("未提供"),
+            snapshot.http_status
+        ),
+        "按下列设备报告逐项排查并复检；异常状态不等同硬件损坏。",
+    );
+    if snapshot.cameras.is_empty() {
+        add(
+            "cameras",
+            "相机状态",
+            ResultStatus::Unsupported,
+            "设备报告未提供相机状态。".into(),
+            "确认设备应用支持相机健康状态后复检。",
+        );
     }
-}
-fn checks() -> Vec<CheckResult> {
-    [
-        ("fixture-link", "连接观测"),
-        ("fixture-result", "状态观测"),
-        ("fixture-optional", "可选能力观测"),
-    ]
-    .into_iter()
-    .map(|(id, name)| CheckResult {
-        id: id.into(),
-        name: name.into(),
-        status: ResultStatus::NotRun,
-        evidence: "尚未执行此项模拟检查".into(),
-        observed_at_ms: None,
-        rule_version: RULE_VERSION.into(),
-        applicable_firmware: "仅 fixture-current / fixture-legacy；不适用于真实固件".into(),
-        suggestion: "运行检测后查看观测证据。".into(),
-        error_kind: None,
-    })
-    .collect()
-}
-fn unknown(check: &mut CheckResult, kind: &str, evidence: &str) {
-    check.status = ResultStatus::Indeterminate;
-    check.error_kind = Some(kind.into());
-    check.observed_at_ms = Some(millis());
-    check.evidence = evidence.into();
-    check.suggestion = "恢复连接或补齐可解析的证据后复检；当前结果不能判断硬件损坏。".into();
-}
-
-pub fn run(request: RunRequest, cancelled: &AtomicBool) -> AppResult<DiagnosticRun> {
-    if !(100..=10_000).contains(&request.timeout_ms) {
-        return Err(AppError::Message(
-            "D1_TIMEOUT_INVALID: 超时必须在 100–10000 ms 内".into(),
-        ));
+    for camera in &snapshot.cameras {
+        let port_limited = snapshot.camera_port_limited && camera.role == "stereo_extension";
+        let status = if port_limited || camera.enabled == Some(false) {
+            ResultStatus::NotRun
+        } else if !fresh || camera.enabled.is_none() {
+            ResultStatus::Indeterminate
+        } else {
+            match (camera.state.as_deref(), camera.fresh) {
+                (Some("STREAMING"), Some(true)) => ResultStatus::Normal,
+                (Some("FAULT" | "FAILED"), Some(false)) => ResultStatus::Abnormal,
+                _ => ResultStatus::Indeterminate,
+            }
+        };
+        add(
+            &format!("camera:{}", camera.role),
+            &format!("相机 · {}", camera.name.as_deref().unwrap_or(&camera.role)),
+            status,
+            format!(
+                "{}设备报告状态={}；画面有效：{}，已启用：{}，必需相机：{}；{}",
+                if port_limited {
+                    "Type-C 当前用于诊断连接，扩展双目相机未检查；此项不判故障。"
+                } else {
+                    ""
+                },
+                camera.state.as_deref().unwrap_or("未提供"),
+                yes_no(camera.fresh),
+                yes_no(camera.enabled),
+                yes_no(camera.required),
+                camera.reason.as_deref().unwrap_or("无补充原因")
+            ),
+            if port_limited {
+                "改用设备热点按 IP 连接，并接回扩展双目相机后复检；本次未验证相机健康。"
+            } else {
+                "检查对应相机连接和配置后复检；恢复中或缺少证据时不能判定相机损坏。"
+            },
+        );
     }
-    let DeviceTarget::Simulation { scenario } = request.target;
-    let mut result = DiagnosticRun {
-        id: format!("simulated:{}", nonce()?),
-        source: "simulated".into(),
-        device: identity(&scenario),
-        scenario: scenario.clone(),
-        started_at_ms: millis(),
+    match &snapshot.storage {
+        Some(storage) => add(
+            "storage",
+            "采集存储",
+            if !fresh {
+                ResultStatus::Indeterminate
+            } else {
+                match (storage.mounted, storage.writable, storage.usage_warning) {
+                    (Some(false), _, _) | (_, Some(false), _) | (_, _, Some(true)) => {
+                        ResultStatus::Abnormal
+                    }
+                    (Some(true), Some(true), Some(false)) => ResultStatus::Normal,
+                    _ => ResultStatus::Indeterminate,
+                }
+            },
+            format!(
+                "设备报告已挂载：{}，可写：{}，容量告警：{}，格式={}，剩余字节={}；{}",
+                yes_no(storage.mounted),
+                yes_no(storage.writable),
+                yes_no(storage.usage_warning),
+                storage.filesystem.as_deref().unwrap_or("未提供"),
+                storage
+                    .free_bytes
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "未提供".into()),
+                storage.reason.as_deref().unwrap_or("无补充原因")
+            ),
+            "按设备报告检查采集卡挂载、可写性和容量；不会格式化或修改存储。",
+        ),
+        None => add(
+            "storage",
+            "采集存储",
+            ResultStatus::Unsupported,
+            "设备未提供存储状态。".into(),
+            "确认设备应用版本支持存储状态查询。",
+        ),
+    }
+    for (index, alert) in snapshot.alerts.iter().enumerate().filter(|(_, alert)| {
+        !alert
+            .component
+            .as_deref()
+            .is_some_and(|component| component.starts_with("camera."))
+    }) {
+        let status = if !fresh {
+            ResultStatus::Indeterminate
+        } else {
+            match alert.severity.as_deref() {
+                Some("critical" | "warning") => ResultStatus::Abnormal,
+                Some("info") => ResultStatus::Normal,
+                _ => ResultStatus::Indeterminate,
+            }
+        };
+        add(
+            &format!("alert:{index}"),
+            if alert.code.starts_with("BATTERY_") {
+                "供电告警"
+            } else {
+                "设备告警"
+            },
+            status,
+            format!(
+                "{} · {}",
+                alert.code,
+                alert.message.as_deref().unwrap_or("设备未提供说明")
+            ),
+            alert.action.as_deref().unwrap_or("按设备告警排查后复检。"),
+        );
+    }
+    let (status, evidence) = match &snapshot.self_test {
+        Some(test) if test.phase.as_deref() == Some("IDLE") && test.result.is_none() => (
+            ResultStatus::NotRun,
+            "设备尚未执行长时自检；本次只读取当前健康状态。".into(),
+        ),
+        Some(test) => (
+            // A previously persisted QC result cannot establish current health.
+            ResultStatus::Indeterminate,
+            format!(
+                "设备已有自检 phase={}，result={}；属于设备已有结果，不是本次启动的自检。",
+                test.phase.as_deref().unwrap_or("未提供"),
+                test.result.as_deref().unwrap_or("未提供")
+            ),
+        ),
+        None => (
+            ResultStatus::Unsupported,
+            "当前设备未提供长时自检结果。".into(),
+        ),
+    };
+    add(
+        "self-test",
+        "设备已有长时自检",
+        status,
+        evidence,
+        "本次检测不触发采集、长时自检、重启或配置修改。",
+    );
+    result
+}
+pub async fn run(request: DeviceRequest, cancelled: &AtomicBool) -> AppResult<DiagnosticRun> {
+    let started = millis();
+    let mut run = DiagnosticRun {
+        id: format!("device:{}", nonce()?),
+        source: "physical_device",
+        device: None,
+        observation: None,
+        started_at_ms: started,
         finished_at_ms: 0,
         status: TaskStatus::Completed,
-        checks: checks(),
+        checks: vec![],
     };
-    let start = Instant::now();
-    for index in 0..result.checks.len() {
-        let step = Instant::now();
-        let delay = if scenario == Scenario::Timeout {
-            Duration::from_secs(11)
-        } else {
-            Duration::from_millis(220)
-        };
-        loop {
-            if cancelled.load(Ordering::Acquire) {
-                result.status = TaskStatus::Cancelled;
-                break;
-            }
-            if start.elapsed() >= Duration::from_millis(request.timeout_ms) {
-                result.status = TaskStatus::TimedOut;
-                unknown(
-                    &mut result.checks[index],
-                    "timeout",
-                    "模拟响应未在本次时间预算内返回，没有取得硬件故障证据。",
-                );
-                break;
-            }
-            if step.elapsed() >= delay {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
+    match d1_device::query(&request, cancelled).await {
+        Ok(snapshot) => {
+            run.checks = checks(&snapshot);
+            run.device = Some(snapshot.device.clone());
+            run.observation = Some(snapshot);
         }
-        if result.status != TaskStatus::Completed {
-            break;
-        }
-        let check = &mut result.checks[index];
-        if scenario == Scenario::Offline || (scenario == Scenario::Disconnect && index == 1) {
-            unknown(
-                check,
-                "disconnected",
-                if scenario == Scenario::Offline {
-                    "模拟设备离线，未收到观测数据。"
+        Err(error) => {
+            run.status = match error.code {
+                "D1_CANCELLED" => TaskStatus::Cancelled,
+                "D1_QUERY_TIMEOUT" => TaskStatus::TimedOut,
+                "D1_DISCONNECTED" => TaskStatus::Disconnected,
+                _ => TaskStatus::Unavailable,
+            };
+            run.checks.push(CheckResult {
+                id: "health-query".into(),
+                name: "设备健康查询".into(),
+                status: if run.status == TaskStatus::Cancelled {
+                    ResultStatus::NotRun
+                } else if ["D1_PROTOCOL_UNSUPPORTED", "D1_HEALTH_PAGE_ONLY"].contains(&error.code) {
+                    ResultStatus::Unsupported
                 } else {
-                    "首项后模拟连接中断，后续未执行。"
+                    ResultStatus::Indeterminate
                 },
-            );
-            result.status = TaskStatus::Disconnected;
-            break;
-        }
-        check.observed_at_ms = Some(millis());
-        if scenario == Scenario::Partial && index == 2 {
-            check.status = ResultStatus::Unsupported;
-            check.evidence = "合成 fixture-legacy 能力列表未声明 fixture-optional。".into();
-            check.suggestion = "此模拟固件不支持该项；不能算作通过。".into();
-        } else if scenario == Scenario::ParseFailure && index == 1 {
-            unknown(
-                check,
-                "parse_failure",
-                "合成响应缺少 fixture-v1 必需字段，无法解析观测。",
-            );
-        } else if scenario == Scenario::Failure && index == 1 {
-            check.status = ResultStatus::Abnormal;
-            check.evidence =
-                "合成响应 flag=fixture-failure，命中 fixture-v1 的显式失败分支。".into();
-            check.suggestion = "这是合成异常，不代表实际硬件故障；真实建议需正式设备规则。".into();
-        } else {
-            check.status = ResultStatus::Normal;
-            check.evidence = "合成响应 flag=fixture-ok，与 fixture-v1 的预期值一致。".into();
-            check.suggestion = "本项模拟通过；真实设备仍未检测。".into();
+                evidence: error.message.into(),
+                observed_at_ms: if run.status == TaskStatus::Cancelled {
+                    None
+                } else {
+                    Some(millis())
+                },
+                rule_version: RULE_VERSION.into(),
+                applicable_firmware: "尚未取得设备版本".into(),
+                suggestion: "检查连接并复检；当前没有硬件损坏证据。".into(),
+                error_kind: Some(error.code.into()),
+            });
         }
     }
-    result.finished_at_ms = millis().max(result.started_at_ms + 1);
-    Ok(result)
+    run.finished_at_ms = millis().max(started + 1);
+    Ok(run)
 }
 impl DeviceState {
     pub fn remember(&self, owner: &str, run: DiagnosticRun) -> AppResult<()> {
@@ -284,7 +472,7 @@ impl DeviceState {
             .get(id)
             .filter(|(stored_owner, _)| stored_owner == owner)
             .map(|(_, run)| run.clone())
-            .ok_or_else(|| AppError::Message("D1_RUN_MISSING: 请先运行本地模拟检测".into()))
+            .ok_or_else(|| AppError::Message("D1_RUN_MISSING: 请先运行设备检测".into()))
     }
 }
 
@@ -322,34 +510,6 @@ fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-// Conservative fixture filter, NOT a collector for unknown real log formats.
-fn safe_message(message: &str) -> Option<&str> {
-    let lower = message.to_lowercase();
-    let denied = [
-        "password",
-        "passwd",
-        "token",
-        "authorization",
-        "bearer",
-        "secret",
-        "private key",
-        "connection_key",
-        "ssh_key",
-        "email",
-        "phone",
-        "密码",
-        "密钥",
-        "私钥",
-    ];
-    if message.len() > 4096
-        || message.chars().any(|c| c.is_control())
-        || denied.iter().any(|key| lower.contains(key))
-    {
-        None
-    } else {
-        Some(message)
-    }
-}
 fn build_plan(state: &DeviceState, owner: &str, request: &BundleRequest) -> AppResult<BundlePlan> {
     let run = state.get(owner, &request.run_id)?;
     if request.from_ms > request.to_ms
@@ -360,7 +520,7 @@ fn build_plan(state: &DeviceState, owner: &str, request: &BundleRequest) -> AppR
             "D1_TIME_RANGE_INVALID: 范围必须位于本次运行起止时间内".into(),
         ));
     }
-    let filtered_checks: Vec<_> = run
+    let checks: Vec<_> = run
         .checks
         .iter()
         .filter(|check| {
@@ -369,38 +529,20 @@ fn build_plan(state: &DeviceState, owner: &str, request: &BundleRequest) -> AppR
                 .is_none_or(|ms| ms >= request.from_ms && ms <= request.to_ms)
         })
         .collect();
-    let summary = serde_json::json!({"schemaVersion":1,"source":"simulated","runId":run.id,"device":run.device,
+    let summary = serde_json::json!({"schemaVersion":2,"source":"physical_device","runId":run.id,"device":run.device,
         "ruleVersion":RULE_VERSION,"taskStatus":run.status,"startedAtMs":run.started_at_ms,"finishedAtMs":run.finished_at_ms,
-        "fromMs":request.from_ms,"toMs":request.to_ms,"checks":filtered_checks});
-    let mut logs = Vec::new();
-    let mut filtered = 0;
-    for message in [
-        "Local synthetic diagnostic fixture; no device connection",
-        "password=fixture-secret",
-        "Authorization: Bearer fixture-token",
-        "-----BEGIN OPENSSH PRIVATE KEY-----",
-        "email=fixture@example.invalid",
-    ] {
-        if let Some(message) = safe_message(message) {
-            if run.started_at_ms >= request.from_ms && run.started_at_ms <= request.to_ms {
-                serde_json::to_writer(
-                    &mut logs,
-                    &serde_json::json!({"timestampMs":run.started_at_ms,"source":"synthetic_fixture","code":"FIXTURE_START","message":message}),
-                )?;
-                logs.push(b'\n');
-            }
-        } else {
-            filtered += 1;
-        }
+        "fromMs":request.from_ms,"toMs":request.to_ms,"checks":checks});
+    let mut files: Vec<(String, Vec<u8>)> = vec![(
+        "diagnostics.json".into(),
+        serde_json::to_vec_pretty(&summary)?,
+    )];
+    let included = run.observation.as_ref().filter(|snapshot| {
+        snapshot.observed_at_ms >= request.from_ms && snapshot.observed_at_ms <= request.to_ms
+    });
+    if let Some(snapshot) = included {
+        files.push(("health.json".into(), serde_json::to_vec_pretty(snapshot)?));
     }
-    let mut files: Vec<(String, Vec<u8>)> = vec![
-        (
-            "diagnostics.json".into(),
-            serde_json::to_vec_pretty(&summary)?,
-        ),
-        ("logs/simulation.jsonl".into(), logs),
-    ];
-    let entries: Vec<BundleFile> = files
+    let entries: Vec<_> = files
         .iter()
         .map(|(name, bytes)| BundleFile {
             name: name.clone(),
@@ -408,9 +550,9 @@ fn build_plan(state: &DeviceState, owner: &str, request: &BundleRequest) -> AppR
             sha256: sha(bytes),
         })
         .collect();
-    let manifest = serde_json::json!({"schemaVersion":1,"format":"d1-manager.diagnostic-package.v1","application":"D1 Manager",
-        "appVersion":env!("CARGO_PKG_VERSION"),"source":"simulated","device":run.device,"runId":run.id,"collectedAtMs":run.finished_at_ms,
-        "fromMs":request.from_ms,"toMs":request.to_ms,"files":entries,"filteredMessages":filtered,"realLogsCollected":false,"uploaded":false});
+    let manifest = serde_json::json!({"schemaVersion":2,"format":"d1-manager.diagnostic-package.v2","application":"D1 Manager",
+        "appVersion":env!("CARGO_PKG_VERSION"),"source":"physical_device","device":run.device,"runId":run.id,"collectedAtMs":run.finished_at_ms,
+        "fromMs":request.from_ms,"toMs":request.to_ms,"files":entries,"healthSnapshotIncluded":included.is_some(),"realLogsCollected":false,"uploaded":false});
     files.push((
         "manifest.json".into(),
         serde_json::to_vec_pretty(&manifest)?,
@@ -424,8 +566,8 @@ fn build_plan(state: &DeviceState, owner: &str, request: &BundleRequest) -> AppR
         })
         .collect();
     let plan_hash = sha(&serde_json::to_vec(&entries)?);
-    Ok(BundlePlan {preview:BundlePreview {source:"simulated".into(),run_id:run.id,from_ms:request.from_ms,to_ms:request.to_ms,
-        files:entries,plan_hash,filtered_messages:filtered,privacy:"仅合成日志、模拟设备身份及检测摘要；不含真实日志、账号、审核队列或本地路径；不上传。".into()},files})
+    Ok(BundlePlan{preview:BundlePreview{source:"physical_device".into(),run_id:run.id,from_ms:request.from_ms,to_ms:request.to_ms,
+        files:entries,plan_hash,filtered_messages:0,privacy:"仅本次真实设备健康观测、应用/板端版本和检测摘要；不含人员名称、任务、账号、审核队列或原始日志；不自动上传。".into()},files})
 }
 pub fn preview(
     state: &DeviceState,
@@ -452,11 +594,8 @@ pub fn export(
         return Err(AppError::Message("D1_DESTINATION_INVALID".into()));
     }
     let name = format!(
-        "D1-Manager-simulated-{}",
-        request
-            .run_id
-            .strip_prefix("simulated:")
-            .unwrap_or("invalid")
+        "D1-Manager-device-{}",
+        request.run_id.strip_prefix("device:").unwrap_or("invalid")
     );
     let output = parent.join(&name);
     publish_plan(&plan, &output, cancelled)?;
@@ -472,7 +611,7 @@ fn check_cancelled(cancelled: &AtomicBool) -> AppResult<()> {
 fn validate_plan(plan: &BundlePlan) -> AppResult<()> {
     let mut total = 0;
     for (name, bytes) in &plan.files {
-        if !["manifest.json", "diagnostics.json", "logs/simulation.jsonl"].contains(&name.as_str())
+        if !["manifest.json", "diagnostics.json", "health.json"].contains(&name.as_str())
             || bytes.len() > MAX_FILE_BYTES
         {
             return Err(AppError::Message(
@@ -502,7 +641,7 @@ fn verify_package(plan: &BundlePlan, partial: &Path) -> AppResult<()> {
     }
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(partial.join("manifest.json"))?)?;
-    if manifest["source"] != "simulated"
+    if manifest["source"] != "physical_device"
         || manifest["realLogsCollected"] != false
         || manifest["uploaded"] != false
     {
@@ -519,7 +658,6 @@ fn publish_plan(plan: &BundlePlan, output: &Path, cancelled: &AtomicBool) -> App
     let partial = parent.join(format!(".D1-Manager.partial-{}", nonce()?));
     fs::create_dir(&partial)?;
     let result = (|| {
-        fs::create_dir(partial.join("logs"))?;
         for (name, bytes) in &plan.files {
             check_cancelled(cancelled)?;
             let mut options = OpenOptions::new();
@@ -547,22 +685,30 @@ fn publish_plan(plan: &BundlePlan, output: &Path, cancelled: &AtomicBool) -> App
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn request(scenario: Scenario) -> RunRequest {
-        RunRequest {
-            target: DeviceTarget::Simulation { scenario },
-            timeout_ms: 2000,
-        }
+    fn health() -> HealthSnapshot {
+        d1_device::parse_health(br#"{"device":{"schema":"dohc.device.health.v1","device_id":"test-device","workspace_version":"1.1.1"},"health":"FAILED","heartbeat_stale":false,"devices":{"main":{"state":"STREAMING","enabled":true,"fresh":true},"t265":{"state":"FAULT","enabled":true,"fresh":false},"optional":{"state":"RECOVERING","enabled":true,"fresh":false}},"storage":{"mounted":true,"writable":true,"usage_warning":false},"self_test":{"phase":"IDLE","result":null}}"#,503).unwrap()
     }
     fn fixture() -> (DeviceState, BundleRequest) {
         let state = DeviceState::default();
-        let run = run(request(Scenario::Success), &AtomicBool::new(false)).unwrap();
-        let req = BundleRequest {
+        let snapshot = health();
+        let at = snapshot.observed_at_ms;
+        let run = DiagnosticRun {
+            id: format!("device:{}", nonce().unwrap()),
+            source: "physical_device",
+            device: Some(snapshot.device.clone()),
+            checks: checks(&snapshot),
+            observation: Some(snapshot),
+            started_at_ms: at,
+            finished_at_ms: at + 1,
+            status: TaskStatus::Completed,
+        };
+        let request = BundleRequest {
             run_id: run.id.clone(),
-            from_ms: run.started_at_ms,
-            to_ms: run.finished_at_ms,
+            from_ms: at,
+            to_ms: at + 1,
         };
         state.remember("test-owner", run).unwrap();
-        (state, req)
+        (state, request)
     }
     fn temp() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("d1-test-{}", nonce().unwrap()));
@@ -570,106 +716,114 @@ mod tests {
         dir
     }
     #[test]
-    fn rejects_real_targets_unknown_fields_and_invalid_budgets() {
-        for value in [
-            r#"{"target":{"kind":"ssh","host":"example.invalid"},"timeoutMs":1000}"#,
-            r#"{"target":{"kind":"simulation","scenario":"success","command":"sh"},"timeoutMs":1000}"#,
-            r#"{"target":{"kind":"simulation","scenario":"success"},"timeoutMs":1000,"host":"x"}"#,
-        ] {
-            assert!(serde_json::from_str::<RunRequest>(value).is_err());
-        }
-        let mut invalid = request(Scenario::Success);
-        invalid.timeout_ms = 0;
-        assert!(run(invalid, &AtomicBool::new(false)).is_err());
-        let config = availability().unwrap();
-        assert_eq!(
-            config["configuration"]["productionOperations"],
-            serde_json::json!([])
-        );
-        assert_eq!(config["configuration"]["deviceOta"]["enabled"], false);
-        assert!(config["configuration"]["deviceOta"]["scheme"].is_null());
-    }
-    #[test]
-    fn explicit_failure_and_version_capabilities_are_distinct() {
-        for (scenario, index, status) in [
-            (Scenario::Success, 1, ResultStatus::Normal),
-            (Scenario::Failure, 1, ResultStatus::Abnormal),
-            (Scenario::Partial, 2, ResultStatus::Unsupported),
-            (Scenario::ParseFailure, 1, ResultStatus::Indeterminate),
-        ] {
-            let value = run(request(scenario), &AtomicBool::new(false)).unwrap();
-            assert_eq!(value.checks[index].status, status);
-            assert!(value.device.id.starts_with("simulated:"));
-            assert!(value.checks[index].observed_at_ms.is_some());
-            assert!(!value.checks[index].evidence.is_empty());
-        }
-    }
-    #[test]
-    fn disconnection_timeout_and_cancellation_never_claim_damage() {
-        for scenario in [Scenario::Offline, Scenario::Disconnect, Scenario::Timeout] {
-            let mut req = request(scenario);
-            req.timeout_ms = 700;
-            let value = run(req, &AtomicBool::new(false)).unwrap();
-            assert!(value
-                .checks
-                .iter()
-                .any(|r| r.status == ResultStatus::Indeterminate));
-            assert!(!value
-                .checks
-                .iter()
-                .any(|r| r.status == ResultStatus::Abnormal));
-            assert_eq!(value.checks[2].status, ResultStatus::NotRun);
-        }
-        let value = run(request(Scenario::Success), &AtomicBool::new(true)).unwrap();
-        assert_eq!(value.status, TaskStatus::Cancelled);
-        assert!(value
-            .checks
+    fn type_c_port_exemption_never_passes_an_unobserved_camera_or_hides_other_failures() {
+        let mut snapshot=d1_device::parse_health(br#"{"device":{"schema":"dohc.device.health.v1","device_id":"test"},"health":"DEGRADED","heartbeat_stale":false,"devices":{"main":{"state":"STREAMING","enabled":true,"fresh":true},"stereo_extension":{"state":"RECOVERING","enabled":true,"fresh":false}},"storage":{"mounted":true,"writable":true,"usage_warning":false},"alerts":[{"code":"CAMERA_RECOVERING","component":"camera.stereo_extension"}]}"#,200).unwrap();
+        d1_device::apply_connection_context(&mut snapshot, false);
+        assert!(snapshot.camera_port_limited && snapshot.connection_limited_only);
+        let result = checks(&snapshot);
+        let camera = result
             .iter()
-            .all(|r| r.status == ResultStatus::NotRun && r.observed_at_ms.is_none()));
-        let cancel = AtomicBool::new(false);
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                std::thread::sleep(Duration::from_millis(270));
-                cancel.store(true, Ordering::Release);
-            });
-            let value = run(request(Scenario::Success), &cancel).unwrap();
-            assert_eq!(value.status, TaskStatus::Cancelled);
-            assert_eq!(value.checks[0].status, ResultStatus::Normal);
-            assert_eq!(value.checks[1].status, ResultStatus::NotRun);
-        });
+            .find(|check| check.id == "camera:stereo_extension")
+            .unwrap();
+        assert_eq!(camera.status, ResultStatus::NotRun);
+        assert!(camera.evidence.contains("Type-C 当前用于诊断连接"));
+        assert_eq!(
+            result
+                .iter()
+                .find(|check| check.id == "health")
+                .unwrap()
+                .status,
+            ResultStatus::Indeterminate
+        );
+        assert_eq!(snapshot.cameras[1].state.as_deref(), Some("RECOVERING"));
+        assert_eq!(snapshot.alerts.len(), 1);
+        d1_device::apply_connection_context(&mut snapshot, true);
+        assert!(!snapshot.camera_port_limited && !snapshot.connection_limited_only);
+        assert_eq!(
+            checks(&snapshot)
+                .iter()
+                .find(|check| check.id == "camera:stereo_extension")
+                .unwrap()
+                .status,
+            ResultStatus::Indeterminate
+        );
+        snapshot.health = Some("FAILED".into());
+        snapshot.cameras[0].state = Some("FAULT".into());
+        snapshot.cameras[0].fresh = Some(false);
+        d1_device::apply_connection_context(&mut snapshot, false);
+        assert!(snapshot.camera_port_limited && !snapshot.connection_limited_only);
+        assert_eq!(
+            checks(&snapshot)
+                .iter()
+                .find(|check| check.id == "camera:main")
+                .unwrap()
+                .status,
+            ResultStatus::Abnormal
+        );
+        assert_eq!(
+            checks(&snapshot)
+                .iter()
+                .find(|check| check.id == "health")
+                .unwrap()
+                .status,
+            ResultStatus::Abnormal
+        );
+        snapshot.heartbeat_stale = Some(true);
+        d1_device::apply_connection_context(&mut snapshot, false);
+        assert!(!snapshot.connection_limited_only);
+        assert!(checks(&snapshot)
+            .iter()
+            .all(|check| check.status != ResultStatus::Normal));
     }
     #[test]
-    fn redacts_fixture_credentials_and_personal_fields() {
-        for message in [
-            "Password = x",
-            "TOKEN=x",
-            "authorization: x",
-            "Bearer x",
-            "ssh_key=x",
-            "BEGIN PRIVATE KEY",
-            "email=x",
-            "phone=x",
-            "密码=x",
-            "a\nb",
-        ] {
-            assert!(safe_message(message).is_none());
-        }
-        assert!(safe_message("observed fixture-ok").is_some());
-        let (state, req) = fixture();
-        let plan = build_plan(&state, "test-owner", &req).unwrap();
-        assert_eq!(plan.preview.filtered_messages, 4);
-        let text = String::from_utf8(
-            plan.files
+    fn actual_report_states_distinguish_failure_recovery_staleness_and_not_run() {
+        let mut snapshot = health();
+        let result = checks(&snapshot);
+        let status = |id: &str| {
+            result
                 .iter()
-                .find(|(n, _)| n == "logs/simulation.jsonl")
+                .find(|check| check.id == id)
                 .unwrap()
-                .1
-                .clone(),
-        )
-        .unwrap();
-        assert!(!text.contains("fixture-secret"));
-        assert!(!text.contains("fixture-token"));
-        assert!(!text.contains("example.invalid"));
+                .status
+                .clone()
+        };
+        assert_eq!(status("camera:main"), ResultStatus::Normal);
+        assert_eq!(status("camera:t265"), ResultStatus::Abnormal);
+        assert_eq!(status("camera:optional"), ResultStatus::Indeterminate);
+        assert_eq!(status("self-test"), ResultStatus::NotRun);
+        snapshot.heartbeat_stale = Some(true);
+        assert!(checks(&snapshot)
+            .iter()
+            .all(|check| check.status != ResultStatus::Normal
+                && check.status != ResultStatus::Abnormal));
+        snapshot.cameras.clear();
+        snapshot.storage = None;
+        snapshot.self_test = None;
+        assert!(checks(&snapshot)
+            .iter()
+            .filter(|check| ["cameras", "storage", "self-test"].contains(&check.id.as_str()))
+            .all(|check| check.status == ResultStatus::Unsupported));
+    }
+    #[test]
+    fn package_contains_actual_whitelisted_snapshot_and_no_synthetic_logs() {
+        let (state, request) = fixture();
+        let plan = build_plan(&state, "test-owner", &request).unwrap();
+        let names: Vec<_> = plan.files.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["diagnostics.json", "health.json", "manifest.json"]
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(&plan.files[2].1).unwrap();
+        assert_eq!(manifest["source"], "physical_device");
+        assert_eq!(manifest["uploaded"], false);
+        assert_eq!(manifest["realLogsCollected"], false);
+        let mut range = request;
+        range.from_ms += 1;
+        assert!(!build_plan(&state, "test-owner", &range)
+            .unwrap()
+            .files
+            .iter()
+            .any(|(name, _)| name == "health.json"));
     }
     #[test]
     fn verifies_range_preview_hash_and_atomic_no_replace() {

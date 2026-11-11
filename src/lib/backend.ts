@@ -4,18 +4,18 @@ import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import packageInfo from "../../package.json";
 import d1Configuration from "../../config/d1-manager.json";
-import { cancelBrowserDeviceTask, runBrowserDeviceSimulation } from "./d1-browser-simulation";
-import type { DeviceAvailability, DeviceBundlePreview, DeviceBundleRequest, DeviceRun, DeviceScenario } from "./d1";
+import type { DeviceAvailability, DeviceConnectionMode, DeviceBundlePreview, DeviceBundleRequest, DeviceRun, DevicePage, DevicePageApiRequest, DevicePageApiResponse, DevicePageRequest, WifiSnapshot, WifiNetwork } from "./d1";
 
-export async function getDeviceAvailability(): Promise<DeviceAvailability> {
-  if (isTauriRuntime()) return invoke("d1_availability");
-  return {connection:"not_connected",identity:null,realDeviceEnabled:false,configuration:d1Configuration} as DeviceAvailability;
+export async function getDeviceAvailability(interfaceId?:string,apAddress?:string,connectionMode?:DeviceConnectionMode): Promise<DeviceAvailability> {
+  if (isTauriRuntime()) return invoke("d1_availability", {interfaceId:interfaceId??null,apAddress:apAddress??null,connectionMode:connectionMode??null});
+  return {connection:"not_connected",identity:null,observation:null,error:null,attemptedAddress:null,selectedInterfaceId:null,realDeviceEnabled:false,configuration:{...d1Configuration,diagnosticUpload:{enabled:false,endpoint:null,status:"waiting_interface"},deviceOta:{...d1Configuration.deviceOta,scheme:null,enabled:false,status:"waiting_interface"}},
+    linkDiscovery:{status:"unsupported",platform:"browser",observedAtMs:Date.now(),candidates:[],error:null}};
 }
-export async function runDeviceSimulation(scenario: DeviceScenario, operationId:number): Promise<DeviceRun> {
-  if (isTauriRuntime()) return invoke("d1_run_simulation", {request:{target:{kind:"simulation",scenario},timeoutMs:1500},operationId});
-  return runBrowserDeviceSimulation(scenario,operationId,1500);
+export async function runDeviceDiagnostics(interfaceId:string,operationId:number,apAddress?:string,connectionMode?:DeviceConnectionMode): Promise<DeviceRun> {
+  if (!isTauriRuntime()) throw new Error("请在桌面客户端连接 D1 后检测。");
+  return invoke("d1_run_diagnostics",{request:{interfaceId,apAddress:apAddress??null,connectionMode:connectionMode??null},operationId});
 }
-export async function clearDeviceSimulation(): Promise<void> { if(isTauriRuntime()) await invoke("d1_clear_simulation"); }
+export async function clearDeviceSession(): Promise<void> { if(isTauriRuntime()) await invoke("d1_clear_session"); }
 export async function previewDeviceBundle(request:DeviceBundleRequest): Promise<DeviceBundlePreview> {
   if(!isTauriRuntime()) throw new Error("请在桌面客户端预览并导出诊断包。");
   return invoke("d1_preview_bundle", {request});
@@ -25,6 +25,34 @@ export async function exportDeviceBundle(request:DeviceBundleRequest,destination
   return invoke("d1_export_bundle",{request,destinationParent,previewHash,operationId});
 }
 import { createAuditFlusher } from "./audit-flush";
+export async function getWifiInventory(refresh=false):Promise<WifiSnapshot> {
+  if(!isTauriRuntime())return {supported:false,networks:[],message:"请在桌面客户端查看可用 Wi-Fi。",observedAtMs:Date.now()};
+  return invoke("d1_wifi_inventory",{refresh});
+}
+export async function connectDeviceWifi(request:{interfaceId:string;ssid:string;password:string},operationId:number):Promise<WifiNetwork> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端连接设备热点。");
+  return invoke("d1_wifi_connect",{request,operationId});
+}
+export async function renewUsbDeviceAddress(interfaceId:string,operationId:number):Promise<void> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端连接设备。");
+  return invoke("d1_renew_usb_address",{interfaceId,operationId});
+}
+export async function readDevicePage(request:DevicePageRequest,operationId:number):Promise<DevicePage> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端连接设备。");
+  return invoke("d1_read_page",{request:{...request,apAddress:request.apAddress??null},operationId});
+}
+export async function requestDevicePageApi(request:DevicePageRequest,api:DevicePageApiRequest,operationId:number):Promise<DevicePageApiResponse> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端连接设备。");
+  return invoke("d1_device_page_request",{request:{...request,apAddress:request.apAddress??null},api,operationId});
+}
+export async function requestDevicePageBatch(request:DevicePageRequest,apis:DevicePageApiRequest[],operationId:number):Promise<DevicePageApiResponse[]> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端连接设备。");
+  return invoke("d1_device_page_read_batch",{request:{...request,apAddress:request.apAddress??null},apis,operationId});
+}
+export async function confirmDevicePageOperation(path:string):Promise<boolean> {
+  const message=path==="/configure"?"设备将连接所填 Wi-Fi，当前热点会断开。是否继续？":path==="/api/v1/camera-config"||path==="/api/v1/runtime-config"?"保存配置会重启相关设备服务。请先停止采集、自检和压力测试，是否继续？":"此操作会修改设备配置。是否继续？";
+  return isTauriRuntime()?confirm(message,{title:"确认设备配置",kind:"warning"}):window.confirm(message);
+}
 import { REJECTION_REASONS } from "./rejection-reasons";
 import { findReviewOverlap } from "./machine-annotation";
 import type { TaskIndexResult } from "./task-center";
@@ -1529,7 +1557,7 @@ export async function setPreviewLocation(location: { sourceRoot: string; preview
 
 export async function cancelTask(operationId: number): Promise<boolean> {
   if (isTauriRuntime()) return invoke<boolean>("cancel_task", { operationId });
-  return cancelBrowserDeviceTask(operationId);
+  return false;
 }
 
 export async function onTaskProgress(

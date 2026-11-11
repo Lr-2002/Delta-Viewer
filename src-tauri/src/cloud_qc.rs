@@ -131,6 +131,18 @@ fn client(config: &Config) -> AppResult<Client> {
         .build()
         .map_err(|_| fail("CLOUD_QC_NETWORK_UNAVAILABLE"))
 }
+fn download_client() -> AppResult<Client> {
+    // Managed Windows sessions use native TLS for the user-center proxy and do
+    // not pass through client(config). The public download needs its own setup.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    Client::builder()
+        .tls_backend_rustls()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|_| fail("CLOUD_QC_DOWNLOAD_CLIENT_FAILED"))
+}
 async fn request(
     client: &Client,
     config: &Config,
@@ -559,13 +571,7 @@ pub async fn fetch(
     identifier(&json!(recording))?;
     let (mut config, http, identity) = context(data, auth).await?;
     // Signed BOS URLs use normal public trust and never receive the review token.
-    let downloads = Client::builder()
-        .tls_backend_rustls()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(300))
-        .build()
-        .map_err(|_| fail("CLOUD_QC_NETWORK_UNAVAILABLE"))?;
+    let downloads = download_client()?;
     let route = format!("/api/review/v1/jobs/{job}/recordings/{recording}");
     let mut binding = request(&http, &config, &route, None).await?;
     select_bound_company(&mut config, &identity, &binding)?;
@@ -1051,6 +1057,31 @@ fn submission_hash(payload: &Value) -> AppResult<String> {
 mod tests {
     use super::*;
     #[test]
+    fn download_client_initializes_tls_in_a_fresh_process() {
+        const CHILD: &str = "DELTA_TEST_CLOUD_QC_TLS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "cloud_qc::tests::download_client_initializes_tls_in_a_fresh_process",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "fresh-process TLS initialization failed: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        assert!(rustls::crypto::CryptoProvider::get_default().is_none());
+        let _client = download_client().unwrap();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    }
+    #[test]
     fn session_calibration_decimal_survives_viewer_json_roundtrip() {
         let raw = r#"{"calibration":{"profiles":{"main":{"camera_matrix":[[592.2461644153864,0.0,1911.7162939335162]]}}}}"#;
         let value: Value = serde_json::from_str(raw).unwrap();
@@ -1147,6 +1178,8 @@ mod tests {
             .join("b".repeat(32));
         let directory = holder.join("files/recording");
         fs::create_dir_all(&directory).unwrap();
+        // Match fetch(), which persists the canonical destination on Windows too.
+        let directory = directory.canonicalize().unwrap();
         let binding =
             json!({"account_id":"alice","local_directory":directory,"base_review_version":3});
         write_json(&holder.join("binding.json"), &binding).unwrap();
@@ -1172,6 +1205,7 @@ mod tests {
             .join("b".repeat(32));
         let directory = holder.join("files/recording");
         fs::create_dir_all(&directory).unwrap();
+        let directory = directory.canonicalize().unwrap();
         fs::write(directory.join("session.json"), br#"{"qc":"approved"}"#).unwrap();
         fs::write(
             directory.join("description.json"),

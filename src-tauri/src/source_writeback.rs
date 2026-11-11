@@ -473,6 +473,7 @@ mod tests {
     fn full_disk_conflict_and_reopened_result_remain_local_and_need_new_command() {
         for message in [
             "REVIEW_STORAGE_FULL",
+            "REVIEW_STORAGE_PERMISSION_DENIED",
             "REVIEW_STORAGE_UNRESPONSIVE",
             "SOURCE_REVIEW_CONFLICT",
             "MACHINE_REVIEW_OVERLAP",

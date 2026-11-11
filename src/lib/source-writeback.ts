@@ -10,7 +10,7 @@ export async function writebackCall<T>(owner:WritebackOwner,request:object):Prom
   if (!isTauriRuntime()) throw Error('统一写回需要桌面端及支持此功能的用户中心');
   return invoke('source_writeback_management',{...owner,request});
 }
-export const writebackErrors:Record<string,string>={storage_full:'NAS 空间不足',storage_unavailable:'此条共享目录检查失败，请核对连接或权限',source_missing:'此条目录不存在或无法访问，请核对路径与共享连接',storage_timeout:'共享目录检查超时（连续三条超时后暂停本次写回）',conflict:'共享结果已变化，需人工核对',invalid_result:'片段范围等结果内容不合法，需核对',changed:'本机结果已改变，原指令未覆盖',local_storage:'本机队列读写失败',unknown:'原因未知，请在原电脑查看待写结果'};
+export const writebackErrors:Record<string,string>={storage_full:'NAS 空间不足',storage_unavailable:'共享目录拒绝写入或不可访问，请检查账号权限、目录路径和连接',source_missing:'此条目录不存在或无法访问，请核对路径与共享连接',storage_timeout:'共享目录检查超时（连续三条超时后暂停本次写回）',conflict:'共享结果已变化，需人工核对',invalid_result:'片段范围等结果内容不合法，需核对',changed:'本机结果已改变，原指令未覆盖',local_storage:'本机队列读写失败',unknown:'原因未知，请在原电脑查看待写结果'};
 export function writebackState(account:WritebackAccount|undefined,now=Date.now()):string {
   if(!account?.request)return '尚未下发';
   if(!account.deliveries.length)return '等待客户端上线 / 升级至 1.5.8';

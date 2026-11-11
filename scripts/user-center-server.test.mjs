@@ -261,6 +261,9 @@ test("user center supports operator self-registration and administrator account 
       .map((result) => result.body.user.assignmentPlans[0])
       .sort((left, right) => left.startIndex - right.startIndex);
     assert.ok(concurrentRanges[0].startIndex + concurrentRanges[0].quantity <= concurrentRanges[1].startIndex);
+    // Concurrent requests can allocate either range first. Transfer must retain
+    // allocatora's actual range, irrespective of which request reached the server.
+    const transferredStartIndex = concurrentAssignments[0].body.user.assignmentPlans[0].startIndex;
     const transferred = await request(port, ca, "POST", "/api/v1/admin/assignments/transfer", {
       fromUsername: "allocatora",
       toUsername: "operator2",
@@ -276,7 +279,7 @@ test("user center supports operator self-registration and administrator account 
     const secondTasks = await request(port, ca, "GET", "/api/v1/tasks/assigned", null, secondLogin.body.token);
     assert.deepEqual(secondTasks.body.tasks, [
       { task: "BedMaking", quantity: 2, startIndex: 3, priority: "normal", deadlineAtMs: null, status: "active", order: 0, detail: "BedMaking", completed: 0, remaining: 2, estimatedCompletionAtMs: null },
-      { task: "ConcurrentTask", quantity: 7, startIndex: concurrentAssignments[0].body.user.assignmentPlans[0].startIndex, priority: "normal", deadlineAtMs: null, status: "active", order: 1, detail: "ConcurrentTask", completed: 0, remaining: 7, estimatedCompletionAtMs: null },
+      { task: "ConcurrentTask", quantity: 7, startIndex: transferredStartIndex, priority: "normal", deadlineAtMs: null, status: "active", order: 1, detail: "ConcurrentTask", completed: 0, remaining: 7, estimatedCompletionAtMs: null },
     ]);
     const editedDetail = await request(port, ca, "PUT", "/api/v1/admin/task-details", {
       task: "Bedsheet",
