@@ -135,7 +135,7 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
           throw Error(`Unexpected fallback ${command}`);
         },
       };
-      for (const event of ["seeking", "waiting", "playing", "ended", "error"]) {
+      for (const event of ["seeking", "waiting", "playing", "pause", "ended", "error"]) {
         document.addEventListener(event, (e) => {
           if (e.target instanceof HTMLVideoElement) window.__nativeStats.events.push({
             event, time: performance.now(), mediaTime: e.target.currentTime,
@@ -168,6 +168,29 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
     })));
     assert.ok(moving.every((v) => v.time > 0.5 && !v.error), JSON.stringify(moving));
     if (!sampleRoot) {
+      // NAS may deliver smaller bursts than the startup runway while the
+      // decoder still has playable frames. Polling must not turn this into
+      // repeated shared pauses when no camera has actually run out of data.
+      await page.waitForFunction(() => [...document.querySelectorAll("video")]
+        .every(v => !v.paused && !v.seeking && v.readyState >= 3));
+      const shortRunway = await page.evaluate(() => {
+        const secondary = document.querySelectorAll("video")[1];
+        Object.defineProperty(secondary, "buffered", { configurable: true,
+          value: { length: 1, start: () => 0, end: () => secondary.currentTime + .5 } });
+        return { primary: document.querySelector("video").currentTime,
+          eventCount: window.__nativeStats.events.length };
+      });
+      await page.waitForTimeout(500);
+      const shortRunwayResult = await page.evaluate((before) => ({
+        advance: document.querySelector("video").currentTime - before.primary,
+        paused: [...document.querySelectorAll("video")].some(v => v.paused),
+        pauses: window.__nativeStats.events.slice(before.eventCount).filter(e => e.event === "pause"),
+      }), shortRunway);
+      await page.evaluate(() => { delete document.querySelectorAll("video")[1].buffered; });
+      assert.equal(shortRunwayResult.paused, false,
+        "playable NAS buffer below the startup threshold must not pause running cameras");
+      assert.deepEqual(shortRunwayResult.pauses, [], "polling must not cause shared stop/start cycles");
+      assert.ok(shortRunwayResult.advance > .35, JSON.stringify(shortRunwayResult));
       await page.evaluate(() => {
         const primary = document.querySelectorAll("video")[1];
         const tail = primary.currentTime + .05;

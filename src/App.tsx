@@ -216,6 +216,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.9.1": "修复 NAS 视频尚有缓冲时被反复主动暂停的卡顿；启动和断流恢复仍等待足够缓冲，多路相机继续同步播放。",
   "1.9.0": "修复 NAS 多路视频缓冲恢复时的时间回跳和重复定位；保留按相机分段播放的星炬外发审核及交付平台有效率统计。",
   "1.8.9": "修复 NAS 七路回放与星炬外发审核；发布构建会检测并选择可达的 Ubuntu 镜像，继续完成正式三平台发布。",
   "1.8.8": "保留 NAS 七路回放和星炬外发审核修复；修正构建机镜像列表的下载阻塞，恢复完整三平台发布。",

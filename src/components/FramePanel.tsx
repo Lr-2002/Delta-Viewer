@@ -294,6 +294,14 @@ export const FramePanel = memo(function FramePanel({
         onBufferingChange?.(stream.name, true);
         return;
       }
+      // The startup runway is hysteresis for starting/recovering a paused
+      // decoder, not a minimum buffer for continuous playback. Requiring it
+      // on every poll pauses healthy NAS streams before they run out of data.
+      // A real waiting event below still freezes all cameras together.
+      if (!video.paused && !playbackHeld) {
+        onBufferingChange?.(stream.name, false);
+        return;
+      }
       const remaining = Math.max(0, video.duration - video.currentTime);
       const runway = Math.min(0.75 * video.playbackRate, remaining);
       const buffered = Array.from({ length: video.buffered.length }, (_, index) => index)
@@ -316,8 +324,8 @@ export const FramePanel = memo(function FramePanel({
       onBufferingChange?.(stream.name, true);
     };
     if (playbackHeld) pauseForBuffering();
-    // Browser buffers stay in memory. Resume only after a short runway, so
-    // bursty NAS reads do not repeatedly start and stop the primary decoder.
+    // Browser buffers stay in memory. A paused decoder starts only after a
+    // short runway; a running decoder waits for an actual buffering event.
     video.addEventListener("waiting", waitForRunway);
     video.addEventListener("progress", resume);
     video.addEventListener("canplay", resume);
