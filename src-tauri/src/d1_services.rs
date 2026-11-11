@@ -22,6 +22,7 @@ pub struct TrustRoot {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
 pub struct DeviceOtaConfig {
     #[serde(default)]
     pub origin: Option<String>,
@@ -41,6 +42,7 @@ pub struct DeviceOtaConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
 pub struct DiagnosticUploadConfig {
     #[serde(default)]
     pub origin: Option<String>,
@@ -54,6 +56,7 @@ pub struct DiagnosticUploadConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
 pub struct ServicesConfig {
     #[serde(default)]
     pub schema_version: u32,
