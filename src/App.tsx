@@ -216,6 +216,9 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.8.7": "修复 NAS 七路预览在检查完成时中断；开通星炬外发审核，按相机分段看原始视频，结论写入描述副本并同步交付平台最终有效率。",
+  "1.8.6": "完整检查完成时保留正在进行的视频播放；减少 NAS 七路抢读，外发审核按相机与分段加载原始视频并核对保存结果。",
+  "1.8.5": "减少 NAS 七路视频重复探测和过量预读；外发审核按相机及分段加载长录制，切换任务隔离旧响应，失败后重新核对已保存结论。",
   "1.7.7": "登录密码默认隐藏，可用密码框旁的按钮临时显示；切换状态保留已输入内容。AP页刷新Wi-Fi与手动密码采用统一按钮样式。",
   "1.7.6": "修复设备页面初始化等待及运行配置加载，支持批量读取和页面往返；使用设备真实状态展示中文检测卡片；D1 热点默认密码连接并保留手动输入，配网增加等待与结果核对；移除首页重复入口。",
   "1.7.5": "修复 Windows 云端 QC 下载时缺少 TLS 初始化导致的崩溃；管理员 NAS 写回通知按指令记忆，完成或收起后不重复弹出，新指令继续自动执行。",
@@ -1239,10 +1242,14 @@ function App() {
     const end = Math.max(start, Math.min(candidate.maxFrame, savedAnnotation?.clipEndFrame ?? candidate.maxFrame));
     setClipStartFrame(start);
     setClipEndFrame(end);
-    const frame = clampPlaybackFrame(frameRef.current, start, end);
+    const previewFrame = frameRef.current;
+    const frame = clampPlaybackFrame(previewFrame, start, end);
     setCurrentFrame(frame);
     frameRef.current = frame;
-    setPlaying(false);
+    // Finishing checks upgrades this same preview; it is not a new playback
+    // request. Preserve the user's play/pause choice unless restored bounds
+    // actually move the current frame.
+    if (frame !== previewFrame) setPlaying(false);
     setAnnotationReadyRoot(candidate.data.summary.root);
     setView("proofread");
   }

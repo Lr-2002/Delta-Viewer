@@ -58,7 +58,10 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
         if (command !== 'outbound_review_call') throw Error('Unexpected command ' + command);
         const input = args.input; window.fixtureCalls.push(input);
         if (input.action === 'list') return { batches: [structuredClone(window.fixtureBatch)], reasonOptions: [...window.fixtureReasonOptions] };
-        if (input.action === 'video-url') return { url: 'https://outbound.fixture/api/platform/manager-outbound/media/' + 'a'.repeat(64) };
+        if (input.action === 'video-url') {
+          if(window.fixtureHoldVideo) await new Promise(resolve => { (window.fixtureVideoResolvers ||= []).push(resolve); });
+          return { url: 'https://outbound.fixture/api/platform/manager-outbound/media/' + 'a'.repeat(64) };
+        }
         if (input.action === 'save-reason-option') {
           if (!window.fixtureReasonOptions.includes(input.reason)) window.fixtureReasonOptions.push(input.reason);
           return { reasonOptions: [...window.fixtureReasonOptions] };
@@ -83,17 +86,19 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByRole('button', { name: '领取批次' }).click();
     assert.equal(await page.getByRole('button', { name: '有效数据' }).isDisabled(), true);
     await page.getByRole('button', { name: '打开原始视频' }).click();
-    assert.equal(await page.locator('video').count(), 5, 'all five camera videos are rendered');
+    await page.waitForFunction(() => document.querySelectorAll('video').length === 5);
     assert.equal(await page.getByRole('button', { name: '有效数据' }).isDisabled(), true, 'decisions wait for every camera');
     await page.evaluate(() => { window.fixtureMediaAllowed = true; });
     await page.waitForFunction(() => [...document.querySelectorAll('video')].length === 5
       && [...document.querySelectorAll('video')].every(video => video.readyState >= 3));
     assert.equal(await page.getByRole('button', { name: '有效数据' }).isEnabled(), true);
     await page.getByRole('button', { name: '有效数据' }).click();
+    await page.evaluate(() => { window.fixtureMediaAllowed = false; });
     await page.getByRole('button', { name: /录制 002/ }).click();
     await page.getByRole('button', { name: '打开原始视频' }).click();
-    assert.equal(await page.locator('video').count(), 7, 'all seven camera videos are rendered');
+    await page.waitForFunction(() => document.querySelectorAll('video').length === 7);
     assert.equal(await page.getByRole('button', { name: '无效数据' }).isDisabled(), true, 'invalid decisions wait for every camera');
+    await page.evaluate(() => { window.fixtureMediaAllowed = true; });
     await page.waitForFunction(() => [...document.querySelectorAll('video')].length === 7
       && [...document.querySelectorAll('video')].every(video => video.readyState >= 3));
     await page.getByRole('button', { name: '无效数据' }).click();
@@ -117,6 +122,28 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     if (process.env.OUTBOUND_SCREENSHOT_DIR)
       await page.screenshot({ path: path.join(process.env.OUTBOUND_SCREENSHOT_DIR, 'narrow.png') });
+    await page.evaluate(() => {
+      const long=window.fixtureBatch.recordings[0];
+      long.decision=null;
+      long.videos=Array.from({length:56},(_,segment)=>({segment,label:`cam${Math.floor(segment/8)}/cam${Math.floor(segment/8)}-${String(segment%8).padStart(5,'0')}.mp4`,size:1024,sha256:null}));
+      window.fixtureCalls=[];
+    });
+    await page.getByRole('button', { name: '刷新外发批次' }).click();
+    await page.getByRole('button', { name: /录制 001/ }).click();
+    await page.getByRole('button', { name: '打开原始视频' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('video').length === 7);
+    await page.getByText('7 路原始视频 · 共 8 段', { exact:true }).waitFor();
+    assert.equal(await page.evaluate(() => window.fixtureCalls.filter(x=>x.action==='video-url').length),7,'load one part per camera instead of 56 parallel players');
+    await page.getByRole('button', { name: '第 8 段',exact:true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('video').length === 7);
+    assert.deepEqual(await page.evaluate(() => window.fixtureCalls.filter(x=>x.action==='video-url').slice(-7).map(x=>x.segment)),[7,15,23,31,39,47,55],'last part of every camera stays reachable');
+    await page.evaluate(()=>{window.fixtureHoldVideo=true;window.fixtureVideoResolvers=[];});
+    await page.getByRole('button', { name: '第 1 段',exact:true }).click();
+    await page.waitForFunction(()=>window.fixtureVideoResolvers.length===4);
+    await page.getByRole('button', { name: /录制 002/ }).click();
+    await page.evaluate(()=>{window.fixtureHoldVideo=false;window.fixtureVideoResolvers.forEach(resolve=>resolve());});
+    await page.waitForFunction(()=>document.querySelector('.outbound-player-heading strong')?.textContent==='录制 002');
+    assert.equal(await page.locator('video').count(),0,'late URLs from the previous recording cannot open players in a different recording');
     console.log('PASS outbound reviewer claim, five/seven camera playback, valid/invalid decisions, persistent custom reason, desktop/mobile width');
   } finally {
     await browser?.close(); await server.close(); rmSync(scratch, { recursive: true, force: true });

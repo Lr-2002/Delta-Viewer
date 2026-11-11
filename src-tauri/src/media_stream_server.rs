@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+const MAX_MEDIA_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
+
 #[derive(Clone)]
 pub struct MediaStreamServer {
     address: SocketAddrV4,
@@ -238,7 +240,7 @@ fn serve_connection(
         Err(_) => return write_empty_response(&mut stream, "404 Not Found", &[]),
     };
     let total = file.metadata()?.len();
-    let (start, end, partial) = match parse_range(request.range.as_deref(), total) {
+    let (start, mut end, mut partial) = match parse_range(request.range.as_deref(), total) {
         Ok(range) => range,
         Err(()) => {
             return write_empty_response(
@@ -248,6 +250,22 @@ fn serve_connection(
             )
         }
     };
+    if request.method == "GET"
+        && mime_type == "video/mp4"
+        && request.range.as_deref().is_some_and(|value| {
+            value.strip_prefix("bytes=").is_some_and(|value| {
+                value
+                    .split_once('-')
+                    .is_some_and(|(start, end)| !start.is_empty() && end.is_empty())
+            })
+        })
+        && end.saturating_sub(start).saturating_add(1) > MAX_MEDIA_RESPONSE_BYTES
+    {
+        end = start
+            .saturating_add(MAX_MEDIA_RESPONSE_BYTES - 1)
+            .min(total - 1);
+        partial = true;
+    }
     let length = end.saturating_sub(start).saturating_add(1);
     let status = if partial {
         "206 Partial Content"
@@ -428,7 +446,7 @@ fn write_headers(
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_media_range, parse_range, MediaStreamServer};
+    use super::{copy_media_range, parse_range, MediaStreamServer, MAX_MEDIA_RESPONSE_BYTES};
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpStream;
@@ -566,6 +584,117 @@ mod tests {
             .unwrap();
         assert!(String::from_utf8_lossy(&response[..separator]).contains("206 Partial Content"));
         assert_eq!(&response[separator + 4..], b"3456");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn caps_large_get_responses_and_returns_the_exact_following_range() {
+        let root = std::env::temp_dir().join(format!(
+            "dohc-media-range-cap-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("preview.mp4");
+        let bytes = vec![17_u8; (MAX_MEDIA_RESPONSE_BYTES + 1024) as usize];
+        fs::write(&path, &bytes).unwrap();
+        let server = MediaStreamServer::start().unwrap();
+        let url = server.register(&path).unwrap();
+        let address_and_path = url.strip_prefix("http://").unwrap();
+        let (address, request_path) = address_and_path.split_once('/').unwrap();
+        let request = |method: &str, range: Option<&str>| {
+            let mut stream = TcpStream::connect(address).unwrap();
+            write!(
+                stream,
+                "{method} /{request_path} HTTP/1.1\r\nHost: {address}\r\n"
+            )
+            .unwrap();
+            if let Some(range) = range {
+                write!(stream, "Range: {range}\r\n").unwrap();
+            }
+            write!(stream, "\r\n").unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).unwrap();
+            response
+        };
+        let response = request("GET", Some("bytes=0-"));
+        let separator = response
+            .windows(4)
+            .position(|value| value == b"\r\n\r\n")
+            .unwrap();
+        let headers = String::from_utf8_lossy(&response[..separator]);
+        assert!(headers.contains("206 Partial Content"));
+        assert!(headers.contains(&format!(
+            "Content-Range: bytes 0-{}/",
+            MAX_MEDIA_RESPONSE_BYTES - 1
+        )));
+        assert_eq!(
+            response.len() - separator - 4,
+            MAX_MEDIA_RESPONSE_BYTES as usize
+        );
+        assert!(response[separator + 4..].iter().all(|byte| *byte == 17));
+
+        let response = request("GET", Some(&format!("bytes={}-", MAX_MEDIA_RESPONSE_BYTES)));
+        let separator = response
+            .windows(4)
+            .position(|value| value == b"\r\n\r\n")
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&response[..separator]).contains(&format!(
+                "Content-Range: bytes {}-{}/",
+                MAX_MEDIA_RESPONSE_BYTES,
+                MAX_MEDIA_RESPONSE_BYTES + 1023
+            ))
+        );
+        assert_eq!(response.len() - separator - 4, 1024);
+        assert_eq!(
+            &response[separator + 4..],
+            &bytes[MAX_MEDIA_RESPONSE_BYTES as usize..]
+        );
+
+        let response = request("GET", None);
+        let separator = response
+            .windows(4)
+            .position(|value| value == b"\r\n\r\n")
+            .unwrap();
+        let headers = String::from_utf8_lossy(&response[..separator]);
+        assert!(headers.contains("200 OK"));
+        assert!(headers.contains(&format!("Content-Length: {}", bytes.len())));
+        assert!(!headers.contains("Content-Range:"));
+        assert_eq!(&response[separator + 4..], bytes.as_slice());
+
+        let response = request("HEAD", Some("bytes=0-"));
+        let separator = response
+            .windows(4)
+            .position(|value| value == b"\r\n\r\n")
+            .unwrap();
+        let headers = String::from_utf8_lossy(&response[..separator]);
+        assert!(headers.contains("206 Partial Content"));
+        assert!(headers.contains(&format!("Content-Range: bytes 0-{}", bytes.len() - 1)));
+        assert!(headers.contains(&format!("Content-Length: {}", bytes.len())));
+        assert!(response[separator + 4..].is_empty());
+
+        let stream_url = server.register_file(&path, "video/mp2t").unwrap();
+        let stream_path = stream_url.strip_prefix("http://").unwrap();
+        let (stream_address, stream_request_path) = stream_path.split_once('/').unwrap();
+        let mut stream = TcpStream::connect(stream_address).unwrap();
+        write!(
+            stream,
+            "GET /{stream_request_path} HTTP/1.1\r\nHost: {stream_address}\r\nRange: bytes=0-\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let separator = response
+            .windows(4)
+            .position(|value| value == b"\r\n\r\n")
+            .unwrap();
+        let headers = String::from_utf8_lossy(&response[..separator]);
+        assert!(headers.contains("Content-Range: bytes 0-"));
+        assert!(headers.contains(&format!("Content-Length: {}", bytes.len())));
+        assert_eq!(&response[separator + 4..], bytes.as_slice());
         fs::remove_dir_all(root).unwrap();
     }
 

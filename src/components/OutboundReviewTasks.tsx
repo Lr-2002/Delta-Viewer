@@ -1,11 +1,11 @@
 import {useEffect,useMemo,useRef,useState} from "react";
 import {Check,CheckCircle2,LoaderCircle,Play,RefreshCw,Save,Video,X,XCircle} from "lucide-react";
 import type {UserIdentity} from "../types";
-import {changeOutboundBatch,fetchOutboundVideo,listOutboundBatches,OUTBOUND_INVALID_REASONS,outboundError,saveOutboundReasonOption,type OutboundBatch} from "../lib/outbound-review";
+import {changeOutboundBatch,fetchOutboundVideo,listOutboundBatches,OUTBOUND_INVALID_REASONS,outboundError,outboundVideoParts,saveOutboundReasonOption,type OutboundBatch} from "../lib/outbound-review";
 import "./outbound-review.css";
 
 interface Props {currentUser:UserIdentity;workspaceBusy?:boolean}
-type VideoState={recordingId:string;urls:Record<number,string>;ready:number[]};
+type VideoState={recordingId:string;part:number;urls:Record<number,string>;ready:number[];failed:boolean};
 
 export function OutboundReviewTasks({currentUser,workspaceBusy=false}:Props){
   const [batches,setBatches]=useState<OutboundBatch[]>([]);
@@ -16,6 +16,7 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false}:Props){
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState(false);
   const [opening,setOpening]=useState(false);
+  const [partIndex,setPartIndex]=useState(0);
   const [error,setError]=useState("");
   const [reasonDialog,setReasonDialog]=useState(false);
   const [selectedReason,setSelectedReason]=useState("");
@@ -23,10 +24,13 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false}:Props){
   const [notice,setNotice]=useState("");
   const players=useRef(new Map<number,HTMLVideoElement>());
   const syncingUntil=useRef(0);
+  const requestGeneration=useRef(0);
   const batch=batches.find(value=>value.id===batchId)??null;
   const recording=batch?.recordings.find(value=>value.id===recordingId)??batch?.recordings[0]??null;
   const isOwner=batch?.claim===currentUser.username;
-  const videosReady=Boolean(recording&&videoState?.recordingId===recording.id&&recording.videos.length>0&&recording.videos.every(video=>videoState.urls[video.segment]&&videoState.ready.includes(video.segment)));
+  const grouped=useMemo(()=>outboundVideoParts(recording?.videos??[]),[recording?.videos]);
+  const partVideos=grouped.parts[partIndex]??[];
+  const videosReady=Boolean(recording&&videoState?.recordingId===recording.id&&videoState.part===partIndex&&!videoState.failed&&partVideos.length>0&&partVideos.every(video=>videoState.urls[video.segment]&&videoState.ready.includes(video.segment)));
   const availableReasons=useMemo(()=>[...new Set([...OUTBOUND_INVALID_REASONS,...reasonOptions])],[reasonOptions]);
 
   async function load(){
@@ -39,13 +43,13 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false}:Props){
     }catch(cause){setError(outboundError(cause));}
     finally{setLoading(false);}
   }
-  useEffect(()=>{void load();},[]);
+  useEffect(()=>{void load();return()=>{requestGeneration.current++;};},[]);
   useEffect(()=>{
     if(!batch){setRecordingId("");setVideoState(null);return;}
     setRecordingId(previous=>batch.recordings.some(item=>item.id===previous)?previous:batch.recordings[0]?.id??"");
-    setVideoState(null);
+    requestGeneration.current++;setVideoState(null);setOpening(false);setPartIndex(0);setReasonDialog(false);
   },[batch?.id]);
-  useEffect(()=>{setVideoState(null);},[recordingId]);
+  useEffect(()=>{requestGeneration.current++;setVideoState(null);setOpening(false);setPartIndex(0);setReasonDialog(false);setError("");},[recordingId]);
 
   function updateBatch(next:OutboundBatch){
     setBatches(previous=>previous.map(value=>value.id===next.id?next:value));
@@ -63,21 +67,32 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false}:Props){
         const next=result.batch.recordings.find(item=>!item.decision);
         if(next)setRecordingId(next.id);
       }
-    }catch(cause){setError(outboundError(cause));}
+    }catch(cause){
+      const message=outboundError(cause);
+      try{const fresh=await listOutboundBatches();setBatches(fresh.batches);setReasonOptions(fresh.reasonOptions??[]);}catch{/* Keep the original error and saved state available for an explicit refresh. */}
+      setError(message);
+    }
     finally{setBusy(false);}
   }
-  async function openVideos(){
+  async function openVideos(nextPart=partIndex){
     if(!batch||!recording||!isOwner)return;
-    setOpening(true);setError("");setNotice("");
+    const generation=++requestGeneration.current;
+    const files=grouped.parts[nextPart]??[];
+    if(!files.length)return;
+    setPartIndex(nextPart);setVideoState(null);setOpening(true);setError("");setNotice("");
     try{
-      const pairs=await Promise.all(recording.videos.map(async video=>[video.segment,await fetchOutboundVideo(batch,recording,video.segment)] as const));
-      setVideoState({recordingId:recording.id,urls:Object.fromEntries(pairs),ready:[]});
-    }catch(cause){setVideoState(null);setError(outboundError(cause));}
-    finally{setOpening(false);}
+      const pairs=[];
+      for(let offset=0;offset<files.length;offset+=4){
+        if(generation!==requestGeneration.current)return;
+        pairs.push(...await Promise.all(files.slice(offset,offset+4).map(async video=>[video.segment,await fetchOutboundVideo(batch,recording,video.segment)] as const)));
+      }
+      if(generation===requestGeneration.current)setVideoState({recordingId:recording.id,part:nextPart,urls:Object.fromEntries(pairs),ready:[],failed:false});
+    }catch(cause){if(generation===requestGeneration.current){setVideoState(null);setError(outboundError(cause));}}
+    finally{if(generation===requestGeneration.current)setOpening(false);}
   }
   function markReady(segment:number){
     setVideoState(previous=>{
-      if(!previous||previous.recordingId!==recording?.id)return previous;
+      if(!previous||previous.recordingId!==recording?.id||previous.part!==partIndex)return previous;
       return {...previous,ready:previous.ready.includes(segment)?previous.ready:[...previous.ready,segment]};
     });
   }
@@ -119,10 +134,11 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false}:Props){
         {batch.recordings.length>0?<>
           <nav className="outbound-recordings" aria-label="录制列表">{batch.recordings.map((item,index)=><button type="button" key={item.id} className={item.id===(recording?.id??"")?"selected":""} aria-pressed={item.id===(recording?.id??"")} onClick={()=>setRecordingId(item.id)}><span>{item.name||`录制 ${index+1}`}</span><strong className={item.decision?.value??""}>{item.decision?.value==="valid"?"有效":item.decision?.value==="invalid"?"无效":"待审"}</strong></button>)}</nav>
           {recording&&<section className="outbound-player" aria-label="原始视频审核">
-            <div className="outbound-player-heading"><div><strong>{recording.name}</strong><span>{recording.videos.length} 路原始视频</span></div>
-              {isOwner&&!videoState&&<button className="button button-secondary" type="button" disabled={opening||workspaceBusy||!recording.videos.length} onClick={()=>void openVideos()}>{opening?<LoaderCircle size={16} className="spin"/>:<Play size={16}/>}打开原始视频</button>}
+            <div className="outbound-player-heading"><div><strong>{recording.name}</strong><span>{grouped.cameraCount} 路原始视频{grouped.parts.length>1?` · 共 ${grouped.parts.length} 段`:""}</span></div>
+              {isOwner&&(!videoState||videoState.failed)&&<button className="button button-secondary" type="button" disabled={opening||workspaceBusy||!recording.videos.length} onClick={()=>void openVideos()}>{opening?<LoaderCircle size={16} className="spin"/>:<Play size={16}/>}打开原始视频</button>}
             </div>
-            {videoState?.recordingId===recording.id?<div className="outbound-video-grid">{recording.videos.map(video=><article className="outbound-video-item" key={video.segment}><header><strong>{video.label||`视频 ${video.segment+1}`}</strong><span>{(video.size/1024/1024).toFixed(1)} MB</span></header><video ref={element=>{if(element)players.current.set(video.segment,element);else players.current.delete(video.segment);}} src={videoState.urls[video.segment]} controls playsInline preload="metadata" onCanPlay={()=>markReady(video.segment)} onPlay={event=>syncFrom(event.currentTarget,"play")} onPause={event=>syncFrom(event.currentTarget,"pause")} onSeeking={event=>syncFrom(event.currentTarget,"seek")} onTimeUpdate={event=>syncFrom(event.currentTarget,"time")} onError={()=>setError(`原始视频读取失败：${video.label}`)}/></article>)}</div>:<div className="outbound-video-placeholder"><Video size={22}/><span>{isOwner?"打开后将并列读取本条录制的全部原始视频":"领取批次后查看原始视频"}</span></div>}
+            {grouped.parts.length>1&&<nav className="outbound-video-tabs" aria-label="视频分段">{grouped.parts.map((_,index)=><button key={index} type="button" aria-pressed={index===partIndex} disabled={!isOwner||opening||busy||workspaceBusy} onClick={()=>void openVideos(index)}>第 {index+1} 段</button>)}</nav>}
+            {videoState?.recordingId===recording.id&&videoState.part===partIndex?<div className="outbound-video-grid">{partVideos.map(video=><article className="outbound-video-item" key={`${recording.id}:${video.segment}`}><header><strong>{video.camera||`视频 ${video.segment+1}`}</strong><span>{(video.size/1024/1024).toFixed(1)} MB</span></header><video ref={element=>{if(element)players.current.set(video.segment,element);else players.current.delete(video.segment);}} src={videoState.urls[video.segment]} controls playsInline preload="auto" onCanPlay={()=>markReady(video.segment)} onPlay={event=>syncFrom(event.currentTarget,"play")} onPause={event=>syncFrom(event.currentTarget,"pause")} onSeeking={event=>syncFrom(event.currentTarget,"seek")} onTimeUpdate={event=>syncFrom(event.currentTarget,"time")} onError={()=>{setVideoState(previous=>previous?{...previous,failed:true}:null);setError(`原始视频读取失败：${video.label}，请重新打开。`);}}/></article>)}</div>:<div className="outbound-video-placeholder"><Video size={22}/><span>{opening?"正在读取原始视频…":isOwner?"打开后将并列读取本条录制的全部相机":"领取批次后查看原始视频"}</span></div>}
             <div className="outbound-decision"><span>{recording.decision?`已由 ${recording.decision.actor} 于 ${new Date(recording.decision.at).toLocaleString("zh-CN",{hour12:false})} 判为${recording.decision.value==="valid"?"有效":"无效"}${recording.decision.reason?` · ${recording.decision.reason}`:""}`:videosReady?"请根据完整原始视频判断数据有效性":"视频全部就绪后可提交结论"}</span>
               <button className="button button-secondary" type="button" disabled={!isOwner||busy||workspaceBusy||!videosReady||Boolean(recording.decision)} onClick={()=>void act("decide","valid")}><CheckCircle2 size={16}/>有效数据</button>
               <button className="button button-secondary outbound-invalid-button" type="button" disabled={!isOwner||busy||workspaceBusy||!videosReady||Boolean(recording.decision)} onClick={()=>setReasonDialog(true)}><XCircle size={16}/>无效数据</button>

@@ -427,7 +427,7 @@ test("new account cannot automatically save another account's recovery draft", a
   } finally { await context.close(); }
 });
 
-test("long recording shows usable read-only video controls while checks wait and mounts audit only afterward", async () => {
+for (const restoredStart of [0, 100]) test(`long recording preserves preview playback when checks finish unless saved bounds move it (${restoredStart})`, async () => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
   const page = await context.newPage();
   await context.route("**/src/lib/backend.ts", async route => {
@@ -441,6 +441,8 @@ test("long recording shows usable read-only video controls while checks wait and
       window.previewValidationStarted=true;
       await new Promise(resolve=>{window.finishPreviewChecks=()=>{window.previewChecksDone=true;resolve();};});
     `);
+    if (restoredStart) body = body.replace(/(export async function loadEpisodeAnnotation\([^]*?\) \{)/,
+      `$1\n return { clipStartFrame: ${restoredStart}, clipEndFrame: 195 };`);
     for (const name of ["listMachineAnnotationSources", "loadMachineAnnotation", "loadMachineReview"]) {
       body = body.replace(new RegExp("(export async function " + name + "\\([^]*?\\) \\{)"),
         '$1\n window.previewEditorReads=(window.previewEditorReads??0)+1;');
@@ -457,10 +459,13 @@ test("long recording shows usable read-only video controls while checks wait and
     assert.equal(await slider.inputValue(), "1");
     await page.waitForFunction(() => window.previewValidationStarted);
     assert.equal(await page.evaluate(() => window.previewEditorReads??0), 0);
+    await page.getByRole("button", { name: "全局播放", exact: true }).click();
+    await page.getByRole("button", { name: "暂停", exact: true }).waitFor();
     await page.evaluate(() => window.finishPreviewChecks());
     await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
     assert.ok(await page.evaluate(() => window.previewEditorReads > 0));
     assert.equal(await slider.count(), 0);
+    await page.getByRole("button", { name: restoredStart ? "全局播放" : "暂停", exact: true }).waitFor();
   } finally { await context.close(); }
 });
 

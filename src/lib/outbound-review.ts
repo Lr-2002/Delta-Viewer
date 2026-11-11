@@ -9,6 +9,22 @@ export interface OutboundBatch {
 }
 export const OUTBOUND_INVALID_REASONS = ["无实际意义动作", "测试数据", "设备没有正确佩戴"] as const;
 
+export function outboundVideoParts(videos: OutboundVideo[]) {
+  const cameras = new Map<string, OutboundVideo[]>();
+  for (const video of videos) {
+    const path = video.label.replaceAll("\\", "/");
+    const parent = path.lastIndexOf("/");
+    const camera = parent > 0 ? path.slice(0, parent) : path.replace(/-\d+\.mp4$/i, "").replace(/\.mp4$/i, "");
+    const files = cameras.get(camera) ?? [];
+    files.push(video);
+    cameras.set(camera, files);
+  }
+  for (const files of cameras.values()) files.sort((a, b) => a.label.localeCompare(b.label, "en", { numeric: true }));
+  const count = Math.max(0, ...[...cameras.values()].map(files => files.length));
+  return { cameraCount: cameras.size, parts: Array.from({ length: count }, (_, index) =>
+    [...cameras.entries()].flatMap(([camera, files]) => files[index] ? [{ ...files[index], camera }] : [])) };
+}
+
 const outboundCall = <T,>(input: Record<string, unknown>) => invoke<T>("outbound_review_call", { input });
 export const listOutboundBatches = () => outboundCall<{ batches: OutboundBatch[]; reasonOptions: string[] }>({ action: "list" });
 export const saveOutboundReasonOption = (reason: string) =>
