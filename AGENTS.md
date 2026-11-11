@@ -1,5 +1,11 @@
 # D1 Manager 开发指南
 
+### 2026-11-12 NAS 缓冲恢复时钟修正（1.9.0）
+
+1.8.9 已完成自动 annotated tag 和完整三平台 Release，不重复发布或部署。正式包目标 Windows 复测曾出现缓冲及回退；合成实际 FramePanel 夹具确认：主相机呈现回调滞后时，shared hold 将主相机回定位至旧 React 时间轴。修复在暂停缓冲前上报实际主相机媒体时间，恢复时只对齐副相机，同一连续播放周期忽略回退的呈现回调；主动拖动、重新播放和分段重建时钟，保留真实采集映射与原审核门禁。
+
+回归包含延迟回调叠加副相机缓冲，原生回调与旧 WebView 计时回退均须通过。1.9.0 必须继续完整门禁、既有自动三平台发布和目标 Windows 正式产物验收；不得以夹具通过代替现场。外发服务已生效，不重启、不重复部署、不代领代审真实批次；源文件、账号、队列、草稿及旧窗口保持。
+
 ### 2026-11-11 runner 镜像可达性探测（1.8.9）
 
 1.8.7 的 Azure archive 在 GitHub runner DNS 不可达；1.8.8 已改写 `/etc/apt/apt-mirrors.txt`，但完整日志确认 `archive.ubuntu.com` 同样 DNS 失败，依赖安装在 30 分钟门禁内超时，两版均无 tag/Release。1.8.9 在改写 Ubuntu archive 主机前，使用 HTTPS HEAD 读取 `dists/noble/InRelease`，按固定候选顺序选第一个可达站点；Ubuntu archive、security 和 Azure 主机都统一到所选镜像，保留 suites、components、Signed-By、APT Release/包签名和原子文件更新。所有站点不可达时快速失败，禁止长时间重试后伪装通过。回归使用固定候选、无网络 fixture 验证候选回退、源改写和幂等；不修改目标用户或业务服务的软件源。

@@ -116,7 +116,9 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
         window.__pendingPresentations = new Map();
         const request = HTMLVideoElement.prototype.requestVideoFrameCallback;
         HTMLVideoElement.prototype.requestVideoFrameCallback = function (callback) {
-          const id = request.call(this, callback);
+          const id = request.call(this, (now, metadata) => callback(now,
+            window.__nativeFreezeClock && this === document.querySelector("video")
+              ? { ...metadata, mediaTime: window.__nativeFrozenTime } : metadata));
           window.__pendingPresentations.set(this, { id, callback });
           return id;
         };
@@ -220,6 +222,56 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => v.currentTime < .05 && !v.seeking));
       await page.evaluate(() => window.__nativePlayback.play(true));
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => v.currentTime > .3 && !v.paused));
+      if (presentationCallback) {
+        // Reproduce a delayed primary compositor callback followed by a NAS
+        // secondary buffering pause. The media decoder keeps advancing while
+        // React's last presented frame stays behind. Recovery must not seek
+        // the primary backward to that stale frame.
+        await page.evaluate(() => {
+          window.__nativeFrozenTime = document.querySelector("video").currentTime;
+          window.__nativeFreezeClock = true;
+        });
+        await page.waitForTimeout(800);
+        const beforeHold = await page.locator("video").first().evaluate(v => v.currentTime);
+        await page.evaluate(() => {
+          const secondary = document.querySelectorAll("video")[1];
+          const tail = secondary.currentTime + .05;
+          Object.defineProperty(secondary, "buffered", { configurable: true,
+            value: { length: 1, start: () => 0, end: () => tail } });
+          secondary.dispatchEvent(new Event("waiting"));
+        });
+        await page.waitForFunction(() => [...document.querySelectorAll("video")].every(v => v.paused));
+        await page.waitForTimeout(250);
+        const held = await page.evaluate(() => ({
+          primary: document.querySelector("video").currentTime,
+          frame: Number(document.getElementById("position").textContent),
+        }));
+        assert.ok(held.primary >= beforeHold - .04,
+          `buffering rewound primary from ${beforeHold} to ${held.primary}`);
+        assert.ok(Math.abs(held.frame / 30 - held.primary) < .04,
+          "shared hold uses the actual primary clock, not a stale presentation");
+        await page.evaluate(() => {
+          delete document.querySelectorAll("video")[1].buffered;
+        });
+        await page.waitForFunction(() => [...document.querySelectorAll("video")].every(v => !v.paused));
+        await page.evaluate(() => {
+          const video = document.querySelector("video");
+          const pending = window.__pendingPresentations.get(video);
+          video.cancelVideoFrameCallback(pending.id);
+          pending.callback(performance.now(), { mediaTime: window.__nativeFrozenTime });
+        });
+        await page.waitForTimeout(100);
+        assert.ok(Number(await page.locator("#position").textContent()) >= held.frame,
+          "late presentation after recovery must not undo the frozen clock");
+        await page.evaluate(() => { window.__nativeFreezeClock = false; });
+        await page.waitForFunction(() => [...document.querySelectorAll("video")]
+          .every(v => !v.paused && !v.seeking && v.currentTime > 1.3));
+        await page.evaluate(() => window.__nativePlayback.seek(5));
+        await page.waitForFunction(() => [...document.querySelectorAll("video")]
+          .every(v => !v.seeking && Math.abs(v.currentTime - 5 / 30) < .04));
+        await page.evaluate(() => window.__nativePlayback.play(true));
+        await page.waitForFunction(() => Number(document.getElementById("position").textContent) > 8);
+      }
     }
     const stats = await page.evaluate(() => window.__nativeStats);
     const finished = await page.evaluate(() => ({ wall: performance.now(), media: document.querySelector("video").currentTime }));
