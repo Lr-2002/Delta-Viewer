@@ -10,7 +10,8 @@ import tempfile
 
 
 def configure(apt_root: Path) -> int:
-    candidates = [apt_root / "sources.list"]
+    # GitHub's mirror+file sources resolve through this list before apt downloads.
+    candidates = [apt_root / "sources.list", apt_root / "apt-mirrors.txt"]
     source_dir = apt_root / "sources.list.d"
     if source_dir.is_dir():
         candidates.extend(sorted(source_dir.glob("*.list")))

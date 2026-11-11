@@ -829,7 +829,9 @@ test("ephemeral Ubuntu runners use the primary archive without weakening package
   const legacy = "deb http://azure.archive.ubuntu.com/ubuntu jammy main\ndeb http://security.ubuntu.com/ubuntu jammy-security main\n";
   const deb822 = "Types: deb\nURIs: https://azure.archive.ubuntu.com/ubuntu/\nSuites: noble noble-updates\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n";
   const custom = "deb https://example.invalid/ubuntu noble main\n";
-  const files = [["sources.list", legacy], ["sources.list.d/ubuntu.sources", deb822], ["sources.list.d/custom.list", custom]];
+  const mirrors = "http://azure.archive.ubuntu.com/ubuntu\thttps://archive.ubuntu.com/ubuntu\nhttp://security.ubuntu.com/ubuntu\nhttps://example.invalid/ubuntu\n";
+  const mirrorSource = "Types: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\nSuites: noble noble-updates\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n";
+  const files = [["sources.list", legacy], ["sources.list.d/ubuntu.sources", deb822], ["sources.list.d/custom.list", custom], ["apt-mirrors.txt", mirrors], ["sources.list.d/mirror.sources", mirrorSource]];
   for (const [name,contents] of files) await writeFile(path.join(fixture,name),contents);
   const script = path.join(root,"scripts/configure-ubuntu-archive.py");
   const run = () => execFileSync("python3",[script,"--apt-root",fixture],{encoding:"utf8"});
