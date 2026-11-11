@@ -74,7 +74,7 @@ export function DiagnosticLogPanel({busy,beginOperation,onError}:Props){
       </p>
       {!preview.hasCid&&<p className="manager-ota-error" role="alert"><AlertCircle size={15}/>该会话未记录设备 CID，无法关联已登记设备。</p>}
     </div>}
-    {!enabled&&<span className="manager-upload-state">上传服务待接入{service?.detail?`：${service.detail}`:""}</span>}
+    {!enabled&&<span className="manager-upload-state"><span>上传服务待接入</span>{service?.detail?<small>{service.detail}</small>:null}</span>}
     {enabled&&<span className="manager-upload-state">{service?.origin??""} · 仅在主动点击后上传一次，不含图像或原始文件</span>}
     {receipt&&<p className="manager-ota-success" role="status"><CheckCircle2 size={17}/>{receipt.message}（{receipt.entryCount} 条，报告 {receipt.reportId}）</p>}
     <p className="manager-privacy">原始日志保留在本机；上传内容为脱敏后的结构化日志，不含源文件。</p>

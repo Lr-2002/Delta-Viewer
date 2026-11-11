@@ -245,3 +245,4 @@
 .manager-log-levels {display:flex;flex-wrap:wrap;gap:10px;font-size:13px;color:#3d4b58;}
 .manager-log-levels span {padding:3px 8px;border:1px solid #e2e2e7;border-radius:5px;background:#f6f7f9;}
 @media(max-width:760px) {.manager-ota-status,.manager-ota-release dl {grid-template-columns:repeat(2,minmax(0,1fr));}.manager-ota {padding:16px;}}
+.manager-upload-state small {display:block;font-size:12px;color:#7b8794;margin-top:2px;}
