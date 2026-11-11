@@ -1,5 +1,9 @@
 # D1 Manager 开发指南
 
+### 2026-11-11 应用 OTA 与诊断日志接入（1.8.5）
+
+设备信息页“DOHC 应用升级”按 4174 源站 Factory 通道读取签名清单，校验 manifest/changelog/制品的大小与 SHA-256 后，经设备 `/ota/upload/v1/session` 分块中继五个文件；上传确认与 `operation_id` 不代表安装成功，界面以设备 `GET /ota/status` 的 state/result/user_guidance 为准，安装、防回退与回滚由设备 updater 独立完成。日志与支持页“上传诊断日志”只读取用户选择的采集会话目录，CID 取自 `session.json` 的 `device.emmc_cid`（`recording.log.jsonl` 是 `{schema,session_id,timestamp,event,details}` 事件流，不含 CID），脱敏后最多 200 条按 `runtime-diagnostic` 上传，重试沿用同一 reportId 与幂等键。源站与日志服务地址固定在 `config/d1-manager.json`，前端不得传主机/路径/查询；未配置发布公钥时只核对大小与摘要并以设备验签为唯一信任依据，不得声称已实现公钥验签。Type-C 不提供升级通道。浏览器夹具通过不等于实机升级或真实日志上传验收。
+
 ### 2026-11-11 设备概览按状态着色与注册回归修正（1.8.4候选）
 
 设备信息顶部四张概览卡片按真实报告显示绿色正常、黄色需检查、红色警告和蓝色信息/未知；电压与温度只有设备告警明确关联时才着色，禁止引入应用自设阈值。下方设备分类卡片保持中性底色，状态文字及完整检测详情保留。1.8.0–1.8.2 因浏览器回归使用旧导航或缺少设备状态 IPC 夹具而未生成 tag/Release。1.8.3 最后一组浏览器回归暴露登录标题断言过时，且把 Vite 固定的客户端 env.mjs 内部模块误判为应用文件系统请求；现已分别校正标题并只排除该 Vite 内部资源，本版为 1.8.4。颜色仅为展示，不写设备、不改诊断结论；应用 identifier、数据目录、Viewer 工作区和更新/发布契约不变。
