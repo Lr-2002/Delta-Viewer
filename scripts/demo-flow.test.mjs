@@ -74,10 +74,10 @@ if (!browserExecutable) {
         await page.goto(baseUrl, { waitUntil: "networkidle" });
         await page.getByRole("button", { name: "登录工作区" }).click();
         assert.equal(await page.title(), "D1 Manager");
-        await page.getByRole("heading", { name: "审核员注册", exact: true }).waitFor();
+        await page.getByRole("heading", { name: "创建审核员账号", exact: true }).waitFor();
         await page.getByRole("button", { name: "返回登录", exact: true }).click();
         await page.getByRole("button", { name: "注册审核员账号", exact: true }).click();
-        await page.getByRole("heading", { name: "审核员注册", exact: true }).waitFor();
+        await page.getByRole("heading", { name: "创建审核员账号", exact: true }).waitFor();
         assert.equal(await page.locator(".auth-brand strong").innerText(), "D1 Manager");
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
         mkdirSync(resolve(root, "artifacts/branding"), { recursive: true });
@@ -487,7 +487,7 @@ if (!browserExecutable) {
     const fileSystemResponses = [];
     const fixtureStatuses = [];
     page.on("response", (response) => {
-      if (response.url().includes("/@fs")) fileSystemResponses.push(response.status());
+      if (response.url().includes("/@fs")) fileSystemResponses.push(response.url());
       if (response.url().endsWith("/demo/fixture.json")) fixtureStatuses.push(response.status());
     });
 
@@ -505,7 +505,12 @@ if (!browserExecutable) {
       viewportWidth: window.innerWidth,
     }));
 
-    assert.deepEqual(fileSystemResponses, []);
+    const applicationFileSystemResponses = fileSystemResponses.filter((url) => {
+      const pathname = new URL(url).pathname;
+      // Vite serves this fixed client module through /@fs; application assets must not use it.
+      return !/\/node_modules\/vite\/dist\/client\/env\.mjs$/.test(pathname);
+    });
+    assert.deepEqual(applicationFileSystemResponses, [], `unexpected application filesystem responses: ${applicationFileSystemResponses.join(", ")}`);
     assert.ok(fixtureStatuses.includes(200));
     assert.ok(cameraWidths.cam0 >= cameraWidths.cam1 * 1.9, JSON.stringify(cameraWidths));
     assert.ok(cameraWidths.scrollWidth <= cameraWidths.viewportWidth, JSON.stringify(cameraWidths));

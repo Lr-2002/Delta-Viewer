@@ -189,6 +189,23 @@ if (!browserExecutable && requireBrowser) {
             return null;
           }
           switch (command) {
+            case "d1_availability":
+              return {
+                attemptedAddress: null,
+                connection: "not_connected",
+                identity: null,
+                observation: null,
+                error: null,
+                selectedInterfaceId: null,
+                realDeviceEnabled: false,
+                configuration: {
+                  diagnosticUpload: { enabled: false, endpoint: null, status: "waiting_interface" },
+                  schemaVersion: 1,
+                  deviceOta: { reservedAddress: "", scheme: null, enabled: false, status: "waiting_interface" },
+                  productionOperations: [],
+                },
+                linkDiscovery: { status: "no_candidates", platform: "linux", observedAtMs: Date.now(), candidates: [], error: null },
+              };
           case "resolve_source_path": return args.batchRoot ? "" : args.path;
             case "get_auth_status":
               return {
@@ -343,6 +360,7 @@ if (!browserExecutable && requireBrowser) {
     try {
       await page.goto(baseUrl, { waitUntil: "networkidle" });
       await page.locator(".app-shell").waitFor();
+      await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "数据工作区", exact: true }).click();
       await page.locator(".topbar-actions").getByRole("button", { name: /选择 (SD 卡|数据目录)/ }).click();
       await page.locator(".view-tabs").waitFor();
       await page.locator(".camera-grid img").first().waitFor();
