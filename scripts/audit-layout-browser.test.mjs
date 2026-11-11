@@ -36,6 +36,7 @@ test('one compact sync notice, native history modality and both outboxes recover
   function assertPassword(args){if(args.request.username!=='admin'||args.request.password!=='fixture-password')throw Error('INVALID_CREDENTIALS');}
  },{version});
  await page.goto(server.resolvedUrls.local[0]);
+ await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'数据工作区',exact:true}).click();
  const notice=page.getByLabel('操作记录同步状态',{exact:true});
  await notice.getByRole('button',{name:'重新登录并补传',exact:true}).waitFor();
  assert.equal(await notice.count(),1);
