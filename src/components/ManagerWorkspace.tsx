@@ -285,7 +285,7 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
       try{
         const reply=await requestPageApi({path:"/status",method:"GET"});
         if(!active)return;
-        if(reply.status!==200)throw new Error("设备状态读取失败，请检查设备连接。");
+        if(reply.status!==200&&reply.status!==503)throw new Error("设备状态读取失败，请检查设备连接。");
         const status=JSON.parse(reply.body);
         if(status.schema!=="dohc.device.status-summary.v2")throw new Error("当前连接暂未提供运行状态。");
         setRuntimePage({address:runtimeTarget.current?.apAddress??runtimePage?.address??"",html:"",status,observedAtMs:Date.now()});setRuntimeError("");

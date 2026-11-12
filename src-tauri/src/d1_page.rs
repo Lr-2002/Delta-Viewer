@@ -171,7 +171,17 @@ async fn get(
         .send()
         .await
         .map_err(|_| "无法访问设备页面。请检查 IP、网络连接及设备是否开机。")?;
-    if response.status().as_u16() != 200 {
+    read_get_response(response, path, cancelled).await
+}
+async fn read_get_response(
+    response: reqwest::Response,
+    path: &str,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, String> {
+    // An unhealthy DOHC device deliberately returns its usable status as 503.
+    // Configuration pages and unrelated service errors must still fail closed.
+    let unhealthy_status = path == "/status" && response.status().as_u16() == 503;
+    if response.status().as_u16() != 200 && !unhealthy_status {
         return Err("设备未返回可展示的状态页面。".into());
     }
     if response
@@ -191,6 +201,13 @@ async fn get(
             return Err("设备页面超过大小限制。".into());
         }
         bytes.extend_from_slice(&chunk);
+    }
+    if unhealthy_status {
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| "设备状态暂不可用，请刷新页面。")?;
+        if value["schema"] != "dohc.device.status-summary.v2" {
+            return Err("设备状态接口版本暂不支持。".into());
+        }
     }
     Ok(bytes)
 }
@@ -774,6 +791,55 @@ pub async fn read_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn unhealthy_status_is_readable_but_other_503_responses_are_rejected() {
+        use std::io::{Read, Write};
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = client(None).unwrap();
+        let status = br#"{"schema":"dohc.device.status-summary.v2","health":"FAILED","heartbeat_stale":false,"device":{"device_id":"fixture-device"},"alerts":{"total":1}}"#;
+        for (path, body, accepted) in [
+            ("/status", status.as_slice(), true),
+            ("/", status.as_slice(), false),
+            ("/api/v1/camera-config", status.as_slice(), false),
+            (
+                "/status",
+                b"<html>Service Unavailable</html>".as_slice(),
+                false,
+            ),
+            (
+                "/status",
+                br#"{"schema":"unrelated","health":"FAILED"}"#.as_slice(),
+                false,
+            ),
+        ] {
+            let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let address = listener.local_addr().unwrap();
+            let body = body.to_vec();
+            let expected = body.clone();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = [0; 2048];
+                let count = socket.read(&mut request).unwrap();
+                assert!(request[..count].starts_with(format!("GET {path} HTTP/1.1").as_bytes()));
+                write!(socket, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                socket.write_all(&body).unwrap();
+            });
+            let response = client
+                .get(format!("http://{address}{path}"))
+                .send()
+                .await
+                .unwrap();
+            let result = read_get_response(response, path, &AtomicBool::new(false)).await;
+            server.join().unwrap();
+            assert_eq!(result.is_ok(), accepted, "{path}: {result:?}");
+            if accepted {
+                assert_eq!(result.unwrap(), expected);
+            }
+        }
+    }
     fn api(method: &str, path: &str, body: Option<serde_json::Value>) -> PageApiRequest {
         PageApiRequest {
             path: path.into(),
