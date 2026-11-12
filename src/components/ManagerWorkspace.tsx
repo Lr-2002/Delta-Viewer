@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from "react";
-import {AlertCircle, ArrowRight, Cable, CheckCircle2, CircleDashed, ClipboardList, Download, FileArchive, KeyRound, LoaderCircle, MinusCircle, RefreshCw, ShieldCheck, Upload, Wifi, X, XCircle} from "lucide-react";
+import {AlertCircle, ArrowRight, Cable, CheckCircle2, CircleDashed, ClipboardList, Download, FileArchive, KeyRound, LoaderCircle, MinusCircle, RefreshCw, ShieldCheck, Wifi, X, XCircle} from "lucide-react";
 import {cancelTask, chooseDirectory, confirmDevicePageOperation, exportDeviceBundle, getDeviceAvailability, isTauriRuntime, getWifiInventory, connectDeviceWifi, readDevicePage, requestDevicePageApi, requestDevicePageBatch, previewDeviceBundle, revealOutput, runDeviceDiagnostics, renewUsbDeviceAddress} from "../lib/backend";
 import {deviceResultLabels, deviceTaskLabels, type DevicePage, type DevicePageApiRequest, type DevicePageApiResponse, type WifiSnapshot, type DeviceConnectionMode, type DeviceCheck, type DeviceResultStatus, type DeviceAvailability, type DeviceBundlePreview, type DeviceRun, type HealthSnapshot, type ManagerSection} from "../lib/d1";
 import {linkSummary} from "./DeviceLinkPanel";
@@ -7,6 +7,8 @@ import {cameraLabel, checkLabel, checkObservation, deviceStateLabel, deviceText,
 import "./manager-workspace.css";
 import {DeviceRuntimePanel} from "./DeviceRuntimePanel";
 import {DevicePageView} from "./DevicePageView";
+import {DeviceOtaPanel} from "./DeviceOtaPanel";
+import {DiagnosticLogPanel} from "./DiagnosticLogPanel";
 
 type Operation={id:number;finish:()=>void};
 interface Props {section:ManagerSection;busy:boolean;beginOperation:()=>Operation|null;onNavigate:(section:ManagerSection)=>void}
@@ -106,14 +108,15 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
   const connected=!runtimeError&&((availability?.connection==="connected"&&observation!==null)||!!runtimePage?.status);
   const pageOnly=availability?.error?.code==="D1_HEALTH_PAGE_ONLY";
   const connectionLabel=connected?"已连接 D1":availability?.error?.message??linkSummary(availability?.linkDiscovery??null);
+  useEffect(()=>{setPageView(null);},[section]);
   useEffect(()=>{
-    if(section==="data"||pageView||working!==null||(connectionMode!=="type_c"&&(!pageRequest||connectionMode==="ap")))return;
+    if(section==="data"||pageView||working!==null||(connectionMode!=="type_c"&&!pageRequest))return;
     let active=true;
     let timer:ReturnType<typeof setTimeout>|undefined;
     async function refresh(){
       let retry=true;
       try {
-        const value=await getDeviceAvailability(interfaceId,apAddress,connectionMode);
+        const value=await getDeviceAvailability(pageRequest?.interfaceId??interfaceId,pageRequest?.apAddress??apAddress,connectionMode);
         if(active){
           setAvailability(value);
           if(connectionMode==="type_c")setInterfaceId(previous=>{
@@ -291,10 +294,9 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
     void refresh();return()=>{active=false;clearTimeout(timer);};
   },[pageRequest,pageView,section,working,runtimeRevision]);
   if(section==="data")return null;
-  if(pageView&&(section==="home"||section==="device"))return <><DevicePageView page={pageView} busy={working!==null} showConnectionMode={section==="device"} connectionModeLabel={pageRequest?.connectionMode==="ap"?"设备热点（AP）":"局域网 IP"} onBack={()=>{requestGeneration.current++;setPageView(null);}} onRefresh={()=>{if(pageRequest)void openPage(pageRequest);}} onRequest={requestPageApi} onVerifyAddress={verifyProvisionedAddress}/>{error&&<ManagerErrorToast message={error} onDismiss={()=>setError("")}/>}</>;
+  if(pageView&&(section==="home"||section==="device"))return <><DevicePageView page={pageView} busy={working!==null} showConnectionMode={section==="device"} connectionModeLabel={pageRequest?.connectionMode==="ap"?"设备热点（AP）":"局域网 IP"} onBack={()=>{requestGeneration.current++;setPageView(null);onNavigate("device");}} onRefresh={()=>{if(pageRequest)void openPage(pageRequest);}} onRequest={requestPageApi} onVerifyAddress={verifyProvisionedAddress}/>{error&&<ManagerErrorToast message={error} onDismiss={()=>setError("")}/>}</>;
   const limited=observation?.cameraPortLimited??false;
   const counts=Object.fromEntries(resultOrder.map(status=>[status,run?.checks.filter(check=>check.status===status).length??0]));
-  const ota=<section className="manager-status-row"><ShieldCheck size={20}/><div><strong>DOHC 应用升级</strong><p>等待升级服务接入</p></div><span className="manager-chip">暂不可用</span></section>;
   const connectionHelp=connectionMode==="ap"?"长按录制键，听到进入 AP 的语音后，连接设备标签对应的热点。":connectionMode==="lan"?"输入设备联网后语音播报的 IP，电脑需与设备处于同一网段。":"通过 Type-C 数据线连接已开机的 D1。";
   const connectionModeLabel=connectionMode==="ap"?"设备热点（AP）":connectionMode==="lan"?"局域网 IP":"Type-C 连接";
   const connectionControls=<section className="manager-connection-area" aria-label="设备连接方式">
@@ -331,7 +333,8 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
 
     </>:null}
     {section==="device"&&<>
-      {(pageRequest||statusPage)?<DeviceRuntimePanel cameraPortLimited={!runtimePage&&observation?.cameraPortLimited} connectionLimitedOnly={!runtimePage&&observation?.connectionLimitedOnly} page={statusPage} error={runtimeError} refresh={()=>setRuntimeRevision(n=>n+1)} onConfigure={pageRequest?()=>void openPage(pageRequest):undefined} onNavigate={()=>onNavigate("diagnostics")}/>:observation?<><div className="manager-device-layout"><DeviceSummary snapshot={observation} onOpenDiagnostics={()=>onNavigate("diagnostics")}/><section className="manager-card manager-current-status"><header className="manager-device-heading"><h2>相机与存储</h2><button className="button button-secondary" type="button" disabled={disabled} onClick={()=>onNavigate("diagnostics")}>完整检测结果<ArrowRight size={15}/></button></header><div className="manager-camera-grid">{observation.cameras.map(camera=><div key={camera.role}><strong>{cameraLabel(camera.role)}</strong><ResultBadge status={limited&&camera.role==="stereo_extension"?"not_run":camera.enabled===false?"not_run":observation.heartbeatStale!==false?"indeterminate":camera.state==="STREAMING"&&camera.fresh?"normal":["FAULT","FAILED"].includes(camera.state??"")&&camera.fresh===false?"abnormal":"indeterminate"} label={limited&&camera.role==="stereo_extension"?"未检查":deviceStateLabel(camera.state)}/><small>{camera.effectiveFps===null?"帧率未提供":`${camera.effectiveFps.toFixed(1)} 帧/秒`}</small></div>)}</div><p>采集存储：{observation.storage?.writable===true?"可写":observation.storage?.writable===false?"不可写":"状态未提供"}</p>{limited&&<p className="manager-port-note">Type-C 当前用于连接电脑，扩展双目相机不参与本次检测；设备可能仍亮红灯。</p>}<p className="manager-observed">完整告警和检测证据位于“检测排障”。</p></section></div></>:<><section className="manager-empty compact"><Cable size={32}/><h2>{pageOnly?"暂不能读取设备报告":availability?.error?"设备报告暂不可用":"等待 D1 连接"}</h2>{availability?.attemptedAddress&&<dl className="manager-metadata"><div><dt>{connectionMode==="ap"?"热点 IP":"连接 IP"}</dt><dd>{availability.attemptedAddress}</dd></div></dl>}<p>{connectionMode!=="type_c"?connectionHelp:connectionLabel}</p></section></>}{ota}
+      {(pageRequest||statusPage)?<DeviceRuntimePanel cameraPortLimited={!runtimePage&&observation?.cameraPortLimited} connectionLimitedOnly={!runtimePage&&observation?.connectionLimitedOnly} page={statusPage} error={runtimeError} refresh={()=>setRuntimeRevision(n=>n+1)} onConfigure={pageRequest?()=>void openPage(pageRequest):undefined} onNavigate={()=>onNavigate("diagnostics")}/>:observation?<><div className="manager-device-layout"><DeviceSummary snapshot={observation} onOpenDiagnostics={()=>onNavigate("diagnostics")}/><section className="manager-card manager-current-status"><header className="manager-device-heading"><h2>相机与存储</h2><button className="button button-secondary" type="button" disabled={disabled} onClick={()=>onNavigate("diagnostics")}>完整检测结果<ArrowRight size={15}/></button></header><div className="manager-camera-grid">{observation.cameras.map(camera=><div key={camera.role}><strong>{cameraLabel(camera.role)}</strong><ResultBadge status={limited&&camera.role==="stereo_extension"?"not_run":camera.enabled===false?"not_run":observation.heartbeatStale!==false?"indeterminate":camera.state==="STREAMING"&&camera.fresh?"normal":["FAULT","FAILED"].includes(camera.state??"")&&camera.fresh===false?"abnormal":"indeterminate"} label={limited&&camera.role==="stereo_extension"?"未检查":deviceStateLabel(camera.state)}/><small>{camera.effectiveFps===null?"帧率未提供":`${camera.effectiveFps.toFixed(1)} 帧/秒`}</small></div>)}</div><p>采集存储：{observation.storage?.writable===true?"可写":observation.storage?.writable===false?"不可写":"状态未提供"}</p>{limited&&<p className="manager-port-note">Type-C 当前用于连接电脑，扩展双目相机不参与本次检测；设备可能仍亮红灯。</p>}<p className="manager-observed">完整告警和检测证据位于“检测排障”。</p></section></div></>:<><section className="manager-empty compact"><Cable size={32}/><h2>{pageOnly?"暂不能读取设备报告":availability?.error?"设备报告暂不可用":"等待 D1 连接"}</h2>{availability?.attemptedAddress&&<dl className="manager-metadata"><div><dt>{connectionMode==="ap"?"热点 IP":"连接 IP"}</dt><dd>{availability.attemptedAddress}</dd></div></dl>}<p>{connectionMode!=="type_c"?connectionHelp:connectionLabel}</p></section></>}
+      <DeviceOtaPanel request={pageRequest} connected={connected} busy={disabled} beginOperation={beginOperation} onError={setError}/>
     </>}
     {section==="diagnostics"&&<>
       {statusPage&&<DeviceRuntimePanel cameraPortLimited={!runtimePage&&observation?.cameraPortLimited} connectionLimitedOnly={!runtimePage&&observation?.connectionLimitedOnly} page={statusPage} diagnostics error={runtimeError} refresh={()=>setRuntimeRevision(n=>n+1)} onConfigure={pageRequest?()=>{onNavigate("device");void openPage(pageRequest);}:undefined}/>}
@@ -341,10 +344,10 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
     </>}
     {section==="support"&&<div className="manager-support-layout"><section className="manager-card"><header className="manager-device-heading"><h2>本地诊断包</h2><FileArchive size={21}/></header><p>包含本次设备健康观测与检测摘要，暂不包含原始设备日志。</p>{run?<>
       <dl className="manager-metadata"><div><dt>设备标识</dt><dd>{run.device?.id??"本次未能读取"}</dd></div><div><dt>应用版本</dt><dd>{run.device?.applicationVersion??"本次未能读取"}</dd></div><div><dt>观测范围</dt><dd>{time(run.startedAtMs)} — {time(run.finishedAtMs)}</dd></div></dl>
-      <div className="manager-actions"><button className="button button-secondary" disabled={disabled||!isTauriRuntime()} onClick={()=>void prepare()}><ClipboardList size={17}/>预览包内容</button>{preview&&<button className="button button-primary" disabled={disabled} onClick={()=>void exportBundle()}><Download size={17}/>导出到本机</button>}{working==="export"&&operation.current&&<button className="button button-secondary" disabled={cancelling} onClick={()=>void cancel()}>取消导出</button>}</div>
+      <div className="manager-actions"><button className="button button-secondary" disabled={disabled||!isTauriRuntime()} onClick={()=>void prepare()}><ClipboardList size={17}/>预览检测包</button>{preview&&<button className="button button-primary" disabled={disabled} onClick={()=>void exportBundle()}><Download size={17}/>导出到本机</button>}{working==="export"&&operation.current&&<button className="button button-secondary" disabled={cancelling} onClick={()=>void cancel()}>取消导出</button>}</div>
       {!isTauriRuntime()&&<p>请在桌面客户端预览并导出诊断包。</p>}
       {preview&&<div className="manager-package-preview" aria-label="诊断包预览"><p>{preview.privacy}</p>{preview.files.map(file=><article key={file.name}><strong>{file.name}</strong><span>{file.bytes} 字节</span><code>SHA-256 {file.sha256}</code></article>)}</div>}
       {output&&<div className="manager-export-success" role="status"><CheckCircle2 size={18}/><span>已导出：{output}</span><button className="text-button" onClick={()=>void revealOutput(output).catch(cause=>setError(errorText(cause)))}>打开所在位置</button></div>}
-    </>:<div className="manager-empty compact"><FileArchive size={30}/><h2>还没有检测记录</h2><p>完成设备检测后，即可预览和导出。</p><button className="button button-secondary" onClick={()=>onNavigate("diagnostics")}>前往检测</button></div>}</section><section className="manager-card manager-support-upload" aria-label="上传诊断包"><Upload size={26}/><h2>提交给售后</h2><p>将诊断包上传至服务中心，协助售后定位问题。</p><button className="button button-primary" disabled aria-describedby="diagnostic-upload-state"><Upload size={17}/>上传诊断包</button><span id="diagnostic-upload-state" className="manager-upload-state">上传服务待接入</span><p className="manager-privacy">诊断信息默认保存在本机。接入后也只会在你主动确认后上传。</p></section></div>}
+    </>:<div className="manager-empty compact"><FileArchive size={30}/><h2>还没有检测记录</h2><p>完成设备检测后，即可预览和导出。</p><button className="button button-secondary" onClick={()=>onNavigate("diagnostics")}>前往检测</button></div>}</section><DiagnosticLogPanel busy={disabled} beginOperation={beginOperation} onError={setError}/></div>}
   </main>;
 }

@@ -422,11 +422,12 @@ async function nativePageFixture(context){
   const runtime=`
     export * from "/src/lib/backend.ts";
     export const isTauriRuntime=()=>true;
-    export async function requestDevicePageApi(request,api){window.pageApiCalls.push(api);if(window.pageFixtureMode==="provision-failed"&&api.path==="/")return {status:200,contentType:"text/html",body:"<html><body>无法连接该 Wi-Fi，请检查名称和密码后重试。</body></html>"};return api.path==="/configure"?{status:202,contentType:"text/html",body:'<html><body><h1>正在连接</h1><p>设备正在连接所选 Wi-Fi，配网热点将自动关闭。</p></body></html>'}:{status:200,contentType:"application/json",body:JSON.stringify({ok:true})};}
+    const nativeStatus=()=>({schema:"dohc.device.status-summary.v2",heartbeat_stale:false,device:{device_id:"native-fixture-device",workspace_version:"1.1.1",channel:"factory"},health:"OK",cameras:{configured:1,fresh:1,items:[{role:"main",state:"STREAMING",fresh:true,required:true}]},alerts:{total:0,critical:0,warning:0,items:[]}});
+    export async function requestDevicePageApi(request,api){window.pageApiCalls.push(api);if(window.pageFixtureMode==="provision-failed"&&api.path==="/")return {status:200,contentType:"text/html",body:"<html><body>无法连接该 Wi-Fi，请检查名称和密码后重试。</body></html>"};return api.path==="/configure"?{status:202,contentType:"text/html",body:'<html><body><h1>正在连接</h1><p>设备正在连接所选 Wi-Fi，配网热点将自动关闭。</p></body></html>'}:{status:200,contentType:"application/json",body:JSON.stringify(api.path==="/status"?nativeStatus():{ok:true})};}
     export async function requestDevicePageBatch(request,apis){return Promise.all(apis.map(api=>requestDevicePageApi(request,api)));}
     export async function getWifiInventory(){return {supported:true,message:null,observedAtMs:Date.now(),networks:[{interfaceId:"22",ssid:"Delta-D1-test001",signal:92,connected:window.wifiFixtureConnected,recommended:true,connectable:true},{interfaceId:"22",ssid:"Office",signal:99,connected:false,recommended:false,connectable:false}]};}
     export async function connectDeviceWifi(request){window.wifiConnectCalls.push({ssid:request.ssid,interfaceId:request.interfaceId,passwordLength:request.password.length});if(window.pageFixtureMode==="wrong-password")throw new Error("热点连接未完成。请核对密码后重试。");return {interfaceId:request.interfaceId,ssid:request.ssid,connected:true};}
-    export async function readDevicePage(request){window.nativePageCalls.push(request);if(window.pageFixtureMode==="unreachable")throw new Error("无法访问设备页面。");if(window.pageFixtureMode==="provisioning")return {address:"192.168.4.1",observedAtMs:Date.now(),html:'<html><body><h1>设备维护</h1><form method="post" action="/configure"><label>Wi-Fi 名称<input name="ssid" required maxlength="32"></label><label>Wi-Fi 密码<input type="password" name="password" required minlength="8" maxlength="63"></label><button type="submit">连接网络</button></form><button id="ota-relay">在线下载并升级</button><input id="ota-file" type="file"><button id="ota-submit">上传并升级</button></body></html>'};return {address:request.apAddress??"192.168.4.1",observedAtMs:Date.now(),status:{schema:"dohc.device.status-summary.v2",device:{device_id:"native-fixture-device",workspace_version:"1.1.1",channel:"factory"},health:"OK",cameras:{configured:1,fresh:1,items:[{role:"main",state:"STREAMING",fresh:true,required:true}]},alerts:{total:0,critical:0,warning:0,items:[]}},html:JSON_HTML};}
+    export async function readDevicePage(request){window.nativePageCalls.push(request);if(window.pageFixtureMode==="unreachable")throw new Error("无法访问设备页面。");if(window.pageFixtureMode==="provisioning")return {address:"192.168.4.1",observedAtMs:Date.now(),html:'<html><body><h1>设备维护</h1><form method="post" action="/configure"><label>Wi-Fi 名称<input name="ssid" required maxlength="32"></label><label>Wi-Fi 密码<input type="password" name="password" required minlength="8" maxlength="63"></label><button type="submit">连接网络</button></form><button id="ota-relay">在线下载并升级</button><input id="ota-file" type="file"><button id="ota-submit">上传并升级</button></body></html>'};return {address:request.apAddress??"192.168.4.1",observedAtMs:Date.now(),status:nativeStatus(),html:JSON_HTML};}
   `.replace("JSON_HTML",JSON.stringify(pageHtml));
   await context.route("**/__d1-component-runtime",route=>route.fulfill({contentType:"application/javascript",body:runtime}));
 }
@@ -458,8 +459,10 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       await noOverflow(page);await page.screenshot({path:resolve(reportRoot,`native-lan-${viewport.width}.png`),fullPage:true});
       await page.getByRole("button",{name:"刷新页面",exact:true}).click();assert.equal(await page.evaluate(()=>window.nativePageCalls.length),2);
       await page.getByRole("button",{name:"返回设备管理",exact:true}).click();
+      await navigate(page,"首页");
       await page.getByRole("button",{name:"连接设备",exact:true}).click();await frame.getByRole("heading",{name:"DOHC 设备状态"}).waitFor();
       await page.getByRole("button",{name:"返回设备管理",exact:true}).click();
+      await navigate(page,"首页");
       await page.getByRole("button",{name:"设备热点（AP）",exact:true}).click();
       await page.getByRole("region",{name:"可用 Wi-Fi"}).waitFor();await page.getByRole("button",{name:/Delta-D1-test001/}).waitFor();
       const refreshWifi=page.getByRole("button",{name:"刷新 Wi-Fi",exact:true});
@@ -482,7 +485,7 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       assert.equal(await page.evaluate(()=>window.nativePageCalls.at(-1).connectionMode),"ap");
       assert.equal(await page.evaluate(()=>window.nativePageCalls.at(-1).apAddress),undefined);
       await page.getByText("设备页面 · 192.168.4.1",{exact:true}).waitFor();
-      await page.getByRole("button",{name:"返回设备管理",exact:true}).click();assert.equal(await page.getByLabel("热点密码",{exact:true}).inputValue(),"");
+      await page.getByRole("button",{name:"返回设备管理",exact:true}).click();await navigate(page,"首页");assert.equal(await page.getByLabel("热点密码",{exact:true}).inputValue(),"");
       assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
       evidence.push({viewport,status:"passed",nativePage:true,confirmedConfigurationRequest:true,wifiRecommendation:true,passwordCleared:true,opaqueSandbox:true,guidesAlwaysVisible:true,routedLan:true,externalRequests:0});
     }finally{await context.close();}
@@ -585,6 +588,29 @@ test('actual device HTML loads all startup APIs, navigates configuration repeate
 });
 
 
+test('AP and LAN both expose the same Chinese device information and complete diagnostics',async()=>{
+  for(const mode of ['ap','lan']){
+    const {page,context,errors,external}=await session({width:960,height:680},false,actualNativeMarkupFixture);
+    try{
+      await navigate(page,'首页');await page.getByRole('button',{name:mode==='ap'?'设备热点（AP）':'局域网 IP',exact:true}).click();
+      if(mode==='lan'){
+        await page.getByLabel('设备 IP',{exact:true}).fill('10.1.30.114');await page.getByRole('button',{name:'连接设备',exact:true}).click();
+      }else await page.getByRole('button',{name:'连接热点并打开',exact:true}).click();
+      await page.frameLocator('iframe[title="D1 设备页面"]').locator('#cameraConfigRows input').first().waitFor();
+      await navigate(page,'设备信息');
+      const runtime=page.getByRole('region',{name:'设备实时运行状态'});await runtime.waitFor();
+      assert.equal(await page.locator('iframe[title="D1 设备页面"]').count(),0,'device information does not remain trapped in the native page');
+      await page.getByText('实际连接方式',{exact:true}).waitFor();
+      for(const label of ['存储','采集与写入','相机','指示灯','设备测试'])await runtime.getByRole('heading',{name:label,exact:true}).waitFor();
+      assert.match(await runtime.innerText(),/native-fixture-device/);assert.match(await runtime.innerText(),/正常/);
+      await navigate(page,'检测排障');
+      for(const label of ['采集存储卡','设备内置存储','主相机','设备已有自检','设备已有压力测试'])await runtime.getByRole('heading',{name:label,exact:true}).waitFor();
+      assert.equal(await runtime.getByText('未执行',{exact:true}).count(),2,'reading existing idle tests cannot claim a pass');
+      await page.screenshot({path:resolve(reportRoot,`unified-${mode}-diagnostics.png`),fullPage:true});assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
+    }finally{await context.close();}
+  }
+});
+
 test('D1 hotspot uses factory default on explicit user connection and retains manual override',async()=>{
   const {page,context,errors,external}=await session({width:960,height:680},false,nativePageFixture);
   try{
@@ -594,7 +620,11 @@ test('D1 hotspot uses factory default on explicit user connection and retains ma
     await page.getByRole('button',{name:'连接热点并打开',exact:true}).click();
     await page.frameLocator('iframe[title="D1 设备页面"]').getByRole('heading',{name:'DOHC 设备状态'}).waitFor();
     assert.equal(await page.evaluate(()=>window.wifiConnectCalls[0].passwordLength),0,'empty override delegates to the Rust factory default');
-    await navigate(page,'设备信息');await page.getByText('实际连接方式',{exact:true}).waitFor();await page.getByText('设备热点（AP）',{exact:true}).waitFor();
+    await navigate(page,'设备信息');await page.getByText('实际连接方式',{exact:true}).waitFor();await page.locator('.manager-actual-connection').getByText('设备热点（AP）',{exact:true}).waitFor();
+    await page.waitForFunction(()=>window.pageApiCalls.some(api=>api.path==='/status'));
+    await page.locator('.manager-runtime').getByRole('button',{name:'刷新状态',exact:true}).click();
+    await page.locator('.manager-actual-connection').getByText('设备热点（AP）',{exact:true}).waitFor();
+    assert.equal(await page.locator('.manager-runtime .manager-error').count(),0,'valid periodic status replies retain the AP connection');
     assert.equal(await page.getByRole('group',{name:'连接方式'}).count(),0,'native device view shows the connected mode without repeating selectors');
     assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
   }finally{await context.close();}

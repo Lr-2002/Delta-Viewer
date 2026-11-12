@@ -203,7 +203,7 @@ pub fn lan_address(address: &str) -> Result<Ipv4Addr, String> {
     }
     Ok(ip)
 }
-async fn target(
+pub(crate) async fn resolve_target(
     request: &DeviceRequest,
     cancelled: &AtomicBool,
 ) -> Result<(ConnectionMode, Ipv4Addr, Option<Ipv4Addr>), String> {
@@ -282,7 +282,7 @@ fn client(local: Option<Ipv4Addr>) -> Result<reqwest::Client, String> {
     }
     builder.build().map_err(|_| "无法建立设备页面查询。".into())
 }
-async fn verify_ap_target(
+pub(crate) async fn verify_ap_target(
     request: &DeviceRequest,
     mode: ConnectionMode,
     local: Option<Ipv4Addr>,
@@ -302,7 +302,7 @@ async fn verify_ap_target(
     Ok(())
 }
 pub async fn read(request: DeviceRequest, cancelled: &AtomicBool) -> Result<DevicePage, String> {
-    let (mode, address, local) = target(&request, cancelled).await?;
+    let (mode, address, local) = resolve_target(&request, cancelled).await?;
     // LAN uses the OS route: private enterprise networks may cross subnets.
     let client = client(local)?;
     let bytes = get(&client, address, "/", cancelled).await?;
@@ -592,7 +592,7 @@ pub async fn api_request(
     if cancelled.load(Ordering::Acquire) {
         return Err("设备页面操作已取消。".into());
     }
-    let (mode, address, local) = target(&request, cancelled).await?;
+    let (mode, address, local) = resolve_target(&request, cancelled).await?;
     let client = client(local)?;
     if api.method == "PUT" && api.path == "/api/v1/camera-config" {
         let bytes = get(&client, address, "/api/v1/camera-config", cancelled).await?;

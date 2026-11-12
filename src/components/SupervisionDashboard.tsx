@@ -95,6 +95,7 @@ export function SupervisionDashboard({
   onManagerHome,
   syncNotice,
   onOpenCloudReview,
+  onOpenOutboundReview,
   beginCloudOperation,
 }: {
   currentUser: UserIdentity;
@@ -106,6 +107,7 @@ export function SupervisionDashboard({
   onManagerHome?: () => void;
   syncNotice?: ReactNode;
   onOpenCloudReview?: (root: string) => Promise<void>;
+  onOpenOutboundReview?: (batch: import("../lib/outbound-review").OutboundBatch) => Promise<void>;
   beginCloudOperation?: () => CloudOperationHandle | null;
 }) {
   const [view, setView] = useState<View>(currentUser.canManage ? "accounts" : "overview");
@@ -493,7 +495,7 @@ export function SupervisionDashboard({
           </button>
         ))}
       </nav>
-      {view === "tasks" && <TaskCenter workspaceBusy={updateBusy} beginCloudOperation={beginCloudOperation} currentUser={{...currentUser, role:"admin"}} cloudCurrentUser={currentUser} onOpenCloudReview={onOpenCloudReview} />}
+      {view === "tasks" && <TaskCenter workspaceBusy={updateBusy} beginCloudOperation={beginCloudOperation} currentUser={{...currentUser, role:"admin"}} cloudCurrentUser={currentUser} onOpenCloudReview={onOpenCloudReview} onOpenOutboundReview={onOpenOutboundReview} />}
       <div className="review-supervision-filters" hidden={view === "tasks" || view === "corrections" || view === "accounts"}>
         <label>
           审核账号

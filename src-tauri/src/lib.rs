@@ -8,7 +8,10 @@ mod cloud_qc;
 mod d1;
 mod d1_device;
 pub mod d1_link;
+mod d1_logs;
+mod d1_ota;
 mod d1_page;
+mod d1_services;
 mod d1_wifi;
 mod dataset_layout;
 mod episode_metadata;
@@ -235,6 +238,125 @@ fn d1_owner(auth: &AuthState) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn d1_ota_service(
+    auth: State<'_, AuthState>,
+) -> Result<d1_services::OtaServiceStatus, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    d1_ota::service_status()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn d1_ota_preview(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    operation_id: u64,
+) -> Result<d1_ota::OtaPreview, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let result = d1_ota::preview(&task.cancelled()).await;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_ota_submit(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    request: d1_device::DeviceRequest,
+    operation_id: u64,
+) -> Result<d1_ota::OtaSubmitResult, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let result = d1_ota::submit(&request, operation_id, &task.cancelled()).await;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_ota_status(
+    auth: State<'_, AuthState>,
+    request: d1_device::DeviceRequest,
+) -> Result<d1_ota::DeviceOtaStatus, String> {
+    let owner = d1_owner(&auth)?;
+    let result = d1_ota::status(&request).await;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_logs_service(
+    auth: State<'_, AuthState>,
+) -> Result<d1_services::DiagnosticServiceStatus, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    d1_logs::service_status()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn d1_logs_preview(
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    source: String,
+    operation_id: u64,
+) -> Result<d1_logs::LogPreview, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("DIAGNOSTIC_CANCELLED: 日志预览已取消".to_string());
+        }
+        let result = d1_logs::preview_source(&source).map_err(|error| error.to_string())?;
+        if cancelled.load(Ordering::Acquire) {
+            return Err("DIAGNOSTIC_CANCELLED: 日志预览已取消".to_string());
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_logs_upload(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    request: d1_logs::UploadRequest,
+    operation_id: u64,
+) -> Result<d1_logs::UploadReceipt, String> {
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let result = d1_logs::upload(request, task.cancelled()).await?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    let data_root = base_app_data_root(&app)?;
+    let receipt = result.clone();
+    if let Err(error) =
+        tauri::async_runtime::spawn_blocking(move || d1_logs::remember(&data_root, &receipt))
+            .await
+            .map_err(|error| error.to_string())?
+    {
+        // A local receipt is a convenience; the report itself already uploaded.
+        eprintln!("diagnostic upload receipt not persisted: {error}");
+    }
+    Ok(result)
+}
+
+#[tauri::command]
 async fn d1_wifi_inventory(
     auth: State<'_, AuthState>,
     refresh: bool,
@@ -435,6 +557,52 @@ async fn d1_export_bundle(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_historical_installers(
+    auth: State<'_, AuthState>,
+    version: String,
+) -> Result<Vec<updater::history::Installer>, String> {
+    auth.require_user().map_err(|e| e.to_string())?;
+    updater::history::list(&version)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn download_historical_installer(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    version: String,
+    platform: String,
+    destination: String,
+    operation_id: u64,
+) -> Result<String, String> {
+    auth.require_user().map_err(|e| e.to_string())?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    emit_task_start(
+        &app,
+        operation_id,
+        "update-history",
+        "下载历史版本安装包",
+        &version,
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(updater::history::download(
+            &app,
+            &version,
+            &platform,
+            Path::new(&destination),
+            operation_id,
+            &cancelled,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2939,6 +3107,13 @@ pub fn run() {
             d1_device_page_request,
             d1_device_page_read_batch,
             d1_run_diagnostics,
+            d1_ota_service,
+            d1_ota_preview,
+            d1_ota_submit,
+            d1_ota_status,
+            d1_logs_service,
+            d1_logs_preview,
+            d1_logs_upload,
             d1_clear_session,
             d1_preview_bundle,
             d1_export_bundle,
@@ -2946,6 +3121,8 @@ pub fn run() {
             select_workspace_mode,
             clear_workspace_mode,
             check_for_app_update,
+            list_historical_installers,
+            download_historical_installer,
             download_app_update,
             install_app_update,
             configure_user_center,

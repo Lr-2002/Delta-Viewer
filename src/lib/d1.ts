@@ -49,7 +49,40 @@ export interface DeviceAvailability {
   attemptedAddress:string|null;
   connection:"not_connected"|"connected"|"query_failed"; identity:DeviceIdentity|null; observation:HealthSnapshot|null;
   error:{code:string;message:string}|null; selectedInterfaceId:string|null; realDeviceEnabled:boolean; linkDiscovery:DeviceLinkSnapshot;
-  configuration:{diagnosticUpload:{enabled:false;endpoint:null;status:"waiting_interface"};schemaVersion:number;deviceOta:{reservedAddress:string;scheme:null;enabled:false;status:"waiting_interface"};productionOperations:string[]};
+  configuration:{diagnosticUpload:{enabled:boolean;endpoint:string|null;status:string;origin?:string|null};schemaVersion:number;deviceOta:{origin?:string|null;channel?:string|null;reservedAddress?:string;scheme:string|null;enabled:boolean;status:string;trustRoot?:{keyId:string|null;publicKeyPem:string|null}};productionOperations:string[]};
 }
+
+export type TrustStatus = "configured" | "device_verified";
+export interface OtaServiceStatus {
+  enabled:boolean; origin:string|null; channel:string|null; trust:TrustStatus;
+  trustKeyId:string|null; detail:string;
+}
+export interface OtaFileDescriptor { name:string; path:string; size:number; sha256:string|null }
+export interface OtaPreview {
+  releaseId:string; version:string; channel:string; keyId:string|null; rollbackIndex:number|null;
+  artifactBytes:number; totalBytes:number; files:OtaFileDescriptor[]; trust:TrustStatus;
+}
+export interface OtaSubmitResult {
+  releaseId:string; version:string; operationId:string|null; deviceState:string|null; message:string;
+}
+export interface DeviceOtaStatus {
+  available:boolean; state:string|null; result:string|null; operationId:string|null;
+  releaseBefore:string|null; releaseTarget:string|null; targetVersion:string|null;
+  active:boolean; finalState:boolean; guidance:string|null; detail:string;
+}
+export interface DiagnosticServiceStatus { enabled:boolean; origin:string|null; detail:string }
+export interface LogLevelCounts { error:number; warning:number; info:number; debug:number }
+export interface LogPreview {
+  source:string; deviceId:string|null; hasCid:boolean; workspaceVersion:string|null; releaseId:string|null;
+  totalEntries:number; selectedEntries:number; levels:LogLevelCounts;
+  startedAt:string|null; completedAt:string|null; truncated:boolean; fileCount:number;
+}
+export interface LogUploadReceipt { reportId:string; deviceId:string; entryCount:number; message:string }
+export const otaStateLabels:Record<string,string> = {
+  IDLE:"设备就绪", QUEUED:"排队中", PRECHECK:"预检中", FETCH_INDEX:"读取索引", DOWNLOAD:"下载中",
+  VERIFY:"校验中", STAGE:"暂存中", PRE_ACTIVATION:"准备激活", ACTIVATE:"正在激活", HEALTH_WINDOW:"健康观察",
+  CONVERGENCE:"收敛检查", ROLLBACK:"回滚中", SUCCESS:"升级成功", FAILED:"升级失败", ROLLBACK_FAILED:"回滚失败",
+  UP_TO_DATE:"已是最新",
+};
 export interface DeviceBundleRequest {runId:string; fromMs:number; toMs:number}
 export interface DeviceBundlePreview extends DeviceBundleRequest {source:"physical_device";files:{name:string;bytes:number;sha256:string}[];planHash:string;filteredMessages:number;privacy:string}

@@ -4,8 +4,47 @@ import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import packageInfo from "../../package.json";
 import d1Configuration from "../../config/d1-manager.json";
-import type { DeviceAvailability, DeviceConnectionMode, DeviceBundlePreview, DeviceBundleRequest, DeviceRun, DevicePage, DevicePageApiRequest, DevicePageApiResponse, DevicePageRequest, WifiSnapshot, WifiNetwork } from "./d1";
+import type { DeviceAvailability, DeviceConnectionMode, DeviceBundlePreview, DeviceBundleRequest, DeviceRun, DevicePage, DevicePageApiRequest, DevicePageApiResponse, DevicePageRequest, WifiSnapshot, WifiNetwork, OtaServiceStatus, OtaPreview, OtaSubmitResult, DeviceOtaStatus, DiagnosticServiceStatus, LogPreview, LogUploadReceipt } from "./d1";
 
+const browserOtaStatus = ():OtaServiceStatus => ({enabled:false,origin:null,channel:null,trust:"device_verified",trustKeyId:null,detail:"请在桌面客户端使用应用升级。"});
+const browserLogStatus = ():DiagnosticServiceStatus => ({enabled:false,origin:null,detail:"请在桌面客户端上传诊断日志。"});
+export async function getOtaServiceStatus():Promise<OtaServiceStatus> {
+  if(!isTauriRuntime())return browserOtaStatus();
+  return invoke("d1_ota_service");
+}
+export async function previewOtaRelease(operationId:number):Promise<OtaPreview> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端读取升级版本。");
+  return invoke("d1_ota_preview",{operationId});
+}
+export async function submitOtaToDevice(request:DevicePageRequest,operationId:number):Promise<OtaSubmitResult> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端升级设备。");
+  return invoke("d1_ota_submit",{request:{...request,apAddress:request.apAddress??null},operationId});
+}
+export async function readDeviceOtaStatus(request:DevicePageRequest):Promise<DeviceOtaStatus> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端读取设备升级状态。");
+  return invoke("d1_ota_status",{request:{...request,apAddress:request.apAddress??null}});
+}
+export async function getDiagnosticServiceStatus():Promise<DiagnosticServiceStatus> {
+  if(!isTauriRuntime())return browserLogStatus();
+  return invoke("d1_logs_service");
+}
+export async function previewDiagnosticLogs(source:string,operationId:number):Promise<LogPreview> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端读取采集会话日志。");
+  return invoke("d1_logs_preview",{source,operationId});
+}
+export async function confirmDeviceOtaUpgrade(version:string):Promise<boolean> {
+  const message=`将把 Factory${version} 升级包发送到设备。设备会校验并决定是否安装，期间不能断电。是否继续？`;
+  return isTauriRuntime()?confirm(message,{title:"确认设备升级",kind:"warning"}):window.confirm(message);
+}
+export async function uploadDiagnosticLogs(source:string,reportId:string,idempotencyKey:string,operationId:number):Promise<LogUploadReceipt> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端上传诊断日志。");
+  return invoke("d1_logs_upload",{request:{source,reportId,idempotencyKey},operationId});
+}
+export async function chooseSessionDirectory(title:string):Promise<string|null> {
+  if(!isTauriRuntime())return null;
+  const selection = await open({directory:true,multiple:false,title});
+  return typeof selection === "string" ? selection : null;
+}
 export async function getDeviceAvailability(interfaceId?:string,apAddress?:string,connectionMode?:DeviceConnectionMode): Promise<DeviceAvailability> {
   if (isTauriRuntime()) return invoke("d1_availability", {interfaceId:interfaceId??null,apAddress:apAddress??null,connectionMode:connectionMode??null});
   return {connection:"not_connected",identity:null,observation:null,error:null,attemptedAddress:null,selectedInterfaceId:null,realDeviceEnabled:false,configuration:{...d1Configuration,diagnosticUpload:{enabled:false,endpoint:null,status:"waiting_interface"},deviceOta:{...d1Configuration.deviceOta,scheme:null,enabled:false,status:"waiting_interface"}},
@@ -183,6 +222,14 @@ let sessionActivationRetryAttempts = 0;
 const DEMO_OFFLINE_IDENTITY: UserIdentity = { username: "offline.local", displayName: "离线本机", role: "operator" };
 
 export type AppUpdateSource = "auto" | "lan" | "github";
+export interface HistoricalInstaller {key:string;label:string;fileName:string;size:number;sha256:string}
+export async function listHistoricalInstallers(version:string):Promise<HistoricalInstaller[]> {
+  if(!isTauriRuntime()) throw new Error("请在桌面应用中下载历史版本。");
+  return invoke("list_historical_installers",{version});
+}
+export async function downloadHistoricalInstaller(version:string,platform:string,destination:string,operationId:number):Promise<string> {
+  return invoke("download_historical_installer",{version,platform,destination,operationId});
+}
 export async function checkForAppUpdate(source: AppUpdateSource = "auto"): Promise<AppUpdateInfo> {
   if (isTauriRuntime()) return invoke<AppUpdateInfo>("check_for_app_update", { source });
   return {
