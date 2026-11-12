@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { FramePanel } from "../components/FramePanel";
+import { usePlaybackIntent } from "../lib/use-playback-intent";
 import type { StreamSummary } from "../types";
 import "../styles.css";
 
@@ -18,11 +19,12 @@ declare global {
 
 function NativePlaybackHarness() {
   const [frame, setFrame] = useState(0);
-  const [playing, setPlaying] = useState(false);
+  const { playing, setPlaying, requested } = usePlaybackIntent();
   const [speed, setSpeed] = useState(1);
   const [buffering, setBuffering] = useState<Record<string, boolean>>({});
   const clockActive = useRef(false);
   const presented = useCallback((_stream: string, next: number) => {
+    if (!requested.current) return;
     setFrame(Math.min(next, window.__nativeEnd));
     if (next >= window.__nativeEnd) setPlaying(false);
   }, []);

@@ -1,4 +1,4 @@
-export type TaskName = "scan" | "import" | "validate" | "export" | "update";
+export type TaskName = "scan" | "import" | "validate" | "export" | "update" | "playback-cache";
 
 export interface UserIdentity {
   username: string;
@@ -357,6 +357,7 @@ export interface StreamSummary {
 }
 
 export interface VideoSource {
+  localPlayback?: boolean;
   captureTimeline?: number[];
   timingError?: string;
   adaptivePaths?: string[];

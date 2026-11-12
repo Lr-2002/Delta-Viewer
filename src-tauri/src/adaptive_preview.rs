@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -207,6 +208,34 @@ fn automatic_location_with(
     None
 }
 
+type AutomaticLocationCache = Option<(PathBuf, Instant, Option<PreviewLocation>)>;
+static AUTOMATIC_LOCATION_CACHE: OnceLock<Mutex<AutomaticLocationCache>> = OnceLock::new();
+const AUTOMATIC_LOCATION_CACHE_TTL: Duration = Duration::from_secs(2);
+
+fn automatic_location_cached_at(
+    cache: &mut AutomaticLocationCache,
+    root: &Path,
+    now: Instant,
+    is_directory: impl Fn(&Path) -> bool,
+) -> Option<PreviewLocation> {
+    if let Some((cached_root, checked_at, location)) = cache.as_ref() {
+        if cached_root == root && now.duration_since(*checked_at) < AUTOMATIC_LOCATION_CACHE_TTL {
+            return location.clone();
+        }
+    }
+    let location = automatic_location_with(root, is_directory);
+    *cache = Some((root.to_path_buf(), now, location.clone()));
+    location
+}
+
+fn automatic_location_cached(root: &Path) -> Option<PreviewLocation> {
+    let cache = AUTOMATIC_LOCATION_CACHE.get_or_init(|| Mutex::new(None));
+    let Ok(mut cache) = cache.lock() else {
+        return automatic_location(root);
+    };
+    automatic_location_cached_at(&mut cache, root, Instant::now(), |path| path.is_dir())
+}
+
 pub fn register_preview(
     data_root: &Path,
     root: &Path,
@@ -218,7 +247,7 @@ pub fn register_preview(
     let root = root.canonicalize()?;
     let automatic = saved.source_root.is_empty() || saved.preview_root.is_empty();
     let location = if automatic {
-        match automatic_location(&root) {
+        match automatic_location_cached(&root) {
             Some(location) => location,
             None => return Ok(None),
         }
@@ -409,6 +438,7 @@ mod automatic_tests {
         )
         .unwrap();
         let source = VideoSource {
+            local_playback: false,
             capture_timeline: None,
             timing_error: None,
             adaptive_paths: None,
@@ -453,5 +483,41 @@ mod automatic_tests {
         })
         .unwrap();
         assert_eq!(Path::new(&location.source_root), root);
+    }
+
+    #[test]
+    fn automatic_location_cache_coalesces_camera_probes_and_expires_quickly() {
+        let root = PathBuf::from("/share/srp/26-10-11-demo/recording");
+        let now = Instant::now();
+        let mut cache = None;
+        let probes = std::cell::Cell::new(0);
+        assert!(automatic_location_cached_at(&mut cache, &root, now, |_| {
+            probes.set(probes.get() + 1);
+            false
+        })
+        .is_none());
+        let first_probe_count = probes.get();
+        assert!(first_probe_count > 0);
+
+        assert!(automatic_location_cached_at(
+            &mut cache,
+            &root,
+            now + Duration::from_millis(400),
+            |_| panic!("camera streams for one recording must reuse the same search"),
+        )
+        .is_none());
+        assert_eq!(probes.get(), first_probe_count);
+
+        assert!(automatic_location_cached_at(
+            &mut cache,
+            &root,
+            now + AUTOMATIC_LOCATION_CACHE_TTL,
+            |_| {
+                probes.set(probes.get() + 1);
+                false
+            },
+        )
+        .is_none());
+        assert!(probes.get() > first_probe_count);
     }
 }

@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SESSION_SCHEMA: &str = "dohc.recording.session-metadata.v1";
@@ -629,7 +633,10 @@ async fn post_report(body: Vec<u8>, idempotency_key: &str) -> Result<Value, Stri
     Err(format!("UPLOAD_FAILED_{status}_{code}: {message}"))
 }
 
-pub async fn upload(request: UploadRequest) -> Result<UploadReceipt, String> {
+pub async fn upload(
+    request: UploadRequest,
+    cancelled: Arc<AtomicBool>,
+) -> Result<UploadReceipt, String> {
     validate_identifier(&request.report_id, "reportId")?;
     if !(8..=200).contains(&request.idempotency_key.len()) {
         return Err("UPLOAD_IDEMPOTENCY_INVALID: 幂等键长度必须为 8–200".into());
@@ -637,9 +644,20 @@ pub async fn upload(request: UploadRequest) -> Result<UploadReceipt, String> {
     if request.idempotency_key.chars().any(char::is_control) {
         return Err("UPLOAD_IDEMPOTENCY_INVALID: 幂等键含非法字符".into());
     }
-    let collected = collect(Path::new(&request.source))?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("DIAGNOSTIC_CANCELLED: 日志上传已取消，未发送".into());
+    }
+    let source = request.source.clone();
+    let collected = tauri::async_runtime::spawn_blocking(move || collect(Path::new(&source)))
+        .await
+        .map_err(|error| error.to_string())??;
     let body = build_body(&collected, &request.report_id)?;
     let entry_count = collected.entries.len();
+    if cancelled.load(Ordering::Acquire) {
+        return Err("DIAGNOSTIC_CANCELLED: 日志上传已取消，未发送".into());
+    }
+    // Once sent, retain the real server receipt even if cancellation arrives;
+    // cancelling a local wait cannot undo a remote submission.
     let value = post_report(body, &request.idempotency_key).await?;
     let device_id = value["data"]["report"]["deviceId"]
         .as_str()

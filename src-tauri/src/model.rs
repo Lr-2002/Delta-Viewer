@@ -915,6 +915,7 @@ pub struct FramePayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoSource {
+    pub local_playback: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capture_timeline: Option<Vec<f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]

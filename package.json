@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.8.5",
+  "version": "1.9.5",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -13,7 +13,7 @@
     "check:exfat-macos": "node scripts/exfat-smoke-macos.mjs",
     "check:full": "node scripts/release-check.mjs --full",
     "check:bundle": "node scripts/release-check.mjs --full --bundle",
-    "test:d1-manager": "node --test scripts/d1-manager.test.mjs",
+    "test:d1-manager": "node --test --test-concurrency=1 scripts/d1-manager.test.mjs scripts/d1-services-ui.test.mjs",
     "test:outbound-review": "node --test --test-concurrency=1 scripts/outbound-review-session.test.mjs scripts/outbound-review.test.mjs",
     "test:demo-flow": "node --test scripts/demo-flow.test.mjs",
     "check:linux": "node scripts/check-linux-package.mjs",

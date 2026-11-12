@@ -98,6 +98,12 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
   await server.listen();
   browser = await chromium.launch({ executablePath: browserPath, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  if (!sampleRoot) {
+    // Exercise the commit/passive-effect gap on constrained WebViews: an old
+    // media callback must not replace an explicit seek during a slow render.
+    const timing = await page.context().newCDPSession(page);
+    await timing.send("Emulation.setCPUThrottlingRate", { rate: 6 });
+  }
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
@@ -116,7 +122,9 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
         window.__pendingPresentations = new Map();
         const request = HTMLVideoElement.prototype.requestVideoFrameCallback;
         HTMLVideoElement.prototype.requestVideoFrameCallback = function (callback) {
-          const id = request.call(this, callback);
+          const id = request.call(this, (now, metadata) => callback(now,
+            window.__nativeFreezeClock && this === document.querySelector("video")
+              ? { ...metadata, mediaTime: window.__nativeFrozenTime } : metadata));
           window.__pendingPresentations.set(this, { id, callback });
           return id;
         };
@@ -133,7 +141,7 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
           throw Error(`Unexpected fallback ${command}`);
         },
       };
-      for (const event of ["seeking", "waiting", "playing", "ended", "error"]) {
+      for (const event of ["seeking", "waiting", "playing", "pause", "ended", "error"]) {
         document.addEventListener(event, (e) => {
           if (e.target instanceof HTMLVideoElement) window.__nativeStats.events.push({
             event, time: performance.now(), mediaTime: e.target.currentTime,
@@ -166,6 +174,29 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
     })));
     assert.ok(moving.every((v) => v.time > 0.5 && !v.error), JSON.stringify(moving));
     if (!sampleRoot) {
+      // NAS may deliver smaller bursts than the startup runway while the
+      // decoder still has playable frames. Polling must not turn this into
+      // repeated shared pauses when no camera has actually run out of data.
+      await page.waitForFunction(() => [...document.querySelectorAll("video")]
+        .every(v => !v.paused && !v.seeking && v.readyState >= 3));
+      const shortRunway = await page.evaluate(() => {
+        const secondary = document.querySelectorAll("video")[1];
+        Object.defineProperty(secondary, "buffered", { configurable: true,
+          value: { length: 1, start: () => 0, end: () => secondary.currentTime + .5 } });
+        return { primary: document.querySelector("video").currentTime,
+          eventCount: window.__nativeStats.events.length };
+      });
+      await page.waitForTimeout(500);
+      const shortRunwayResult = await page.evaluate((before) => ({
+        advance: document.querySelector("video").currentTime - before.primary,
+        paused: [...document.querySelectorAll("video")].some(v => v.paused),
+        pauses: window.__nativeStats.events.slice(before.eventCount).filter(e => e.event === "pause"),
+      }), shortRunway);
+      await page.evaluate(() => { delete document.querySelectorAll("video")[1].buffered; });
+      assert.equal(shortRunwayResult.paused, false,
+        "playable NAS buffer below the startup threshold must not pause running cameras");
+      assert.deepEqual(shortRunwayResult.pauses, [], "polling must not cause shared stop/start cycles");
+      assert.ok(shortRunwayResult.advance > .35, JSON.stringify(shortRunwayResult));
       await page.evaluate(() => {
         const primary = document.querySelectorAll("video")[1];
         const tail = primary.currentTime + .05;
@@ -211,7 +242,17 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
       await page.evaluate(() => window.__nativePlayback.speed(1.25));
       await page.waitForTimeout(250);
       assert.equal(await page.evaluate(() => window.__nativeStats.events.filter((e) => e.event === "seeking" && e.stream === "cam0").length), before);
-      await page.evaluate(() => window.__nativePlayback.seek(30));
+      await page.evaluate(() => {
+        const video = document.querySelector("video");
+        const pending = window.__pendingPresentations?.get(video);
+        window.__nativePlayback.seek(30);
+        // The already queued callback may arrive before React even commits
+        // the seek. Synchronous user intent must reject that old clock too.
+        if (pending) {
+          video.cancelVideoFrameCallback(pending.id);
+          pending.callback(performance.now(), { mediaTime: video.currentTime });
+        }
+      });
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => !v.seeking && Math.abs(v.currentTime - 1) < .05));
       await page.evaluate(() => window.__nativePlayback.play(true));
       await page.waitForFunction(() => document.getElementById("position").textContent === "180", null, { timeout: 15000 });
@@ -220,6 +261,56 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => v.currentTime < .05 && !v.seeking));
       await page.evaluate(() => window.__nativePlayback.play(true));
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => v.currentTime > .3 && !v.paused));
+      if (presentationCallback) {
+        // Reproduce a delayed primary compositor callback followed by a NAS
+        // secondary buffering pause. The media decoder keeps advancing while
+        // React's last presented frame stays behind. Recovery must not seek
+        // the primary backward to that stale frame.
+        await page.evaluate(() => {
+          window.__nativeFrozenTime = document.querySelector("video").currentTime;
+          window.__nativeFreezeClock = true;
+        });
+        await page.waitForTimeout(800);
+        const beforeHold = await page.locator("video").first().evaluate(v => v.currentTime);
+        await page.evaluate(() => {
+          const secondary = document.querySelectorAll("video")[1];
+          const tail = secondary.currentTime + .05;
+          Object.defineProperty(secondary, "buffered", { configurable: true,
+            value: { length: 1, start: () => 0, end: () => tail } });
+          secondary.dispatchEvent(new Event("waiting"));
+        });
+        await page.waitForFunction(() => [...document.querySelectorAll("video")].every(v => v.paused));
+        await page.waitForTimeout(250);
+        const held = await page.evaluate(() => ({
+          primary: document.querySelector("video").currentTime,
+          frame: Number(document.getElementById("position").textContent),
+        }));
+        assert.ok(held.primary >= beforeHold - .04,
+          `buffering rewound primary from ${beforeHold} to ${held.primary}`);
+        assert.ok(Math.abs(held.frame / 30 - held.primary) < .04,
+          "shared hold uses the actual primary clock, not a stale presentation");
+        await page.evaluate(() => {
+          delete document.querySelectorAll("video")[1].buffered;
+        });
+        await page.waitForFunction(() => [...document.querySelectorAll("video")].every(v => !v.paused));
+        await page.evaluate(() => {
+          const video = document.querySelector("video");
+          const pending = window.__pendingPresentations.get(video);
+          video.cancelVideoFrameCallback(pending.id);
+          pending.callback(performance.now(), { mediaTime: window.__nativeFrozenTime });
+        });
+        await page.waitForTimeout(100);
+        assert.ok(Number(await page.locator("#position").textContent()) >= held.frame,
+          "late presentation after recovery must not undo the frozen clock");
+        await page.evaluate(() => { window.__nativeFreezeClock = false; });
+        await page.waitForFunction(() => [...document.querySelectorAll("video")]
+          .every(v => !v.paused && !v.seeking && v.currentTime > 1.3));
+        await page.evaluate(() => window.__nativePlayback.seek(5));
+        await page.waitForFunction(() => [...document.querySelectorAll("video")]
+          .every(v => !v.seeking && Math.abs(v.currentTime - 5 / 30) < .04));
+        await page.evaluate(() => window.__nativePlayback.play(true));
+        await page.waitForFunction(() => Number(document.getElementById("position").textContent) > 8);
+      }
     }
     const stats = await page.evaluate(() => window.__nativeStats);
     const finished = await page.evaluate(() => ({ wall: performance.now(), media: document.querySelector("video").currentTime }));

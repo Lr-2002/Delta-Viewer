@@ -108,14 +108,15 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
   const connected=!runtimeError&&((availability?.connection==="connected"&&observation!==null)||!!runtimePage?.status);
   const pageOnly=availability?.error?.code==="D1_HEALTH_PAGE_ONLY";
   const connectionLabel=connected?"已连接 D1":availability?.error?.message??linkSummary(availability?.linkDiscovery??null);
+  useEffect(()=>{setPageView(null);},[section]);
   useEffect(()=>{
-    if(section==="data"||pageView||working!==null||(connectionMode!=="type_c"&&(!pageRequest||connectionMode==="ap")))return;
+    if(section==="data"||pageView||working!==null||(connectionMode!=="type_c"&&!pageRequest))return;
     let active=true;
     let timer:ReturnType<typeof setTimeout>|undefined;
     async function refresh(){
       let retry=true;
       try {
-        const value=await getDeviceAvailability(interfaceId,apAddress,connectionMode);
+        const value=await getDeviceAvailability(pageRequest?.interfaceId??interfaceId,pageRequest?.apAddress??apAddress,connectionMode);
         if(active){
           setAvailability(value);
           if(connectionMode==="type_c")setInterfaceId(previous=>{
@@ -293,7 +294,7 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
     void refresh();return()=>{active=false;clearTimeout(timer);};
   },[pageRequest,pageView,section,working,runtimeRevision]);
   if(section==="data")return null;
-  if(pageView&&(section==="home"||section==="device"))return <><DevicePageView page={pageView} busy={working!==null} showConnectionMode={section==="device"} connectionModeLabel={pageRequest?.connectionMode==="ap"?"设备热点（AP）":"局域网 IP"} onBack={()=>{requestGeneration.current++;setPageView(null);}} onRefresh={()=>{if(pageRequest)void openPage(pageRequest);}} onRequest={requestPageApi} onVerifyAddress={verifyProvisionedAddress}/>{error&&<ManagerErrorToast message={error} onDismiss={()=>setError("")}/>}</>;
+  if(pageView&&(section==="home"||section==="device"))return <><DevicePageView page={pageView} busy={working!==null} showConnectionMode={section==="device"} connectionModeLabel={pageRequest?.connectionMode==="ap"?"设备热点（AP）":"局域网 IP"} onBack={()=>{requestGeneration.current++;setPageView(null);onNavigate("device");}} onRefresh={()=>{if(pageRequest)void openPage(pageRequest);}} onRequest={requestPageApi} onVerifyAddress={verifyProvisionedAddress}/>{error&&<ManagerErrorToast message={error} onDismiss={()=>setError("")}/>}</>;
   const limited=observation?.cameraPortLimited??false;
   const counts=Object.fromEntries(resultOrder.map(status=>[status,run?.checks.filter(check=>check.status===status).length??0]));
   const connectionHelp=connectionMode==="ap"?"长按录制键，听到进入 AP 的语音后，连接设备标签对应的热点。":connectionMode==="lan"?"输入设备联网后语音播报的 IP，电脑需与设备处于同一网段。":"通过 Type-C 数据线连接已开机的 D1。";

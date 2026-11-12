@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { after, before, test } from "node:test";
 import { createServer } from "vite";
 import { chromium } from "playwright-core";
@@ -427,7 +428,7 @@ test("new account cannot automatically save another account's recovery draft", a
   } finally { await context.close(); }
 });
 
-test("long recording shows usable read-only video controls while checks wait and mounts audit only afterward", async () => {
+for (const restoredStart of [0, 100]) test(`long recording preserves preview playback when checks finish unless saved bounds move it (${restoredStart})`, async () => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
   const page = await context.newPage();
   await context.route("**/src/lib/backend.ts", async route => {
@@ -441,6 +442,8 @@ test("long recording shows usable read-only video controls while checks wait and
       window.previewValidationStarted=true;
       await new Promise(resolve=>{window.finishPreviewChecks=()=>{window.previewChecksDone=true;resolve();};});
     `);
+    if (restoredStart) body = body.replace(/(export async function loadEpisodeAnnotation\([^]*?\) \{)/,
+      `$1\n return { clipStartFrame: ${restoredStart}, clipEndFrame: 195 };`);
     for (const name of ["listMachineAnnotationSources", "loadMachineAnnotation", "loadMachineReview"]) {
       body = body.replace(new RegExp("(export async function " + name + "\\([^]*?\\) \\{)"),
         '$1\n window.previewEditorReads=(window.previewEditorReads??0)+1;');
@@ -457,11 +460,84 @@ test("long recording shows usable read-only video controls while checks wait and
     assert.equal(await slider.inputValue(), "1");
     await page.waitForFunction(() => window.previewValidationStarted);
     assert.equal(await page.evaluate(() => window.previewEditorReads??0), 0);
+    await page.getByRole("button", { name: "全局播放", exact: true }).click();
+    await page.getByRole("button", { name: "暂停", exact: true }).waitFor();
     await page.evaluate(() => window.finishPreviewChecks());
     await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
     assert.ok(await page.evaluate(() => window.previewEditorReads > 0));
     assert.equal(await slider.count(), 0);
+    await page.getByRole("button", { name: restoredStart ? "全局播放" : "暂停", exact: true }).waitFor();
   } finally { await context.close(); }
+});
+
+test("history offers three LAN installers, records the chosen old version and never installs automatically",async()=>{
+  const page=await browser.newPage({viewport:{width:960,height:680}});const errors=[];page.on("pageerror",error=>errors.push(error.message));
+  await page.addInitScript(()=>{window.historyDownloads=[];window.historyChecks=[];window.historyInstalls=0;});
+  await page.route("**/src/lib/backend.ts",async route=>{
+    const response=await route.fetch();const original=await response.text();
+    let body=original.replace(/(export async function listHistoricalInstallers\([^]*?\) \{)/,'$1 window.historyChecks.push(version);if(window.historyUnavailable)throw new Error("此版本尚未在内网缓存");return ["windows-x64","macos-arm64","ubuntu-deb-x64"].map((key,index)=>({key,label:["Windows x64","macOS arm64","Ubuntu x64"][index],size:10485760,sha256:"a".repeat(64),fileName:"fixture-installer"}));');
+    body=body.replace(/(export async function downloadHistoricalInstaller\([^]*?\) \{)/,'$1 window.historyDownloads.push({version,platform,destination,operationId});return "/fixture-downloads/installer.exe";');
+    body=body.replace(/(export async function chooseDirectory\([^]*?\) \{)/,'$1 return "/fixture-downloads";');
+    body=body.replace(/(export async function installAppUpdate\([^]*?\) \{)/,'$1 window.historyInstalls++;');
+    assert.notEqual(body,original);await route.fulfill({response,body});
+  });
+  try{
+    await open(page,"machineAnnotation=present");await page.getByRole("button",{name:"查看历史版本",exact:true}).click();
+    const dialog=page.getByRole("dialog",{name:"历史版本",exact:true});
+    const release=dialog.locator('.version-history-entry').filter({has:page.getByText('v1.9.1',{exact:true})});
+    await release.getByRole('button',{name:'下载 / 回退',exact:true}).click();
+    assert.deepEqual(await page.evaluate(()=>window.historyChecks),['1.9.1']);
+    for(const label of ['Windows x64','macOS arm64','Ubuntu x64'])assert.equal(await release.getByRole('button',{name:new RegExp(label)}).count(),1);
+    await release.getByRole('button',{name:/Windows x64/}).click();
+    await release.getByText('已保存并校验：/fixture-downloads/installer.exe',{exact:true}).waitFor();
+    const saved=await page.evaluate(()=>window.historyDownloads);assert.equal(saved.length,1);assert.equal(saved[0].version,'1.9.1');assert.equal(saved[0].platform,'windows-x64');assert.equal(saved[0].destination,'/fixture-downloads');assert.ok(saved[0].operationId>0);assert.equal(await page.evaluate(()=>window.historyInstalls),0);
+    assert.match(await release.innerText(),/保存当前工作并退出软件/);
+    await page.evaluate(()=>window.historyUnavailable=true);
+    const unavailable=dialog.locator('.version-history-entry').filter({has:page.getByText('v1.9.0',{exact:true})});
+    await unavailable.getByRole('button',{name:'下载 / 回退',exact:true}).click();await unavailable.getByRole('alert').waitFor();
+    await page.evaluate(()=>window.historyUnavailable=false);await unavailable.getByRole('button',{name:'重试',exact:true}).click();await unavailable.getByRole('button',{name:/Ubuntu x64/}).waitFor();
+    await page.setViewportSize({width:390,height:844});await unavailable.scrollIntoViewIfNeeded();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await page.screenshot({path:'artifacts/unified-proofreading/history-download.png'});assert.deepEqual(errors,[]);
+  }finally{await page.close();}
+});
+
+for(const renderer of ["local","cloud"])for(const callback of [true,false])test(`segment selection starts the actual primary MP4 at its own boundary (${renderer}, callback ${callback})`,async()=>{
+  const context=await browser.newContext({viewport:{width:1440,height:920}});const page=await context.newPage();
+  const media="artifacts/unified-proofreading/segment-selection.mp4";
+  execFileSync(process.env.FFMPEG??"ffmpeg",["-nostdin","-v","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=30:duration=8","-c:v","libx264","-threads","1","-pix_fmt","yuv420p","-movflags","+faststart",media]);
+  const bytes=readFileSync(media);const errors=[];page.on("pageerror",error=>errors.push(error.message));
+  try{
+    if(process.env.D1_SEGMENT_NEGATIVE_CONTROL==='1')await context.route('**/src/App.tsx',async route=>{
+      const response=await route.fetch(),original=await response.text();
+      let body=original.replace(/function playSegment\(range\) \{[^]*?\n  \}/,'function playSegment(range) {frameRef.current=range.startFrame;setCurrentFrame(range.startFrame);setMachinePreviewRange(range);resetPlaybackPreparation();setPlaying(true);}');
+      body=body.replace(/useEffect\(\(\) => \{\s*if \(machinePreviewRange\) setPlaying\(true\);\s*\}, \[machinePreviewRange\]\);/,'');
+      assert.notEqual(body,original);await route.fulfill({response,body});
+    });
+    if(!callback)await context.addInitScript(()=>Object.defineProperty(HTMLVideoElement.prototype,"requestVideoFrameCallback",{value:undefined}));
+    await context.route("**/__segment-selection.mp4",route=>{
+      const range=route.request().headers().range?.match(/^bytes=(\d+)-(\d*)$/);const start=Number(range?.[1]??0),end=range?.[2]?Math.min(Number(range[2]),bytes.length-1):bytes.length-1;
+      return route.fulfill({status:range?206:200,body:bytes.subarray(start,end+1),headers:{"content-type":"video/mp4","accept-ranges":"bytes","content-length":String(end-start+1),...(range?{"content-range":`bytes ${start}-${end}/${bytes.length}`}:{})}});
+    });
+    await context.route("**/src/lib/backend.ts",async route=>{
+      const response=await route.fetch();const original=await response.text();
+      const body=original.replace(/(export async function videoSource\([^]*?\) \{)/,'$1 return {fps:30,mediaFps:30,segmentSeconds:8,startFrame:0,paths:[new URL("/__segment-selection.mp4",location.origin).href]};');
+      assert.notEqual(body,original);await route.fulfill({response,body});
+    });
+    if(renderer==="cloud")await context.route("**/src/components/MachineAnnotationPanel.tsx",route=>route.fulfill({contentType:"application/javascript",body:'export {CloudMachineAnnotationPanel as MachineAnnotationPanel,flushCloudMachineReviewSaves as flushMachineReviewSaves} from "/src/components/CloudMachineAnnotationPanel.tsx";'}));
+    await open(page,"machineAnnotation=present");
+    await page.waitForFunction(()=>document.querySelectorAll('.camera-grid video').length>=5&&[...document.querySelectorAll('.camera-grid video')].every(video=>video.readyState>=2));
+    await page.getByLabel("播放帧率",{exact:true}).selectOption("30");await page.getByLabel("播放速度",{exact:true}).selectOption("0.25");
+    const evidence=[];
+    for(const [segment,start] of [[2,60],[3,120],[2,60]]){
+      await page.getByRole("button",{name:`定位机标片段 ${segment}`,exact:true}).click();
+      await page.waitForFunction(({start})=>{
+        const video=document.querySelector('.camera-grid video');
+        return video&&!video.paused&&!video.seeking&&video.currentTime>=start/30-0.04&&video.currentTime<start/30+0.3;
+      },{start},{timeout:10000});
+      evidence.push(await page.locator('.camera-grid video').first().evaluate(video=>({time:video.currentTime,paused:video.paused})));
+    }
+    assert.deepEqual(errors,[]);await writeFile(`artifacts/unified-proofreading/segment-selection-${renderer}-${callback}.json`,JSON.stringify(evidence,null,2));
+  }finally{await context.close();}
 });
 
 let server, browser, url;

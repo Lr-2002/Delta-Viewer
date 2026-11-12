@@ -1,4 +1,5 @@
 import { PreviewPriority } from "./lib/preview-priority";
+import { usePlaybackIntent } from "./lib/use-playback-intent";
 import { BrandMark } from "./components/BrandMark";
 import { CloudMachineAnnotationPanel, flushCloudMachineReviewSaves } from "./components/CloudMachineAnnotationPanel";
 import { cloudWorkspaceNumber } from "./lib/cloud-qc";
@@ -39,6 +40,7 @@ import {
 import { ManagerWorkspace } from "./components/ManagerWorkspace";
 import { deviceSections, type ManagerSection } from "./lib/d1";
 import { AppUpdates } from "./components/AppUpdates";
+import { ReleaseDownload } from "./components/ReleaseDownload";
 import { MachineAnnotationPanel, flushMachineReviewSaves } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
 import { auditNeedsLogin } from "./lib/review-audit-status";
@@ -53,6 +55,8 @@ import { FramePanel } from "./components/FramePanel";
 import { PreviewSettings } from "./components/PreviewSettings";
 import { ProgressStrip } from "./components/ProgressStrip";
 import { TaskCenter } from "./components/TaskCenter";
+import { OutboundReviewTasks } from "./components/OutboundReviewTasks";
+import type { OutboundBatch } from "./lib/outbound-review";
 import { SkeletonViewer } from "./components/SkeletonViewer";
 import { SourceWritebackClient } from "./components/SourceWritebackClient";
 import { ClientPresence } from "./components/ClientPresence";
@@ -68,6 +72,7 @@ import {
   cancelTask,
   clearDeviceSession,
   downloadAppUpdate,
+  downloadHistoricalInstaller,
   chooseDirectory,
   clearWorkspaceMode,
   confirmAction,
@@ -88,6 +93,7 @@ import {
   listAssignedTaskDefinitions,
   loadEpisodeAnnotation,
   loadEpisode,
+  prepareLocalPlayback,
   logoutLocalAccount,
   openCaptureWorkbench,
   recordOperationError,
@@ -216,6 +222,17 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.9.5": "外发任务领取后进入主工作区；修复片段单击播放位置，统一三种连接的中文设备状态；历史版本支持内网下载与手动回退，接入应用 OTA 和诊断日志上传。",
+  "1.9.4": "修复拖动后旧回调覆盖定位；保留 NAS 本地流畅播放、正常退出缓存清理和星炬外发审核。",
+  "1.9.3": "正常退出时清理本窗口的临时视频缓存，保留其他窗口及原 NAS 数据；保留本地流畅播放和外发审核。",
+  "1.9.2": "共享目录新增本地流畅播放：主动缓存并校验当前录制的视频，支持取消；原始数据、审核写回位置和多路同步保持。",
+  "1.9.1": "修复 NAS 视频尚有缓冲时被反复主动暂停的卡顿；启动和断流恢复仍等待足够缓冲，多路相机继续同步播放。",
+  "1.9.0": "修复 NAS 多路视频缓冲恢复时的时间回跳和重复定位；保留按相机分段播放的星炬外发审核及交付平台有效率统计。",
+  "1.8.9": "修复 NAS 七路回放与星炬外发审核；发布构建会检测并选择可达的 Ubuntu 镜像，继续完成正式三平台发布。",
+  "1.8.8": "保留 NAS 七路回放和星炬外发审核修复；修正构建机镜像列表的下载阻塞，恢复完整三平台发布。",
+  "1.8.7": "修复 NAS 七路预览在检查完成时中断；开通星炬外发审核，按相机分段看原始视频，结论写入描述副本并同步交付平台最终有效率。",
+  "1.8.6": "完整检查完成时保留正在进行的视频播放；减少 NAS 七路抢读，外发审核按相机与分段加载原始视频并核对保存结果。",
+  "1.8.5": "减少 NAS 七路视频重复探测和过量预读；外发审核按相机及分段加载长录制，切换任务隔离旧响应，失败后重新核对已保存结论。",
   "1.7.7": "登录密码默认隐藏，可用密码框旁的按钮临时显示；切换状态保留已输入内容。AP页刷新Wi-Fi与手动密码采用统一按钮样式。",
   "1.7.6": "修复设备页面初始化等待及运行配置加载，支持批量读取和页面往返；使用设备真实状态展示中文检测卡片；D1 热点默认密码连接并保留手动输入，配网增加等待与结果核对；移除首页重复入口。",
   "1.7.5": "修复 Windows 云端 QC 下载时缺少 TLS 初始化导致的崩溃；管理员 NAS 写回通知按指令记忆，完成或收起后不重复弹出，新指令继续自动执行。",
@@ -393,6 +410,7 @@ function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [managementMode, setManagementMode] = useState(false);
   const [managerSection, setManagerSection] = useState<ManagerSection>("home");
+  const [outboundBatch,setOutboundBatch]=useState<OutboundBatch|null>(null);
   const [managerAdminHome, setManagerAdminHome] = useState(false);
   const [managerNavigationBusy, setManagerNavigationBusy] = useState(false);
   const managerNavigationLock = useRef(false);
@@ -443,7 +461,7 @@ function App() {
   const [machinePreviewRange, setMachinePreviewRange] = useState<ExportRange | null>(null);
   const [speed, setSpeed] = useState(1);
   const [fpsOverride, setFpsOverride] = useState<number | null>(null);
-  const [playing, setPlaying] = useState(false);
+  const { playing, setPlaying, requested: playbackRequested } = usePlaybackIntent();
   const [operationBusy, setBusy] = useState(false);
   const [sourcePublishing, setSourcePublishing] = useState(false);
   const busy = operationBusy || Boolean(batchRejection) || sourcePublishing || managerNavigationBusy;
@@ -579,7 +597,7 @@ function App() {
     frameId: number,
     timelinePosition: number,
   ) => {
-    if (streamName !== primaryStreamName || !primaryNativeClockRef.current) return;
+    if (!playbackRequested.current || streamName !== primaryStreamName || !primaryNativeClockRef.current) return;
     const next = Math.max(playbackStart, Math.min(primaryPlaybackEndFrame, frameId));
     const presentedPosition = Math.max(playbackStart, Math.min(primaryPlaybackEndFrame, timelinePosition));
     skeletonFramePresenterRef.current?.(presentedPosition);
@@ -638,12 +656,39 @@ function App() {
     setProgress(null);
   }
 
+  async function enableLocalPlayback() {
+    if (!data || busy || reviewHasUnsaved) return;
+    const root = data.summary.root;
+    const owner = beginOperation();
+    if (!owner) return;
+    setPlaying(false);
+    resetOperationFeedback(owner);
+    try {
+      const result = await prepareLocalPlayback(root, availableStreams.map(stream => stream.name), owner.id);
+      ensureOperationActive(owner);
+      window.dispatchEvent(new Event("delta-preview-location"));
+      setNotice(`已就绪：${result.files} 个视频（${formatBytes(result.bytes)}）。本地播放，审核结果仍写回原目录。`);
+    } catch (cause) {
+      if (isCurrentOperation(owner)) setError(toMessage(cause));
+    } finally { finishOperation(owner); }
+  }
+
   async function downloadAvailableUpdate() {
     if (busy || operationScopeRef.current.current()) throw new Error("正在处理数据或导出，请等待完成后再下载更新");
     const owner = beginOperation();
     if (!owner) throw new Error("当前任务尚未完成");
     try { await downloadAppUpdate(owner.id); ensureOperationActive(owner); }
     finally { finishOperation(owner); }
+  }
+
+  async function downloadHistoricalVersion(version:string,platform:string):Promise<string|null> {
+    if(busy||reviewHasUnsaved||operationScopeRef.current.current())throw new Error("请先完成当前任务并保存修改。");
+    const owner=beginOperation();if(!owner)throw new Error("当前任务尚未完成。");
+    try{
+      const directory=await chooseDirectory(`选择 v${version} 安装包保存目录`);
+      if(!directory)return null;
+      const result=await downloadHistoricalInstaller(version,platform,directory,owner.id);ensureOperationActive(owner);return result;
+    }finally{finishOperation(owner);}
   }
 
   async function installAvailableUpdate() {
@@ -872,6 +917,7 @@ function App() {
     sourceNavigationVersion.current += 1;
     setPendingSourceRestore(null);
     setManagerSection("data");
+    setOutboundBatch(null);
     resetOperationFeedback(owner);
     let operation = "scan_source";
     let loadingEpisode: EpisodeSummary | null = null;
@@ -1239,10 +1285,14 @@ function App() {
     const end = Math.max(start, Math.min(candidate.maxFrame, savedAnnotation?.clipEndFrame ?? candidate.maxFrame));
     setClipStartFrame(start);
     setClipEndFrame(end);
-    const frame = clampPlaybackFrame(frameRef.current, start, end);
+    const previewFrame = frameRef.current;
+    const frame = clampPlaybackFrame(previewFrame, start, end);
     setCurrentFrame(frame);
     frameRef.current = frame;
-    setPlaying(false);
+    // Finishing checks upgrades this same preview; it is not a new playback
+    // request. Preserve the user's play/pause choice unless restored bounds
+    // actually move the current frame.
+    if (frame !== previewFrame) setPlaying(false);
     setAnnotationReadyRoot(candidate.data.summary.root);
     setView("proofread");
   }
@@ -1326,6 +1376,7 @@ function App() {
   }
 
   function resetWorkspaceData() {
+    setOutboundBatch(null);
     setManagerSection("home");
     setManagerAdminHome(false);
     void clearDeviceSession().catch(() => undefined);
@@ -1504,9 +1555,16 @@ function App() {
   }
 
   function playSegment(range: ExportRange) {
+    // Commit the paused seek before resuming. React batches select+play; without
+    // this boundary the primary MP4 keeps its previous clock and skips the seek.
+    setPlaying(false);
     frameRef.current = range.startFrame; setCurrentFrame(range.startFrame);
-    setMachinePreviewRange(range); resetPlaybackPreparation(); setPlaying(true);
+    setMachinePreviewRange({...range}); resetPlaybackPreparation();
   }
+
+  useEffect(() => {
+    if (machinePreviewRange) setPlaying(true);
+  }, [machinePreviewRange]);
 
   function changeView(next: View) {
     if (reviewUnsaved.current) { setNotice("正在保存当前修改，请稍候。"); return; }
@@ -2027,6 +2085,19 @@ function App() {
     setManagerAdminHome(false);
     setManagementMode(true);
   }
+  async function openOutboundReview(batch:OutboundBatch) {
+    if(busy||reviewUnsaved.current)throw new Error("请先完成当前操作和草稿保存。");
+    await flushMachineReviewSaves(data?.summary.root);
+    await flushCloudMachineReviewSaves(data?.summary.root);
+    if(reviewUnsaved.current)throw new Error("当前修改尚未保存，请先重试保存。");
+    const resumeAudit=await pauseAndPersistReviewAudit();
+    try{
+      endReviewAudit();resetLoadedData();setQueuedEpisodeRoot(null);
+      sourceNavigationVersion.current+=1;setPendingSourceRestore(null);
+      setOutboundBatch(batch);setManagerSection("data");setManagerAdminHome(true);setManagementMode(false);
+      setPersonalTaskOpen(false);setHistoryOpen(false);setError("");setNotice("");
+    }finally{resumeAudit();}
+  }
   async function navigateManager(next: ManagerSection) {
     if (next === managerSection || managerNavigationLock.current) return;
     if (busy || document.querySelector("dialog[open]")) {setManagerNavigationError("请先完成当前任务或关闭窗口。"); return;}
@@ -2085,7 +2156,7 @@ function App() {
       {isManagedWorkspace && currentUser && <ClientPresence key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={`${authStatus.userCenter.serviceId}:${currentUser.username}`} />}
       {isManagedWorkspace && currentUser?.role === "operator" && <SourceWritebackClient key={`writeback:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || playing} onBusy={setSourcePublishing} onWritten={()=>setBatchReviewRevision(value=>value+1)}/>}
       {showManagement && currentUser && <SupervisionDashboard writebackOwner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} currentUser={currentUser} onLogout={logout} onManagerHome={() => {setManagerSection("home");setManagerAdminHome(true);setManagementMode(false);}} updateBusy={busy} updateControls={updateControls}
-        onTestMode={currentUser.role === "operator" ? () => {setManagerSection("data");setManagementMode(false);} : undefined} syncNotice={syncNotice} beginCloudOperation={beginCloudOperation} onOpenCloudReview={async root => {
+        onTestMode={currentUser.role === "operator" ? () => {setManagerSection("data");setManagementMode(false);} : undefined} syncNotice={syncNotice} beginCloudOperation={beginCloudOperation} onOpenOutboundReview={openOutboundReview} onOpenCloudReview={async root => {
           if (busy || reviewUnsaved.current) throw new Error("当前保存尚未完成");
           await openSource(root, true, [], true); setManagementMode(false); setPersonalTaskOpen(false);
         }} />}
@@ -2093,6 +2164,8 @@ function App() {
         <ReleaseHistoryDialog
           currentVersion={APP_VERSION}
           releases={releaseHistory}
+          busy={busy||reviewHasUnsaved}
+          onDownload={downloadHistoricalVersion}
           onClose={() => setReleaseHistoryOpen(false)}
         />
       ) : null}
@@ -2112,13 +2185,13 @@ function App() {
         </nav>
         {managerSection === "data" && <div className="source-display">
           <HardDrive size={16} />
-          <span title={sourcePath}>{sourcePath ? shortPath(sourcePath, 58) : isManagedWorkspace && currentUser?.role === "operator" ? "首次使用请配置本机 NAS 目录" : "未选择 SD 卡"}</span>
+          <span title={outboundBatch?.name??sourcePath}>{outboundBatch?`外发审核 · ${outboundBatch.name}`:sourcePath ? shortPath(sourcePath, 58) : isManagedWorkspace && currentUser?.role === "operator" ? "首次使用请配置本机 NAS 目录" : "未选择 SD 卡"}</span>
           {sourcePath ? <span className="source-dot" /> : null}
         </div>}
         <div className="topbar-actions">
           <button className="icon-button version-history-trigger" type="button" onClick={() => setReleaseHistoryOpen(true)} title="查看历史版本" aria-label="查看历史版本"><BookOpenText size={16}/></button>
           {managerSection === "data" && canManage && <button className="button button-secondary management-mode-button" disabled={busy || reviewHasUnsaved} onClick={openManagement}>管理模式</button>}
-          {managerSection === "data" && <StatusBadge status={status} />}
+          {managerSection === "data" && !outboundBatch && <StatusBadge status={status} />}
           {isManagedWorkspace && currentUser && !showManagement ? updateControls(busy) : null}
           {managerSection === "data" && currentUser?.role !== "admin" && <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy} aria-label={isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}>
             <FolderOpen size={16} />
@@ -2182,10 +2255,12 @@ function App() {
       </nav>}
       <div id={showManagement ? undefined : "app-update-notices"} />
 
-      {isManagedWorkspace && currentUser?.role === "operator" && personalTaskOpen ? (
+      {isManagedWorkspace && currentUser && (currentUser.role === "operator"||outboundBatch) && personalTaskOpen ? (
         <div className="personal-task-overlay" role="presentation" onClick={() => setPersonalTaskOpen(false)}>
         <TaskCenter
           currentUser={currentUser}
+          initialView={outboundBatch?"outbound":"local"}
+          onOpenOutboundReview={openOutboundReview}
           onOpen={async (root, episodeRoot, batchRoot) => {
             if (reviewUnsaved.current || busy) throw new Error("当前操作尚未完成，请稍后打开任务");
             await openSource(batchRoot ?? root, true, [], true, episodeRoot);
@@ -2246,7 +2321,8 @@ function App() {
       {managerNavigationError && <div className="alert-banner alert-error" role="alert"><CircleAlert size={17}/><span>{managerNavigationError}</span><button className="text-button" onClick={()=>setManagerNavigationError("")}>关闭</button></div>}
       <ManagerWorkspace key={`${workspaceMode}:${currentUser?.username ?? "local"}:${authStatus.userCenter.serviceId ?? "local"}`}
         section={managerSection} busy={busy} beginOperation={beginManagerOperation} onNavigate={next => void navigateManager(next)} />
-      <div className={`workspace${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`} hidden={managerSection !== "data"} inert={managerSection !== "data"}>
+      {managerSection==="data"&&outboundBatch&&currentUser&&!showManagement&&<OutboundReviewTasks key={`${authStatus.userCenter.serviceId}:${currentUser.username}:${outboundBatch.id}`} currentUser={currentUser} initialBatch={outboundBatch} view="workspace" workspaceBusy={busy} suspended={personalTaskOpen} onReturnToTasks={()=>setPersonalTaskOpen(true)}/>}
+      <div className={`workspace${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`} hidden={managerSection !== "data"||!!outboundBatch} inert={managerSection !== "data"||!!outboundBatch}>
         <aside className="sidebar" style={{ "--sidebar-scale": sidebarScale } as CSSProperties}>
           <div className="sidebar-heading">
             <div>
@@ -2373,6 +2449,11 @@ function App() {
                         <h2>多路回放</h2>
                       </div>
                       <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
+                      {isTauriRuntime() && scan?.volume.driveType === "remote" && <button type="button" className="button local-playback-button"
+                        disabled={busy || reviewHasUnsaved} onClick={() => void enableLocalPlayback()}
+                        title="将当前录制的视频临时缓存到本机，缓解 NAS 波动；审核结果仍写回原目录。退出后清理缓存。">
+                        <HardDrive size={15} />本地流畅播放
+                      </button>}
                       <PreviewSettings />
                     </div>
                     <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
@@ -2928,10 +3009,14 @@ function DisplayNameDialog({
 function ReleaseHistoryDialog({
   currentVersion,
   releases,
+  busy,
+  onDownload,
   onClose,
 }: {
   currentVersion: string;
   releases: ReleaseHistoryEntry[];
+  busy:boolean;
+  onDownload:(version:string,platform:string)=>Promise<string|null>;
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -2952,7 +3037,7 @@ function ReleaseHistoryDialog({
           <div>
             <span className="section-kicker">发布记录</span>
             <h2 id="version-history-title">历史版本</h2>
-            <p>只读展示发布记录，不会切换或降级当前应用。</p>
+            <p>查看更新记录，或通过公司内网下载对应版本安装包。</p>
           </div>
           <button className="icon-button" type="button" onClick={onClose} title="关闭历史版本" aria-label="关闭历史版本" autoFocus>
             <X size={16} />
@@ -2977,6 +3062,7 @@ function ReleaseHistoryDialog({
                   </ul>
                 </details>
               ) : null}
+              <ReleaseDownload version={release.version} current={release.version===currentVersion} busy={busy} onDownload={onDownload}/>
             </article>
           ))}
         </div>

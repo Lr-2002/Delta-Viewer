@@ -879,6 +879,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .version-history-dialog .version-history-summary { font-size: 14.56px; line-height: 1.65; }
 .version-history-details { grid-column: 2; color: var(--muted); font-size: 13.44px; }
 .version-history-details summary { width: fit-content; cursor: pointer; color: var(--ink); font-weight: 650; }
+.release-download { grid-column: 2; }
+.release-download > .button { min-height: 32px; font-size: 13px; }
+.release-download-panel { margin-top: 10px; padding: 12px; background: var(--surface-alt); border: 1px solid var(--line); border-radius: 8px; }
+.release-download-panel p { overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; margin: 6px 0; }
+.release-download-panel > .button { margin: 4px 6px 4px 0; }
+.release-download-panel small { color: var(--muted); }
+@media(max-width:760px) { .release-download { grid-column: 1 / -1; } }
 .version-history-details ul { margin: 9px 0 0; padding: 10px 12px 10px 27px; border-left: 2px solid var(--line-strong); background: var(--surface-alt); font-size: 13.44px; line-height: 1.65; }
 
 .source-display { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13.44px; }
@@ -1169,6 +1176,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .frame-camera-name { min-width: 0; overflow-wrap: anywhere; }
 .frame-resolution { color: #b5b5b5; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .video-playback-status { margin-left: auto; color: #d8d8d8; }
+.local-playback-button { flex-shrink: 0; min-height: 30px; padding: 5px 9px; font-size: 12px; gap: 5px; }
+@media (max-width: 700px) { .compact-heading:has(.local-playback-button) { flex-wrap: wrap; } }
 .frame-loading, .frame-error { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; align-content: center; gap: 6px; color: #b5b5b5; font-size: 12.32px; }
 .frame-error { color: #eeeeee; }
 

@@ -28,9 +28,13 @@ export async function getDiagnosticServiceStatus():Promise<DiagnosticServiceStat
   if(!isTauriRuntime())return browserLogStatus();
   return invoke("d1_logs_service");
 }
-export async function previewDiagnosticLogs(source:string):Promise<LogPreview> {
+export async function previewDiagnosticLogs(source:string,operationId:number):Promise<LogPreview> {
   if(!isTauriRuntime())throw new Error("请在桌面客户端读取采集会话日志。");
-  return invoke("d1_logs_preview",{source});
+  return invoke("d1_logs_preview",{source,operationId});
+}
+export async function confirmDeviceOtaUpgrade(version:string):Promise<boolean> {
+  const message=`将把 Factory${version} 升级包发送到设备。设备会校验并决定是否安装，期间不能断电。是否继续？`;
+  return isTauriRuntime()?confirm(message,{title:"确认设备升级",kind:"warning"}):window.confirm(message);
 }
 export async function uploadDiagnosticLogs(source:string,reportId:string,idempotencyKey:string,operationId:number):Promise<LogUploadReceipt> {
   if(!isTauriRuntime())throw new Error("请在桌面客户端上传诊断日志。");
@@ -218,6 +222,14 @@ let sessionActivationRetryAttempts = 0;
 const DEMO_OFFLINE_IDENTITY: UserIdentity = { username: "offline.local", displayName: "离线本机", role: "operator" };
 
 export type AppUpdateSource = "auto" | "lan" | "github";
+export interface HistoricalInstaller {key:string;label:string;fileName:string;size:number;sha256:string}
+export async function listHistoricalInstallers(version:string):Promise<HistoricalInstaller[]> {
+  if(!isTauriRuntime()) throw new Error("请在桌面应用中下载历史版本。");
+  return invoke("list_historical_installers",{version});
+}
+export async function downloadHistoricalInstaller(version:string,platform:string,destination:string,operationId:number):Promise<string> {
+  return invoke("download_historical_installer",{version,platform,destination,operationId});
+}
 export async function checkForAppUpdate(source: AppUpdateSource = "auto"): Promise<AppUpdateInfo> {
   if (isTauriRuntime()) return invoke<AppUpdateInfo>("check_for_app_update", { source });
   return {
@@ -1579,6 +1591,11 @@ export async function videoSource(root: string, stream: string): Promise<VideoSo
   } catch {
     return null;
   }
+}
+
+export async function prepareLocalPlayback(root: string, streams: string[], operationId: number): Promise<{files: number; bytes: number}> {
+  if (!isTauriRuntime()) throw new Error("请在桌面客户端准备本地播放。");
+  return invoke("prepare_local_playback", {root, streams, operationId});
 }
 
 export async function getPreviewLocation(): Promise<{ sourceRoot: string; previewRoot: string }> {

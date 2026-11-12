@@ -28,6 +28,7 @@ mod mp4_clock;
 mod mp4_preview_cache;
 mod operation_history;
 mod outbound_review;
+mod playback_cache;
 mod recording_timing;
 mod review_catalog;
 mod review_outbox;
@@ -303,10 +304,29 @@ async fn d1_logs_service(
 #[tauri::command]
 async fn d1_logs_preview(
     auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
     source: String,
+    operation_id: u64,
 ) -> Result<d1_logs::LogPreview, String> {
-    auth.require_user().map_err(|error| error.to_string())?;
-    d1_logs::preview_source(&source).map_err(|error| error.to_string())
+    let owner = d1_owner(&auth)?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("DIAGNOSTIC_CANCELLED: 日志预览已取消".to_string());
+        }
+        let result = d1_logs::preview_source(&source).map_err(|error| error.to_string())?;
+        if cancelled.load(Ordering::Acquire) {
+            return Err("DIAGNOSTIC_CANCELLED: 日志预览已取消".to_string());
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
 }
 
 #[tauri::command]
@@ -318,13 +338,18 @@ async fn d1_logs_upload(
     operation_id: u64,
 ) -> Result<d1_logs::UploadReceipt, String> {
     let owner = d1_owner(&auth)?;
-    let _task = control.start(operation_id)?;
-    let result = d1_logs::upload(request).await?;
+    let task = control.start(operation_id)?;
+    let result = d1_logs::upload(request, task.cancelled()).await?;
     if d1_owner(&auth)? != owner {
         return Err("D1_SESSION_CHANGED".into());
     }
     let data_root = base_app_data_root(&app)?;
-    if let Err(error) = d1_logs::remember(&data_root, &result) {
+    let receipt = result.clone();
+    if let Err(error) =
+        tauri::async_runtime::spawn_blocking(move || d1_logs::remember(&data_root, &receipt))
+            .await
+            .map_err(|error| error.to_string())?
+    {
         // A local receipt is a convenience; the report itself already uploaded.
         eprintln!("diagnostic upload receipt not persisted: {error}");
     }
@@ -532,6 +557,52 @@ async fn d1_export_bundle(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_historical_installers(
+    auth: State<'_, AuthState>,
+    version: String,
+) -> Result<Vec<updater::history::Installer>, String> {
+    auth.require_user().map_err(|e| e.to_string())?;
+    updater::history::list(&version)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn download_historical_installer(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    version: String,
+    platform: String,
+    destination: String,
+    operation_id: u64,
+) -> Result<String, String> {
+    auth.require_user().map_err(|e| e.to_string())?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    emit_task_start(
+        &app,
+        operation_id,
+        "update-history",
+        "下载历史版本安装包",
+        &version,
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(updater::history::download(
+            &app,
+            &version,
+            &platform,
+            Path::new(&destination),
+            operation_id,
+            &cancelled,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2784,16 +2855,24 @@ async fn get_video_source(
     app: AppHandle,
     auth: State<'_, AuthState>,
     media_stream_server: State<'_, Option<MediaStreamServer>>,
+    playback_cache: State<'_, playback_cache::PlaybackCache>,
     root: String,
     stream: String,
 ) -> Result<VideoSource, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let data_root = app_data_root(&app)?;
     let media_stream_server = media_stream_server.inner().clone();
+    let playback_cache = playback_cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut source = source::video_source(Path::new(&root), &stream, Some(&app))
             .map_err(|error| error.to_string())?;
-        if let Some(server) = media_stream_server.as_ref() {
+        source.local_playback = playback_cache
+            .resolve(Path::new(&root), &mut source.paths)
+            .map_err(|error| error.to_string())?;
+        if let Some(server) = media_stream_server
+            .as_ref()
+            .filter(|_| !source.local_playback)
+        {
             match adaptive_preview::register_preview(
                 &data_root,
                 Path::new(&root),
@@ -2825,6 +2904,76 @@ async fn get_video_source(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn prepare_local_playback(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    playback_cache: State<'_, playback_cache::PlaybackCache>,
+    root: String,
+    streams: Vec<String>,
+    operation_id: u64,
+) -> Result<playback_cache::CacheResult, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    if streams.is_empty() || streams.len() > 7 {
+        return Err("请选择当前录制中可用的相机".into());
+    }
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let cache = playback_cache.inner().clone();
+    let data_root = app_data_root(&app)?;
+    emit_task_start(
+        &app,
+        operation_id,
+        "playback-cache",
+        "准备本地流畅播放",
+        &root,
+    );
+    tauri::async_runtime::spawn_blocking(
+        move || -> error::AppResult<playback_cache::CacheResult> {
+            let _task = task;
+            let _progress = source::enter_operation_progress(operation_id);
+            let started = std::time::Instant::now();
+            let mut paths = Vec::new();
+            for stream in streams {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(error::AppError::Cancelled);
+                }
+                paths.extend(
+                    source::video_source(Path::new(&root), &stream, Some(&app))?
+                        .paths
+                        .into_iter()
+                        .map(PathBuf::from),
+                );
+            }
+            cache.prepare(
+                &data_root,
+                Path::new(&root),
+                paths,
+                &cancelled,
+                |phase, done, total, path| {
+                    source::emit_progress(
+                        Some(&app),
+                        ProgressPayload {
+                            task: "playback-cache".into(),
+                            phase: phase.into(),
+                            current: done,
+                            total,
+                            bytes_done: done,
+                            total_bytes: total,
+                            current_path: path.display().to_string(),
+                            elapsed_ms: started.elapsed().as_millis(),
+                        },
+                    );
+                },
+            )
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2947,6 +3096,7 @@ pub fn run() {
         .manage(SourceIndexCache::default())
         .manage(Mp4PreviewCache::default())
         .manage(media_stream_server)
+        .manage(playback_cache::PlaybackCache::default())
         .manage(review_catalog::ReviewCatalogCache::default())
         .invoke_handler(tauri::generate_handler![
             d1_availability,
@@ -2971,6 +3121,8 @@ pub fn run() {
             select_workspace_mode,
             clear_workspace_mode,
             check_for_app_update,
+            list_historical_installers,
+            download_historical_installer,
             download_app_update,
             install_app_update,
             configure_user_center,
@@ -3064,14 +3216,22 @@ pub fn run() {
             export_validation_report,
             cancel_task,
             get_video_source,
+            prepare_local_playback,
             get_jpeg_stream_source,
             read_frame,
             diagnose_video_failure,
             get_preview_location,
             set_preview_location
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Delta Viewer");
+        .build(tauri::generate_context!())
+        .expect("error while building Delta Viewer")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                // Tauri exits the process directly, so managed-state Drop is
+                // insufficient for normal-exit cleanup.
+                app.state::<playback_cache::PlaybackCache>().clear();
+            }
+        });
 }
 
 #[cfg(test)]

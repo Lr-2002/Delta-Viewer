@@ -741,6 +741,9 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
   let server;
   let interval;
   let syncPromise;
+  const historicalMetadata = new Map();
+  const historicalInFlight = new Map();
+  let historicalDownloads = 0;
   const state = {
     status: "starting",
     current: null,
@@ -874,6 +877,7 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
     }
     const filePath = path.join(configuration.cacheRoot, "versions", version, fileName);
     const info = await lstat(filePath).catch(() => null);
+    if (!info?.isFile() && await serveHistorical(request,response,version.slice(1),fileName)) return true;
     if (!info?.isFile()) {
       sendJson(response, 404, { error: "not found" });
       return true;
@@ -903,6 +907,66 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
       .on("error", () => response.destroy())
       .pipe(response);
     return true;
+  }
+
+  async function historical(version) {
+    requireSemver(version,"historical release");
+    if(historicalMetadata.has(version))return historicalMetadata.get(version);
+    if(historicalInFlight.has(version))return historicalInFlight.get(version);
+    if(historicalInFlight.size>=4)throw new Error("historical metadata is busy; retry shortly");
+    const promise=(async()=>{
+      const release=await fetchJson(fetchImpl,configuration.upstreamReleaseApiUrl.replace(/\/latest$/,`/tags/v${version}`));
+      if(release.draft!==false||release.prerelease!==false||release.tag_name!==`v${version}`||!release.published_at)
+        throw new Error("historical release is not published");
+      const prefix=`${configuration.upstreamAssetOrigin}${configuration.upstreamAssetPathPrefix}v${version}/`;
+      const latest=validateLatestManifest(await fetchJson(fetchImpl,`${prefix}latest.json`),configuration);
+      if(latest.version!==version)throw new Error("historical manifest version mismatch");
+      const installers=validateReleaseManifest(await fetchJson(fetchImpl,`${prefix}release-manifest.json`),latest,configuration);
+      // Fixed official release metadata only; clients cannot provide an upstream
+      // URL. Keep history independent of the latest pointer and rolling cache.
+      const result={version,installers};
+      if(historicalMetadata.size>=32)historicalMetadata.delete(historicalMetadata.keys().next().value);
+      historicalMetadata.set(version,result);return result;
+    })().finally(()=>historicalInFlight.delete(version));
+    historicalInFlight.set(version,promise);return promise;
+  }
+
+  async function serveHistorical(request,response,version,fileName) {
+    const definition=TARGETS.find(item=>item.installerName(version)===fileName);
+    if(fileName!=="release.json"&&!definition)return false;
+    let metadata;
+    try{metadata=await historical(version);}catch{
+      sendJson(response,404,{error:"此版本没有可用的正式安装包，或上游暂不可用"});return true;
+    }
+    if(fileName==="release.json"){
+      sendJson(response,200,{schemaVersion:1,version,installers:metadata.installers.map(item=>({key:item.key,label:item.label,fileName:item.fileName,size:item.size,sha256:item.sha256,url:localAssetUrl(configuration.publicBaseUrl,version,item.fileName)}))});return true;
+    }
+    if(historicalDownloads>=2){sendJson(response,503,{error:"历史版本下载繁忙，请稍后重试"});return true;}
+    const entry=metadata.installers.find(item=>item.key===definition.key);
+    const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),ASSET_TIMEOUT_MS);
+    const closed=()=>controller.abort();response.on("close",closed);historicalDownloads++;
+    try{
+      const upstream=await fetchImpl(entry.url,{headers:{accept:"application/octet-stream","user-agent":"Delta-Viewer-Update-Mirror/1"},redirect:"follow",signal:controller.signal});
+      if(!upstream.ok||!upstream.body)throw new Error("historical installer unavailable");
+      const length=upstream.headers.get("content-length");
+      if(length!==null&&Number(length)!==entry.size)throw new Error("historical installer size mismatch");
+      response.writeHead(200,{"content-type":contentType(fileName),"content-length":entry.size,"cache-control":"no-store","x-content-type-options":"nosniff"});
+      if(request.method==="HEAD"){controller.abort();response.end();return true;}
+      const hash=createHash("sha256");let received=0;
+      for await(const chunk of upstream.body){
+        const bytes=Buffer.from(chunk);received+=bytes.length;
+        if(received>entry.size||received>MAX_INSTALLER_BYTES)throw new Error("historical installer exceeded bounded size");
+        hash.update(bytes);
+        if(!response.write(bytes))await new Promise((resolve,reject)=>{
+          const drain=()=>{cleanup();resolve();};const close=()=>{cleanup();reject(new Error("download closed"));};
+          const cleanup=()=>{response.off("drain",drain);response.off("close",close);};
+          response.once("drain",drain);response.once("close",close);
+        });
+      }
+      if(received!==entry.size||hash.digest("hex")!==entry.sha256)throw new Error("historical installer verification failed");
+      response.end();return true;
+    }catch(error){if(!response.headersSent)sendJson(response,502,{error:"历史安装包读取失败，请重试"});else response.destroy();return true;}
+    finally{clearTimeout(timer);response.off("close",closed);controller.abort();historicalDownloads--;}
   }
 
   async function handleRequest(request, response) {

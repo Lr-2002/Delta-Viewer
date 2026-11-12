@@ -27,7 +27,7 @@ export function DiagnosticLogPanel({busy,beginOperation,onError}:Props){
     setSource(selection);setPreview(null);setReceipt(null);pendingReport.current=null;
     const owner=beginOperation();if(!owner){onError("请先完成当前任务。");return;}
     operation.current=owner;setWorking("preview");
-    try{setPreview(await previewDiagnosticLogs(selection));}
+    try{setPreview(await previewDiagnosticLogs(selection,owner.id));}
     catch(cause){onError(String(cause instanceof Error?cause.message:cause));setSource("");}
     finally{operation.current=null;owner.finish();setWorking(null);}
   }

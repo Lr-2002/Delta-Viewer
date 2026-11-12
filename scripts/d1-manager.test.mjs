@@ -458,8 +458,10 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       await noOverflow(page);await page.screenshot({path:resolve(reportRoot,`native-lan-${viewport.width}.png`),fullPage:true});
       await page.getByRole("button",{name:"刷新页面",exact:true}).click();assert.equal(await page.evaluate(()=>window.nativePageCalls.length),2);
       await page.getByRole("button",{name:"返回设备管理",exact:true}).click();
+      await navigate(page,"首页");
       await page.getByRole("button",{name:"连接设备",exact:true}).click();await frame.getByRole("heading",{name:"DOHC 设备状态"}).waitFor();
       await page.getByRole("button",{name:"返回设备管理",exact:true}).click();
+      await navigate(page,"首页");
       await page.getByRole("button",{name:"设备热点（AP）",exact:true}).click();
       await page.getByRole("region",{name:"可用 Wi-Fi"}).waitFor();await page.getByRole("button",{name:/Delta-D1-test001/}).waitFor();
       const refreshWifi=page.getByRole("button",{name:"刷新 Wi-Fi",exact:true});
@@ -482,7 +484,7 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       assert.equal(await page.evaluate(()=>window.nativePageCalls.at(-1).connectionMode),"ap");
       assert.equal(await page.evaluate(()=>window.nativePageCalls.at(-1).apAddress),undefined);
       await page.getByText("设备页面 · 192.168.4.1",{exact:true}).waitFor();
-      await page.getByRole("button",{name:"返回设备管理",exact:true}).click();assert.equal(await page.getByLabel("热点密码",{exact:true}).inputValue(),"");
+      await page.getByRole("button",{name:"返回设备管理",exact:true}).click();await navigate(page,"首页");assert.equal(await page.getByLabel("热点密码",{exact:true}).inputValue(),"");
       assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
       evidence.push({viewport,status:"passed",nativePage:true,confirmedConfigurationRequest:true,wifiRecommendation:true,passwordCleared:true,opaqueSandbox:true,guidesAlwaysVisible:true,routedLan:true,externalRequests:0});
     }finally{await context.close();}
@@ -584,6 +586,29 @@ test('actual device HTML loads all startup APIs, navigates configuration repeate
   }
 });
 
+
+test('AP and LAN both expose the same Chinese device information and complete diagnostics',async()=>{
+  for(const mode of ['ap','lan']){
+    const {page,context,errors,external}=await session({width:960,height:680},false,actualNativeMarkupFixture);
+    try{
+      await navigate(page,'首页');await page.getByRole('button',{name:mode==='ap'?'设备热点（AP）':'局域网 IP',exact:true}).click();
+      if(mode==='lan'){
+        await page.getByLabel('设备 IP',{exact:true}).fill('10.1.30.114');await page.getByRole('button',{name:'连接设备',exact:true}).click();
+      }else await page.getByRole('button',{name:'连接热点并打开',exact:true}).click();
+      await page.frameLocator('iframe[title="D1 设备页面"]').locator('#cameraConfigRows input').first().waitFor();
+      await navigate(page,'设备信息');
+      const runtime=page.getByRole('region',{name:'设备实时运行状态'});await runtime.waitFor();
+      assert.equal(await page.locator('iframe[title="D1 设备页面"]').count(),0,'device information does not remain trapped in the native page');
+      await page.getByText('实际连接方式',{exact:true}).waitFor();
+      for(const label of ['存储','采集与写入','相机','指示灯','设备测试'])await runtime.getByRole('heading',{name:label,exact:true}).waitFor();
+      assert.match(await runtime.innerText(),/native-fixture-device/);assert.match(await runtime.innerText(),/正常/);
+      await navigate(page,'检测排障');
+      for(const label of ['采集存储卡','设备内置存储','主相机','设备已有自检','设备已有压力测试'])await runtime.getByRole('heading',{name:label,exact:true}).waitFor();
+      assert.equal(await runtime.getByText('未执行',{exact:true}).count(),2,'reading existing idle tests cannot claim a pass');
+      await page.screenshot({path:resolve(reportRoot,`unified-${mode}-diagnostics.png`),fullPage:true});assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
+    }finally{await context.close();}
+  }
+});
 
 test('D1 hotspot uses factory default on explicit user connection and retains manual override',async()=>{
   const {page,context,errors,external}=await session({width:960,height:680},false,nativePageFixture);
