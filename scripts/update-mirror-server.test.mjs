@@ -15,12 +15,14 @@ import { createUpdateMirror } from "./update-mirror-server.mjs";
 
 test("historical installers stream through LAN without changing the current release or retaining all old packages",async()=>{
   const cacheRoot=await mkdtemp(path.join(tmpdir(),"d1-history-download-"));
-  const signer=createSigner();let upstreamBase;let current,old;let tagReads=0;
+  const signer=createSigner();let upstreamBase;let current,old,limited;let tagReads=0;
   const upstream=createServer((request,response)=>{
     const pathname=new URL(request.url,upstreamBase).pathname;
-    const selected=pathname.includes("1.9.1")?old:current;
+    const requested=/\/v(\d+\.\d+\.\d+)\//.exec(pathname)?.[1];
+    const selected=requested==="1.9.1"?old:requested==="1.9.0"?limited:requested&&requested!=="1.9.4"?null:current;
     let body;
-    if(pathname.includes("/tags/")){tagReads++;body=Buffer.from(JSON.stringify({tag_name:"v1.9.1",draft:false,prerelease:false,published_at:"2026-11-12T00:00:00Z"}));}
+    if(pathname.includes("/tags/")){tagReads++;if(pathname.endsWith("v1.9.0")){response.writeHead(403).end('{"message":"API rate limit exceeded"}');return;}if(!pathname.endsWith("v1.9.1")){response.writeHead(404).end();return;}body=Buffer.from(JSON.stringify({tag_name:"v1.9.1",draft:false,prerelease:false,published_at:"2026-11-12T00:00:00Z"}));}
+    else if(!selected){response.writeHead(404).end();return;}
     else if(pathname.endsWith("latest.json"))body=Buffer.from(JSON.stringify(selected.latest));
     else if(pathname.endsWith("release-manifest.json"))body=Buffer.from(JSON.stringify(selected.releaseManifest));
     else body=selected.files.get(decodeURIComponent(pathname.split("/").at(-1)));
@@ -29,7 +31,7 @@ test("historical installers stream through LAN without changing the current rele
   let mirror;
   try{
     upstreamBase=`http://127.0.0.1:${await listen(upstream)}`;
-    current=createRelease("1.9.4",signer,upstreamBase);old=createRelease("1.9.1",signer,upstreamBase);
+    current=createRelease("1.9.4",signer,upstreamBase);old=createRelease("1.9.1",signer,upstreamBase);limited=createRelease("1.9.0",signer,upstreamBase);
     mirror=createUpdateMirror({schemaVersion:1,listenHost:"127.0.0.1",listenPort:0,publicBaseUrl:"http://127.0.0.1:0",upstreamManifestUrl:`${upstreamBase}/latest.json`,upstreamReleaseApiUrl:`${upstreamBase}/api/releases/latest`,upstreamAssetOrigin:upstreamBase,upstreamAssetPathPrefix:"/repo/releases/download/",refreshIntervalSeconds:3600,retainedVersions:2,updaterPublicKey:signer.wrappedPublicKey,cacheRoot,allowTestUpstream:true},{logger:{error:()=>{}}});
     const {publicBaseUrl}=await mirror.start();await mirror.sync();
     const metadata=await fetch(`${publicBaseUrl}/releases/v1.9.1/release.json`).then(r=>r.json());
@@ -39,6 +41,10 @@ test("historical installers stream through LAN without changing the current rele
       const bytes=Buffer.from(await response.arrayBuffer());assert.equal(bytes.length,entry.size);assert.equal(sha256(bytes),entry.sha256);
     }
     const again=await fetch(`${publicBaseUrl}/releases/v1.9.1/release.json`).then(r=>r.json());assert.deepEqual(again,metadata);assert.equal(tagReads,1);
+    const fallback=await fetch(`${publicBaseUrl}/releases/v1.9.0/release.json`).then(r=>r.json());
+    assert.equal(fallback.version,"1.9.0","API quota must not hide public release assets");assert.equal(fallback.installers.length,3);
+    const installer=fallback.installers[0];const received=Buffer.from(await fetch(installer.url).then(r=>r.arrayBuffer()));assert.equal(sha256(received),installer.sha256);
+    assert.equal((await fetch(`${publicBaseUrl}/releases/v1.8.9/release.json`)).status,404,"missing public manifests still fail closed");
     assert.equal(mirror.state.current.version,"1.9.4");
     assert.equal(await readFile(path.join(cacheRoot,"versions","v1.9.1","release.json")).catch(()=>null),null,"old installer downloads do not fill the rolling cache");
   }finally{await mirror?.stop();await close(upstream);await rm(cacheRoot,{recursive:true,force:true});}

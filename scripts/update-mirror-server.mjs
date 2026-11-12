@@ -915,8 +915,13 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
     if(historicalInFlight.has(version))return historicalInFlight.get(version);
     if(historicalInFlight.size>=4)throw new Error("historical metadata is busy; retry shortly");
     const promise=(async()=>{
-      const release=await fetchJson(fetchImpl,configuration.upstreamReleaseApiUrl.replace(/\/latest$/,`/tags/v${version}`));
-      if(release.draft!==false||release.prerelease!==false||release.tag_name!==`v${version}`||!release.published_at)
+      // The public API shares the mirror's egress quota. Exact public release
+      // assets remain readable without credentials when that API is unavailable;
+      // drafts have no public download route. Explicit non-stable API results
+      // still fail, and both immutable manifests plus all three assets are required.
+      let release;
+      try{release=await fetchJson(fetchImpl,configuration.upstreamReleaseApiUrl.replace(/\/latest$/,`/tags/v${version}`));}catch{}
+      if(release&&(release.draft!==false||release.prerelease!==false||release.tag_name!==`v${version}`||!release.published_at))
         throw new Error("historical release is not published");
       const prefix=`${configuration.upstreamAssetOrigin}${configuration.upstreamAssetPathPrefix}v${version}/`;
       const latest=validateLatestManifest(await fetchJson(fetchImpl,`${prefix}latest.json`),configuration);
