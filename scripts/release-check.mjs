@@ -21,6 +21,7 @@ import { constants as fsConstants, createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { verifyApplicationTitle } from "./application-title.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cargoManifest = "src-tauri/Cargo.toml";
@@ -223,11 +224,12 @@ async function verifyVersions() {
     readFile(path.join(root, "src-tauri/Cargo.lock"), "utf8"),
     readFile(path.join(root, "src-tauri/tauri.conf.json"), "utf8"),
   ]);
+  const tauriConfig = JSON.parse(tauriConfigText);
   const versions = {
     packageJson: JSON.parse(packageJsonText).version,
     cargoToml: packageVersionFromToml(cargoToml),
     cargoLock: packageVersionFromLock(cargoLock),
-    tauriConfig: JSON.parse(tauriConfigText).version,
+    tauriConfig: tauriConfig.version,
   };
   const unique = new Set(Object.values(versions));
   if (unique.size !== 1) {
@@ -237,7 +239,8 @@ async function verifyVersions() {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
     throw new Error(`application version is not valid semver: ${version}`);
   }
-  return { version, files: versions };
+  const windowTitle = verifyApplicationTitle(tauriConfig, version);
+  return { version, files: versions, windowTitle };
 }
 
 async function sha256(filePath) {

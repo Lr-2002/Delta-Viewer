@@ -13,6 +13,18 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { formatReleaseChangelog, parseReleaseChangelog } from "./release-changelog.mjs";
+import { verifyApplicationTitle } from "./application-title.mjs";
+
+test("release checks reject stale, missing and ambiguous main window titles", () => {
+  const config = title => ({ app: { windows: [{ label: "main", title }] } });
+  assert.equal(verifyApplicationTitle(config("D1 Manager 1.9.8"), "1.9.8"), "D1 Manager 1.9.8");
+  for (const value of [config("D1 Manager 1.9.6"), config("D1 Manager 1.9.8 Preview"), {},
+    { app: { windows: [{ label: "other", title: "D1 Manager 1.9.8" }] } },
+    { app: { windows: [...config("D1 Manager 1.9.8").app.windows, ...config("D1 Manager 1.9.8").app.windows] } },
+  ]) {
+    assert.throws(() => verifyApplicationTitle(value, "1.9.8"), /main window title must be/);
+  }
+});
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const verifyScript = path.join(root, "scripts/verify-release.mjs");
@@ -142,6 +154,7 @@ test("verify-release accepts only a clean trusted-main annotated version tag", a
   );
   await writeJson(path.join(testRoot, "src-tauri/tauri.conf.json"), {
     version: "1.2.3",
+    app: { windows: [{ label: "main", title: "D1 Manager 1.2.3" }] },
     bundle: {
       active: true,
       category: "Utility",

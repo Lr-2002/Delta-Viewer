@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseReleaseChangelog } from "./release-changelog.mjs";
+import { verifyApplicationTitle } from "./application-title.mjs";
 
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -160,6 +161,7 @@ async function verify(options) {
     }
   }
 
+  verifyApplicationTitle(tauriConfig, version);
   const changelog = parseReleaseChangelog(changelogContents, version);
   if (tauriConfig.bundle?.active !== true) throw new Error("Tauri bundling is not active");
   if (tauriConfig.bundle?.category !== "Utility") {
