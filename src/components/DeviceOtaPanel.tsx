@@ -56,30 +56,31 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
   }
 
   async function checkRelease(){
-    setPreview(null);setNotice("");
+    setNotice("");
     if(!request){onError("请先在设备信息页连接设备。");return;}
     await run("preview",async owner=>{const value=await previewOtaRelease(owner.id);setPreview(value);});
   }
 
   async function submit(){
     if(!request){onError("请先在设备信息页连接设备。");return;}
-    if(!preview)return;
+    if(!preview||!device?.available||device.active)return;
     const version=preview.version?` ${preview.version}`:"";
     if(!await confirmDeviceOtaUpgrade(version))return;
     setNotice("");
-    const result=await run("submit",async owner=>submitOtaToDevice(request,owner.id));
+    const result=await run("submit",async owner=>submitOtaToDevice(request,owner.id,preview.previewId));
     if(result){setNotice(result.message);}
   }
 
   const enabled=service?.enabled??false;
+  const canUpgrade=enabled&&connected&&!!request&&device?.available===true&&!device.active;
   const trust=device?.state&&!enabled?null:service?.trust??"device_verified";
   const stateLabel=device?.state?(otaStateLabels[device.state]??device.state):null;
 
   return <section className="manager-ota" aria-label="DOHC 应用升级">
     <header className="manager-ota-heading">
       <ShieldCheck size={20}/>
-      <div><h2>DOHC 应用升级</h2><p>{service?.detail??serviceError??"正在读取升级服务…"}</p></div>
-      <span className={`manager-chip${enabled?" is-ready":""}`}>{enabled?"可用":"不可用"}</span>
+      <div><h2>DOHC 应用升级</h2><p>{service?.detail||serviceError||"正在读取升级服务…"}</p></div>
+      <span className={`manager-chip${canUpgrade?" is-ready":""}`}>{canUpgrade?"可升级":device?.active?"升级中":"暂不可升级"}</span>
     </header>
     {!connected&&<p className="manager-ota-note">连接设备后读取升级状态。在线升级需要设备热点或局域网 IP，Type-C 不提供升级通道。</p>}
     {connected&&!request&&<p className="manager-ota-note">Type-C 不提供升级通道，请从首页连接设备热点或局域网 IP。</p>}
@@ -92,11 +93,11 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
     {device?.guidance&&<p className="manager-ota-note">{device.guidance}</p>}
     {enabled&&<>
       <div className="manager-actions">
-        <button className="button button-secondary" disabled={busy||working!==null||!request||!connected} onClick={()=>void checkRelease()}>
+        <button className="button button-secondary" disabled={busy||working!==null||!canUpgrade} onClick={()=>void checkRelease()}>
           {working==="preview"?<LoaderCircle size={17} className="spin"/>:<RefreshCw size={17}/>}检查最新版本
         </button>
-        {preview&&<button className="button button-primary" disabled={busy||working!==null||!connected} onClick={()=>void submit()}>
-          {working==="submit"?<LoaderCircle size={17} className="spin"/>:<UploadCloud size={17}/>}下载并升级
+        {preview&&<button className="button button-primary" disabled={busy||working!==null||!canUpgrade} onClick={()=>void submit()}>
+          {working==="submit"?<LoaderCircle size={17} className="spin"/>:<UploadCloud size={17}/>}开始升级
         </button>}
       </div>
       {preview&&<div className="manager-ota-release" aria-label="升级包内容">
@@ -113,7 +114,7 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
     </>}
     {!enabled&&!serviceError&&<p className="manager-ota-note">升级服务尚未配置。{trust==="device_verified"?"":"未设置发布公钥时，只有设备验签作为唯一信任依据。"}</p>}
     {notice&&<p className="manager-ota-success" role="status"><CheckCircle2 size={17}/>{notice}</p>}
-    {device?.finalState&&device.state==="SUCCESS"&&<p className="manager-ota-success" role="status"><CheckCircle2 size={17}/>设备报告升级成功。{device.releaseTarget?`目标版本 ${device.targetVersion??device.releaseTarget}。`:""}</p>}
+    {device?.finalState&&device.state==="SUCCESS"&&device.result==="PASS"&&<p className="manager-ota-success" role="status"><CheckCircle2 size={17}/>设备报告升级成功。{device.releaseTarget?`目标版本 ${device.targetVersion??device.releaseTarget}。`:""}</p>}
     {device?.finalState&&(device.state==="FAILED"||device.state==="ROLLBACK_FAILED")&&<p className="manager-ota-error" role="alert"><AlertCircle size={15}/>{device.detail}{device.guidance?` ${device.guidance}`:""}</p>}
     {device&&<p className="manager-observed">状态更新于 {time(observedAt)}</p>}
   </section>;

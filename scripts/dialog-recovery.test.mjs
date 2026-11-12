@@ -74,6 +74,7 @@ if (!browserExecutable && requireBrowser) {
         exportValidationReport: 0,
         exportAnnotatedEpisodes: 0,
         importEpisode: 0,
+        validateEpisode: 0,
         revealedPaths: [],
       };
       let callbackId = 1;
@@ -283,6 +284,7 @@ if (!browserExecutable && requireBrowser) {
                 }],
               };
             case "validate_episode":
+              calls.validateEpisode++;
               return { report, summary: { ...episode, root: args.path, indexed: true } };
             case "load_episode_annotation":
               return null;
@@ -364,6 +366,14 @@ if (!browserExecutable && requireBrowser) {
       await page.locator(".topbar-actions").getByRole("button", { name: /选择 (SD 卡|数据目录)/ }).click();
       await page.locator(".view-tabs").waitFor();
       await page.locator(".camera-grid img").first().waitFor();
+      assert.equal(await page.evaluate(()=>window.__dialogRecoveryMock.calls.validateEpisode),0,"opening data does not precheck");
+      await page.getByRole("button",{name:"检查",exact:true}).click();
+      await page.getByText("尚未检查，点击“运行数据检查”查看完整结果。",{exact:true}).waitFor();
+      assert.equal(await page.locator(".check-table-row").filter({hasText:"未检查"}).count(),6);
+      await page.getByRole("button",{name:"运行数据检查",exact:true}).click();
+      await page.waitForFunction(()=>window.__dialogRecoveryMock.calls.validateEpisode===1);
+      await page.getByRole("button",{name:"重新检查",exact:true}).waitFor();
+
 
       await page.locator(".view-tabs button").nth(2).click();
       await page.evaluate(() => window.__dialogRecoveryMock.failNext("plugin:dialog|message", "CONFIRM_DIALOG_FAILURE"));
@@ -376,7 +386,7 @@ if (!browserExecutable && requireBrowser) {
 
       await page.locator(".view-tabs button").nth(1).click();
       await page.evaluate(() => window.__dialogRecoveryMock.failNext("plugin:dialog|open", "REPORT_DIRECTORY_DIALOG_FAILURE"));
-      await page.locator(".check-heading-actions button").click();
+      await page.getByRole("button",{name:"导出报告",exact:true}).click();
       await expectFailure(page, "REPORT_DIRECTORY_DIALOG_FAILURE", 3, "export_validation_report");
 
       await page.locator(".view-tabs button").nth(2).click();
@@ -388,7 +398,7 @@ if (!browserExecutable && requireBrowser) {
       assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.records.length), 3);
 
       await page.locator(".view-tabs button").nth(1).click();
-      await page.locator(".check-heading-actions button").click();
+      await page.getByRole("button",{name:"导出报告",exact:true}).click();
       await page.waitForFunction(() => window.__dialogRecoveryMock.calls.exportValidationReport === 1);
       await page.waitForFunction(() => [...document.querySelectorAll(".alert-notice")]
         .some((element) => element.textContent?.includes("检查报告已导出")));

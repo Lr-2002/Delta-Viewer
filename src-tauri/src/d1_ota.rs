@@ -14,13 +14,13 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CHANNEL_SCHEMA: &str = "dohc.ota.channel.v1";
 const MANIFEST_SCHEMA: &str = "dohc.ota.release-manifest.v1";
 const PORTAL_SCHEMA: &str = "dohc.ap-ota.portal.v1";
 const UPLOAD_SCHEMA: &str = "dohc.ap-ota.upload.v1";
-const ACCEPTED_SCHEMA: &str = "dohc.ap-ota.accepted.v1";
 const SIGNATURE_BYTES: usize = 64;
 const MAX_JSON_BYTES: usize = 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
@@ -41,6 +41,7 @@ pub struct FileDescriptor {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OtaPreview {
+    pub preview_id: String,
     pub release_id: String,
     pub version: String,
     pub channel: String,
@@ -86,6 +87,37 @@ struct Downloaded {
 struct Release {
     preview: OtaPreview,
     files: Vec<Downloaded>,
+    upload: Mutex<Option<(String, String)>>,
+    submitted: AtomicBool,
+    begin_attempted: AtomicBool,
+    settled: AtomicBool,
+    baseline_operation: Mutex<Option<String>>,
+    expected_operation: Mutex<Option<String>>,
+}
+
+#[derive(Default)]
+pub struct OtaState(Mutex<Option<(String, Instant, Arc<Release>)>>);
+impl OtaState {
+    fn remember(&self, owner: &str, release: Release) -> Result<OtaPreview, String> {
+        let preview = release.preview.clone();
+        *self.0.lock().map_err(|_| "OTA_STATE_UNAVAILABLE")? =
+            Some((owner.into(), Instant::now(), Arc::new(release)));
+        Ok(preview)
+    }
+    fn get(&self, owner: &str, preview_id: &str) -> Result<Arc<Release>, String> {
+        let guard = self.0.lock().map_err(|_| "OTA_STATE_UNAVAILABLE")?;
+        let (saved_owner, created, release) = guard
+            .as_ref()
+            .ok_or("OTA_PREVIEW_EXPIRED: 请重新检查升级版本")?;
+        if saved_owner != owner
+            || (created.elapsed() > Duration::from_secs(1800)
+                && !release.begin_attempted.load(Ordering::Acquire))
+            || release.preview.preview_id != preview_id
+        {
+            return Err("OTA_PREVIEW_EXPIRED: 版本预览已失效，请重新检查".into());
+        }
+        Ok(Arc::clone(release))
+    }
 }
 
 fn failure(message: impl Into<String>) -> String {
@@ -119,7 +151,8 @@ fn channel_name() -> Result<String, String> {
         .channel
         .unwrap_or_else(|| "factory".into());
     // A channel name is part of a fixed path; keep it to a plain identifier.
-    if channel.is_empty()
+    if channel != "factory"
+        || channel.is_empty()
         || channel.len() > 32
         || !channel
             .bytes()
@@ -148,6 +181,18 @@ async fn fetch(
     limit: u64,
     cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, String> {
+    Ok(fetch_with_etag(client, origin, path, limit, cancelled)
+        .await?
+        .0)
+}
+
+async fn fetch_with_etag(
+    client: &reqwest::Client,
+    origin: &Origin,
+    path: &str,
+    limit: u64,
+    cancelled: &AtomicBool,
+) -> Result<(Vec<u8>, Option<String>), String> {
     if cancelled.load(Ordering::Acquire) {
         return Err("OTA_CANCELLED: 升级已取消".into());
     }
@@ -177,6 +222,11 @@ async fn fetch(
     {
         return Err("OTA_RESPONSE_TOO_LARGE: 升级资源超过大小限制".into());
     }
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     use futures_util::StreamExt;
@@ -190,7 +240,7 @@ async fn fetch(
         }
         bytes.extend_from_slice(&chunk);
     }
-    Ok(bytes)
+    Ok((bytes, etag))
 }
 
 fn descriptor_path(value: &serde_json::Value, label: &str) -> Result<FileDescriptor, String> {
@@ -239,7 +289,7 @@ async fn resolve(
 ) -> Result<Release, String> {
     let channel = channel_name()?;
     let channel_path = format!("/ota/v1/channels/{channel}.json");
-    let channel_bytes = fetch(
+    let (channel_bytes, etag) = fetch_with_etag(
         client,
         origin,
         &channel_path,
@@ -247,6 +297,20 @@ async fn resolve(
         cancelled,
     )
     .await?;
+    let generation = etag
+        .as_deref()
+        .map(|value| value.trim_matches('"'))
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or("OTA_CHANNEL_INVALID: 升级通道缺少有效 ETag，请重试")?;
+    let channel_signature = fetch(
+        client,
+        origin,
+        &format!("{channel_path}.sig?generation={generation}"),
+        SIGNATURE_BYTES as u64,
+        cancelled,
+    )
+    .await?;
+    verify_signature(&channel_bytes, &channel_signature)?;
     let channel_json: serde_json::Value = serde_json::from_slice(&channel_bytes)
         .map_err(|_| failure("OTA_CHANNEL_INVALID: 升级通道不是有效 JSON"))?;
     if text(&channel_json, "schema").as_deref() != Some(CHANNEL_SCHEMA) {
@@ -261,13 +325,23 @@ async fn resolve(
     {
         return Err("OTA_CHANNEL_INVALID: 升级通道发布编号无效".into());
     }
-    let version = text(&channel_json, "version").unwrap_or_default();
+    if text(&channel_json, "channel").as_deref() != Some(channel.as_str()) {
+        return Err("OTA_CHANNEL_INVALID: 通道名称不一致".into());
+    }
+    let version = text(&channel_json, "version")
+        .filter(|v| !v.is_empty())
+        .ok_or("OTA_CHANNEL_INVALID: 缺少版本")?;
     let key_id = text(&channel_json, "key_id");
     let rollback_index = channel_json
         .get("rollback_index")
         .and_then(|value| value.as_u64());
 
     let manifest = descriptor_path(&channel_json["manifest"], "manifest.json")?;
+    if manifest.path != format!("/ota/v1/releases/{release_id}/manifest.json")
+        || manifest.size > MAX_JSON_BYTES as u64
+    {
+        return Err("OTA_CHANNEL_INVALID: manifest 路径或大小无效".into());
+    }
     if manifest.sha256.is_none() {
         return Err("OTA_CHANNEL_INVALID: 升级通道缺少 manifest 摘要".into());
     }
@@ -316,21 +390,41 @@ async fn resolve(
         }
     }
 
-    let artifact = descriptor_path(&manifest_json["artifact"], "artifact.deb")?;
-    if !["/deb", "/tar.gz"]
-        .iter()
-        .any(|suffix| artifact.path.ends_with(suffix))
+    if key_id.is_none()
+        || rollback_index.is_none()
+        || manifest_key != key_id
+        || manifest_rollback != rollback_index
+        || manifest_version != version
+        || text(&manifest_json["signing"], "algorithm").as_deref() != Some("Ed25519")
     {
-        return Err("OTA_MANIFEST_INVALID: 制品不是受支持的安装包格式".into());
+        return Err("OTA_MANIFEST_MISMATCH: 版本、签名密钥或防回退序号缺失或不一致".into());
     }
-    if artifact.sha256.is_none() {
-        return Err("OTA_MANIFEST_INVALID: 制品缺少摘要".into());
+    let mut artifact = descriptor_path(&manifest_json["artifact"], "artifact")?;
+    artifact.name = if artifact.path == format!("/ota/v1/artifacts/{release_id}.deb") {
+        "artifact.deb"
+    } else if artifact.path == format!("/ota/v1/artifacts/{release_id}.tar.gz") {
+        "artifact.tar.gz"
+    } else {
+        return Err("OTA_MANIFEST_INVALID: 制品路径或格式不受支持".into());
     }
+    .into();
     if artifact.size > MAX_ARTIFACT_BYTES {
         return Err("OTA_ARTIFACT_TOO_LARGE: 升级包超过大小限制".into());
     }
     let changelog_json = descriptor_path(&manifest_json["changelog"]["json"], "changelog.json")?;
     let changelog_md = descriptor_path(&manifest_json["changelog"]["markdown"], "changelog.md")?;
+    for descriptor in [&artifact, &changelog_json, &changelog_md] {
+        if descriptor.sha256.is_none() {
+            return Err("OTA_MANIFEST_INVALID: 发布文件缺少摘要".into());
+        }
+    }
+    for descriptor in [&changelog_json, &changelog_md] {
+        if descriptor.path != format!("/ota/v1/releases/{release_id}/{}", descriptor.name)
+            || descriptor.size > MAX_JSON_BYTES as u64
+        {
+            return Err("OTA_MANIFEST_INVALID: 更新说明路径或大小无效".into());
+        }
+    }
     let signature = FileDescriptor {
         name: "manifest.json.sig".into(),
         path: format!("{}.sig", manifest.path),
@@ -377,12 +471,12 @@ async fn resolve(
             .await?,
         },
         Downloaded {
-            name: "artifact.deb".into(),
+            name: artifact.name.clone(),
             bytes: fetch(client, origin, &artifact.path, artifact.size, cancelled).await?,
         },
     ];
     let declared = [&changelog_json, &changelog_md, &signature, &artifact];
-    for file in files.iter_mut().skip(2) {
+    for file in files.iter_mut().skip(1) {
         if file.name == "manifest.json.sig" {
             if file.bytes.len() != SIGNATURE_BYTES {
                 return Err("OTA_SIGNATURE_INVALID: manifest 签名不是 64 字节".into());
@@ -404,43 +498,29 @@ async fn resolve(
             }
         }
     }
-    if let Some(root) = d1_services::load()
-        .map_err(|error| error.to_string())?
+    verify_signature(&files[0].bytes, &files[1].bytes)?;
+    if let Some(expected) = d1_services::load()
+        .map_err(|e| e.to_string())?
         .device_ota
         .trust_root
+        .and_then(|r| r.key_id)
     {
-        if let Some(pem) = root
-            .public_key_pem
-            .as_deref()
-            .filter(|pem| !pem.trim().is_empty())
-        {
-            let key = d1_services::ed25519_public_key(pem)?;
-            let signature_bytes = files
-                .iter()
-                .find(|file| file.name == "manifest.json.sig")
-                .map(|file| file.bytes.as_slice())
-                .ok_or_else(|| failure("OTA_SIGNATURE_INVALID: 缺少 manifest 签名"))?;
-            let manifest_payload = files
-                .iter()
-                .find(|file| file.name == "manifest.json")
-                .map(|file| file.bytes.as_slice())
-                .ok_or_else(|| failure("OTA_MANIFEST_INVALID: 缺少 manifest"))?;
-            let public =
-                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key.as_slice());
-            public
-                .verify(manifest_payload, signature_bytes)
-                .map_err(|_| "OTA_SIGNATURE_INVALID: manifest 签名校验失败".to_string())?;
-            if let (Some(expected), Some(configured)) = (&root.key_id, &key_id) {
-                if !expected.is_empty() && expected != configured {
-                    return Err("OTA_KEY_ID_MISMATCH: 发布密钥编号与信任根不一致".into());
-                }
-            }
+        if key_id.as_deref() != Some(expected.as_str()) {
+            return Err("OTA_KEY_ID_MISMATCH: 发布密钥编号与配置不一致".into());
         }
     }
 
     let total_bytes = files.iter().map(|file| file.bytes.len() as u64).sum();
     Ok(Release {
         preview: OtaPreview {
+            preview_id: format!(
+                "{}-{}",
+                sha256_hex(&files[0].bytes),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ),
             release_id,
             version: if manifest_version.is_empty() {
                 version
@@ -480,6 +560,12 @@ async fn resolve(
             },
         },
         files,
+        upload: Mutex::new(None),
+        submitted: AtomicBool::new(false),
+        begin_attempted: AtomicBool::new(false),
+        settled: AtomicBool::new(false),
+        baseline_operation: Mutex::new(None),
+        expected_operation: Mutex::new(None),
     })
 }
 
@@ -518,14 +604,53 @@ pub async fn service_status() -> crate::error::AppResult<d1_services::OtaService
     })
 }
 
-pub async fn preview(cancelled: &AtomicBool) -> Result<OtaPreview, String> {
-    let config = d1_services::load().map_err(|error| error.to_string())?;
-    if !config.device_ota.enabled {
+fn verify_signature(payload: &[u8], signature: &[u8]) -> Result<(), String> {
+    if signature.len() != SIGNATURE_BYTES {
+        return Err("OTA_SIGNATURE_INVALID: 签名不是 64 字节".into());
+    }
+    if let Some(pem) = d1_services::load()
+        .map_err(|e| e.to_string())?
+        .device_ota
+        .trust_root
+        .and_then(|r| r.public_key_pem)
+        .filter(|v| !v.trim().is_empty())
+    {
+        let key = d1_services::ed25519_public_key(&pem)?;
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+            .verify(payload, signature)
+            .map_err(|_| "OTA_SIGNATURE_INVALID: 发布签名校验失败".to_string())?;
+    }
+    Ok(())
+}
+
+pub async fn preview(
+    state: &OtaState,
+    owner: &str,
+    cancelled: &AtomicBool,
+) -> Result<OtaPreview, String> {
+    if !d1_services::load()
+        .map_err(|e| e.to_string())?
+        .device_ota
+        .enabled
+    {
         return Err("OTA_DISABLED: 应用升级服务尚未启用".into());
     }
-    let origin = origin()?;
-    let client = client()?;
-    Ok(resolve(&client, &origin, cancelled).await?.preview)
+    if let Some((saved_owner, _, release)) = state
+        .0
+        .lock()
+        .map_err(|_| "OTA_STATE_UNAVAILABLE")?
+        .as_ref()
+    {
+        if saved_owner == owner
+            && release.begin_attempted.load(Ordering::Acquire)
+            && !release.settled.load(Ordering::Acquire)
+        {
+            // Keep the exact five files and the resumable device session.
+            return Ok(release.preview.clone());
+        }
+    }
+    let release = resolve(&client()?, &origin()?, cancelled).await?;
+    state.remember(owner, release)
 }
 
 // ---- Device relay -------------------------------------------------------
@@ -549,6 +674,86 @@ fn chunk_count(size: u64, chunk: u64) -> u64 {
     size.div_ceil(chunk.max(1))
 }
 
+fn valid_upload_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit() && !b.is_ascii_uppercase()
+            }
+        })
+}
+
+type ReceivedChunks = std::collections::BTreeMap<String, std::collections::BTreeSet<u64>>;
+fn validate_upload_session(
+    value: &serde_json::Value,
+    files: &[Downloaded],
+) -> Result<(String, u64, ReceivedChunks), String> {
+    let invalid = || "AP_OTA_RESPONSE_INVALID: 上传会话与本次升级文件不一致".to_string();
+    if text(value, "schema").as_deref() != Some(UPLOAD_SCHEMA) {
+        return Err(invalid());
+    }
+    let id = text(value, "upload_id")
+        .filter(|v| valid_upload_id(v))
+        .ok_or_else(invalid)?;
+    let chunk = value["chunk_size"]
+        .as_u64()
+        .filter(|v| (MIN_CHUNK_BYTES..=MAX_CHUNK_BYTES).contains(v))
+        .ok_or_else(invalid)?;
+    let descriptors = value["files"]
+        .as_array()
+        .filter(|v| v.len() == files.len())
+        .ok_or_else(invalid)?;
+    let mut received = ReceivedChunks::new();
+    for file in files {
+        let matching: Vec<_> = descriptors
+            .iter()
+            .filter(|d| text(d, "name").as_deref() == Some(file.name.as_str()))
+            .collect();
+        if matching.len() != 1 {
+            return Err(invalid());
+        }
+        let descriptor = matching[0];
+        let chunks = chunk_count(file.bytes.len() as u64, chunk);
+        let expected = if file.name == "manifest.json.sig" {
+            None
+        } else {
+            Some(sha256_hex(&file.bytes))
+        };
+        if descriptor["size"].as_u64() != Some(file.bytes.len() as u64)
+            || descriptor["chunks"].as_u64() != Some(chunks)
+            || text(descriptor, "sha256") != expected
+        {
+            return Err(invalid());
+        }
+        let indices = descriptor["received"].as_array().ok_or_else(invalid)?;
+        let mut set = std::collections::BTreeSet::new();
+        for index in indices {
+            let index = index.as_u64().filter(|v| *v < chunks).ok_or_else(invalid)?;
+            if !set.insert(index) {
+                return Err(invalid());
+            }
+        }
+        received.insert(file.name.clone(), set);
+    }
+    Ok((id, chunk, received))
+}
+
+async fn bounded_response(response: reqwest::Response) -> Result<Vec<u8>, String> {
+    use futures_util::StreamExt;
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| "AP_OTA_RESPONSE_INVALID: 设备响应中断")?;
+        if bytes.len() + chunk.len() > MAX_JSON_BYTES {
+            return Err("AP_OTA_RESPONSE_INVALID: 设备响应过大".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 async fn post_json(
     client: &reqwest::Client,
     url: &str,
@@ -562,13 +767,7 @@ async fn post_json(
         .await
         .map_err(|_| "AP_OTA_NETWORK_FAILED: 设备上传接口不可达".to_string())?;
     let status = response.status().as_u16();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|_| "AP_OTA_RESPONSE_INVALID: 设备响应读取失败".to_string())?;
-    if bytes.len() > MAX_JSON_BYTES {
-        return Err("AP_OTA_RESPONSE_INVALID: 设备响应超过大小限制".into());
-    }
+    let bytes = bounded_response(response).await?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| "AP_OTA_RESPONSE_INVALID: 设备响应不是有效 JSON".to_string())?;
     if !(200..300).contains(&status) {
@@ -580,6 +779,57 @@ async fn post_json(
 }
 
 pub async fn status(request: &DeviceRequest) -> Result<DeviceOtaStatus, String> {
+    Ok(status_at(request).await?.1)
+}
+
+pub async fn refresh_status(
+    cache: &OtaState,
+    owner: &str,
+    request: &DeviceRequest,
+) -> Result<DeviceOtaStatus, String> {
+    let (target, status) = status_at(request).await?;
+    let guard = cache.0.lock().map_err(|_| "OTA_STATE_UNAVAILABLE")?;
+    if let Some((saved_owner, _, release)) = guard.as_ref() {
+        release.observe(saved_owner == owner, &target, &status)?;
+    }
+    Ok(status)
+}
+
+impl Release {
+    fn observe(
+        &self,
+        same_owner: bool,
+        target: &str,
+        status: &DeviceOtaStatus,
+    ) -> Result<(), String> {
+        if !same_owner || !self.submitted.load(Ordering::Acquire) || !status.final_state {
+            return Ok(());
+        }
+        let upload = self.upload.lock().map_err(|_| "OTA_STATE_UNAVAILABLE")?;
+        let baseline = self
+            .baseline_operation
+            .lock()
+            .map_err(|_| "OTA_STATE_UNAVAILABLE")?;
+        let expected = self
+            .expected_operation
+            .lock()
+            .map_err(|_| "OTA_STATE_UNAVAILABLE")?;
+        if upload.as_ref().is_some_and(|(saved, _)| saved == target)
+            && status.release_target.as_deref() == Some(self.preview.release_id.as_str())
+            && status.operation_id.is_some()
+            && (if expected.is_some() {
+                *expected == status.operation_id
+            } else {
+                *baseline != status.operation_id
+            })
+        {
+            self.settled.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+}
+
+async fn status_at(request: &DeviceRequest) -> Result<(String, DeviceOtaStatus), String> {
     let mode = request.validated_mode().map_err(|error| error.message)?;
     if mode == ConnectionMode::TypeC {
         return Err("OTA_DEVICE_AP_ONLY: 在线升级需要连接设备热点或局域网 IP".into());
@@ -589,17 +839,21 @@ pub async fn status(request: &DeviceRequest) -> Result<DeviceOtaStatus, String> 
         d1_page::verify_ap_target(request, mode, Some(local), address).await?;
     }
     let client = device_client(local)?;
-    let bytes = client
+    let response = client
         .get(format!("http://{address}/ota/status"))
         .send()
         .await
-        .map_err(|_| "OTA_DEVICE_UNREACHABLE: 无法读取设备升级状态".to_string())?
-        .bytes()
-        .await
         .map_err(|_| "OTA_DEVICE_UNREACHABLE: 无法读取设备升级状态".to_string())?;
-    if bytes.len() > MAX_JSON_BYTES {
-        return Err("OTA_DEVICE_STATUS_INVALID: 状态响应超过大小限制".into());
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err("OTA_DEVICE_UNSUPPORTED: 当前连接未提供升级接口，请使用热点配置模式".into());
     }
+    if response.status() != reqwest::StatusCode::OK {
+        return Err(format!(
+            "OTA_DEVICE_HTTP_{}: 设备升级状态暂不可用",
+            response.status().as_u16()
+        ));
+    }
+    let bytes = bounded_response(response).await?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| "OTA_DEVICE_STATUS_INVALID: 状态响应不是有效 JSON".to_string())?;
     if text(&value, "schema").as_deref() != Some(PORTAL_SCHEMA) {
@@ -635,25 +889,30 @@ pub async fn status(request: &DeviceRequest) -> Result<DeviceOtaStatus, String> 
         .or_else(|| text(&value, "reason"));
     let detail = match state.as_deref() {
         Some("IDLE") | Some("") | None => "设备已就绪，等待升级".into(),
-        Some("SUCCESS") => "设备已报告升级成功".into(),
+        Some("SUCCESS") if text(&value, "result").as_deref() == Some("PASS") => {
+            "设备已报告升级成功".into()
+        }
         Some("UP_TO_DATE") => "设备已是最新版本".into(),
         Some("FAILED") | Some("ROLLBACK_FAILED") => "上一次升级未成功，请查看设备提示".into(),
         Some(_) if active => "设备正在处理升级".into(),
         Some(_) => "设备升级状态待确认".into(),
     };
-    Ok(DeviceOtaStatus {
-        available: true,
-        state,
-        result: text(&value, "result"),
-        operation_id: text(&value, "operation_id"),
-        release_before: text(&value, "release_before"),
-        release_target: text(&value, "release_target"),
-        target_version: text(&value, "target_version"),
-        active,
-        final_state,
-        guidance,
-        detail,
-    })
+    Ok((
+        format!("http://{address}"),
+        DeviceOtaStatus {
+            available: value.get("enabled").and_then(|v| v.as_bool()) == Some(true),
+            state,
+            result: text(&value, "result"),
+            operation_id: text(&value, "operation_id"),
+            release_before: text(&value, "release_before"),
+            release_target: text(&value, "release_target"),
+            target_version: text(&value, "target_version"),
+            active,
+            final_state,
+            guidance,
+            detail,
+        },
+    ))
 }
 
 fn progress(operation_id: u64, phase: &str, bytes_done: u64, total_bytes: u64, started: Instant) {
@@ -674,6 +933,9 @@ fn progress(operation_id: u64, phase: &str, bytes_done: u64, total_bytes: u64, s
 }
 
 pub async fn submit(
+    state: &OtaState,
+    owner: &str,
+    preview_id: &str,
     request: &DeviceRequest,
     operation_id: u64,
     cancelled: &AtomicBool,
@@ -686,51 +948,116 @@ pub async fn submit(
     if mode == ConnectionMode::TypeC {
         return Err("OTA_DEVICE_AP_ONLY: 在线升级需要连接设备热点或局域网 IP".into());
     }
-    let origin = origin()?;
-    let client = client()?;
-    let started = Instant::now();
-    progress(operation_id, "读取升级通道", 0, 0, started);
-    let release = resolve(&client, &origin, cancelled).await?;
-    let total: u64 = release.preview.total_bytes;
-
+    let release = state.get(owner, preview_id)?;
+    if release.submitted.load(Ordering::Acquire) {
+        return Err(
+            "OTA_SUBMISSION_UNCONFIRMED: 升级已提交或回执待确认，请查看设备状态，勿重复提交".into(),
+        );
+    }
+    let current = status(request).await?;
+    if !current.available || current.active {
+        return Err("OTA_DEVICE_NOT_READY: 设备升级不可用或正在执行，请等待并查看状态".into());
+    }
+    if !release.begin_attempted.load(Ordering::Acquire) {
+        *release
+            .baseline_operation
+            .lock()
+            .map_err(|_| "OTA_STATE_UNAVAILABLE")? = current.operation_id;
+    }
     let (_, address, local) = d1_page::resolve_target(request, cancelled).await?;
     if let Some(local) = local {
         d1_page::verify_ap_target(request, mode, Some(local), address).await?;
     }
     let device = device_client(local)?;
 
-    progress(operation_id, "建立设备上传会话", 0, total, started);
-    let begin = post_json(
+    let operation = relay(
+        &release,
         &device,
-        &format!("http://{address}/ota/upload/v1/session"),
-        serde_json::json!({
-            "schema": UPLOAD_SCHEMA,
-            "action": "begin",
-            "files": release.files.iter().map(|file| serde_json::json!({
-                "name": file.name,
-                "size": file.bytes.len(),
-                "sha256": if file.name == "manifest.json.sig" {
-                    serde_json::Value::Null
-                } else {
-                    serde_json::Value::String(sha256_hex(&file.bytes))
-                },
-            })).collect::<Vec<_>>(),
-        }),
+        &format!("http://{address}"),
+        operation_id,
+        cancelled,
     )
     .await?;
-    if !matches!(
-        text(&begin, "schema").as_deref(),
-        Some(UPLOAD_SCHEMA) | Some(ACCEPTED_SCHEMA)
-    ) {
-        return Err("AP_OTA_RESPONSE_INVALID: 设备未返回上传会话".into());
+    *release
+        .expected_operation
+        .lock()
+        .map_err(|_| "OTA_STATE_UNAVAILABLE")? = Some(operation.clone());
+    let device_state = refresh_status(state, owner, request)
+        .await
+        .ok()
+        .and_then(|state| state.state);
+    Ok(OtaSubmitResult {
+        release_id: release.preview.release_id.clone(),
+        version: release.preview.version.clone(),
+        operation_id: Some(operation),
+        device_state,
+        message: "设备已接收升级文件。安装与回滚由设备自行完成，请查看升级状态确认结果。".into(),
+    })
+}
+
+async fn relay(
+    release: &Release,
+    device: &reqwest::Client,
+    target: &str,
+    operation_id: u64,
+    cancelled: &AtomicBool,
+) -> Result<String, String> {
+    let started = Instant::now();
+    let total = release.preview.total_bytes;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("OTA_CANCELLED: 升级已取消，未发送".into());
     }
-    let upload_id = text(&begin, "upload_id")
-        .ok_or_else(|| failure("AP_OTA_RESPONSE_INVALID: 上传会话缺少编号"))?;
-    let chunk = begin
-        .get("chunk_size")
-        .and_then(|size| size.as_u64())
-        .filter(|size| (MIN_CHUNK_BYTES..=MAX_CHUNK_BYTES).contains(size))
-        .ok_or_else(|| failure("AP_OTA_RESPONSE_INVALID: 设备分块大小无效"))?;
+    let saved = release
+        .upload
+        .lock()
+        .map_err(|_| "OTA_STATE_UNAVAILABLE")?
+        .clone();
+    let session = if let Some((saved_target, upload_id)) = saved {
+        if saved_target != target {
+            return Err("OTA_TARGET_CHANGED: 上传目标已变化，请恢复原设备连接".into());
+        }
+        progress(operation_id, "恢复设备上传会话", 0, total, started);
+        let response = device
+            .get(format!("{target}/ota/upload/v1/session/{upload_id}"))
+            .send()
+            .await
+            .map_err(|_| "AP_OTA_NETWORK_FAILED: 无法恢复上传会话，请保持连接后重试")?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            *release.upload.lock().map_err(|_| "OTA_STATE_UNAVAILABLE")? = None;
+            release.begin_attempted.store(false, Ordering::Release);
+            return Err(
+                "AP_OTA_SESSION_EXPIRED: 设备上传会话已过期，请点击开始升级重新上传".into(),
+            );
+        }
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(
+                "AP_OTA_SESSION_UNAVAILABLE: 设备上传会话不可用，请检查设备状态后重新检查版本"
+                    .into(),
+            );
+        }
+        serde_json::from_slice(&bounded_response(response).await?)
+            .map_err(|_| "AP_OTA_RESPONSE_INVALID: 上传会话响应无效")?
+    } else {
+        // Device begin is exclusive: an uncertain reply can be retried manually;
+        // an existing session returns BUSY instead of creating a duplicate.
+        release.begin_attempted.store(true, Ordering::Release);
+        progress(operation_id, "建立设备上传会话", 0, total, started);
+        let value = post_json(device, &format!("{target}/ota/upload/v1/session"), serde_json::json!({
+            "schema": UPLOAD_SCHEMA, "action": "begin",
+            "files": release.files.iter().map(|file| serde_json::json!({
+                "name": file.name, "size": file.bytes.len(),
+                "sha256": if file.name == "manifest.json.sig" { None } else { Some(sha256_hex(&file.bytes)) },
+            })).collect::<Vec<_>>(),
+        })).await?;
+        // Retain the id before validating descriptors: never blindly start another session.
+        let upload_id = text(&value, "upload_id")
+            .filter(|id| valid_upload_id(id))
+            .ok_or("AP_OTA_RESPONSE_INVALID: 上传会话编号无效，请检查设备状态")?;
+        *release.upload.lock().map_err(|_| "OTA_STATE_UNAVAILABLE")? =
+            Some((target.to_string(), upload_id));
+        value
+    };
+    let (upload_id, chunk, received) = validate_upload_session(&session, &release.files)?;
 
     let mut done = 0_u64;
     for file in &release.files {
@@ -747,8 +1074,13 @@ pub async fn submit(
             let start = (index * chunk) as usize;
             let end = ((index + 1) * chunk).min(file.bytes.len() as u64) as usize;
             let slice = &file.bytes[start..end];
+            if received[&file.name].contains(&index) {
+                done += (end - start) as u64;
+                progress(operation_id, "恢复已接收的升级文件", done, total, started);
+                continue;
+            }
             let url = format!(
-                "http://{address}/ota/upload/v1/session/{upload_id}/files/{}/chunks/{index}",
+                "{target}/ota/upload/v1/session/{upload_id}/files/{}/chunks/{index}",
                 file.name
             );
             let response = device
@@ -759,12 +1091,24 @@ pub async fn submit(
                 .send()
                 .await
                 .map_err(|_| "AP_OTA_NETWORK_FAILED: 升级文件上传中断".to_string())?;
-            if !(200..300).contains(&response.status().as_u16()) {
-                let value: serde_json::Value = response.json().await.unwrap_or_default();
+            let status = response.status();
+            let value: serde_json::Value =
+                serde_json::from_slice(&bounded_response(response).await?)
+                    .map_err(|_| "AP_OTA_RESPONSE_INVALID: 上传块回执无效")?;
+            if !status.is_success() {
                 return Err(format!(
                     "AP_OTA_CHUNK_FAILED: {}",
                     text(&value, "message").unwrap_or_else(|| "设备拒绝上传块".into())
                 ));
+            }
+            if text(&value, "schema").as_deref() != Some(UPLOAD_SCHEMA)
+                || text(&value, "upload_id").as_deref() != Some(upload_id.as_str())
+                || text(&value, "name").as_deref() != Some(file.name.as_str())
+                || value["index"].as_u64() != Some(index)
+            {
+                return Err(
+                    "AP_OTA_RESPONSE_INVALID: 上传块回执与当前块不一致，可重试恢复会话".into(),
+                );
             }
             done += (end - start) as u64;
             progress(
@@ -781,26 +1125,254 @@ pub async fn submit(
         return Err("OTA_CANCELLED: 升级已取消；升级文件未提交给设备".into());
     }
     progress(operation_id, "设备校验并提交", total, total, started);
+    release.submitted.store(true, Ordering::Release);
     let complete = post_json(
-        &device,
-        &format!("http://{address}/ota/upload/v1/session/{upload_id}/complete"),
+        device,
+        &format!("{target}/ota/upload/v1/session/{upload_id}/complete"),
         serde_json::json!({}),
     )
     .await?;
-    let operation = text(&complete, "operation_id");
-    let device_state = status(request).await.ok().and_then(|state| state.state);
-    Ok(OtaSubmitResult {
-        release_id: release.preview.release_id,
-        version: release.preview.version,
-        operation_id: operation,
-        device_state,
-        message: "设备已接收升级文件。安装与回滚由设备自行完成，请查看升级状态确认结果。".into(),
-    })
+    let operation = text(&complete, "operation_id").filter(|id| {
+        !id.is_empty()
+            && id.len() <= 160
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
+    });
+    if operation.is_none()
+        || text(&complete, "release_id").as_deref() != Some(release.preview.release_id.as_str())
+    {
+        return Err(
+            "AP_OTA_SUBMISSION_UNCONFIRMED: 提交回执无效，请查看设备状态，勿重复升级".into(),
+        );
+    }
+    Ok(operation.unwrap())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_current_debian_release_and_pairs_raw_channel_signature() {
+        use crate::d1_service_test::{serve, Reply};
+        use serde_json::json;
+        let id = "1.3.1+gfixture.DOHC-workspace";
+        let root = format!("/ota/v1/releases/{id}");
+        let artifact = b"fixture deb bytes".to_vec();
+        let changes = b"{}".to_vec();
+        let markdown = b"changes".to_vec();
+        let descriptor = |path: String, bytes: &[u8]| json!({"path":path,"size":bytes.len(),"sha256":sha256_hex(bytes)});
+        let manifest=serde_json::to_vec(&json!({"schema":MANIFEST_SCHEMA,"release_id":id,"version":"1.3.1",
+            "signing":{"key_id":"dohc-release-lab-2026-01","algorithm":"Ed25519"},"rollback_index":1003001,
+            "artifact":descriptor(format!("/ota/v1/artifacts/{id}.deb"),&artifact),
+            "changelog":{"json":descriptor(format!("{root}/changelog.json"),&changes),"markdown":descriptor(format!("{root}/changelog.md"),&markdown)}})).unwrap();
+        let channel=serde_json::to_vec(&json!({"schema":CHANNEL_SCHEMA,"channel":"factory","release_id":id,"version":"1.3.1",
+            "key_id":"dohc-release-lab-2026-01","rollback_index":1003001,"manifest":descriptor(format!("{root}/manifest.json"),&manifest)})).unwrap();
+        let generation = sha256_hex(&channel);
+        let mut resources = vec![
+            ("/ota/v1/channels/factory.json".into(), channel),
+            (
+                format!("/ota/v1/channels/factory.json.sig?generation={generation}"),
+                vec![7; 64],
+            ),
+            (format!("{root}/manifest.json"), manifest),
+            (format!("{root}/manifest.json.sig"), vec![8; 64]),
+            (format!("{root}/changelog.json"), changes),
+            (format!("{root}/changelog.md"), markdown),
+            (format!("/ota/v1/artifacts/{id}.deb"), artifact.clone()),
+        ];
+        let replies = resources
+            .drain(..)
+            .enumerate()
+            .map(|(i, (path, body))| Reply {
+                method: "GET",
+                path,
+                status: 200,
+                headers: if i == 0 {
+                    vec![("ETag".into(), format!("\"{generation}\""))]
+                } else {
+                    vec![]
+                },
+                body,
+            })
+            .collect();
+        let (base, worker) = serve(replies);
+        let release = tauri::async_runtime::block_on(resolve(
+            &client().unwrap(),
+            &Origin { base },
+            &AtomicBool::new(false),
+        ))
+        .unwrap();
+        assert_eq!(worker.join().unwrap().len(), 7);
+        assert_eq!(release.preview.version, "1.3.1");
+        assert_eq!(release.files.len(), 5);
+        assert_eq!(release.files[4].name, "artifact.deb");
+        assert_eq!(release.files[4].bytes, artifact);
+        let cache = OtaState::default();
+        let preview = cache.remember("reviewer", release).unwrap();
+        assert!(cache.get("other", &preview.preview_id).is_err());
+        assert!(cache.get("reviewer", &preview.preview_id).is_ok());
+    }
+
+    #[test]
+    fn relay_resumes_received_chunks_and_accepts_real_complete_contract() {
+        use crate::d1_service_test::{serve, Reply};
+        use serde_json::json;
+        let upload_id = "12345678-1234-1234-1234-123456789abc";
+        let files: Vec<_> = [
+            "manifest.json",
+            "manifest.json.sig",
+            "changelog.json",
+            "changelog.md",
+            "artifact.deb",
+        ]
+        .into_iter()
+        .map(|name| Downloaded {
+            name: name.into(),
+            bytes: vec![
+                7;
+                if name == "manifest.json.sig" {
+                    64
+                } else if name == "artifact.deb" {
+                    70000
+                } else {
+                    12
+                }
+            ],
+        })
+        .collect();
+        let preview = OtaPreview {
+            preview_id: "resume-preview".into(),
+            release_id: "fixture-release".into(),
+            version: "1.3.1".into(),
+            channel: "factory".into(),
+            key_id: None,
+            rollback_index: None,
+            artifact_bytes: 70000,
+            total_bytes: files.iter().map(|f| f.bytes.len() as u64).sum(),
+            files: vec![],
+            trust: TrustStatus::DeviceVerified,
+        };
+        let release = Release {
+            preview,
+            files,
+            upload: Mutex::new(None),
+            submitted: AtomicBool::new(false),
+            begin_attempted: AtomicBool::new(false),
+            settled: AtomicBool::new(false),
+            baseline_operation: Mutex::new(Some("old-operation".into())),
+            expected_operation: Mutex::new(None),
+        };
+        let session = |received: bool| {
+            json!({"schema":UPLOAD_SCHEMA,"upload_id":upload_id,"chunk_size":65536,
+            "files":release.files.iter().map(|f|json!({"name":f.name,"size":f.bytes.len(),"sha256":if f.name=="manifest.json.sig" {None} else {Some(sha256_hex(&f.bytes))},"chunks":chunk_count(f.bytes.len() as u64,65536),"received":if received&&f.name=="manifest.json" {vec![0]}else{vec![]}})).collect::<Vec<_>>()})
+        };
+        let response = |method, path: String, status, body| Reply {
+            method,
+            path,
+            status,
+            headers: vec![],
+            body: serde_json::to_vec(&body).unwrap(),
+        };
+        let mut replies = vec![
+            response("POST", "/ota/upload/v1/session".into(), 200, session(false)),
+            response(
+                "PUT",
+                format!("/ota/upload/v1/session/{upload_id}/files/manifest.json/chunks/0"),
+                200,
+                json!({"schema":UPLOAD_SCHEMA,"upload_id":upload_id,"name":"manifest.json","index":0}),
+            ),
+            response(
+                "PUT",
+                format!("/ota/upload/v1/session/{upload_id}/files/manifest.json.sig/chunks/0"),
+                503,
+                json!({"message":"interrupted"}),
+            ),
+            response(
+                "GET",
+                format!("/ota/upload/v1/session/{upload_id}"),
+                200,
+                session(true),
+            ),
+        ];
+        for f in release.files.iter().skip(1) {
+            for index in 0..chunk_count(f.bytes.len() as u64, 65536) {
+                replies.push(response("PUT",format!("/ota/upload/v1/session/{upload_id}/files/{}/chunks/{index}",f.name),200,json!({"schema":UPLOAD_SCHEMA,"upload_id":upload_id,"name":f.name,"index":index})));
+            }
+        }
+        replies.push(response(
+            "POST",
+            format!("/ota/upload/v1/session/{upload_id}/complete"),
+            202,
+            json!({"operation_id":"new-operation","release_id":"fixture-release"}),
+        ));
+        let (target, worker) = serve(replies);
+        let client = device_client(None).unwrap();
+        let cancelled = AtomicBool::new(false);
+        assert!(
+            tauri::async_runtime::block_on(relay(&release, &client, &target, 1, &cancelled))
+                .is_err()
+        );
+        assert!(!release.submitted.load(Ordering::Acquire));
+        let operation =
+            tauri::async_runtime::block_on(relay(&release, &client, &target, 2, &cancelled))
+                .unwrap();
+        assert_eq!(operation, "new-operation");
+        let requests = worker.join().unwrap();
+        assert_eq!(requests.len(), 10);
+        // The first confirmed block is never sent again; every actual chunk has its digest.
+        for request in requests.iter().filter(|r| r.starts_with(b"PUT")) {
+            let end = request.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+            let headers = String::from_utf8_lossy(&request[..end]);
+            assert!(headers.to_lowercase().contains(&format!(
+                "x-ap-ota-chunk-sha256: {}",
+                sha256_hex(&request[end..])
+            )));
+        }
+        let status = DeviceOtaStatus {
+            available: true,
+            state: Some("SUCCESS".into()),
+            result: Some("PASS".into()),
+            operation_id: Some("old-operation".into()),
+            release_before: None,
+            release_target: Some("fixture-release".into()),
+            target_version: None,
+            active: false,
+            final_state: true,
+            guidance: None,
+            detail: String::new(),
+        };
+        release.observe(true, &target, &status).unwrap();
+        assert!(!release.settled.load(Ordering::Acquire));
+        let status = DeviceOtaStatus {
+            operation_id: Some(operation),
+            ..status
+        };
+        release.observe(false, &target, &status).unwrap();
+        assert!(!release.settled.load(Ordering::Acquire));
+        release.observe(true, &target, &status).unwrap();
+        assert!(release.settled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn resume_rejects_other_files_and_invalid_received_chunks() {
+        use serde_json::json;
+        let files = vec![Downloaded {
+            name: "artifact.deb".into(),
+            bytes: vec![1; 70_000],
+        }];
+        let mut value = json!({"schema":UPLOAD_SCHEMA,"upload_id":"12345678-1234-1234-1234-123456789abc","chunk_size":65536,
+            "files":[{"name":"artifact.deb","size":70000,"sha256":sha256_hex(&files[0].bytes),"chunks":2,"received":[0]}]});
+        let (_, _, received) = validate_upload_session(&value, &files).unwrap();
+        assert!(received["artifact.deb"].contains(&0));
+        value["files"][0]["received"] = json!([2]);
+        assert!(validate_upload_session(&value, &files).is_err());
+        value["files"][0]["received"] = json!([0]);
+        value["files"][0]["sha256"] = json!("0".repeat(64));
+        assert!(validate_upload_session(&value, &files).is_err());
+        assert!(verify_signature(b"payload", &[0; 63]).is_err());
+    }
 
     #[test]
     fn chunk_counts_match_device_rounding() {

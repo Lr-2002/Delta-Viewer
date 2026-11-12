@@ -10,7 +10,7 @@ import { chromium } from 'playwright-core';
 test('outbound review plays every camera, persists valid and invalid decisions, and saves custom reasons', async () => {
   const scratch = mkdtempSync(path.join(os.tmpdir(), 'outbound-ui-'));
   const videoFile = path.join(scratch, 'sample.mp4');
-  execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=teal:s=320x180:r=10:d=2',
+  execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=teal:s=320x180:r=10:d=8',
     '-c:v', 'libx264', '-threads', '1', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', videoFile]);
   const videoBytes = readFileSync(videoFile);
   const server = await createServer({ server: { host: '127.0.0.1', port: 0 }, logLevel: 'error', plugins: [{
@@ -58,10 +58,13 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
           videos: Array.from({ length: cameraCount }, (_, segment) => ({ segment, label: `cam${segment}/video.mp4`, size: 1024, sha256: null })),
         })) };
       window.fixtureCalls = [];
+      window.fixtureExtraBatches = location.pathname==="/__outbound";
+      window.fixtureHoldClaim = location.pathname==="/__outbound";
       window.fixtureInvoke = async (command, args) => {
         if (command !== 'outbound_review_call') throw Error('Unexpected command ' + command);
         const input = args.input; window.fixtureCalls.push(input);
-        if (input.action === 'list') return { batches: [structuredClone(window.fixtureBatch)], reasonOptions: [...window.fixtureReasonOptions] };
+        if (input.action === 'list') return { batches: [structuredClone(window.fixtureBatch), ...(window.fixtureExtraBatches ? [1,2].map(i=>({...structuredClone(window.fixtureBatch),id:'other-'+i,name:'其他批次 '+i})) : [])], reasonOptions: [...window.fixtureReasonOptions] };
+        if (input.action === 'claim' && window.fixtureHoldClaim) await new Promise(resolve=>window.fixtureReleaseClaim=resolve);
         if (input.action === 'video-url') {
           if(window.fixtureHoldVideo) await new Promise(resolve => { (window.fixtureVideoResolvers ||= []).push(resolve); });
           return { url: 'https://outbound.fixture/api/platform/manager-outbound/media/' + 'a'.repeat(64) };
@@ -90,7 +93,11 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__outbound`);
     assert.equal(await page.locator('video').count(),0,'task center never embeds review players');
     assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).count(),0);
-    await page.getByRole('button', { name: '领取并打开' }).click();
+    await page.getByRole('button', { name: '领取并打开' }).first().click();
+    await page.waitForFunction(()=>typeof window.fixtureReleaseClaim==='function');
+    assert.equal(await page.locator('.outbound-task-actions .spin').count(),1,'only the selected batch shows progress');
+    assert.equal(await page.getByRole('button',{name:'领取并打开'}).nth(1).isDisabled(),true);
+    await page.evaluate(()=>{window.fixtureExtraBatches=false;window.fixtureHoldClaim=false;window.fixtureReleaseClaim();});
     await page.getByRole('main',{name:'数据主工作区'}).waitFor();
     assert.equal(await page.getByRole('region',{name:'外发审核任务',exact:true}).count(),0,'claim closes task center');
     await page.waitForFunction(() => document.querySelectorAll('video').length === 5);
@@ -99,6 +106,21 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.waitForFunction(() => [...document.querySelectorAll('video')].length === 5
       && [...document.querySelectorAll('video')].every(video => video.readyState >= 3));
     assert.equal(await page.getByRole('button', { name: '有效数据' }).isEnabled(), true);
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='list').length),1,'workspace does not refetch every batch');
+    await page.waitForTimeout(220);
+    const followerClock = await page.evaluate(()=>{
+      const videos=[...document.querySelectorAll('video')];
+      const before=videos[0].currentTime;
+      Object.defineProperty(videos[1],'currentTime',{configurable:true,get:()=>1.2,set:()=>{}});
+      videos[1].dispatchEvent(new Event('timeupdate'));
+      const after=videos[0].currentTime;
+      delete videos[1].currentTime;
+      return {before,after};
+    });
+    assert.equal(followerClock.after,followerClock.before,'follower clock never seeks the master');
+    await page.getByRole('button',{name:'全局播放',exact:true}).click();
+    await page.waitForFunction(()=>[...document.querySelectorAll('video')].every(v=>v.currentTime>1&&!v.paused));
+    await page.getByRole('button',{name:'暂停',exact:true}).click();
     await page.evaluate(() => { window.fixtureMediaAllowed = false; });
     await page.getByRole('button', { name: '有效数据' }).click();
     await page.waitForFunction(() => document.querySelectorAll('video').length === 7);

@@ -149,11 +149,42 @@ pub fn origin(value: &str) -> Result<Origin, String> {
 /// Paths are produced internally from a verified channel/manifest, never from the
 /// frontend, and must stay inside the documented `/ota/v1/` namespace.
 pub fn ota_url(origin: &Origin, path: &str) -> Result<String, String> {
-    if !path.starts_with("/ota/v1/") || path.starts_with("//") || path.contains("..") {
-        return Err("OTA_PATH_INVALID: 升级资源路径不在允许范围内".into());
-    }
-    if path.contains(['?', '#']) {
-        return Err("OTA_PATH_INVALID: 升级资源路径不接受查询参数".into());
+    let channel = "/ota/v1/channels/factory.json";
+    let signature = format!("{channel}.sig");
+    let valid_id = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 160
+            && !value.contains("..")
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
+    };
+    let allowed = if path == channel || path == signature {
+        true
+    } else if let Some(generation) = path.strip_prefix(&format!("{signature}?generation=")) {
+        generation.len() == 64 && generation.bytes().all(|b| b.is_ascii_hexdigit())
+    } else if let Some(rest) = path.strip_prefix("/ota/v1/releases/") {
+        rest.split_once('/').is_some_and(|(id, file)| {
+            valid_id(id)
+                && [
+                    "manifest.json",
+                    "manifest.json.sig",
+                    "changelog.json",
+                    "changelog.md",
+                    "dependencies.json",
+                    "sbom.spdx.json",
+                ]
+                .contains(&file)
+        })
+    } else if let Some(rest) = path.strip_prefix("/ota/v1/artifacts/") {
+        rest.strip_suffix(".deb")
+            .or_else(|| rest.strip_suffix(".tar.gz"))
+            .is_some_and(valid_id)
+    } else {
+        false
+    };
+    if !allowed {
+        return Err("OTA_PATH_INVALID: 升级资源路径不在固定发布白名单内".into());
     }
     Ok(format!("{}{path}", origin.base))
 }

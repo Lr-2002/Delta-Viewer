@@ -11,6 +11,8 @@ pub mod d1_link;
 mod d1_logs;
 mod d1_ota;
 mod d1_page;
+#[cfg(test)]
+mod d1_service_test;
 mod d1_services;
 mod d1_wifi;
 mod dataset_layout;
@@ -249,13 +251,14 @@ async fn d1_ota_service(
 
 #[tauri::command]
 async fn d1_ota_preview(
+    state: State<'_, d1_ota::OtaState>,
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
     operation_id: u64,
 ) -> Result<d1_ota::OtaPreview, String> {
     let owner = d1_owner(&auth)?;
     let task = control.start(operation_id)?;
-    let result = d1_ota::preview(&task.cancelled()).await;
+    let result = d1_ota::preview(&state, &owner, &task.cancelled()).await;
     if d1_owner(&auth)? != owner {
         return Err("D1_SESSION_CHANGED".into());
     }
@@ -264,6 +267,8 @@ async fn d1_ota_preview(
 
 #[tauri::command]
 async fn d1_ota_submit(
+    state: State<'_, d1_ota::OtaState>,
+    preview_id: String,
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
     request: d1_device::DeviceRequest,
@@ -271,7 +276,15 @@ async fn d1_ota_submit(
 ) -> Result<d1_ota::OtaSubmitResult, String> {
     let owner = d1_owner(&auth)?;
     let task = control.start(operation_id)?;
-    let result = d1_ota::submit(&request, operation_id, &task.cancelled()).await;
+    let result = d1_ota::submit(
+        &state,
+        &owner,
+        &preview_id,
+        &request,
+        operation_id,
+        &task.cancelled(),
+    )
+    .await;
     if d1_owner(&auth)? != owner {
         return Err("D1_SESSION_CHANGED".into());
     }
@@ -280,11 +293,12 @@ async fn d1_ota_submit(
 
 #[tauri::command]
 async fn d1_ota_status(
+    state: State<'_, d1_ota::OtaState>,
     auth: State<'_, AuthState>,
     request: d1_device::DeviceRequest,
 ) -> Result<d1_ota::DeviceOtaStatus, String> {
     let owner = d1_owner(&auth)?;
-    let result = d1_ota::status(&request).await;
+    let result = d1_ota::refresh_status(&state, &owner, &request).await;
     if d1_owner(&auth)? != owner {
         return Err("D1_SESSION_CHANGED".into());
     }
@@ -303,6 +317,9 @@ async fn d1_logs_service(
 
 #[tauri::command]
 async fn d1_logs_preview(
+    reports: State<'_, d1_logs::ReportState>,
+    devices: State<'_, d1::DeviceState>,
+    run_id: Option<String>,
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
     source: String,
@@ -311,18 +328,22 @@ async fn d1_logs_preview(
     let owner = d1_owner(&auth)?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
+    let run = run_id
+        .as_deref()
+        .map(|id| devices.get(&owner, id))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let reports = reports.inner().clone();
+    let worker_owner = owner.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         if cancelled.load(Ordering::Acquire) {
             return Err("DIAGNOSTIC_CANCELLED: 日志预览已取消".to_string());
         }
-        let result = d1_logs::preview_source(&source).map_err(|error| error.to_string())?;
-        if cancelled.load(Ordering::Acquire) {
-            return Err("DIAGNOSTIC_CANCELLED: 日志预览已取消".to_string());
-        }
-        Ok(result)
+        d1_logs::preview_source(&reports, &worker_owner, &source, run.as_ref())
+            .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|e| e.to_string())?;
     if d1_owner(&auth)? != owner {
         return Err("D1_SESSION_CHANGED".into());
     }
@@ -331,6 +352,7 @@ async fn d1_logs_preview(
 
 #[tauri::command]
 async fn d1_logs_upload(
+    reports: State<'_, d1_logs::ReportState>,
     app: AppHandle,
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
@@ -339,19 +361,16 @@ async fn d1_logs_upload(
 ) -> Result<d1_logs::UploadReceipt, String> {
     let owner = d1_owner(&auth)?;
     let task = control.start(operation_id)?;
-    let result = d1_logs::upload(request, task.cancelled()).await?;
+    let result = d1_logs::upload(&reports, &owner, request, task.cancelled()).await?;
     if d1_owner(&auth)? != owner {
         return Err("D1_SESSION_CHANGED".into());
     }
-    let data_root = base_app_data_root(&app)?;
-    let receipt = result.clone();
-    if let Err(error) =
-        tauri::async_runtime::spawn_blocking(move || d1_logs::remember(&data_root, &receipt))
-            .await
-            .map_err(|error| error.to_string())?
-    {
-        // A local receipt is a convenience; the report itself already uploaded.
-        eprintln!("diagnostic upload receipt not persisted: {error}");
+    // Server success remains success even when local receipt storage fails.
+    if let Ok(data_root) = base_app_data_root(&app) {
+        let receipt = result.clone();
+        let _ =
+            tauri::async_runtime::spawn_blocking(move || d1_logs::remember(&data_root, &receipt))
+                .await;
     }
     Ok(result)
 }
@@ -2429,8 +2448,6 @@ async fn load_episode(
     operation_id: u64,
 ) -> Result<EpisodeData, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    emit_task_start(&app, operation_id, "scan", "检查记录目录响应", &path);
-    ensure_source_directory_responsive(&path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let index_cache = index_cache.inner().clone();
@@ -2447,7 +2464,7 @@ async fn load_episode(
                 index_cache.store(index)?;
                 Ok(data)
             }
-            None => source::load_episode_preview(root, Some(&app), &cancelled),
+            None => source::load_episode_for_review(root, Some(&app), &cancelled),
         }
     })
     .await
@@ -2466,8 +2483,6 @@ async fn validate_episode(
     operation_id: u64,
 ) -> Result<EpisodeValidationResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    emit_task_start(&app, operation_id, "validate", "检查记录目录响应", &path);
-    ensure_source_directory_responsive(&path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let cache = cache.inner().clone();
@@ -3088,6 +3103,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AuthState::default())
         .manage(d1::DeviceState::default())
+        .manage(d1_ota::OtaState::default())
+        .manage(d1_logs::ReportState::default())
         .manage(TaskControl::default())
         .manage(updater::UpdateState::default())
         .manage(review_outbox::OutboxState::default())

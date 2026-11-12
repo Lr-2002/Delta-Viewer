@@ -652,7 +652,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
   }
 
   return <div className="quality-review proofreading-view">
-    {!skeletonMode && <EpisodeSpecialTags embedded={Boolean(playback)} tags={specialTags} streams={data.summary.streams} disabled={!canEdit || saving || suspended}
+    {!skeletonMode && <EpisodeSpecialTags key={username} username={username} embedded={Boolean(playback)} tags={specialTags} streams={data.summary.streams} disabled={!canEdit || saving || suspended}
       onChange={next => {
         if (!canEdit || finishLock.current) return;
         tagsRef.current = next; setSpecialTags(next);

@@ -4,6 +4,7 @@ export interface OutboundVideo { segment: number; label: string; size: number; s
 export interface OutboundDecision { value: "valid" | "invalid"; reason?: string; actor: string; at: string }
 export interface OutboundRecording { id: string; name: string; videos: OutboundVideo[]; decision: OutboundDecision | null }
 export interface OutboundBatch {
+  reasonOptions?: string[];
   id: string; name: string; version: number; claim: string | null; total: number; reviewed: number;
   valid: number; invalid: number; rate: number | null; recordings: OutboundRecording[];
 }

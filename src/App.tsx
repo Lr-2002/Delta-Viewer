@@ -155,7 +155,7 @@ type EpisodeLoadResult = "loaded" | "skipped";
 
 interface PendingAnnotationConfirmation {
   data: EpisodeData;
-  report: ValidationReport;
+  report: ValidationReport | null;
   sourceEpisodeRoot: string;
   minFrame: number;
   maxFrame: number;
@@ -1210,8 +1210,7 @@ function App() {
     updateScannedEpisode(loaded.summary);
     const loadedMinFrame = getMinFrame(loaded);
     const loadedMaxFrame = getMaxFrame(loaded);
-    // Show read-only frames immediately, but mount draft editors only after
-    // validation has cached the fingerprint and saved bounds are restored.
+    // Show frames immediately, then restore the existing draft identity and bounds.
     previewPriorityRef.current?.close();
     const priority = loaded.statesPartial ? new PreviewPriority(root,
       loaded.summary.streams.filter(stream => cameraSlots.includes(stream.name) && stream.frameCount > 0).map(stream => stream.name)) : null;
@@ -1240,12 +1239,7 @@ function App() {
       if (previewPriorityRef.current === priority) previewPriorityRef.current = null;
       ensureOperationActive(owner);
     }
-    const validated = await validateEpisode(root, owner.id);
-    ensureOperationActive(owner);
-    if (validated.report.status === "warning") auditActivity("validation_warning");
-    if (validated.report.status === "error") auditActivity("validation_error");
-    updateScannedEpisode(validated.summary);
-    if (!validated.summary.streams.some((stream) => stream.frameCount > 0)) {
+    if (!loaded.summary.streams.some((stream) => stream.frameCount > 0)) {
       const reason = await diagnoseVideoFailure(root, "cam0", loadedMinFrame, "未发现可读取的视频或图像；可能缺少媒体文件或清单不完整。");
       ensureOperationActive(owner);
       resetLoadedData();
@@ -1255,16 +1249,17 @@ function App() {
     }
 
     // A bounded first preview never substitutes for complete telemetry/checks.
-    const complete = loaded.statesPartial ? await loadEpisode(root, owner.id) : loaded;
+    const complete = loaded;
     ensureOperationActive(owner);
     const candidate: PendingAnnotationConfirmation = {
-      data: { ...complete, summary: validated.summary },
-      report: validated.report,
+      data: complete,
+      report: null,
       sourceEpisodeRoot,
       minFrame: getMinFrame(complete),
       maxFrame: getMaxFrame(complete),
     };
-    // Quality findings remain visible without discarding readable camera data.
+    // Opening data does not run an image/telemetry health check. Annotation
+    // loading still checks the source fingerprint; export still requires validation.
 
     const savedAnnotation = await loadEpisodeAnnotation(root);
     ensureOperationActive(owner);
@@ -1289,7 +1284,7 @@ function App() {
     const frame = clampPlaybackFrame(previewFrame, start, end);
     setCurrentFrame(frame);
     frameRef.current = frame;
-    // Finishing checks upgrades this same preview; it is not a new playback
+    // Restoring saved bounds upgrades this same preview; it is not a new playback
     // request. Preserve the user's play/pause choice unless restored bounds
     // actually move the current frame.
     if (frame !== previewFrame) setPlaying(false);
@@ -1802,6 +1797,25 @@ function App() {
       ...recorded.reverse(),
       ...current.filter((item) => !recorded.some((record) => record.id === item.id)),
     ].slice(0, 200));
+  }
+
+  async function runDataCheck() {
+    if (!data || operationScopeRef.current.current()) return;
+    const root = data.summary.root;
+    const owner = beginOperation();
+    if (!owner) return;
+    resetOperationFeedback(owner);
+    try {
+      const validated = await validateEpisode(root, owner.id);
+      ensureOperationActive(owner);
+      setReport(validated.report);
+      updateScannedEpisode(validated.summary);
+      setData(previous => previous?.summary.root === root ? {...previous, summary: validated.summary} : previous);
+      if (validated.report.status === "warning") auditActivity("validation_warning");
+      if (validated.report.status === "error") auditActivity("validation_error");
+    } catch (reason) {
+      await reportFailure("validate_episode", reason, root, owner);
+    } finally { finishOperation(owner); }
   }
 
   async function runReportExport() {
@@ -2541,7 +2555,7 @@ function App() {
                         <div className="proofreading-transport">{playbackControls}</div>
                         <input type="range" aria-label="预览播放帧" min={minFrame} max={maxFrame} value={currentFrame}
                           onChange={event => seekFrame(event.currentTarget.valueAsNumber)} />
-                        <p role="status">正在读取视频并检查完整数据；画面出现后可预览，检查完成后开放片段编辑和审核。</p>
+                        <p role="status">正在读取视频与编辑记录，请稍候。</p>
                       </section>
                     </div> : <ReviewPanel username={reviewStorageUsername} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement || managerSection !== "data"} busy={busy || showManagement || managerSection !== "data" || annotationReadyRoot !== data.summary.root}
                       playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onPlay: playSegment, onToggle: togglePlayback, controls: (
@@ -2591,6 +2605,7 @@ function App() {
                   data={data}
                   report={report}
                   busy={busy}
+                  onCheck={() => void runDataCheck()}
                   onExportReport={() => void runReportExport()}
                   onLocateIssue={locateIssue}
                 />
@@ -2603,6 +2618,7 @@ function App() {
                   rangeStateCount={clipStateCount}
                   rangeDurationMs={clipDurationMs}
                   validationReady={report !== null}
+                  onCheck={() => { changeView("checks"); void runDataCheck(); }}
                   selectedFormat={exportFormat}
                   result={exportResult}
                   busy={busy}

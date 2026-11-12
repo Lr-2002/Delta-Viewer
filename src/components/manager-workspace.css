@@ -168,6 +168,9 @@
 .manager-device-page>header span {font-size:13px;color:#6e6e73;}
 .manager-device-page-connection {padding:8px 20px;background:#f7f8fa;border-bottom:1px solid #e2e2e7;}
 .manager-device-page iframe {flex:1;min-height:0;width:100%;border:0;background:#f5f5f7;}
+.manager-device-page.has-ota-panel {overflow-y:auto;}
+.manager-device-page.has-ota-panel>header,.manager-device-ota-panel {flex-shrink:0;}
+.manager-device-page.has-ota-panel>iframe {flex:0 0 auto;height:clamp(360px,65dvh,700px);min-height:360px;}
 .manager-runtime {display:flex;flex-direction:column;gap:16px;min-width:0;}
 .manager-runtime-heading {display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}
 .manager-runtime-heading h2 {margin:0 0 4px;font-size:21px;}

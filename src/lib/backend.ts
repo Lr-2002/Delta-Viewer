@@ -16,9 +16,9 @@ export async function previewOtaRelease(operationId:number):Promise<OtaPreview> 
   if(!isTauriRuntime())throw new Error("请在桌面客户端读取升级版本。");
   return invoke("d1_ota_preview",{operationId});
 }
-export async function submitOtaToDevice(request:DevicePageRequest,operationId:number):Promise<OtaSubmitResult> {
+export async function submitOtaToDevice(request:DevicePageRequest,operationId:number,previewId:string):Promise<OtaSubmitResult> {
   if(!isTauriRuntime())throw new Error("请在桌面客户端升级设备。");
-  return invoke("d1_ota_submit",{request:{...request,apAddress:request.apAddress??null},operationId});
+  return invoke("d1_ota_submit",{previewId,request:{...request,apAddress:request.apAddress??null},operationId});
 }
 export async function readDeviceOtaStatus(request:DevicePageRequest):Promise<DeviceOtaStatus> {
   if(!isTauriRuntime())throw new Error("请在桌面客户端读取设备升级状态。");
@@ -28,17 +28,17 @@ export async function getDiagnosticServiceStatus():Promise<DiagnosticServiceStat
   if(!isTauriRuntime())return browserLogStatus();
   return invoke("d1_logs_service");
 }
-export async function previewDiagnosticLogs(source:string,operationId:number):Promise<LogPreview> {
+export async function previewDiagnosticLogs(source:string,operationId:number,runId?:string):Promise<LogPreview> {
   if(!isTauriRuntime())throw new Error("请在桌面客户端读取采集会话日志。");
-  return invoke("d1_logs_preview",{source,operationId});
+  return invoke("d1_logs_preview",{source,operationId,runId:runId??null});
 }
 export async function confirmDeviceOtaUpgrade(version:string):Promise<boolean> {
   const message=`将把 Factory${version} 升级包发送到设备。设备会校验并决定是否安装，期间不能断电。是否继续？`;
   return isTauriRuntime()?confirm(message,{title:"确认设备升级",kind:"warning"}):window.confirm(message);
 }
-export async function uploadDiagnosticLogs(source:string,reportId:string,idempotencyKey:string,operationId:number):Promise<LogUploadReceipt> {
+export async function uploadDiagnosticLogs(previewId:string,operationId:number):Promise<LogUploadReceipt> {
   if(!isTauriRuntime())throw new Error("请在桌面客户端上传诊断日志。");
-  return invoke("d1_logs_upload",{request:{source,reportId,idempotencyKey},operationId});
+  return invoke("d1_logs_upload",{request:{previewId},operationId});
 }
 export async function chooseSessionDirectory(title:string):Promise<string|null> {
   if(!isTauriRuntime())return null;

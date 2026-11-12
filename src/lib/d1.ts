@@ -59,7 +59,7 @@ export interface OtaServiceStatus {
 }
 export interface OtaFileDescriptor { name:string; path:string; size:number; sha256:string|null }
 export interface OtaPreview {
-  releaseId:string; version:string; channel:string; keyId:string|null; rollbackIndex:number|null;
+  previewId:string; releaseId:string; version:string; channel:string; keyId:string|null; rollbackIndex:number|null;
   artifactBytes:number; totalBytes:number; files:OtaFileDescriptor[]; trust:TrustStatus;
 }
 export interface OtaSubmitResult {
@@ -73,6 +73,7 @@ export interface DeviceOtaStatus {
 export interface DiagnosticServiceStatus { enabled:boolean; origin:string|null; detail:string }
 export interface LogLevelCounts { error:number; warning:number; info:number; debug:number }
 export interface LogPreview {
+  previewId:string; reportType:string; checkCount:number;
   source:string; deviceId:string|null; hasCid:boolean; workspaceVersion:string|null; releaseId:string|null;
   totalEntries:number; selectedEntries:number; levels:LogLevelCounts;
   startedAt:string|null; completedAt:string|null; truncated:boolean; fileCount:number;

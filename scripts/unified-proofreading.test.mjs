@@ -428,22 +428,18 @@ test("new account cannot automatically save another account's recovery draft", a
   } finally { await context.close(); }
 });
 
-for (const restoredStart of [0, 100]) test(`long recording preserves preview playback when checks finish unless saved bounds move it (${restoredStart})`, async () => {
+for (const restoredStart of [0, 100]) test(`opening restores draft bounds without automatic precheck and preserves playback unless bounds move it (${restoredStart})`, async () => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 920 } });
   const page = await context.newPage();
   await context.route("**/src/lib/backend.ts", async route => {
     const response = await route.fetch();
     let body = await response.text();
-    const begin = body.indexOf("export async function loadEpisode(");
-    const end = body.indexOf("export async function validateEpisode(", begin);
-    const load = body.slice(begin, end).replaceAll("return {", "return { statesPartial: !window.previewChecksDone,");
-    body = body.slice(0, begin) + load + body.slice(end);
-    body = body.replace(/(export async function validateEpisode\([^]*?\) \{)/, `$1
-      window.previewValidationStarted=true;
-      await new Promise(resolve=>{window.finishPreviewChecks=()=>{window.previewChecksDone=true;resolve();};});
+    body = body.replace(/(export async function validateEpisode\([^]*?\) \{)/, `$1 window.previewValidationStarted=true;`);
+    body = body.replace(/(export async function loadEpisodeAnnotation\([^]*?\) \{)/, `$1
+      window.previewRestoreStarted=true;
+      await new Promise(resolve=>{window.finishPreviewRestore=resolve;});
+      ${restoredStart ? `return { clipStartFrame: ${restoredStart}, clipEndFrame: 195 };` : ""}
     `);
-    if (restoredStart) body = body.replace(/(export async function loadEpisodeAnnotation\([^]*?\) \{)/,
-      `$1\n return { clipStartFrame: ${restoredStart}, clipEndFrame: 195 };`);
     for (const name of ["listMachineAnnotationSources", "loadMachineAnnotation", "loadMachineReview"]) {
       body = body.replace(new RegExp("(export async function " + name + "\\([^]*?\\) \\{)"),
         '$1\n window.previewEditorReads=(window.previewEditorReads??0)+1;');
@@ -458,11 +454,12 @@ for (const restoredStart of [0, 100]) test(`long recording preserves preview pla
     const slider = page.getByRole("slider", { name: "预览播放帧", exact: true });
     await page.getByRole("button", { name: "下一帧", exact: true }).click();
     assert.equal(await slider.inputValue(), "1");
-    await page.waitForFunction(() => window.previewValidationStarted);
+    await page.waitForFunction(() => window.previewRestoreStarted);
+    assert.equal(await page.evaluate(()=>window.previewValidationStarted??false),false);
     assert.equal(await page.evaluate(() => window.previewEditorReads??0), 0);
     await page.getByRole("button", { name: "全局播放", exact: true }).click();
     await page.getByRole("button", { name: "暂停", exact: true }).waitFor();
-    await page.evaluate(() => window.finishPreviewChecks());
+    await page.evaluate(() => window.finishPreviewRestore());
     await page.waitForFunction(() => document.querySelector('[aria-label="复核动作描述"]')?.disabled === false);
     assert.ok(await page.evaluate(() => window.previewEditorReads > 0));
     assert.equal(await slider.count(), 0);
@@ -1550,6 +1547,14 @@ for (const renderer of ["local", "cloud"]) test(`${renderer} episode special tag
     await choices.nth(2).check();
     assert.equal(await choices.nth(0).isChecked(), false);
     await panel.getByLabel("特殊标签说明", { exact: true }).fill("相机 x123 设备线入镜");
+    await panel.getByRole("button", { name: "存为常用", exact: true }).click();
+    await panel.getByRole("group", { name: "常用特殊标签", exact: true }).getByRole("button", { name: "相机 x123 设备线入镜", exact: true }).waitFor();
+    assert.deepEqual((await saved()).specialTags, before.specialTags, "saving a common option cannot modify a review");
+    await panel.getByRole("button", { name: "取消", exact: true }).click();
+    await panel.getByRole("group", { name: "常用特殊标签", exact: true }).getByRole("button", { name: "相机 x123 设备线入镜", exact: true }).click();
+    await choices.nth(1).check();
+    await choices.nth(2).check();
+    await panel.getByLabel("特殊标签说明", { exact: true }).focus();
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => !document.querySelector('.special-tag-add').disabled);
     let draft = await saved();

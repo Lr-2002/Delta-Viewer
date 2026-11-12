@@ -193,6 +193,7 @@ if (!browserExecutable) {
       });
       assert.deepEqual(saved, { start: 30, end: 90, revision: 2 });
       await page.getByRole("button", { name: "检查", exact: true }).click();
+      await page.getByRole("button", {name:"运行数据检查",exact:true}).click();
       await page.getByRole("button", { name: "导出", exact: true }).click();
       await page.getByRole("button", { name: "批量", exact: true }).click();
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -302,6 +303,7 @@ if (!browserExecutable) {
       await page.getByLabel("裁剪起始帧").fill("30");
       await page.getByLabel("裁剪结束帧").fill("90");
       await page.getByRole("button", { name: "检查", exact: true }).click();
+      await page.getByRole("button", {name:"运行数据检查",exact:true}).click();
       await page.getByText(code, { exact: true }).waitFor();
       await page.getByRole("button", { name: "回放", exact: true }).click();
       assert.equal(await page.locator(".camera-grid .frame-panel").count(), 7);
@@ -838,6 +840,7 @@ if (!browserExecutable) {
 
     await registerDemoAccount(page, baseUrl, "issue-locate");
     await page.getByRole("button", { name: "检查", exact: true }).click();
+    await page.getByRole("button", {name:"运行数据检查",exact:true}).click();
     await page.getByRole("button", { name: "定位到帧 180" }).click();
     await page.waitForFunction(() => document.querySelector(".frame-counter")?.textContent?.includes("帧 180 / 195"));
     await page.locator('img[alt="Camera 0 frame 180"]').waitFor();
@@ -867,6 +870,7 @@ if (!browserExecutable) {
 
       await registerDemoAccount(page, baseUrl, `frame-rate-${viewport.width}`);
       await page.getByRole("button", { name: "检查", exact: true }).click();
+      await page.getByRole("button", {name:"运行数据检查",exact:true}).click();
       await page.getByText("状态记录 · 目标 30 FPS / 中位 29.50 FPS / 稳定度 91.8%", { exact: true }).waitFor();
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),

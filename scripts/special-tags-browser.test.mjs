@@ -1,0 +1,91 @@
+import assert from "node:assert/strict";
+import { existsSync, readdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { createServer } from "vite";
+import { chromium } from "playwright-core";
+
+test("common special tags survive reload, remain account scoped and never change a review until added", async t => {
+  const server = await createServer({ logLevel: "error", server: { host: "127.0.0.1", port: 0 }, plugins: [{ name: "special-tags-fixture", configureServer(server) {
+    server.middlewares.use(async (req, res, next) => {
+      if (!req.url.startsWith("/__special-tags")) return next();
+      res.setHeader("content-type", "text/html");
+      res.end(await server.transformIndexHtml(req.url, `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"></head><body><div id="root"></div><script type="module">
+        import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {EpisodeSpecialTags} from '/src/components/EpisodeSpecialTags.tsx';import '/src/styles.css';
+        function App(){const [user,setUser]=useState('alice');const [tags,setTags]=useState([]);const [episode,setEpisode]=useState(0);window.switchUser=setUser;window.nextEpisode=()=>{setTags([]);setEpisode(v=>v+1)};return React.createElement(EpisodeSpecialTags,{key:user+':'+episode,username:user,tags,streams:[{name:'camera0',label:'相机 0'},{name:'camera1',label:'相机 1'}],disabled:false,onChange:next=>{window.changes++;window.tags=next;setTags(next)}})}window.changes=0;createRoot(document.getElementById('root')).render(React.createElement(App));
+      </script></body></html>`));
+    });
+  } }] });
+  await server.listen(); t.after(() => server.close());
+  const cache = join(homedir(), ".cache/ms-playwright");
+  const installed = existsSync(cache) ? readdirSync(cache).filter(name => name.startsWith("chromium-")).map(name => join(cache, name, "chrome-linux64/chrome")) : [];
+  const executablePath = [process.env.PLAYWRIGHT_CHROMIUM, chromium.executablePath(), ...installed, "/usr/bin/google-chrome", "/usr/bin/chromium"].filter(Boolean).find(existsSync);
+  assert.ok(executablePath);
+  const browser = await chromium.launch({ executablePath, headless: true }); t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 920 } });
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  await page.goto(server.resolvedUrls.local[0] + "__special-tags");
+  const panel = page.getByLabel("数据特殊标签", { exact: true });
+  const library = panel.getByRole("group", { name: "常用特殊标签", exact: true });
+  const input = panel.getByLabel("特殊标签说明", { exact: true });
+  const text = "相机设备线入镜";
+  await panel.getByRole("button", { name: "添加标签", exact: true }).click();
+  await input.fill(text);
+  await panel.getByRole("button", { name: "存为常用", exact: true }).click();
+  await library.getByRole("button", { name: text, exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.changes), 0);
+  await panel.getByRole("button", { name: "存为常用", exact: true }).click();
+  assert.equal(await library.getByRole("button", { name: text, exact: true }).count(), 1);
+  await page.reload();
+  await library.getByRole("button", { name: text, exact: true }).click();
+  await page.evaluate(async () => {
+    const audit = await import("/src/lib/review-audit.ts");
+    audit.configureReviewAudit("tag-audit", "isolated-fixture");
+    audit.beginReviewAudit("/synthetic/recording", "synthetic");
+    audit.observeReviewInteractions();
+  });
+  assert.equal(await input.inputValue(), text);
+  assert.equal(await page.evaluate(() => window.changes), 0);
+  await panel.getByLabel("相机 0", { exact: true }).check();
+  await panel.getByRole("button", { name: "添加", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.tags), [{ camera: "camera0", description: text }]);
+  await page.evaluate(() => window.nextEpisode());
+  await library.getByRole("button", { name: text, exact: true }).click();
+  assert.equal(await panel.getByLabel("整条数据", { exact: true }).isChecked(), true, "camera choices are not copied to a different recording");
+  await panel.getByRole("button", { name: "添加", exact: true }).click();
+  const saved = await page.evaluate(() => ({ changes: window.changes, tags: window.tags }));
+  await page.evaluate(() => window.switchUser("bob"));
+  await library.waitFor({ state: "detached" });
+  await page.evaluate(() => window.switchUser("alice"));
+  await library.getByRole("button", { name: text, exact: true }).waitFor();
+  await panel.getByRole("button", { name: "管理", exact: true }).click();
+  await panel.getByRole("button", { name: `移除常用标签 ${text}`, exact: true }).click();
+  await page.waitForFunction(() => Object.keys(localStorage).filter(key => key.startsWith("dohc.review-audit.v1:")).some(key => JSON.parse(localStorage.getItem(key)).details.target === "特殊标签操作"));
+  const events = await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("dohc.review-audit.v1:")).map(key => JSON.parse(localStorage.getItem(key))));
+  assert.equal(events.some(event => JSON.stringify(event).includes(text)), false, "common-tag descriptions cannot leak into operation telemetry");
+  assert.deepEqual(await page.evaluate(() => ({ changes: window.changes, tags: window.tags })), saved, "removing a template cannot rewrite an existing review");
+  await panel.getByRole("button", { name: "添加标签", exact: true }).click();
+  await input.fill("新常用说明");
+  await page.evaluate(() => { const original = Storage.prototype.setItem; window.restoreStorage = () => { Storage.prototype.setItem = original; }; Storage.prototype.setItem = () => { throw Error("disk full"); }; });
+  await panel.getByRole("button", { name: "存为常用", exact: true }).click();
+  await panel.getByRole("alert").filter({ hasText: "常用标签未保存" }).waitFor();
+  assert.equal(await library.count(), 0);
+  assert.equal(await input.inputValue(), "新常用说明");
+  await page.evaluate(() => window.restoreStorage());
+  await panel.getByRole("button", { name: "存为常用", exact: true }).click();
+  await library.getByRole("button", { name: "新常用说明", exact: true }).waitFor();
+  assert.equal(await panel.getByRole("alert").count(), 0);
+  assert.deepEqual(await page.evaluate(() => ({ changes: window.changes, tags: window.tags })), saved);
+  await mkdir("artifacts/special-tags", { recursive: true });
+  for (const width of [1440, 960, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: `artifacts/special-tags/common-${width}.png`, fullPage: true });
+  }
+  await page.reload();
+  assert.equal(await library.getByRole("button", { name: text, exact: true }).count(), 0);
+  await library.getByRole("button", { name: "新常用说明", exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});

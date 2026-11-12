@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useRef, useState} from "react";
+import {useEffect, useMemo, useRef, useState, type ReactNode} from "react";
 import {ArrowLeft, RefreshCw, LoaderCircle, CheckCircle2, AlertCircle} from "lucide-react";
 import type {DevicePage, DevicePageApiRequest, DevicePageApiResponse} from "../lib/d1";
 
@@ -12,6 +12,7 @@ function request(path,method,headers,body,navigate=false){const id=String(++seri
 window.addEventListener("message",event=>{const data=event.data;if(event.source!==window.parent||data?.token!==token)return;if(data.type==="d1-page-host-ready"){if(ready)return;ready=true;clearInterval(handshake);for(const item of pending.values())window.parent.postMessage(item.message,"*");return}if(data.type!=="d1-page-response"||!pending.has(data.id))return;const item=pending.get(data.id);pending.delete(data.id);clearTimeout(item.timer);item.resolve(data)});
 window.fetch=async(input,init={})=>{try{const requestObject=input instanceof Request?input:null,raw=typeof input==="string"?input:input instanceof URL?input.href:input.url,path=route(raw),method=String(init.method??requestObject?.method??"GET").toUpperCase();if(!["GET","PUT","POST"].includes(method))throw new Error("设备页面操作不支持");const requestHeaders=new Headers(requestObject?.headers);new Headers(init.headers).forEach((value,key)=>requestHeaders.set(key,value));const headers=Object.fromEntries([...requestHeaders.entries()].filter(([key])=>["content-type","if-match"].includes(key.toLowerCase())));const sourceBody=Object.hasOwn(init,"body")?init.body:requestObject?await requestObject.clone().text():undefined;const body=method==="GET"||sourceBody===undefined?undefined:typeof sourceBody==="string"?sourceBody:await new Response(sourceBody).text();const reply=await request(path,method,headers,body);return new Response(reply.body||"",{status:reply.status,headers:{"Content-Type":reply.contentType||"text/plain"}})}catch(error){return new Response(JSON.stringify({message:error instanceof Error?error.message:"设备请求失败"}),{status:502,headers:{"Content-Type":"application/json"}})}};
 document.addEventListener("click",event=>{const link=event.target instanceof Element?event.target.closest("a"):null;if(!link)return;event.preventDefault();try{const raw=link.getAttribute("data-d1-route")||link.getAttribute("href");if(!raw||raw==="#")return;void request(route(raw),"GET",{},undefined,true)}catch{}});
+document.addEventListener("click",event=>{if(event.target instanceof Element&&event.target.closest("#ota-relay")){event.preventDefault();window.parent.postMessage({type:"d1-page-open-ota",token},"*")}});
 document.addEventListener("submit",event=>{event.preventDefault();const form=event.target;if(!(form instanceof HTMLFormElement)||form.getAttribute("data-d1-form")!=="configure")return;const fields=new FormData(form),body=JSON.stringify({ssid:fields.get("ssid"),password:fields.get("password")});const password=form.querySelector('input[name="password"]');if(password)password.value="";void request("/configure","POST",{"content-type":"application/json"},body,true)});
 })()`.replace("__TOKEN__",JSON.stringify(token));
   return script;
@@ -34,8 +35,11 @@ export function interactiveDeviceHtml(html:string,page:DevicePage,token:string):
       else if(!["class","id","style","title","colspan","rowspan","scope","type","value","selected","checked","open","disabled","required","name","min","max","step","minlength","maxlength","placeholder","autocomplete","multiple","data-key","data-category","data-d1-route","data-d1-form","href"].includes(attribute.name)&&!attribute.name.startsWith("aria-"))element.removeAttribute(attribute.name);
     }
     if(element.matches('input[type="password"]'))element.removeAttribute("value");
-    if(element.matches('#ota-relay,#ota-submit,#ota-file'))element.setAttribute("disabled","");
-    if(element.id==="ota-status")element.textContent="设备升级暂不可用";
+    // Binary relay uses the native, validated OTA flow below the sandbox. Never
+    // send firmware through the text-only configuration request bridge.
+    if(element.id==="ota-relay"){element.removeAttribute("disabled");element.textContent="打开应用升级";}
+    if(element.matches('#ota-form,#ota-file,#ota-submit'))element.remove();
+    if(element.id==="ota-status")element.textContent="在 D1 Manager 中检查版本并升级。";
   }
   if(page?.status)fillStatus(template.content,page);
   else if(template.content.querySelector('#cameraRows')) {
@@ -67,8 +71,9 @@ function fillStatus(root:DocumentFragment,page:DevicePage) {
   const battery=obj(stress.battery);set("stressPower",`start ${num(battery.start_voltage,3," V")} | now ${num(battery.end_voltage,3," V")} | min ${num(battery.minimum_voltage,3," V")}`);
   set("stressCameras",items(stress.cameras).map(entry=>{const camera=obj(entry);return `${text(camera.stream)} ${text(camera.read)}/${text(camera.write)}/${text(camera.saved)}`;}).join(" | ")||"无");set("stressReport","只读模式不收集报告文件");
 }
-export function DevicePageView({page,busy,showConnectionMode,connectionModeLabel,onBack,onRefresh,onRequest,onVerifyAddress}:{page:DevicePage;busy:boolean;showConnectionMode:boolean;connectionModeLabel:string;onBack:()=>void;onRefresh:()=>void;onRequest:(request:DevicePageApiRequest)=>Promise<DevicePageApiResponse>;onVerifyAddress:(address:string)=>Promise<DevicePage>}) {
+export function DevicePageView({page,busy,showConnectionMode,connectionModeLabel,onBack,onRefresh,onRequest,onVerifyAddress,otaPanel}:{page:DevicePage;busy:boolean;showConnectionMode:boolean;connectionModeLabel:string;onBack:()=>void;onRefresh:()=>void;onRequest:(request:DevicePageApiRequest)=>Promise<DevicePageApiResponse>;onVerifyAddress:(address:string)=>Promise<DevicePage>;otaPanel?:ReactNode}) {
   const frame=useRef<HTMLIFrameElement>(null);
+  const otaContainer=useRef<HTMLDivElement>(null);
   const [navigation,setNavigation]=useState<{html:string;version:number}|null>(null);
   const [navigationError,setNavigationError]=useState("");
   const [provisioning,setProvisioning]=useState<{started:number;state:"waiting"|"failed"|"unconfirmed";message:string}|null>(null);
@@ -84,6 +89,7 @@ export function DevicePageView({page,busy,showConnectionMode,connectionModeLabel
       if(event.source!==frame.current?.contentWindow)return;
       const message=event.data;
       if(message?.type==="d1-page-ready"&&message.token===token){frame.current?.contentWindow?.postMessage({type:"d1-page-host-ready",token},"*");return;}
+      if(message?.type==="d1-page-open-ota"&&message.token===token){otaContainer.current?.scrollIntoView({behavior:"smooth",block:"start"});otaContainer.current?.querySelector("button")?.focus({preventScroll:true});return;}
       if(message?.type!=="d1-page-request"||message.token!==token||typeof message.id!=="string"||typeof message.path!=="string"||!(["GET","PUT","POST"] as string[]).includes(message.method))return;
       const request:DevicePageApiRequest={path:message.path,method:message.method,body:typeof message.body==="string"?message.body:undefined,ifMatch:typeof message.headers?.["if-match"]==="string"?message.headers["if-match"]:undefined};
       void requestHandler.current(request).then(reply=>{
@@ -125,10 +131,11 @@ export function DevicePageView({page,busy,showConnectionMode,connectionModeLabel
     catch{setNavigationError("尚未读取到该设备的联网状态，请核对设备播报 IP 与电脑网络。");}
     finally{setVerifying(false);}
   }
-  return <main className="manager-device-page" aria-label="设备原生页面">
+  return <main className={`manager-device-page${otaPanel ? " has-ota-panel" : ""}`} aria-label="设备原生页面">
     <header><button className="button button-secondary" disabled={busy} onClick={onBack}><ArrowLeft size={17}/>返回设备管理</button><div><strong>设备页面 · {page.address}</strong><span>设备端页面 · {new Date(page.observedAtMs).toLocaleTimeString("zh-CN",{hour12:false})}</span></div><button className="button button-secondary" disabled={busy} onClick={onRefresh}><RefreshCw size={17} className={busy?"spin":undefined}/>刷新页面</button></header>
     {showConnectionMode&&<p className="manager-actual-connection manager-device-page-connection" role="status"><span>实际连接方式</span><strong>{connectionModeLabel}</strong></p>}
     {(navigationError||page.statusError)&&<p className="manager-error" role="status">{navigationError||page.statusError}</p>}
     {provisioning?<section className={`manager-provisioning is-${provisioning.state}`} aria-label="设备配网进度" aria-live="polite"><div className="manager-provisioning-symbol">{provisioning.state==="waiting"?<LoaderCircle className="spin" size={38}/>:<AlertCircle size={38}/>}</div><h1>{provisioning.state==="waiting"?"设备正在配网":provisioning.state==="failed"?"配网失败":"等待确认配网结果"}</h1><p>{provisioning.message}</p>{provisioning.state==="waiting"&&<><div className="manager-progress-indeterminate" role="progressbar" aria-label="等待设备配网结果"/><span>已等待 {elapsed} 秒</span></>}<ol><li><CheckCircle2 size={17}/>配置已提交</li><li>设备连接 Wi-Fi · 热点可能暂时关闭</li><li>核对设备播报，读取联网状态</li></ol><form onSubmit={event=>{event.preventDefault();void verifyAddress();}}><label htmlFor="d1-configured-address">设备联网后的 IP</label><input id="d1-configured-address" placeholder="输入设备语音播报的 IP" inputMode="decimal" value={newAddress} onChange={event=>setNewAddress(event.target.value)} disabled={verifying}/><button className="button button-primary" disabled={verifying||!newAddress.trim()}>{verifying?"正在核对…":"读取联网状态"}</button></form><small>设备当前固件不提供配网结果查询接口；热点断开和提交成功均不能单独证明配网成功。</small>{provisioning.state==="failed"&&<button className="button button-secondary" onClick={()=>{setProvisioning(null);onRefresh();}}>重新填写配网信息</button>}</section>:<iframe key={token} ref={frame} title="D1 设备页面" sandbox="allow-scripts allow-forms allow-modals" srcDoc={html}/>}
+    {!provisioning&&otaPanel&&<div className="manager-device-ota-panel" ref={otaContainer}>{otaPanel}</div>}
   </main>;
 }

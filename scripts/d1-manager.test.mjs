@@ -83,7 +83,7 @@ test("Manager navigation retains the Viewer workspace at desktop/minimum/narrow 
       await page.screenshot({path:resolve(reportRoot,`home-${viewport.width}.png`),fullPage:true});
       await page.getByRole("button",{name:"设备热点（AP）",exact:true}).click();
       await page.getByText("如何连接设备热点",{exact:true}).waitFor();
-      assert.equal(await page.locator(".manager-connection-area").evaluate(root=>{const guide=root.querySelector(".manager-connection-guide"),controls=root.querySelector(".manager-segmented");return Boolean(guide&&controls&&(guide.compareDocumentPosition(controls)&Node.DOCUMENT_POSITION_FOLLOWING));}),true,"the yellow connection guide appears before the mode selector");
+      assert.equal(await page.locator(".manager-connection-area").evaluate(root=>{const guide=root.querySelector(".manager-connection-guide"),controls=root.querySelector(".manager-wifi")??root.querySelector(".manager-connect-bar");return Boolean(guide&&controls&&controls.getBoundingClientRect().bottom<=guide.getBoundingClientRect().top);}),true,"the yellow connection guide appears below the connection controls");
       await page.getByText("Delta-D1-***",{exact:true}).waitFor();await noOverflow(page);
       assert.equal(await page.getByRole("button",{name:"连接设备",exact:true}).isDisabled(),true);
       await page.screenshot({path:resolve(reportRoot,`ap-guide-${viewport.width}.png`),fullPage:true});
@@ -364,8 +364,8 @@ test("Real device UI shows reported identity and failures without any simulation
       await t265.getByText("原始记录与规则",{exact:true}).click();await t265.getByText("设备报告 state=FAULT",{exact:true}).waitFor();
       await t265.getByText("证据与建议",{exact:true}).click();
       await navigate(page,"日志与支持");await page.getByText("test-d1-device",{exact:true}).waitFor();
-      assert.equal(await page.getByRole("button",{name:"预览包内容"}).isDisabled(),true);
-      assert.equal(await page.getByRole("button",{name:"上传诊断包",exact:true}).isDisabled(),true);await page.getByText("上传服务待接入",{exact:true}).waitFor();await noOverflow(page);
+      assert.equal(await page.getByRole("button",{name:"预览检测与日志"}).isDisabled(),true);
+      assert.equal(await page.getByRole("button",{name:"上传到售后",exact:true}).isDisabled(),true);await page.getByText("上传服务待接入",{exact:true}).waitFor();await noOverflow(page);
       await page.screenshot({path:resolve(reportRoot,`support-${viewport.width}.png`),fullPage:true});
       await navigate(page,"设备管理");
       await page.evaluate(()=>{window.deviceFixture={...window.deviceFixture,connection:"not_connected",identity:null,observation:null,selectedInterfaceId:null,realDeviceEnabled:false,linkDiscovery:{...window.deviceFixture.linkDiscovery,status:"no_candidates",candidates:[]}};});
@@ -492,7 +492,7 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
   }
 });
 
-test("AP provisioning form requires host confirmation and returns the connecting page without enabling OTA",async()=>{
+test("AP configuration keeps Wi-Fi interactive and opens the native OTA panel",async()=>{
   const {page,context,errors,external}=await session({width:1440,height:920},false,nativePageFixture);
   try{
     await navigate(page,"首页");await page.getByRole("button",{name:"设备热点（AP）",exact:true}).click();
@@ -500,8 +500,20 @@ test("AP provisioning form requires host confirmation and returns the connecting
     await page.evaluate(()=>window.pageFixtureMode="provisioning");
     await page.getByRole("button",{name:"连接热点并打开",exact:true}).click();
     const frame=page.frameLocator('iframe[title="D1 设备页面"]');await frame.getByRole("heading",{name:"设备维护"}).waitFor();
-    assert.equal(await frame.getByRole("button",{name:"在线下载并升级"}).isDisabled(),true);
-    assert.equal(await frame.getByRole("button",{name:"上传并升级"}).isDisabled(),true);
+    assert.equal(await frame.getByRole("button",{name:"打开应用升级"}).isEnabled(),true);
+    assert.equal(await frame.getByRole("button",{name:"上传并升级"}).count(),0);
+    await frame.getByRole("button",{name:"打开应用升级"}).click();
+    await page.getByRole("region",{name:"DOHC 应用升级"}).waitFor();
+    assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0,"opening OTA must not submit an upgrade");
+    for(const viewport of [{width:1440,height:920},{width:960,height:680},{width:390,height:844}]){
+      await page.setViewportSize(viewport);
+      assert.ok(await page.locator('iframe[title="D1 设备页面"]').evaluate(element=>element.getBoundingClientRect().height>=360),"OTA panel must not collapse the device configuration page");
+      const ota=page.getByRole("region",{name:"DOHC 应用升级"});await ota.scrollIntoViewIfNeeded();
+      const bounds=await ota.boundingBox();assert.ok(bounds.y<viewport.height&&bounds.y+bounds.height>0,"OTA panel is reachable in the device page scroll area");
+      await noOverflow(page);
+      await page.screenshot({path:resolve(reportRoot,`native-ota-${viewport.width}.png`),fullPage:true});
+    }
+    await page.setViewportSize({width:1440,height:920});
     await frame.getByLabel("Wi-Fi 名称",{exact:true}).fill("Office fixture");await frame.getByLabel("Wi-Fi 密码",{exact:true}).fill("fixture-network-password");
     page.once("dialog",dialog=>dialog.dismiss());await frame.getByRole("button",{name:"连接网络",exact:true}).click();
     assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0);
@@ -517,7 +529,7 @@ test("AP provisioning form requires host confirmation and returns the connecting
     await page.evaluate(()=>window.pageFixtureMode="provision-failed");
     await page.getByRole("heading",{name:"配网失败",exact:true}).waitFor();
     assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
-    evidence.push({status:"passed",apProvisioningForm:true,confirmationRequired:true,otaDisabled:true,provisioningFailureFromDevice:true,externalRequests:0});
+    evidence.push({status:"passed",apProvisioningForm:true,confirmationRequired:true,nativeOtaEntry:true,provisioningFailureFromDevice:true,externalRequests:0});
   }finally{await context.close();}
 });
 

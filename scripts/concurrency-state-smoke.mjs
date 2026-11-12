@@ -541,23 +541,38 @@ try {
   }), finalScan.operationId);
   await page.evaluate(() => window.__concurrencyMock.resolveActiveTask());
   await page.waitForFunction(() => window.__concurrencyMock.calls.loadEpisode === 2);
-  await page.waitForFunction(() => window.__concurrencyMock.activeTask()?.kind === "validate");
+  await page.waitForFunction(() => !document.querySelector(".progress-strip"));
+  assert.equal(await page.evaluate(()=>window.__concurrencyMock.calls.validateEpisode),0);
   await page.locator(".camera-grid img").first().waitFor();
   await page.waitForFunction(() => [...document.querySelectorAll(".camera-grid img")]
     .every((image) => image.naturalWidth > 0));
   assert.match(await page.locator(".episode-item-meta").first().innerText(), /快速预览/);
+  await page.getByRole("button",{name:"检查",exact:true}).click();
+  await page.getByRole("button",{name:"运行数据检查",exact:true}).click();
+  await page.waitForFunction(() => window.__concurrencyMock.activeTask()?.kind === "validate");
+  await page.evaluate(() => window.__concurrencyMock.emitProgress({
+    operationId: window.__concurrencyMock.activeTask().operationId,
+    task: "validate", phase: "Manual data check", current: 0, total: 1,
+    bytesDone: 0, totalBytes: 1, currentPath: "/source/episode-1", elapsedMs: 1,
+  }));
   await page.locator(".view-tabs button").filter({ hasText: "导出" }).click();
-  assert.equal(await page.locator(".export-button").isDisabled(), true);
+  assert.equal(await page.getByRole("button",{name:"检查数据后导出",exact:true}).isDisabled(), true);
   assert.match(await page.locator(".export-heading .status-mark").innerText(), /等待检查/);
   await page.locator(".view-tabs button").filter({ hasText: "校对" }).click();
   assert.equal(await page.evaluate(() => window.__concurrencyMock.calls.validateEpisode), 1);
   await cancel.click();
   await page.waitForFunction(() => !document.querySelector(".progress-strip"));
   await page.locator(".episode-item").filter({ hasText: "episode-1" }).dblclick();
+  await page.waitForFunction(() => !document.querySelector(".progress-strip"));
+  assert.equal(await page.evaluate(()=>window.__concurrencyMock.calls.validateEpisode),1);
+  await page.getByRole("button",{name:"检查",exact:true}).click();
+  await page.getByRole("button",{name:"运行数据检查",exact:true}).click();
   await page.waitForFunction(() => window.__concurrencyMock.calls.validateEpisode === 2);
   await page.waitForFunction(() => !document.querySelector(".progress-strip"));
   assert.match(await page.locator(".episode-item-meta").first().innerText(), /1 states/);
   assert.equal(await rescan.isDisabled(), false);
+  await page.getByRole("button",{name:"校对",exact:true}).click();
+  await page.locator(".camera-grid img").first().waitFor();
 
   for (const viewport of [
     { width: 1440, height: 920 },

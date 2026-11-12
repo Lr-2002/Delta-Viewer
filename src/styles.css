@@ -1752,6 +1752,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .special-tag-form .button { width: auto; min-height: 32px; padding: 6px 10px; font-size: 13.44px; }
 .special-tag-form p { margin: 0; flex-basis: 100%; color: #a13024; }
 .special-tag-hint { margin: 7px 0 0; }
+.special-tag-library { margin-top: 10px; padding: 9px 10px; border-radius: 6px; background: var(--surface-alt, #f6f6f6); }
+.special-tag-library-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 7px; color: var(--muted); font-size: 12.32px; }
+.special-tag-library-heading button { border: 1px solid var(--line); border-radius: 5px; padding: 3px 8px; background: var(--surface); color: var(--ink); }
+.special-tag-library-options { display: flex; flex-wrap: wrap; gap: 6px; max-height: 140px; overflow-y: auto; }
+.special-tag-library-options > span { display: inline-flex; min-width: 0; max-width: 100%; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); }
+.special-tag-library-options button { display: inline-flex; align-items: center; min-width: 0; border: 0; border-radius: 4px; background: transparent; color: var(--ink); padding: 6px 8px; font-size: 13.44px; text-align: left; overflow-wrap: anywhere; }
+.special-tag-library-options button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.special-tag-library-options button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.special-tag-library-error { color: #a13024; margin: 7px 0 0; }
 
 /* Reserve room for the tag entry while retaining the desktop chart and QC controls. */
 @media (min-width: 1241px) {

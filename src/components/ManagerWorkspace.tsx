@@ -104,13 +104,14 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
   const observation=availability?.observation??null;
   const target=availability?.selectedInterfaceId??null;
   const statusPage=runtimePage??(observation?.statusSummary?{address:observation.connectionAddress??"",html:"",status:observation.statusSummary,observedAtMs:observation.observedAtMs}:null);
+  const apConfiguration=connectionMode==="ap"&&!statusPage?.status;
   const disabled=busy||working!==null;
   const connected=!runtimeError&&((availability?.connection==="connected"&&observation!==null)||!!runtimePage?.status);
   const pageOnly=availability?.error?.code==="D1_HEALTH_PAGE_ONLY";
   const connectionLabel=connected?"已连接 D1":availability?.error?.message??linkSummary(availability?.linkDiscovery??null);
   useEffect(()=>{setPageView(null);},[section]);
   useEffect(()=>{
-    if(section==="data"||pageView||working!==null||(connectionMode!=="type_c"&&!pageRequest))return;
+    if(section==="data"||pageView||working!==null||apConfiguration||(connectionMode!=="type_c"&&!pageRequest))return;
     let active=true;
     let timer:ReturnType<typeof setTimeout>|undefined;
     async function refresh(){
@@ -136,7 +137,7 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
       finally {if(active&&retry)timer=setTimeout(()=>void refresh(),3000);}
     }
     void refresh();return()=>{active=false;clearTimeout(timer);};
-  },[section,interfaceId,working,connectionMode,apAddress,pageView,pageRequest,runtimeRevision]);
+  },[section,interfaceId,working,connectionMode,apAddress,pageView,pageRequest,runtimeRevision,apConfiguration]);
   useEffect(()=>{
     if(!availability||connectionMode!=="type_c"||section==="data"||pageView||busy||working||!isTauriRuntime()||availability.linkDiscovery.platform!=="windows")return;
     const links=availability.linkDiscovery.candidates;
@@ -172,7 +173,7 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
   useEffect(()=>()=>{requestGeneration.current++;clearTimeout(batchTimer.current);pendingReads.current.splice(0).forEach(item=>item.resolve({status:409,contentType:"application/json",body:'{"message":"设备连接已结束"}'}));if(operation.current)void cancelTask(operation.current.id);},[]);
   function selectInterface(value:string){requestGeneration.current++;setInterfaceId(value||undefined);setAvailability(null);setRun(null);setPreview(null);setOutput("");setError("");setRuntimePage(null);setRuntimeError("");setPageRequest(null);}
   async function detect(){
-    if(disabled||!target)return;
+    if(disabled||!target||apConfiguration)return;
     const owner=beginOperation();if(!owner){setError("请先完成当前任务。");return;}
     const generation=requestGeneration.current;
     operation.current=owner;setWorking("diagnostics");setRun(null);setPreview(null);setOutput("");setError("");setCancelling(false);
@@ -278,7 +279,7 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
     }finally{owner.finish();}
   }
   useEffect(()=>{
-    if(!pageRequest||pageView||section==="data"||working)return;
+    if(!pageRequest||pageView||section==="data"||working||apConfiguration)return;
     let active=true,timer:ReturnType<typeof setTimeout>|undefined;
     async function refresh(){
       try{
@@ -292,18 +293,14 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
       finally{if(active)timer=setTimeout(()=>void refresh(),5000);}
     }
     void refresh();return()=>{active=false;clearTimeout(timer);};
-  },[pageRequest,pageView,section,working,runtimeRevision]);
+  },[pageRequest,pageView,section,working,runtimeRevision,apConfiguration]);
   if(section==="data")return null;
-  if(pageView&&(section==="home"||section==="device"))return <><DevicePageView page={pageView} busy={working!==null} showConnectionMode={section==="device"} connectionModeLabel={pageRequest?.connectionMode==="ap"?"设备热点（AP）":"局域网 IP"} onBack={()=>{requestGeneration.current++;setPageView(null);onNavigate("device");}} onRefresh={()=>{if(pageRequest)void openPage(pageRequest);}} onRequest={requestPageApi} onVerifyAddress={verifyProvisionedAddress}/>{error&&<ManagerErrorToast message={error} onDismiss={()=>setError("")}/>}</>;
+  if(pageView&&(section==="home"||section==="device"))return <><DevicePageView page={pageView} busy={working!==null} showConnectionMode={section==="device"||apConfiguration} connectionModeLabel={apConfiguration?"热点配置模式 · 配网与应用升级":pageRequest?.connectionMode==="ap"?"设备热点（AP）":"局域网 IP"} onBack={()=>{requestGeneration.current++;setPageView(null);onNavigate(apConfiguration?"home":"device");}} onRefresh={()=>{if(pageRequest)void openPage(pageRequest);}} onRequest={requestPageApi} onVerifyAddress={verifyProvisionedAddress} otaPanel={<DeviceOtaPanel request={pageRequest} connected={true} busy={disabled} beginOperation={beginOperation} onError={setError}/>}/>{error&&<ManagerErrorToast message={error} onDismiss={()=>setError("")}/>}</>;
   const limited=observation?.cameraPortLimited??false;
   const counts=Object.fromEntries(resultOrder.map(status=>[status,run?.checks.filter(check=>check.status===status).length??0]));
   const connectionHelp=connectionMode==="ap"?"长按录制键，听到进入 AP 的语音后，连接设备标签对应的热点。":connectionMode==="lan"?"输入设备联网后语音播报的 IP，电脑需与设备处于同一网段。":"通过 Type-C 数据线连接已开机的 D1。";
   const connectionModeLabel=connectionMode==="ap"?"设备热点（AP）":connectionMode==="lan"?"局域网 IP":"Type-C 连接";
   const connectionControls=<section className="manager-connection-area" aria-label="设备连接方式">
-    <aside className="manager-connection-guide" aria-label={connectionMode==="ap"?"热点连接教程":connectionMode==="lan"?"局域网连接教程":"Type-C 连接提示"}>
-      <strong>{connectionMode==="ap"?"如何连接设备热点":connectionMode==="lan"?"如何获取设备 IP":"Type-C 连接提示"}</strong>
-      {connectionMode==="type_c"?<><p>请使用支持数据传输的 USB-A 转 Type-C 数据线，将电脑 A 口连接到 D1 的 Type-C 口。</p><p>D1 唯一的 Type-C 口连接电脑期间，扩展相机将暂时断开；需要检测相机时，请改用设备热点或局域网连接。</p></>:connectionMode==="ap"?<><p>设备未在采集时，长按录制键，等待语音确认进入 AP 模式。</p><p>选择设备标签对应的 <b>Delta-D1-***</b> 热点，按手册输入密码后连接；热点无需联网，默认密码自动填写。</p><p>连接后在软件内打开设备页面，地址按实际热点连接获取。</p></>:<><p>先按设备操作手册完成配网，确认设备已联网。</p><p>长按录制键后接短按，等待设备语音播报本机 IP。</p><p>输入播报的 IP 后连接，在软件内打开设备状态页面。</p></>}
-    </aside>
     <div className="manager-connect-bar">
       <div className="manager-segmented" role="group" aria-label="连接方式">
         <button type="button" aria-pressed={connectionMode==="type_c"} disabled={disabled} onClick={()=>changeConnection("type_c")}><Cable size={17}/>Type-C 连接</button>
@@ -321,6 +318,10 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
       {!wifi.networks.some(n=>n.recommended)&&!wifiLoading&&<p>未发现 D1 热点。请确认设备已进入 AP 模式后刷新。</p>}
       {selectedWifi&&<form className="manager-wifi-form" onSubmit={event=>{event.preventDefault();void connectWifi();}}>{!selectedWifi.connected&&<><button type="button" className="button button-secondary manager-wifi-password-toggle" onClick={()=>{setManualWifiPassword(v=>!v);setWifiPassword("");}}><KeyRound size={15}/>{manualWifiPassword?"使用默认密码":"手动输入密码"}</button>{manualWifiPassword&&<><label htmlFor="d1-wifi-password">热点密码</label><input id="d1-wifi-password" type="password" autoComplete="off" maxLength={63} value={wifiPassword} disabled={disabled} onChange={event=>setWifiPassword(event.target.value)}/></>}</>}<button className="button button-primary" type="submit" disabled={disabled||(!selectedWifi.connected&&manualWifiPassword&&!wifiPassword)}>{working==="wifi"?"正在连接…":working==="page"?"正在打开…":selectedWifi.connected?"进入设备页面":"连接热点并打开"}</button><small>连接热点会切换电脑 Wi-Fi；密码仅用于本次连接。</small></form>}</>}
     </section>}
+    <aside className="manager-connection-guide" aria-label={connectionMode==="ap"?"热点连接教程":connectionMode==="lan"?"局域网连接教程":"Type-C 连接提示"}>
+      <strong>{connectionMode==="ap"?"如何连接设备热点":connectionMode==="lan"?"如何获取设备 IP":"Type-C 连接提示"}</strong>
+      {connectionMode==="type_c"?<><p>请使用支持数据传输的 USB-A 转 Type-C 数据线，将电脑 A 口连接到 D1 的 Type-C 口。</p><p>D1 唯一的 Type-C 口连接电脑期间，扩展相机将暂时断开；需要检测相机时，请改用局域网连接。</p></>:connectionMode==="ap"?<><p>设备未在采集时，长按录制键，等待语音确认进入 AP 模式。</p><p>选择设备标签对应的 <b>Delta-D1-***</b> 热点；热点无需联网，默认密码自动填写。</p><p>热点配置模式用于配网和应用升级。查看完整设备信息、检测相机，请配网后使用局域网 IP，或切换 Type-C。</p></>:<><p>先按设备操作手册完成配网，确认设备已联网。</p><p>长按录制键后接短按，等待设备语音播报本机 IP。</p><p>输入播报的 IP 后连接，在软件内打开设备状态页面。</p></>}
+    </aside>
 
   </section>;
   return <main className={`manager-workspace manager-section-${section}`} aria-label="D1 设备工作区">
@@ -329,14 +330,15 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
     {section==="home"&&connectionControls}
     {section==="device"&&connected&&<p className="manager-actual-connection" role="status"><span>实际连接方式</span><strong>{connectionModeLabel}</strong></p>}
     {section==="home"?<>
-      <section className="manager-home-device"><div><Cable size={24}/><div><h2>{connected?"D1 已连接":"连接你的 D1"}</h2>{(observation||availability?.error)&&<p>{observation?`应用 ${observation.device.applicationVersion??"版本未提供"} · ${observation.connectionLimitedOnly?"相机连接受限":healthLabel(observation.health)}`:availability?.error?.message}</p>}</div></div><div className="manager-actions"><button className="button button-primary" onClick={()=>onNavigate("diagnostics")}><ShieldCheck size={17}/>检测设备</button></div></section>
+      <section className="manager-home-device"><div><Cable size={24}/><div><h2>{apConfiguration?"热点配置模式":connected?"D1 已连接":"连接你的 D1"}</h2>{(observation||availability?.error)&&<p>{observation?`应用 ${observation.device.applicationVersion??"版本未提供"} · ${observation.connectionLimitedOnly?"相机连接受限":healthLabel(observation.health)}`:availability?.error?.message}</p>}</div></div><div className="manager-actions"><button className="button button-primary" disabled={apConfiguration} title={apConfiguration?"热点配置模式不提供完整检测，请使用局域网 IP 或 Type-C":undefined} onClick={()=>onNavigate("diagnostics")}><ShieldCheck size={17}/>检测设备</button></div></section>
 
     </>:null}
-    {section==="device"&&<>
+    {(section==="device"||section==="diagnostics")&&apConfiguration&&<section className="manager-empty compact" aria-label="热点配置模式"><Wifi size={30}/><h2>热点配置模式</h2><p>此模式用于 Wi-Fi 配网和应用升级，当前设备未提供完整运行状态，设备信息和检测暂不可用。</p><p>配网后使用局域网 IP，或切换 Type-C 查看设备信息与检测。</p><button className="button button-primary" disabled={disabled||!pageRequest} onClick={()=>{if(pageRequest)void openPage(pageRequest);}}>打开配置与升级</button><button className="button button-secondary" onClick={()=>onNavigate("home")}>选择其他连接方式</button></section>}
+    {section==="device"&&!apConfiguration&&<>
       {(pageRequest||statusPage)?<DeviceRuntimePanel cameraPortLimited={!runtimePage&&observation?.cameraPortLimited} connectionLimitedOnly={!runtimePage&&observation?.connectionLimitedOnly} page={statusPage} error={runtimeError} refresh={()=>setRuntimeRevision(n=>n+1)} onConfigure={pageRequest?()=>void openPage(pageRequest):undefined} onNavigate={()=>onNavigate("diagnostics")}/>:observation?<><div className="manager-device-layout"><DeviceSummary snapshot={observation} onOpenDiagnostics={()=>onNavigate("diagnostics")}/><section className="manager-card manager-current-status"><header className="manager-device-heading"><h2>相机与存储</h2><button className="button button-secondary" type="button" disabled={disabled} onClick={()=>onNavigate("diagnostics")}>完整检测结果<ArrowRight size={15}/></button></header><div className="manager-camera-grid">{observation.cameras.map(camera=><div key={camera.role}><strong>{cameraLabel(camera.role)}</strong><ResultBadge status={limited&&camera.role==="stereo_extension"?"not_run":camera.enabled===false?"not_run":observation.heartbeatStale!==false?"indeterminate":camera.state==="STREAMING"&&camera.fresh?"normal":["FAULT","FAILED"].includes(camera.state??"")&&camera.fresh===false?"abnormal":"indeterminate"} label={limited&&camera.role==="stereo_extension"?"未检查":deviceStateLabel(camera.state)}/><small>{camera.effectiveFps===null?"帧率未提供":`${camera.effectiveFps.toFixed(1)} 帧/秒`}</small></div>)}</div><p>采集存储：{observation.storage?.writable===true?"可写":observation.storage?.writable===false?"不可写":"状态未提供"}</p>{limited&&<p className="manager-port-note">Type-C 当前用于连接电脑，扩展双目相机不参与本次检测；设备可能仍亮红灯。</p>}<p className="manager-observed">完整告警和检测证据位于“检测排障”。</p></section></div></>:<><section className="manager-empty compact"><Cable size={32}/><h2>{pageOnly?"暂不能读取设备报告":availability?.error?"设备报告暂不可用":"等待 D1 连接"}</h2>{availability?.attemptedAddress&&<dl className="manager-metadata"><div><dt>{connectionMode==="ap"?"热点 IP":"连接 IP"}</dt><dd>{availability.attemptedAddress}</dd></div></dl>}<p>{connectionMode!=="type_c"?connectionHelp:connectionLabel}</p></section></>}
       <DeviceOtaPanel request={pageRequest} connected={connected} busy={disabled} beginOperation={beginOperation} onError={setError}/>
     </>}
-    {section==="diagnostics"&&<>
+    {section==="diagnostics"&&!apConfiguration&&<>
       {statusPage&&<DeviceRuntimePanel cameraPortLimited={!runtimePage&&observation?.cameraPortLimited} connectionLimitedOnly={!runtimePage&&observation?.connectionLimitedOnly} page={statusPage} diagnostics error={runtimeError} refresh={()=>setRuntimeRevision(n=>n+1)} onConfigure={pageRequest?()=>{onNavigate("device");void openPage(pageRequest);}:undefined}/>}
       <section className="manager-diagnostic-controls" aria-label="设备检测操作"><div><strong>{connected?`D1 · 应用 ${observation?.device.applicationVersion??String(runtimePage?.status?.device&&typeof runtimePage.status.device==="object"?(runtimePage.status.device as Record<string,unknown>).workspace_version??"版本未提供":"版本未提供")}`:"等待设备连接"}</strong><p>{limited?"Type-C 占用相机接口，扩展双目相机不参与本次检测。":"只读检查，不启动录制或修改设备。"}</p></div><div className="manager-actions"><button className="button button-primary" disabled={disabled||!target} onClick={()=>void detect()}>{working==="diagnostics"?<LoaderCircle size={17} className="spin"/>:<ShieldCheck size={17}/>}运行设备检测</button>{working==="diagnostics"&&<button className="button button-secondary" disabled={cancelling} onClick={()=>void cancel()}>{cancelling?"正在取消":"取消检测"}</button>}<button className="button button-secondary" disabled={disabled||!run} onClick={()=>onNavigate("support")}><FileArchive size={17}/>查看诊断包</button></div></section>
       {working==="diagnostics"&&<p className="manager-running" role="status">正在读取 D1 健康报告…</p>}
@@ -348,6 +350,6 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
       {!isTauriRuntime()&&<p>请在桌面客户端预览并导出诊断包。</p>}
       {preview&&<div className="manager-package-preview" aria-label="诊断包预览"><p>{preview.privacy}</p>{preview.files.map(file=><article key={file.name}><strong>{file.name}</strong><span>{file.bytes} 字节</span><code>SHA-256 {file.sha256}</code></article>)}</div>}
       {output&&<div className="manager-export-success" role="status"><CheckCircle2 size={18}/><span>已导出：{output}</span><button className="text-button" onClick={()=>void revealOutput(output).catch(cause=>setError(errorText(cause)))}>打开所在位置</button></div>}
-    </>:<div className="manager-empty compact"><FileArchive size={30}/><h2>还没有检测记录</h2><p>完成设备检测后，即可预览和导出。</p><button className="button button-secondary" onClick={()=>onNavigate("diagnostics")}>前往检测</button></div>}</section><DiagnosticLogPanel busy={disabled} beginOperation={beginOperation} onError={setError}/></div>}
+    </>:<div className="manager-empty compact"><FileArchive size={30}/><h2>还没有检测记录</h2><p>完成设备检测后，即可预览和导出。</p><button className="button button-secondary" onClick={()=>onNavigate("diagnostics")}>前往检测</button></div>}</section><DiagnosticLogPanel run={run} busy={disabled} beginOperation={beginOperation} onError={setError}/></div>}
   </main>;
 }

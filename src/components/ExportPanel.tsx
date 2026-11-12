@@ -58,6 +58,7 @@ export function ExportPanel({
   result,
   busy,
   onSelectFormat,
+  onCheck,
   onExport,
   onReveal,
 }: {
@@ -72,6 +73,7 @@ export function ExportPanel({
   result: ExportResult | null;
   busy: boolean;
   onSelectFormat: (format: ExportFormat) => void;
+  onCheck: () => void;
   onExport: () => void;
   onReveal: (path: string) => void;
 }) {
@@ -149,11 +151,11 @@ export function ExportPanel({
         <button
           className="button button-primary export-button"
           type="button"
-          onClick={onExport}
-          disabled={busy || blocked}
+          onClick={validationReady ? onExport : onCheck}
+          disabled={busy || (validationReady && blocked)}
         >
           {busy ? <LoaderCircle className="spin" size={17} /> : <FolderOutput size={17} />}
-          选择目录并导出
+          {validationReady ? "选择目录并导出" : "检查数据后导出"}
         </button>
       </div>
 

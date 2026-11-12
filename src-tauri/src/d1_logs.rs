@@ -4,8 +4,8 @@
 //! reads the recorded `session.json` (for the real eMMC CID and identity), the
 //! `.session_meta/recording.log.jsonl` event stream and any bounded `.gst.log`
 //! text, reduces them to at most 200 accepted log entries and uploads one
-//! `runtime-diagnostic` report. Nothing here invents hardware conclusions: the
-//! report states that host-side logs were collected, nothing more.
+//! `runtime-diagnostic` report. A matching backend-owned diagnostic run may be
+//! included; unavailable checks stay unknown rather than becoming fabricated passes.
 use crate::d1_device::safe_text;
 use crate::d1_services;
 use crate::error::{AppError, AppResult};
@@ -16,9 +16,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SESSION_SCHEMA: &str = "dohc.recording.session-metadata.v1";
 const SESSION_LOG_SCHEMA: &str = "dohc.recording.session-log.v1";
@@ -34,6 +34,9 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogPreview {
+    pub preview_id: String,
+    pub report_type: String,
+    pub check_count: usize,
     pub source: String,
     pub device_id: Option<String>,
     pub has_cid: bool,
@@ -69,11 +72,34 @@ pub struct UploadReceipt {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UploadRequest {
-    /// Absolute folder of one recorded session (read-only).
-    pub source: String,
-    pub report_id: String,
-    /// Stable per-submission key; retries must reuse the same value.
-    pub idempotency_key: String,
+    pub preview_id: String,
+}
+
+struct FrozenReport {
+    owner: String,
+    preview_id: String,
+    report_id: String,
+    idempotency_key: String,
+    body: Vec<u8>,
+    entry_count: usize,
+    created: Instant,
+}
+#[derive(Clone, Default)]
+pub struct ReportState(Arc<Mutex<Vec<Arc<FrozenReport>>>>);
+impl ReportState {
+    fn get(&self, owner: &str, id: &str) -> Result<Arc<FrozenReport>, String> {
+        self.0
+            .lock()
+            .map_err(|_| "DIAGNOSTIC_STATE_UNAVAILABLE")?
+            .iter()
+            .find(|v| {
+                v.owner == owner
+                    && v.preview_id == id
+                    && v.created.elapsed() < Duration::from_secs(86400)
+            })
+            .cloned()
+            .ok_or_else(|| "DIAGNOSTIC_PREVIEW_EXPIRED: 请重新预览检测日志".into())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,12 +279,16 @@ fn default_level(event: &str, detail: &Value) -> &'static str {
 
 fn clip(value: &str, max: usize) -> String {
     let trimmed = value.trim();
-    if trimmed.chars().count() <= max {
+    if trimmed.encode_utf16().count() <= max {
         return trimmed.to_string();
     }
+    let mut used = 0;
     trimmed
         .chars()
-        .take(max.saturating_sub(1))
+        .take_while(|c| {
+            used += c.len_utf16();
+            used < max
+        })
         .chain(std::iter::once('…'))
         .collect()
 }
@@ -434,22 +464,30 @@ fn level_counts(entries: &[LogEntry]) -> LevelCounts {
     counts
 }
 
+#[cfg(test)]
 fn preview(source: &str) -> Result<LogPreview, String> {
     let collected = collect(Path::new(source))?;
-    Ok(LogPreview {
+    Ok(preview_collected(source, &collected))
+}
+
+fn preview_collected(source: &str, collected: &Collected) -> LogPreview {
+    LogPreview {
+        preview_id: String::new(),
+        report_type: "runtime-diagnostic".into(),
+        check_count: 0,
         source: source.into(),
         has_cid: true,
-        device_id: Some(collected.device_id),
-        workspace_version: collected.workspace_version,
-        release_id: collected.release_id,
+        device_id: Some(collected.device_id.clone()),
+        workspace_version: collected.workspace_version.clone(),
+        release_id: collected.release_id.clone(),
         total_entries: collected.total,
         selected_entries: collected.entries.len(),
         levels: level_counts(&collected.entries),
-        started_at: collected.started_at,
-        completed_at: collected.completed_at,
+        started_at: collected.started_at.clone(),
+        completed_at: collected.completed_at.clone(),
         truncated: collected.truncated,
         file_count: collected.file_count,
-    })
+    }
 }
 
 pub async fn service_status() -> AppResult<d1_services::DiagnosticServiceStatus> {
@@ -470,8 +508,145 @@ pub async fn service_status() -> AppResult<d1_services::DiagnosticServiceStatus>
     })
 }
 
-pub fn preview_source(source: &str) -> AppResult<LogPreview> {
-    preview(source).map_err(AppError::Message)
+pub fn preview_source(
+    state: &ReportState,
+    owner: &str,
+    source: &str,
+    run: Option<&crate::d1::DiagnosticRun>,
+) -> AppResult<LogPreview> {
+    let collected = collect(Path::new(source)).map_err(AppError::Message)?;
+    let mut preview = preview_collected(source, &collected);
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce)
+        .map_err(|_| AppError::Message("DIAGNOSTIC_RANDOM_UNAVAILABLE".into()))?;
+    let token: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    let report_id = format!("host-log-{token}");
+    let bytes = build_body(&collected, &report_id).map_err(AppError::Message)?;
+    let mut body: Value = serde_json::from_slice(&bytes)?;
+    if let Some(run) = run {
+        append_run(&mut body, &collected, run).map_err(AppError::Message)?;
+        preview.check_count = run.checks.len().min(64);
+        preview.report_type = "runtime-diagnostic".into();
+        preview.started_at = Some(format_rfc3339(run.started_at_ms));
+        preview.completed_at = Some(format_rfc3339(run.finished_at_ms.max(run.started_at_ms)));
+        // Report the versions observed now, not the versions in an old recording.
+        preview.workspace_version = run
+            .device
+            .as_ref()
+            .and_then(|d| d.application_version.clone());
+        preview.release_id = run.device.as_ref().and_then(|d| d.release_id.clone());
+    }
+    let bytes = bounded_body(&mut body).map_err(AppError::Message)?;
+    preview.selected_entries = body["logs"].as_array().map_or(0, Vec::len);
+    preview.truncated |= preview.selected_entries < collected.entries.len();
+    preview.preview_id = token.clone();
+    let frozen = Arc::new(FrozenReport {
+        owner: owner.into(),
+        preview_id: token,
+        report_id: report_id.clone(),
+        idempotency_key: format!("diag-{report_id}"),
+        body: bytes,
+        entry_count: preview.selected_entries,
+        created: Instant::now(),
+    });
+    let mut reports = state
+        .0
+        .lock()
+        .map_err(|_| AppError::Message("DIAGNOSTIC_STATE_UNAVAILABLE".into()))?;
+    reports.retain(|v| v.created.elapsed() < Duration::from_secs(86400));
+    if reports.len() >= 8 {
+        reports.remove(0);
+    }
+    reports.push(frozen);
+    Ok(preview)
+}
+
+fn append_run(
+    body: &mut Value,
+    collected: &Collected,
+    run: &crate::d1::DiagnosticRun,
+) -> Result<(), String> {
+    use crate::d1::{ResultStatus, TaskStatus};
+    let device = run
+        .device
+        .as_ref()
+        .filter(|d| d.identity_verified)
+        .ok_or("DIAGNOSTIC_DEVICE_UNKNOWN: 检测未读取真实设备身份，请重新检测")?;
+    if device.id != collected.device_id {
+        return Err(
+            "DIAGNOSTIC_DEVICE_MISMATCH: 此采集目录属于另一台设备，请选择当前 D1 的采集目录".into(),
+        );
+    }
+    let failed = run
+        .checks
+        .iter()
+        .any(|c| c.status == ResultStatus::Abnormal);
+    let incomplete = run.status != TaskStatus::Completed
+        || run.checks.is_empty()
+        || run.checks.len() > 64
+        || run.checks.iter().any(|c| {
+            matches!(
+                c.status,
+                ResultStatus::Indeterminate | ResultStatus::Unsupported | ResultStatus::NotRun
+            )
+        });
+    body["reportType"] = json!("runtime-diagnostic");
+    body["outcome"] = json!(if failed {
+        "failed"
+    } else if incomplete {
+        "degraded"
+    } else {
+        "passed"
+    });
+    body["observedStartedAt"] = json!(format_rfc3339(run.started_at_ms));
+    body["observedCompletedAt"] = json!(format_rfc3339(run.finished_at_ms.max(run.started_at_ms)));
+    body["summary"] = json!(format!(
+        "D1 Manager 只读检测：{} 项；未执行或无法判断的项目保留为未知。附采集会话最近日志。",
+        run.checks.len()
+    ));
+    body["stages"] = json!([{
+        "name":"device-health-observation", "outcome":if failed {"failed"} else if incomplete {"skipped"} else {"passed"},
+        "summary":"仅包含设备实际返回的观测与检测证据，未启动设备自检或压力测试。",
+        "checks":run.checks.iter().take(64).enumerate().map(|(i,c)|json!({"name":clip(&format!("{} {}",i+1,c.name),120),
+            "outcome": match c.status {ResultStatus::Normal=>"passed",ResultStatus::Abnormal=>"failed",_=>"warning"},
+            "summary":clip(&safe_message(&format!("{:?}：{}",c.status,c.evidence)).unwrap_or_else(||"证据已脱敏".into()),1000)
+        })).collect::<Vec<_>>()
+    },{"name":"host-log-collection","outcome":"passed","checks":[],"summary":"采集日志来自已核对同一设备标识的本地会话目录"}]);
+    if let Some(snapshot) = &run.observation {
+        body["alerts"] = json!(snapshot.alerts.iter().take(64).map(|a|json!({"code":clip(&a.code,120),
+            "severity":match a.severity.as_deref(){Some("critical")=>"critical",Some("info")=>"info",_=>"warning"},
+            "summary":clip(&safe_message(a.message.as_deref().unwrap_or(&a.code)).unwrap_or_else(||"告警内容已脱敏".into()),2000)
+        })).collect::<Vec<_>>());
+    }
+    body.as_object_mut().unwrap().remove("workspaceVersion");
+    body.as_object_mut().unwrap().remove("firmwareVersion");
+    if let Some(v) = &device.application_version {
+        body["workspaceVersion"] = json!(clip(v, 80));
+    }
+    if let Some(v) = &device.firmware {
+        body["firmwareVersion"] = json!(clip(v, 80));
+    }
+    Ok(())
+}
+
+fn bounded_body(body: &mut Value) -> Result<Vec<u8>, String> {
+    loop {
+        let text = json!({"summary":body["summary"],"stages":body["stages"],"alerts":body["alerts"],"logs":body["logs"]});
+        let bytes = serde_json::to_vec(body).map_err(|_| "UPLOAD_BODY_INVALID")?;
+        if bytes.len() <= MAX_BODY_BYTES as usize
+            && serde_json::to_vec(&text)
+                .map_err(|_| "UPLOAD_BODY_INVALID")?
+                .len()
+                <= 512 * 1024
+        {
+            return Ok(bytes);
+        }
+        let logs = body["logs"].as_array_mut().ok_or("UPLOAD_BODY_INVALID")?;
+        if logs.is_empty() {
+            return Err("UPLOAD_BODY_TOO_LARGE: 检测报告超过接口大小限制".into());
+        }
+        logs.remove(0);
+    }
 }
 
 fn validate_identifier(value: &str, label: &str) -> Result<(), String> {
@@ -509,7 +684,9 @@ fn build_body(collected: &Collected, report_id: &str) -> Result<Vec<u8>, String>
                 .map(|entry| entry.occurred_at.clone())
         })
         .unwrap_or_else(|| now.clone());
-    let outcome = if collected.entries.iter().any(|entry| entry.level == "error") {
+    let outcome = if collected.entries.is_empty()
+        || collected.entries.iter().any(|entry| entry.level == "error")
+    {
         "degraded"
     } else {
         "passed"
@@ -570,12 +747,7 @@ fn build_body(collected: &Collected, report_id: &str) -> Result<Vec<u8>, String>
     if let Some(version) = &collected.firmware_version {
         body["firmwareVersion"] = Value::String(clip(version, 80));
     }
-    let bytes =
-        serde_json::to_vec(&body).map_err(|_| "UPLOAD_BODY_INVALID: 报告序列化失败".to_string())?;
-    if bytes.len() as u64 > MAX_BODY_BYTES {
-        return Err("UPLOAD_BODY_TOO_LARGE: 报告超过 1 MiB，请缩短日志范围".into());
-    }
-    Ok(bytes)
+    bounded_body(&mut body)
 }
 
 fn upload_url(origin: &d1_services::Origin) -> String {
@@ -585,7 +757,58 @@ fn upload_url(origin: &d1_services::Origin) -> String {
     )
 }
 
-async fn post_report(body: Vec<u8>, idempotency_key: &str) -> Result<Value, String> {
+async fn post_report(
+    client: &reqwest::Client,
+    url: &str,
+    body: Vec<u8>,
+    idempotency_key: &str,
+) -> Result<Value, String> {
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Idempotency-Key", idempotency_key)
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                "UPLOAD_TIMEOUT: 日志上传超时，可用相同内容重试".to_string()
+            } else {
+                "UPLOAD_NETWORK_FAILED: 无法连接日志服务，请检查内网".to_string()
+            }
+        })?;
+    let status = response.status().as_u16();
+    use futures_util::StreamExt;
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(part) = stream.next().await {
+        let part = part.map_err(|_| "UPLOAD_RESPONSE_INVALID: 日志服务响应读取失败")?;
+        if bytes.len() + part.len() > 1024 * 1024 {
+            return Err("UPLOAD_RESPONSE_INVALID: 日志服务响应过大".into());
+        }
+        bytes.extend_from_slice(&part);
+    }
+    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    if status == 201 {
+        return Ok(value);
+    }
+    let code = text_field(&value["error"], "code").unwrap_or_else(|| status.to_string());
+    let message =
+        text_field(&value["error"], "message").unwrap_or_else(|| "日志服务拒绝上传".into());
+    Err(format!("UPLOAD_FAILED_{status}_{code}: {message}"))
+}
+
+pub async fn upload(
+    state: &ReportState,
+    owner: &str,
+    request: UploadRequest,
+    cancelled: Arc<AtomicBool>,
+) -> Result<UploadReceipt, String> {
+    let frozen = state.get(owner, &request.preview_id)?;
+    validate_identifier(&frozen.report_id, "reportId")?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("DIAGNOSTIC_CANCELLED: 上传已取消，未发送".into());
+    }
     let config = d1_services::load().map_err(|error| error.to_string())?;
     if !config.diagnostic_upload.enabled {
         return Err("DIAGNOSTIC_UPLOAD_DISABLED: 日志上传服务尚未启用".into());
@@ -604,70 +827,28 @@ async fn post_report(body: Vec<u8>, idempotency_key: &str) -> Result<Value, Stri
         .timeout(UPLOAD_TIMEOUT)
         .build()
         .map_err(|_| "UPLOAD_CLIENT_UNAVAILABLE: 无法建立上传连接".to_string())?;
-    let response = client
-        .post(upload_url(&origin))
-        .header("Content-Type", "application/json")
-        .header("Idempotency-Key", idempotency_key)
-        .body(body)
-        .send()
-        .await
-        .map_err(|error| {
-            if error.is_timeout() {
-                "UPLOAD_TIMEOUT: 日志上传超时，可用相同内容重试".to_string()
-            } else {
-                "UPLOAD_NETWORK_FAILED: 无法连接日志服务，请检查内网".to_string()
-            }
-        })?;
-    let status = response.status().as_u16();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|_| "UPLOAD_RESPONSE_INVALID: 日志服务响应读取失败".to_string())?;
-    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    if status == 201 || status == 200 {
-        return Ok(value);
+    // The body and key are immutable across retries, including an uncertain receipt.
+    let value = post_report(
+        &client,
+        &upload_url(&origin),
+        frozen.body.clone(),
+        &frozen.idempotency_key,
+    )
+    .await?;
+    let report = &value["data"]["report"];
+    let device_id = text_field(report, "deviceId")
+        .ok_or("UPLOAD_RECEIPT_INVALID: 缺少设备档案关联，请用原报告重试确认")?;
+    if text_field(report, "reportId").as_deref() != Some(frozen.report_id.as_str())
+        || text_field(report, "kind").as_deref() != Some("device-diagnostic-report-v1")
+        || text_field(report, "id").is_none()
+    {
+        return Err("UPLOAD_RECEIPT_INVALID: 上传回执不匹配，请用原报告重试确认".into());
     }
-    let code = text_field(&value["error"], "code").unwrap_or_else(|| status.to_string());
-    let message =
-        text_field(&value["error"], "message").unwrap_or_else(|| "日志服务拒绝上传".into());
-    Err(format!("UPLOAD_FAILED_{status}_{code}: {message}"))
-}
-
-pub async fn upload(
-    request: UploadRequest,
-    cancelled: Arc<AtomicBool>,
-) -> Result<UploadReceipt, String> {
-    validate_identifier(&request.report_id, "reportId")?;
-    if !(8..=200).contains(&request.idempotency_key.len()) {
-        return Err("UPLOAD_IDEMPOTENCY_INVALID: 幂等键长度必须为 8–200".into());
-    }
-    if request.idempotency_key.chars().any(char::is_control) {
-        return Err("UPLOAD_IDEMPOTENCY_INVALID: 幂等键含非法字符".into());
-    }
-    if cancelled.load(Ordering::Acquire) {
-        return Err("DIAGNOSTIC_CANCELLED: 日志上传已取消，未发送".into());
-    }
-    let source = request.source.clone();
-    let collected = tauri::async_runtime::spawn_blocking(move || collect(Path::new(&source)))
-        .await
-        .map_err(|error| error.to_string())??;
-    let body = build_body(&collected, &request.report_id)?;
-    let entry_count = collected.entries.len();
-    if cancelled.load(Ordering::Acquire) {
-        return Err("DIAGNOSTIC_CANCELLED: 日志上传已取消，未发送".into());
-    }
-    // Once sent, retain the real server receipt even if cancellation arrives;
-    // cancelling a local wait cannot undo a remote submission.
-    let value = post_report(body, &request.idempotency_key).await?;
-    let device_id = value["data"]["report"]["deviceId"]
-        .as_str()
-        .map(str::to_string)
-        .unwrap_or_else(|| collected.device_id.clone());
     Ok(UploadReceipt {
-        report_id: request.report_id,
+        report_id: frozen.report_id.clone(),
         device_id,
-        entry_count,
-        message: "日志已提交。设备与报告由 Dashboard 关联，可在设备档案中查看。".into(),
+        entry_count: frozen.entry_count,
+        message: "已上传至 Device 设备档案，可在详细诊断报告中查看。".into(),
     })
 }
 
@@ -729,6 +910,115 @@ mod tests {
         ));
         fs::create_dir_all(root.join(".session_meta")).unwrap();
         root
+    }
+
+    #[test]
+    fn frozen_report_survives_source_change_and_is_bound_to_owner() {
+        let root = temp_root("frozen");
+        fs::write(root.join("session.json"),br#"{"schema":"dohc.recording.session-metadata.v1","device":{"device_id":"fixture-device","emmc_cid":"f4012241524a313158155c1983481c00"}}"#).unwrap();
+        let state = ReportState::default();
+        let preview = preview_source(&state, "owner", root.to_str().unwrap(), None).unwrap();
+        let before = state.get("owner", &preview.preview_id).unwrap();
+        fs::write(root.join("session.json"), b"changed").unwrap();
+        let retry = state.get("owner", &preview.preview_id).unwrap();
+        assert_eq!(before.body, retry.body);
+        assert_eq!(before.idempotency_key, retry.idempotency_key);
+        assert!(state.get("other", &preview.preview_id).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn device_checks_keep_unknown_and_reject_other_device_identity() {
+        use crate::d1::{CheckResult, DiagnosticRun, ResultStatus, TaskStatus};
+        let collected = Collected {
+            cid: "f4012241524a313158155c1983481c00".into(),
+            device_id: "fixture-device".into(),
+            workspace_version: None,
+            release_id: None,
+            firmware_version: None,
+            started_at: None,
+            completed_at: None,
+            entries: vec![],
+            total: 0,
+            truncated: false,
+            file_count: 1,
+        };
+        let device = crate::d1_device::DeviceIdentity {
+            id: "fixture-device".into(),
+            application_version: Some("1.1.1".into()),
+            release_id: None,
+            firmware: None,
+            hardware_profile: None,
+            architecture: None,
+            channel: None,
+            source: "fixture",
+            identity_verified: true,
+        };
+        let mut run = DiagnosticRun {
+            id: "fixture".into(),
+            source: "fixture",
+            device: Some(device),
+            observation: None,
+            started_at_ms: 1,
+            finished_at_ms: 2,
+            status: TaskStatus::Completed,
+            checks: vec![CheckResult {
+                id: "camera".into(),
+                name: "相机".into(),
+                status: ResultStatus::Indeterminate,
+                evidence: "未提供".into(),
+                observed_at_ms: None,
+                rule_version: "fixture".into(),
+                applicable_firmware: "fixture".into(),
+                suggestion: String::new(),
+                error_kind: None,
+            }],
+        };
+        let mut body: Value =
+            serde_json::from_slice(&build_body(&collected, "fixture-report-01").unwrap()).unwrap();
+        append_run(&mut body, &collected, &run).unwrap();
+        assert_eq!(body["outcome"], "degraded");
+        assert_eq!(body["stages"][0]["checks"][0]["outcome"], "warning");
+        run.device.as_mut().unwrap().id = "different-device".into();
+        assert!(append_run(&mut body, &collected, &run)
+            .unwrap_err()
+            .contains("MISMATCH"));
+    }
+
+    #[test]
+    fn http_upload_requires_created_and_preserves_body_and_key() {
+        use crate::d1_service_test::{serve, Reply};
+        let receipt = json!({"data":{"report":{"id":"entity","kind":"device-diagnostic-report-v1","deviceId":"device","reportId":"fixture-report"}}});
+        let replies = [201, 200, 503]
+            .into_iter()
+            .map(|status| Reply {
+                method: "POST",
+                path: "/report".into(),
+                status,
+                headers: vec![],
+                body: serde_json::to_vec(&receipt).unwrap(),
+            })
+            .collect();
+        let (base, worker) = serve(replies);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let body = b"{\"reportId\":\"fixture-report\"}".to_vec();
+        for status in [201, 200, 503] {
+            let result = tauri::async_runtime::block_on(post_report(
+                &client,
+                &format!("{base}/report"),
+                body.clone(),
+                "stable-key",
+            ));
+            assert_eq!(result.is_ok(), status == 201);
+        }
+        let requests = worker.join().unwrap();
+        for req in requests {
+            assert!(req.ends_with(&body));
+            assert!(String::from_utf8_lossy(&req)
+                .to_ascii_lowercase()
+                .contains("idempotency-key: stable-key"));
+        }
+        assert!(clip(&"😀".repeat(2000), 2000).encode_utf16().count() <= 2000);
     }
 
     #[test]

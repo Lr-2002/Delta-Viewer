@@ -300,6 +300,8 @@ export function observeReviewInteractions() {
       "button, input, select, textarea, [role='slider']",
     );
     if (!control || control.matches("input[type='password']")) return "";
+    // Special-tag descriptions stay in review results, never in operation telemetry.
+    if (control.closest(".episode-special-tags")) return "特殊标签操作";
     return (
       control.getAttribute("aria-label") ||
       control.getAttribute("title") ||

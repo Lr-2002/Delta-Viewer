@@ -16,6 +16,7 @@ interface ChecksPanelProps {
   data: EpisodeData;
   report: ValidationReport | null;
   busy: boolean;
+  onCheck: () => void;
   onExportReport: () => void;
   onLocateIssue: (issue: ValidationIssue) => void;
 }
@@ -27,6 +28,7 @@ export function ChecksPanel({
   data,
   report,
   busy,
+  onCheck,
   onExportReport,
   onLocateIssue,
 }: ChecksPanelProps) {
@@ -91,6 +93,10 @@ export function ChecksPanel({
           <h2>数据检查</h2>
         </div>
         <div className="check-heading-actions">
+          <button className="button button-primary" type="button" disabled={busy} onClick={onCheck}>
+            {busy ? <LoaderCircle className="spin" size={16}/> : <FileCheck2 size={16}/>}
+            {report ? "重新检查" : "运行数据检查"}
+          </button>
           <button
             className="button button-secondary"
             type="button"
@@ -140,7 +146,7 @@ export function ChecksPanel({
             <span>{row.checkedFrames}</span>
             <span>{row.decodeFailures}</span>
             <span>
-              <StatusMark status={row.status} compact />
+              {report ? <StatusMark status={row.status} compact /> : <span className="status-mark">未检查</span>}
             </span>
           </div>
         ))}
@@ -151,7 +157,7 @@ export function ChecksPanel({
         {!report ? (
           <div className="issue-empty">
             <LoaderCircle className={busy ? "spin" : undefined} size={18} />
-            {busy ? "正在检查" : "尚未完成检查"}
+            {busy ? "正在检查" : "尚未检查，点击“运行数据检查”查看完整结果。"}
           </div>
         ) : orderedIssues.length ? (
           orderedIssues.map((issue, index) => (

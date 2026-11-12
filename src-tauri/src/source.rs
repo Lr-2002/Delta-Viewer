@@ -218,10 +218,30 @@ fn recording_preview_states(
     Ok(None)
 }
 
+#[cfg(test)]
 pub fn load_episode_preview(
     root: &Path,
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
+) -> AppResult<EpisodeData> {
+    load_episode_initial(root, app, cancelled, true)
+}
+
+/// Open for review without decoding sample images or running a health report.
+/// Complete states and skeletons remain available to the existing editors.
+pub fn load_episode_for_review(
+    root: &Path,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+) -> AppResult<EpisodeData> {
+    load_episode_initial(root, app, cancelled, false)
+}
+
+fn load_episode_initial(
+    root: &Path,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+    preview: bool,
 ) -> AppResult<EpisodeData> {
     if !root.is_dir() {
         return Err(AppError::MissingPath(root.display().to_string()));
@@ -232,7 +252,11 @@ pub fn load_episode_preview(
         return load_episode_with_index(root, &index, cancelled);
     }
     emit_read_stage(app, "读取预览状态记录", &root.join("states.jsonl"));
-    let partial = recording_preview_states(root, cancelled)?;
+    let partial = if preview {
+        recording_preview_states(root, cancelled)?
+    } else {
+        None
+    };
     let states_partial = partial.is_some();
     let states = match partial {
         Some(states) => states,

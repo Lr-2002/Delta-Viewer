@@ -465,7 +465,7 @@ impl DeviceState {
             runs.clear();
         }
     }
-    fn get(&self, owner: &str, id: &str) -> AppResult<DiagnosticRun> {
+    pub(crate) fn get(&self, owner: &str, id: &str) -> AppResult<DiagnosticRun> {
         self.0
             .lock()
             .map_err(|_| AppError::Message("D1_STATE_UNAVAILABLE".into()))?
