@@ -445,6 +445,7 @@ test('HTTP page failure does not block the selected IP from SSH upgrade in any m
       await context.route('**/__d1-upgrade-runtime',route=>route.fulfill({contentType:'application/javascript',body:`
         export * from '/src/lib/backend.ts';
         export async function getOtaServiceStatus(){return {enabled:true,trust:'digest_only',detail:'本地 SSH 夹具'};}
+        export async function checkDeviceOtaRelease(request){return readDeviceOtaStatus(request);}
         export async function readDeviceOtaStatus(request){window.upgradeStatusRequests.push(request);return {available:true,state:'IDLE',active:false,finalState:false,failureCodes:[],detail:'SSH 就绪'};}
       `}));
     });

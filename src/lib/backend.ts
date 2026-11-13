@@ -24,6 +24,10 @@ export async function readDeviceOtaStatus(request:DeviceUpgradeRequest):Promise<
   if(!isTauriRuntime())throw new Error("请在桌面客户端读取设备升级状态。");
   return invoke("d1_ota_status",{request:{...request,apAddress:request.apAddress??null}});
 }
+export async function checkDeviceOtaRelease(request:DeviceUpgradeRequest,previewId:string,operationId:number):Promise<DeviceOtaStatus> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端检查设备版本。");
+  return invoke("d1_ota_check_device",{request:{...request,apAddress:request.apAddress??null},previewId,operationId});
+}
 export async function readOtaHistory():Promise<OtaLogRecord[]> {
   if(!isTauriRuntime())return [];
   return invoke("d1_ota_history");
@@ -41,7 +45,7 @@ export async function previewDiagnosticLogs(source:string,operationId:number,run
   return invoke("d1_logs_preview",{source,operationId,runId:runId??null});
 }
 export async function confirmDeviceOtaUpgrade(version:string):Promise<boolean> {
-  const message=`将通过 SSH 在当前设备安装 Factory${version}。设备优先直接下载，无法联网时由软件经 SSH 发送已核对的安装包，再调用包内安装器。请停止录制并保持供电。当前采用大小与 SHA-256 核对，不依赖 AP OTA 公钥校验。是否继续？`;
+  const message=`即将升级设备至${version}。请先停止录制、自检和压力测试，并保持供电及设备连接。升级过程中请勿关机或断电。是否继续？`;
   return isTauriRuntime()?confirm(message,{title:"确认设备升级",kind:"warning"}):window.confirm(message);
 }
 export async function uploadDiagnosticLogs(previewId:string,operationId:number):Promise<LogUploadReceipt> {

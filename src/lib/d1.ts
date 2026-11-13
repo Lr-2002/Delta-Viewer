@@ -71,7 +71,7 @@ export interface DeviceOtaStatus {
   releaseBefore:string|null; releaseTarget:string|null; targetVersion:string|null;
   active:boolean; finalState:boolean; guidance:string|null; detail:string;
   failureCodes:string[]; reason:string|null; previousResult:boolean;
-  transport?:"ssh";deviceId?:string;cid?:string;logError?:string|null;
+  transport?:"ssh";deviceId?:string;cid?:string;logError?:string|null;currentVersion?:string|null;currentReleaseId?:string|null;
 }
 export interface OtaLogRecord {
   id:string;deviceId:string|null;cid:string|null;operationId:string|null;

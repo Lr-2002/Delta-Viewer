@@ -180,6 +180,13 @@ pub fn submitted(
     match result {
         Ok(receipt) => {
             record.operation_id = receipt.operation_id.clone();
+            if receipt.device_state.as_deref() == Some("UP_TO_DATE") {
+                record.state = "UP_TO_DATE".into();
+                record.result = Some("UP_TO_DATE".into());
+                event(&mut record, "info", &receipt.message);
+                save(&tx, &record)?;
+                return tx.commit().map_err(|e| e.to_string());
+            }
             if record.last_status.is_empty() {
                 record.state = "HOST_SUBMITTED".into();
             }
@@ -319,6 +326,29 @@ pub fn sync_ssh(root: &Path, owner: &str, remote: &crate::d1_ssh::SshStatus) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_build_receipt_is_final_without_waiting_for_an_install() {
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).unwrap();
+        let root =
+            std::env::temp_dir().join(format!("d1-current-log-{:x}", u128::from_le_bytes(nonce)));
+        let operation = begin(&root, "alice", "factory-build", "1.3.1").unwrap();
+        let receipt = crate::d1_ota::OtaSubmitResult {
+            release_id: "factory-build".into(),
+            version: "1.3.1".into(),
+            operation_id: Some(operation.clone()),
+            device_state: Some("UP_TO_DATE".into()),
+            message: "当前已是最新版本 1.3.1，无需升级。".into(),
+        };
+        submitted(&root, "alice", &operation, &Ok(receipt)).unwrap();
+        let saved = get(&root, "alice", &format!("ssh-{operation}")).unwrap();
+        assert_eq!(saved.state, "UP_TO_DATE");
+        assert_eq!(saved.result.as_deref(), Some("UP_TO_DATE"));
+        assert!(saved.events.last().unwrap().message.contains("无需升级"));
+        assert!(!saved.events.last().unwrap().message.contains("等待"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn journal_survives_reopen_isolates_owners_and_keeps_receipt_for_its_revision() {

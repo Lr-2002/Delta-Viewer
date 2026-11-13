@@ -163,7 +163,53 @@ def power_check():
             raise ValueError('OTA_POWER_UNSAFE: 当前电压低于设备升级门限 %.2fV' % minimum)
 
 
-def stage(payload):
+def same_release(actual, payload):
+    # A version label alone must not hide a different build of that version.
+    return actual['version'] == payload['version'] and actual.get('releaseId') == payload['releaseId']
+
+
+def announce_current():
+    """Use the installed prompt player, including its shared PCM/GPIO lock."""
+    code = """import os,sys
+sys.path.insert(0, '/opt/dohc/current')
+from system_monitor import config
+from system_monitor.audio_prompts import PROMPT_OTA_UP_TO_DATE, play_runtime_prompt
+raise SystemExit(0 if play_runtime_prompt(PROMPT_OTA_UP_TO_DATE, config=config) else 1)
+"""
+    try:
+        environment = dict(os.environ)
+        environment.update({key: value for key, value in config().items() if key.startswith('DOHC_')})
+        result = subprocess.run(['/usr/bin/python3', '-c', code], env=environment,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def current_record(directory, payload, actual):
+    now = int(time.time() * 1000)
+    message = '当前已是最新版本 %s，无需升级。' % payload['version']
+    record = dict(available=True, state='UP_TO_DATE', result='UP_TO_DATE',
+                  operationId=payload['operationId'], deviceId=actual['deviceId'], cid=actual['cid'],
+                  releaseBefore=actual['version'], releaseTarget=payload['releaseId'],
+                  targetVersion=payload['version'], active=False, finalState=True,
+                  startedAtMs=now, updatedAtMs=now, failureCodes=[], reason=None,
+                  guidance=message, events=[dict(atMs=now, level='info', message=message)])
+    write(directory / 'request.json', payload)
+    write(directory / 'status.json', record)
+    write(ROOT / 'latest.json', dict(operationId=payload['operationId']))
+    # Persist intent first: retries/polling never replay an audible prompt.
+    played = announce_current()
+    record['updatedAtMs'] = int(time.time() * 1000)
+    record['events'].append(dict(atMs=record['updatedAtMs'], level='info' if played else 'warning',
+                                message='设备已播放当前已是最新版本提示。' if played else '设备语音提示未播放，请以页面版本状态为准。'))
+    if not played:
+        record['guidance'] += '设备语音提示未播放，请以页面状态为准。'
+    write(directory / 'status.json', record)
+    return dict(record, **actual)
+
+
+def stage(payload, check_only=False):
     validate(payload)
     actual = identity()
     if actual['cid'] != payload['cid'] or actual['deviceId'] != payload['deviceId']:
@@ -176,10 +222,18 @@ def stage(payload):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         directory = ROOT / operation
         if directory.exists():
+            saved = load(directory / 'status.json', {})
+            if saved.get('state') == 'UP_TO_DATE' and load(directory / 'request.json') == payload and same_release(actual, payload):
+                return dict(saved, **actual)
             raise ValueError('OTA_OPERATION_EXISTS: 请重新检查版本后再试')
         previous = current()
         if previous.get('active') or previous.get('state') == 'UNKNOWN':
             raise ValueError('OTA_ALREADY_RUNNING: 前次升级正在执行或结果待确认')
+        if same_release(actual, payload):
+            directory.mkdir(mode=0o700)
+            return current_record(directory, payload, actual)
+        if check_only:
+            return read()
         if shutil.disk_usage(str(ROOT)).free < payload['size'] * 5 + 256 * 1024 * 1024:
             raise ValueError('OTA_STORAGE_UNSAFE: 升级暂存空间不足')
         directory.mkdir(mode=0o700)
@@ -270,6 +324,8 @@ def launch(payload, source):
         previous = current()
         if previous.get('active') or previous.get('state') == 'UNKNOWN':
             raise ValueError('OTA_ALREADY_RUNNING: 前次升级正在执行或结果待确认')
+        if same_release(actual, payload):
+            return current_record(directory, payload, actual)
         package = directory / 'artifact.deb'
         verify(package, payload)
         (directory / 'worker.py').write_text(source)
@@ -413,8 +469,8 @@ def worker(directory):
 def entry(action, payload=None, source=None):
     if action == 'read':
         result = read()
-    elif action == 'stage':
-        result = stage(payload)
+    elif action in ('stage', 'check'):
+        result = stage(payload, check_only=action == 'check')
     elif action in ('download', 'receive'):
         result = transfer(payload, incoming=action == 'receive')
     elif action == 'launch':

@@ -228,6 +228,10 @@
 .manager-ota-status>div {display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid #eceef2;border-radius:8px;background:#fafbfc;min-width:0;}
 .manager-ota-status span {font-size:12px;color:#677480;}
 .manager-ota-status strong {font-size:14px;font-weight:600;overflow-wrap:anywhere;}
+.manager-ota-caution {display:flex;align-items:flex-start;gap:10px;border:1px solid #efd27c;border-radius:8px;background:#fff8df;color:#765719;padding:12px 14px;font-size:13px;line-height:1.7;}
+.manager-ota-caution>svg {flex:0 0 auto;margin-top:2px;color:#a77511;}
+.manager-ota-caution strong {font-size:14px;font-weight:600;}
+.manager-ota-caution ul {margin:4px 0 0;padding-left:18px;}
 .manager-ota-note {font-size:13px;color:#5b6874;line-height:1.5;}
 .manager-ota-error {display:flex;align-items:flex-start;gap:6px;font-size:13px;color:#a12a2a;line-height:1.5;}
 .manager-ota-error svg {flex:0 0 auto;margin-top:2px;}

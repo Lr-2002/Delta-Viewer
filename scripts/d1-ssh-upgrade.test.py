@@ -29,6 +29,8 @@ class UpgradeTest(unittest.TestCase):
         self.patch('config', lambda: {})
         self.report = dict(phase='IDLE', heartbeat_stale=False, power=dict(voltage=7.8, temperature=40))
         self.patch('health', lambda: self.report)
+        self.announcements = []
+        self.patch('announce_current', lambda: self.announcements.append('up-to-date') or True)
         self.installs = []
         self.starts = 0
         self.fail_install = False
@@ -93,6 +95,71 @@ class UpgradeTest(unittest.TestCase):
 
     def result(self, directory):
         return upgrade.load(directory / 'status.json')
+
+    def test_check_matching_release_announces_without_download_or_install_and_survives_read(self):
+        self.identity.update(version=self.payload['version'], releaseId=self.payload['releaseId'])
+        self.report = dict(phase='RECORDING')  # A version check does not install.
+        with patch.object(upgrade, 'download', side_effect=AssertionError('must not download')):
+            result = upgrade.stage(self.payload, check_only=True)
+        self.assertEqual((result['state'], result['result']), ('UP_TO_DATE', 'UP_TO_DATE'))
+        self.assertTrue(result['finalState'])
+        self.assertFalse(result['active'])
+        self.assertEqual(self.announcements, ['up-to-date'])
+        self.assertEqual(self.installs, [])
+        self.assertEqual(self.starts, 0)
+        directory = self.root / self.payload['operationId']
+        self.assertFalse((directory / 'artifact.deb').exists())
+        for _ in range(3):
+            self.assertEqual(upgrade.read()['state'], 'UP_TO_DATE')
+        upgrade.stage(self.payload, check_only=True)  # Receipt retry is silent.
+        self.assertEqual(self.announcements, ['up-to-date'])
+
+    def test_direct_submit_same_release_skips_install_but_different_build_does_not(self):
+        self.identity.update(version=self.payload['version'], releaseId=self.payload['releaseId'])
+        self.assertEqual(upgrade.stage(self.payload)['state'], 'UP_TO_DATE')
+        self.assertEqual(self.starts, 0)
+        self.payload['operationId'] = 'cd' * 16
+        self.payload['releaseId'] = 'same-version-new-build'
+        result = upgrade.stage(self.payload, check_only=True)
+        self.assertEqual(result['releaseId'], 'test-release')
+        self.assertFalse((self.root / self.payload['operationId']).exists())
+        self.assertEqual(upgrade.stage(self.payload)['state'], 'STAGING')
+        self.assertEqual(self.announcements, ['up-to-date'])
+
+    def test_newer_release_check_never_stages_and_audio_failure_does_not_change_version_result(self):
+        result = upgrade.stage(self.payload, check_only=True)
+        self.assertEqual(result['state'], 'IDLE')
+        self.assertFalse((self.root / self.payload['operationId']).exists())
+        self.assertEqual(self.announcements, [])
+        self.identity.update(version=self.payload['version'], releaseId=self.payload['releaseId'])
+        with patch.object(upgrade, 'announce_current', return_value=False):
+            result = upgrade.stage(self.payload, check_only=True)
+        self.assertEqual((result['state'], result['result']), ('UP_TO_DATE', 'UP_TO_DATE'))
+        self.assertEqual(result['failureCodes'], [])
+        self.assertIn('语音提示未播放', result['guidance'])
+        self.assertEqual(result['events'][-1]['level'], 'warning')
+
+    def test_version_check_cannot_replace_unknown_or_active_attempt_or_other_device(self):
+        directory = self.launched()
+        self.identity.update(version=self.payload['version'], releaseId=self.payload['releaseId'])
+        self.payload['operationId'] = 'cd' * 16
+        with self.assertRaisesRegex(ValueError, 'OTA_ALREADY_RUNNING'):
+            upgrade.stage(self.payload, check_only=True)
+        self.assertEqual(self.announcements, [])
+        self.payload['cid'] = 'f' * 32
+        with self.assertRaisesRegex(ValueError, 'OTA_DEVICE_CHANGED'):
+            upgrade.stage(self.payload, check_only=True)
+
+    def test_version_changed_during_transfer_is_rechecked_before_launch(self):
+        directory = self.staged()
+        self.identity.update(version=self.payload['version'], releaseId=self.payload['releaseId'])
+        result = upgrade.launch(self.payload, '# fixture')
+        self.assertEqual(result['state'], 'UP_TO_DATE')
+        self.assertEqual(self.starts, 0)
+        self.assertEqual(self.installs, [])
+        self.assertEqual(self.announcements, ['up-to-date'])
+        upgrade.launch(self.payload, '# repeated')
+        self.assertEqual(self.announcements, ['up-to-date'])
 
     def test_success_uses_bundled_dependencies_then_package_and_confirms_version(self):
         directory = self.launched()

@@ -329,6 +329,47 @@ async fn d1_ota_status(
 }
 
 #[tauri::command]
+async fn d1_ota_check_device(
+    ota: State<'_, d1_ota::OtaState>,
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    operation_id: u64,
+    preview_id: String,
+    request: d1_device::DeviceRequest,
+) -> Result<d1_ssh::SshStatus, String> {
+    let ssh = app.state::<d1_ssh::SshState>();
+    let owner = d1_owner(&auth)?;
+    let root = base_app_data_root(&app)?;
+    let history = user_center::d1_history_owner(&root, &auth).map_err(|e| e.to_string())?;
+    let task = control.start(operation_id)?;
+    let mut status = d1_ssh::check_release(
+        &ssh,
+        &ota,
+        &root,
+        &owner,
+        &preview_id,
+        &request,
+        &task.cancelled(),
+    )
+    .await?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    let snapshot = status.clone();
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        d1_ota_log::sync_ssh(&root, &history, &snapshot)
+    })
+    .await
+    .map_err(|e| e.to_string());
+    status.log_error = match saved {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) | Err(error) => Some(format!("设备版本已核对，但本机日志保存失败：{error}")),
+    };
+    Ok(status)
+}
+
+#[tauri::command]
 async fn d1_ota_history(
     app: AppHandle,
     auth: State<'_, AuthState>,
@@ -3218,6 +3259,7 @@ pub fn run() {
             d1_ota_preview,
             d1_ota_submit,
             d1_ota_status,
+            d1_ota_check_device,
             d1_ota_history,
             d1_ota_log_preview,
             d1_logs_service,

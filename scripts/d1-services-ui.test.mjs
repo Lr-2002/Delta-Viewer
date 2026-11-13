@@ -21,7 +21,8 @@ const backend=`
 export async function readOtaHistory(){return window.otaHistory??[];}
 export async function previewOtaLogs(id,operationId){window.otaPreviewRecord=id;return {...await previewDiagnosticLogs('SSH',operationId),previewId:'frozen-ota-preview'};}
 export async function getOtaServiceStatus(){return {enabled:true,origin:null,channel:'factory',trust:'digest_only',trustKeyId:null,detail:'本地测试夹具'};}
-export async function previewOtaRelease(){window.previewCalls++;return {previewId:'fixture-preview',releaseId:'fixture-release',version:'1.0.0',channel:'factory',keyId:null,rollbackIndex:null,artifactBytes:123,totalBytes:456,files:[],trust:'digest_only'};}
+export async function checkDeviceOtaRelease(request){window.checkCalls=(window.checkCalls??0)+1;return window.checkResult??readDeviceOtaStatus(request);}
+export async function previewOtaRelease(){window.previewCalls++;return window.previewResult??{previewId:'fixture-preview',releaseId:'fixture-release',version:'1.0.0',channel:'factory',keyId:null,rollbackIndex:null,artifactBytes:123,totalBytes:456,files:[],trust:'digest_only'};}
 export async function confirmDeviceOtaUpgrade(){window.confirmCalls++;return window.confirmUpgrade??false;}
 export async function submitOtaToDevice(){window.submitCalls++;if(window.submitResult)return window.submitResult;throw Error('fixture must not submit');}
 export async function readDeviceOtaStatus(){window.statusCalls++;(window.statusRequests??=[]).push(arguments[0]);if(window.statusError)throw Error('设备连接中断');return window.otaStatus??{available:true,failureCodes:[],reason:null,previousResult:false,state:'SUCCESS',result:'PASS',operationId:'fixture-op',releaseBefore:'fixture-before',releaseTarget:'fixture-after',targetVersion:'1.0.0',active:false,finalState:true,guidance:null,detail:'本地夹具成功'};}
@@ -58,6 +59,11 @@ test('OTA status becomes unavailable on disconnect; all three modes query SSH st
       await page.goto(origin+'/device-services-fixture');
       await page.getByText('设备报告升级成功。',{exact:false}).waitFor();
       assert.ok(!/未提供/.test(await page.locator('.manager-observed').innerText()));
+      const caution=page.getByRole('complementary',{name:'升级注意事项'});
+      assert.ok((await caution.innerText()).includes('升级过程中请勿关机或断电'));
+      assert.equal(await caution.evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(255, 248, 223)');
+      assert.equal(await page.getByText('共用 SSH 升级',{exact:false}).count(),0);
+      assert.equal(await page.getByText('包内安装器',{exact:false}).count(),0);
       await page.getByRole('button',{name:'检查最新版本',exact:true}).click();
       await page.getByRole('button',{name:'开始升级',exact:true}).click();
       assert.equal(await page.evaluate(()=>window.confirmCalls),1);assert.equal(await page.evaluate(()=>window.submitCalls),0);
@@ -80,6 +86,25 @@ test('OTA status becomes unavailable on disconnect; all three modes query SSH st
       await page.locator('.manager-ota-failure').getByText('升级失败',{exact:true}).waitFor();
       assert.equal(await page.getByText('设备已接收，等待安装结果',{exact:true}).count(),0);
       assert.equal(await page.getByRole('button',{name:'开始升级',exact:true}).isDisabled(),false);
+      await page.evaluate(()=>{
+        window.checkResult=window.otaStatus={available:true,state:'UP_TO_DATE',result:'UP_TO_DATE',operationId:'current-check',releaseBefore:'1.0.0',releaseTarget:'fixture-release',targetVersion:'1.0.0',currentVersion:'1.0.0',currentReleaseId:'fixture-release',active:false,finalState:true,failureCodes:[],reason:null,guidance:'当前已是最新版本 1.0.0，无需升级。'};
+      });
+      const submitsBefore=await page.evaluate(()=>window.submitCalls);
+      await page.getByRole('button',{name:'检查最新版本',exact:true}).click();
+      await page.getByText('当前已是最新版本 1.0.0，无需升级。',{exact:true}).waitFor();
+      assert.equal(await page.getByRole('button',{name:'开始升级',exact:true}).count(),0);
+      assert.equal(await page.locator('.manager-ota-failure').count(),0);
+      assert.equal(await page.getByText('设备报告升级成功。',{exact:false}).count(),0);
+      assert.equal(await page.evaluate(()=>window.submitCalls),submitsBefore,'checking current build never submits an install');
+      await page.screenshot({path:resolve(reportRoot,`ota-current-${width}.png`),fullPage:true});
+      await page.evaluate(()=>{window.checkResult=window.otaStatus={...window.otaStatus,currentVersion:'0.9.0',currentReleaseId:'older-build'};});
+      await page.getByRole('button',{name:'检查最新版本',exact:true}).click();
+      await page.getByRole('button',{name:'开始升级',exact:true}).waitFor();
+      assert.equal(await page.getByText('当前已是最新版本 1.0.0，无需升级。',{exact:true}).count(),0,'a historical current result cannot override the actual running build');
+      await page.evaluate(()=>{window.previewResult={previewId:'next-preview',releaseId:'new-build-same-version',version:'1.0.0',channel:'factory',artifactBytes:123,totalBytes:456,files:[],trust:'digest_only'};});
+      await page.getByRole('button',{name:'检查最新版本',exact:true}).click();
+      await page.getByRole('button',{name:'开始升级',exact:true}).waitFor();
+      assert.equal(await page.getByText('当前已是最新版本 1.0.0，无需升级。',{exact:true}).count(),0,'a different release with the same version is not current');
       await page.evaluate(()=>{window.statusError=true;});
       await page.getByText('设备连接中断',{exact:true}).waitFor();
       assert.equal(await page.getByText('设备报告升级成功。',{exact:false}).count(),0);

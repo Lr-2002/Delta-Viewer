@@ -61,6 +61,8 @@ pub struct SshStatus {
     pub device_id: String,
     pub cid: String,
     pub events: Vec<crate::d1_ota_log::OtaLogEvent>,
+    pub current_version: Option<String>,
+    pub current_release_id: Option<String>,
     pub started_at_ms: Option<u64>,
     pub updated_at_ms: Option<u64>,
     pub log_error: Option<String>,
@@ -125,6 +127,8 @@ async fn exchange(
             inactivity_timeout: Some(Duration::from_secs(
                 if matches!(action, "receive" | "download") {
                     660
+                } else if matches!(action, "check" | "stage") {
+                    45
                 } else {
                     25
                 },
@@ -213,6 +217,8 @@ async fn exchange(
     let deadline = tokio::time::sleep(Duration::from_secs(
         if matches!(action, "receive" | "download") {
             660
+        } else if matches!(action, "check" | "stage") {
+            45
         } else {
             25
         },
@@ -286,10 +292,12 @@ fn parse(value: Value) -> Result<SshStatus, String> {
                 .unwrap_or_default(),
             reason: reason.clone(),
             previous_result: false,
-            guidance: reason,
+            guidance: text("guidance").or(reason),
             detail: "通过设备 SSH 查询；以安装器及实际运行版本确认结果。".into(),
         },
         transport: "ssh",
+        current_version: text("version"),
+        current_release_id: text("releaseId"),
         device_id,
         cid,
         events,
@@ -377,6 +385,64 @@ pub async fn status(
     Ok(status)
 }
 
+fn current_receipt(preview: &crate::d1_ota::OtaPreview, remote: SshStatus) -> OtaSubmitResult {
+    OtaSubmitResult {
+        release_id: preview.release_id.clone(),
+        version: preview.version.clone(),
+        operation_id: remote.status.operation_id,
+        device_state: Some("UP_TO_DATE".into()),
+        message: remote
+            .status
+            .guidance
+            .unwrap_or_else(|| format!("当前已是最新版本 {}，无需升级。", preview.version)),
+    }
+}
+
+/// Explicit version check: this action can only record/announce a matching build.
+/// A newer target never stages a file, downloads bytes or launches the installer.
+pub async fn check_release(
+    state: &SshState,
+    ota: &OtaState,
+    root: &Path,
+    owner: &str,
+    preview_id: &str,
+    request: &DeviceRequest,
+    cancelled: &AtomicBool,
+) -> Result<SshStatus, String> {
+    let (preview, _) = ota.device_package(owner, preview_id)?;
+    let current = status(state, root, owner, request).await?;
+    if current.status.active || current.status.state.as_deref() == Some("UNKNOWN") {
+        return Err("OTA_DEVICE_NOT_READY: 设备正在升级或前次结果待确认".into());
+    }
+    let (fingerprint, device_id, cid) = state
+        .0
+        .lock()
+        .map_err(|_| "OTA_SSH_STATE")?
+        .get(&key(owner, request)?)
+        .cloned()
+        .ok_or("OTA_SSH_STATE")?;
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
+    let operation: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    let artifact = preview
+        .files
+        .iter()
+        .find(|file| file.name == "artifact.deb")
+        .ok_or("OTA_DEB_REQUIRED: Factory 通道不是 Debian 安装包")?;
+    let payload = json!({"operationId":operation,"releaseId":preview.release_id,"version":preview.version,
+        "size":artifact.size,"sha256":artifact.sha256,"deviceId":device_id,"cid":cid});
+    let (value, _) = call(
+        request,
+        Some(fingerprint),
+        "check",
+        &payload,
+        cancelled,
+        None,
+    )
+    .await?;
+    parse(value)
+}
+
 pub struct UpgradeContext<'a> {
     pub root: &'a Path,
     pub owner: &'a str,
@@ -429,7 +495,10 @@ pub async fn submit(
         let url=crate::d1_services::ota_url(&crate::d1_services::origin(&origin)?,&artifact.path)?;
         let payload=json!({"operationId":operation,"releaseId":preview.release_id,"version":preview.version,"url":url,
             "size":artifact.size,"sha256":sha256,"deviceId":device_id,"cid":cid});
-        call(request,Some(fingerprint.clone()),"stage",&payload,cancelled,None).await?;
+        let (staged,_) = call(request,Some(fingerprint.clone()),"stage",&payload,cancelled,None).await?;
+        if staged["state"].as_str() == Some("UP_TO_DATE") {
+            return Ok(current_receipt(&preview, parse(staged)?));
+        }
         // Prefer direct download; AP/USB without Internet can receive the same verified bytes over SSH.
         if let Err(error)=call(request,Some(fingerprint.clone()),"download",&payload,cancelled,None).await {
             if cancelled.load(Ordering::Acquire) { return Err("OTA_CANCELLED: 尚未启动安装".into()); }
@@ -443,6 +512,9 @@ pub async fn submit(
         }
         let (value,_)=call(request,Some(fingerprint),"launch",&payload,cancelled,None).await?;
         let remote=parse(value)?;
+        if remote.status.state.as_deref()==Some("UP_TO_DATE") {
+            return Ok(current_receipt(&preview, remote));
+        }
         if remote.status.state.as_deref()==Some("FAILED") {
             return Err(remote.status.reason.unwrap_or_else(||"OTA_LAUNCH_FAILED".into()));
         }
@@ -483,6 +555,22 @@ mod tests {
         assert!(!status.status.final_state);
         assert!(status.status.result.is_none());
     }
+    #[test]
+    fn up_to_date_keeps_current_version_separate_from_previous_install() {
+        let status = parse(json!({"available":true,"state":"UP_TO_DATE","result":"UP_TO_DATE",
+            "finalState":true,"active":false,"operationId":"abababababababababababababababab",
+            "deviceId":"b18a915d-f012-4c96-8dcb-56391da07c92","cid":"0123456789abcdef0123456789abcdef",
+            "version":"1.3.1","releaseId":"factory-build","releaseBefore":"1.1.1",
+            "guidance":"当前已是最新版本 1.3.1，无需升级。","events":[]})).unwrap();
+        assert_eq!(status.current_version.as_deref(), Some("1.3.1"));
+        assert_eq!(status.current_release_id.as_deref(), Some("factory-build"));
+        assert_eq!(status.status.release_before.as_deref(), Some("1.1.1"));
+        assert_eq!(status.status.result.as_deref(), Some("UP_TO_DATE"));
+        assert!(status.status.final_state);
+        assert!(!status.status.active);
+        assert!(status.status.guidance.unwrap().contains("无需升级"));
+    }
+
     // Actual SSH handshake, password authentication, flow control and stdin;
     // the synthetic server never executes the received command.
     struct Fixture {
