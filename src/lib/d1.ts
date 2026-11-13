@@ -69,6 +69,7 @@ export interface DeviceOtaStatus {
   available:boolean; state:string|null; result:string|null; operationId:string|null;
   releaseBefore:string|null; releaseTarget:string|null; targetVersion:string|null;
   active:boolean; finalState:boolean; guidance:string|null; detail:string;
+  failureCodes:string[]; reason:string|null; previousResult:boolean;
 }
 export interface DiagnosticServiceStatus { enabled:boolean; origin:string|null; detail:string }
 export interface LogLevelCounts { error:number; warning:number; info:number; debug:number }

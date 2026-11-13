@@ -75,6 +75,9 @@ pub struct DeviceOtaStatus {
     pub target_version: Option<String>,
     pub active: bool,
     pub final_state: bool,
+    pub failure_codes: Vec<String>,
+    pub reason: Option<String>,
+    pub previous_result: bool,
     pub guidance: Option<String>,
     pub detail: String,
 }
@@ -814,8 +817,17 @@ impl Release {
             .expected_operation
             .lock()
             .map_err(|_| "OTA_STATE_UNAVAILABLE")?;
+        let release_matches =
+            status.release_target.as_deref() == Some(self.preview.release_id.as_str());
+        // Verification can fail before the updater records release_target. An exact
+        // operation receipt still identifies that terminal failure unambiguously.
+        let known_early_failure = expected.is_some()
+            && *expected == status.operation_id
+            && status.release_target.is_none()
+            && status.state.as_deref() == Some("FAILED")
+            && status.result.as_deref() == Some("FAIL");
         if upload.as_ref().is_some_and(|(saved, _)| saved == target)
-            && status.release_target.as_deref() == Some(self.preview.release_id.as_str())
+            && (release_matches || known_early_failure)
             && status.operation_id.is_some()
             && (if expected.is_some() {
                 *expected == status.operation_id
@@ -832,20 +844,27 @@ impl Release {
 async fn status_at(request: &DeviceRequest) -> Result<(String, DeviceOtaStatus), String> {
     let mode = request.validated_mode().map_err(|error| error.message)?;
     if mode == ConnectionMode::TypeC {
-        return Err("OTA_DEVICE_AP_ONLY: 在线升级需要连接设备热点或局域网 IP".into());
+        return Err("OTA_NETWORK_REQUIRED: 在线升级需要连接设备热点或局域网 IP".into());
     }
     let (_, address, local) = d1_page::resolve_target(request, &AtomicBool::new(false)).await?;
     if let Some(local) = local {
         d1_page::verify_ap_target(request, mode, Some(local), address).await?;
     }
-    let client = device_client(local)?;
+    let target = format!("http://{address}");
+    Ok((
+        target.clone(),
+        read_status_at(&device_client(local)?, &target).await?,
+    ))
+}
+
+async fn read_status_at(client: &reqwest::Client, target: &str) -> Result<DeviceOtaStatus, String> {
     let response = client
-        .get(format!("http://{address}/ota/status"))
+        .get(format!("{target}/ota/status"))
         .send()
         .await
         .map_err(|_| "OTA_DEVICE_UNREACHABLE: 无法读取设备升级状态".to_string())?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err("OTA_DEVICE_UNSUPPORTED: 当前连接未提供升级接口，请使用热点配置模式".into());
+        return Err(format!("OTA_DEVICE_UNSUPPORTED: {target} 未提供升级接口（/ota/status 返回 404）。当前设备服务需要补齐 OTA 接口；连接状态页不代表已支持升级。"));
     }
     if response.status() != reqwest::StatusCode::OK {
         return Err(format!(
@@ -856,10 +875,14 @@ async fn status_at(request: &DeviceRequest) -> Result<(String, DeviceOtaStatus),
     let bytes = bounded_response(response).await?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| "OTA_DEVICE_STATUS_INVALID: 状态响应不是有效 JSON".to_string())?;
-    if text(&value, "schema").as_deref() != Some(PORTAL_SCHEMA) {
+    parse_device_status(&value)
+}
+
+fn parse_device_status(value: &serde_json::Value) -> Result<DeviceOtaStatus, String> {
+    if text(value, "schema").as_deref() != Some(PORTAL_SCHEMA) {
         return Err("OTA_DEVICE_UNSUPPORTED: 当前设备未提供升级状态接口".into());
     }
-    let state = text(&value, "state");
+    let state = text(value, "state");
     let active_states = [
         "QUEUED",
         "PRECHECK",
@@ -879,17 +902,36 @@ async fn status_at(request: &DeviceRequest) -> Result<(String, DeviceOtaStatus),
     let final_state = state.as_deref().is_some_and(|state| {
         ["SUCCESS", "FAILED", "ROLLBACK_FAILED", "UP_TO_DATE"].contains(&state)
     });
-    let guidance = value
-        .get("user_guidance")
-        .and_then(|guidance| {
-            let title = text(guidance, "title")?;
-            let action = text(guidance, "action").unwrap_or_default();
-            Some(format!("{title}。{action}"))
-        })
-        .or_else(|| text(&value, "reason"));
+    let failure_codes: Vec<String> = value
+        .get("failure_codes")
+        .and_then(|codes| codes.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|code| code.as_str())
+        .filter(|code| !code.is_empty() && code.len() <= 128)
+        .take(32)
+        .map(str::to_string)
+        .collect();
+    let repair_guidance = failure_codes.iter().find_map(|code| match code.as_str() {
+        "OTA_TRUST_ROOT_MISSING" => Some("设备缺少发布验签公钥，升级尚未进入安装。需要通过设备维护入口恢复可信公钥后再重试；等待或重新上传不能解决。"),
+        "OTA_TRUST_ROOT_INVALID" => Some("设备中的发布验签公钥无效。需要通过设备维护入口恢复正确的 Ed25519 公钥后再重试。"),
+        "OTA_SIGNATURE_BACKEND_UNAVAILABLE" => Some("设备缺少可用的签名校验组件。需要修复设备升级服务后再重试。"),
+        _ => None,
+    });
+    let guidance = repair_guidance.map(str::to_string).or_else(|| {
+        value
+            .get("user_guidance")
+            .and_then(|guidance| {
+                let title = text(guidance, "title")?;
+                let cause = text(guidance, "cause").unwrap_or_default();
+                let action = text(guidance, "action").unwrap_or_default();
+                Some(format!("{title}。{cause}。{action}"))
+            })
+            .or_else(|| text(value, "reason"))
+    });
     let detail = match state.as_deref() {
         Some("IDLE") | Some("") | None => "设备已就绪，等待升级".into(),
-        Some("SUCCESS") if text(&value, "result").as_deref() == Some("PASS") => {
+        Some("SUCCESS") if text(value, "result").as_deref() == Some("PASS") => {
             "设备已报告升级成功".into()
         }
         Some("UP_TO_DATE") => "设备已是最新版本".into(),
@@ -897,22 +939,22 @@ async fn status_at(request: &DeviceRequest) -> Result<(String, DeviceOtaStatus),
         Some(_) if active => "设备正在处理升级".into(),
         Some(_) => "设备升级状态待确认".into(),
     };
-    Ok((
-        format!("http://{address}"),
-        DeviceOtaStatus {
-            available: value.get("enabled").and_then(|v| v.as_bool()) == Some(true),
-            state,
-            result: text(&value, "result"),
-            operation_id: text(&value, "operation_id"),
-            release_before: text(&value, "release_before"),
-            release_target: text(&value, "release_target"),
-            target_version: text(&value, "target_version"),
-            active,
-            final_state,
-            guidance,
-            detail,
-        },
-    ))
+    Ok(DeviceOtaStatus {
+        available: value.get("enabled").and_then(|v| v.as_bool()) == Some(true),
+        state,
+        result: text(value, "result"),
+        operation_id: text(value, "operation_id"),
+        release_before: text(value, "release_before"),
+        release_target: text(value, "release_target"),
+        target_version: text(value, "target_version"),
+        active,
+        final_state,
+        failure_codes,
+        reason: text(value, "reason"),
+        previous_result: text(value, "presentation").as_deref() == Some("previous_result"),
+        guidance,
+        detail,
+    })
 }
 
 fn progress(operation_id: u64, phase: &str, bytes_done: u64, total_bytes: u64, started: Instant) {
@@ -946,7 +988,7 @@ pub async fn submit(
     }
     let mode = request.validated_mode().map_err(|error| error.message)?;
     if mode == ConnectionMode::TypeC {
-        return Err("OTA_DEVICE_AP_ONLY: 在线升级需要连接设备热点或局域网 IP".into());
+        return Err("OTA_NETWORK_REQUIRED: 在线升级需要连接设备热点或局域网 IP".into());
     }
     let release = state.get(owner, preview_id)?;
     if release.submitted.load(Ordering::Acquire) {
@@ -1340,6 +1382,9 @@ mod tests {
             target_version: None,
             active: false,
             final_state: true,
+            failure_codes: vec![],
+            reason: None,
+            previous_result: false,
             guidance: None,
             detail: String::new(),
         };
@@ -1352,6 +1397,97 @@ mod tests {
         release.observe(false, &target, &status).unwrap();
         assert!(!release.settled.load(Ordering::Acquire));
         release.observe(true, &target, &status).unwrap();
+        assert!(release.settled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn reports_missing_device_trust_root_instead_of_retry_guidance() {
+        let value = serde_json::json!({"schema":PORTAL_SCHEMA,"enabled":true,
+            "state":"FAILED","result":"FAIL","operation_id":"failed-before-manifest",
+            "release_before":"1.1.1+gfixture.DOHC-workspace","release_target":null,
+            "reason":"release trust root is unavailable",
+            "failure_codes":["OTA_TRUST_ROOT_MISSING"],"presentation":"previous_result",
+            "user_guidance":{"title":"升级没有完成","action":"等待 5 分钟后再试一次"}});
+        let status = parse_device_status(&value).unwrap();
+        assert_eq!(status.failure_codes, vec!["OTA_TRUST_ROOT_MISSING"]);
+        assert!(status.previous_result && status.final_state && !status.active);
+        let guidance = status.guidance.unwrap();
+        assert!(guidance.contains("设备缺少发布验签公钥"));
+        assert!(!guidance.contains("等待 5 分钟"));
+        assert!(status.release_target.is_none());
+        assert!(parse_device_status(&serde_json::json!({"schema":"unrelated"})).is_err());
+    }
+
+    #[test]
+    fn status_http_uses_selected_target_without_ap_fallback() {
+        use crate::d1_service_test::{serve, Reply};
+        let reply = |status, body: Vec<u8>| Reply {
+            method: "GET",
+            path: "/ota/status".into(),
+            status,
+            headers: vec![],
+            body,
+        };
+        let value = serde_json::to_vec(
+            &serde_json::json!({"schema":PORTAL_SCHEMA,"state":"IDLE","enabled":true}),
+        )
+        .unwrap();
+        let (target, worker) = serve(vec![reply(200, value), reply(404, b"Not Found".to_vec())]);
+        let client = device_client(None).unwrap();
+        let status = tauri::async_runtime::block_on(read_status_at(&client, &target)).unwrap();
+        assert!(status.available);
+        let error = tauri::async_runtime::block_on(read_status_at(&client, &target)).unwrap_err();
+        assert!(error.contains(&target) && error.contains("404"));
+        assert!(!error.contains("请使用热点"));
+        assert_eq!(worker.join().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn exact_terminal_receipt_settles_failure_before_release_is_known() {
+        let release = Release {
+            preview: OtaPreview {
+                preview_id: "p".into(),
+                release_id: "expected-release".into(),
+                version: "1.3.1".into(),
+                channel: "factory".into(),
+                key_id: None,
+                rollback_index: None,
+                artifact_bytes: 0,
+                total_bytes: 0,
+                files: vec![],
+                trust: TrustStatus::DeviceVerified,
+            },
+            files: vec![],
+            upload: Mutex::new(Some(("http://selected-device".into(), "session".into()))),
+            submitted: AtomicBool::new(true),
+            begin_attempted: AtomicBool::new(true),
+            settled: AtomicBool::new(false),
+            baseline_operation: Mutex::new(Some("previous-operation".into())),
+            expected_operation: Mutex::new(Some("accepted-operation".into())),
+        };
+        let mut status = parse_device_status(&serde_json::json!({"schema":PORTAL_SCHEMA,
+            "state":"FAILED","result":"FAIL","operation_id":"previous-operation","release_target":null})).unwrap();
+        release
+            .observe(true, "http://selected-device", &status)
+            .unwrap();
+        assert!(!release.settled.load(Ordering::Acquire));
+        status.operation_id = Some("accepted-operation".into());
+        release
+            .observe(false, "http://selected-device", &status)
+            .unwrap();
+        release
+            .observe(true, "http://another-device", &status)
+            .unwrap();
+        assert!(!release.settled.load(Ordering::Acquire));
+        status.release_target = Some("another-release".into());
+        release
+            .observe(true, "http://selected-device", &status)
+            .unwrap();
+        assert!(!release.settled.load(Ordering::Acquire));
+        status.release_target = None;
+        release
+            .observe(true, "http://selected-device", &status)
+            .unwrap();
         assert!(release.settled.load(Ordering::Acquire));
     }
 

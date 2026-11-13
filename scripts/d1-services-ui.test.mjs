@@ -20,9 +20,9 @@ after(async()=>{await browser?.close();await server?.close();writeFileSync(resol
 const backend=`
 export async function getOtaServiceStatus(){return {enabled:true,origin:null,channel:'factory',trust:'device_verified',trustKeyId:null,detail:'本地测试夹具'};}
 export async function previewOtaRelease(){window.previewCalls++;return {previewId:'fixture-preview',releaseId:'fixture-release',version:'1.0.0',channel:'factory',keyId:null,rollbackIndex:null,artifactBytes:123,totalBytes:456,files:[],trust:'device_verified'};}
-export async function confirmDeviceOtaUpgrade(){window.confirmCalls++;return false;}
-export async function submitOtaToDevice(){window.submitCalls++;throw Error('fixture must not submit');}
-export async function readDeviceOtaStatus(){window.statusCalls++;if(window.statusError)throw Error('设备连接中断');return {available:true,state:'SUCCESS',result:'PASS',operationId:'fixture-op',releaseBefore:'fixture-before',releaseTarget:'fixture-after',targetVersion:'1.0.0',active:false,finalState:true,guidance:null,detail:'本地夹具成功'};}
+export async function confirmDeviceOtaUpgrade(){window.confirmCalls++;return window.confirmUpgrade??false;}
+export async function submitOtaToDevice(){window.submitCalls++;if(window.submitResult)return window.submitResult;throw Error('fixture must not submit');}
+export async function readDeviceOtaStatus(){window.statusCalls++;if(window.statusError)throw Error('设备连接中断');return window.otaStatus??{available:true,failureCodes:[],reason:null,previousResult:false,state:'SUCCESS',result:'PASS',operationId:'fixture-op',releaseBefore:'fixture-before',releaseTarget:'fixture-after',targetVersion:'1.0.0',active:false,finalState:true,guidance:null,detail:'本地夹具成功'};}
 export async function getDiagnosticServiceStatus(){return {enabled:true,origin:null,detail:'本地测试夹具'};}
 export async function chooseSessionDirectory(){return '/synthetic/session';}
 export async function previewDiagnosticLogs(source,operationId){window.logPreviewOperation=operationId;return {previewId:'frozen-preview',checkCount:3,reportType:'runtime-diagnostic',source,deviceId:'synthetic-device',hasCid:true,workspaceVersion:'1.0.0',releaseId:null,totalEntries:3,selectedEntries:3,levels:{error:0,warning:0,info:3,debug:0},startedAt:null,completedAt:null,truncated:false,fileCount:2};}
@@ -59,6 +59,25 @@ test('OTA status becomes unavailable on disconnect; Type-C never queries or subm
       await page.getByRole('button',{name:'检查最新版本',exact:true}).click();
       await page.getByRole('button',{name:'开始升级',exact:true}).click();
       assert.equal(await page.evaluate(()=>window.confirmCalls),1);assert.equal(await page.evaluate(()=>window.submitCalls),0);
+      await page.evaluate(()=>{window.otaStatus={available:true,state:'FAILED',result:'FAIL',operationId:'early-failure',releaseBefore:'1.1.1',releaseTarget:null,targetVersion:null,active:false,finalState:true,previousResult:true,failureCodes:['OTA_TRUST_ROOT_MISSING'],reason:'release trust root is unavailable',guidance:'设备缺少发布验签公钥，升级尚未进入安装。需要通过设备维护入口恢复可信公钥后再重试；等待或重新上传不能解决。',detail:'上一次升级未成功，请查看设备提示'};});
+      await page.getByText('上次升级失败',{exact:true}).waitFor();
+      assert.equal(await page.locator('.manager-ota-failure').count(),1);
+      assert.equal(await page.getByText('设备缺少发布验签公钥',{exact:false}).count(),1);
+      assert.equal(await page.getByText('设备报告升级成功。',{exact:false}).count(),0);
+      assert.equal(await page.getByRole('button',{name:'开始升级',exact:true}).isDisabled(),false);
+      await page.getByText('技术详情',{exact:true}).click();
+      await page.getByText('OTA_TRUST_ROOT_MISSING',{exact:true}).waitFor();
+      await page.screenshot({path:resolve(reportRoot,`ota-failure-${width}.png`),fullPage:true});
+      await page.evaluate(()=>{window.confirmUpgrade=true;window.submitResult={operationId:'next-operation',releaseId:'fixture-release',message:'设备已接收，等待安装结果'};});
+      await page.getByRole('button',{name:'开始升级',exact:true}).click();
+      await page.getByText('等待设备开始升级',{exact:true}).waitFor();
+      assert.equal(await page.locator('.manager-ota-failure').count(),0);
+      assert.equal(await page.locator('.manager-ota-success').count(),0);
+      assert.equal(await page.getByRole('button',{name:'开始升级',exact:true}).isDisabled(),true);
+      await page.evaluate(()=>{window.otaStatus={...window.otaStatus,operationId:'next-operation',previousResult:false};});
+      await page.locator('.manager-ota-failure').getByText('升级失败',{exact:true}).waitFor();
+      assert.equal(await page.getByText('设备已接收，等待安装结果',{exact:true}).count(),0);
+      assert.equal(await page.getByRole('button',{name:'开始升级',exact:true}).isDisabled(),false);
       await page.evaluate(()=>{window.statusError=true;});
       await page.getByText('设备连接中断',{exact:true}).waitFor();
       assert.equal(await page.getByText('设备报告升级成功。',{exact:false}).count(),0);

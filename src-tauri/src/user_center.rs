@@ -16,6 +16,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 const CLIENT_CONFIG_SCHEMA_VERSION: u32 = 1;
@@ -25,7 +26,7 @@ const OPERATOR_SELF_REGISTRATION_CAPABILITY: &str = "operatorSelfRegistrationV1"
 const OPERATOR_PROFILE_CAPABILITY: &str = "operatorProfileV1";
 const OPERATIONS_COCKPIT_CAPABILITY: &str = "operationsCockpitV1";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UserCenterClientConfig {
     schema_version: u32,
@@ -1340,7 +1341,7 @@ pub(crate) async fn outbound_review_request(
 ) -> AppResult<serde_json::Value> {
     let session = state.managed_session()?;
     let config = load_config(data_root)?;
-    let client = client_for(&config)?;
+    let client = outbound_client_for(&config)?;
     let url = endpoint(&config, "api/v1/outbound-review/proxy")?;
     let response = client
         .post(url)
@@ -1372,6 +1373,24 @@ pub(crate) async fn outbound_review_request(
         )));
     }
     Ok(value)
+}
+
+fn outbound_client_for(config: &UserCenterClientConfig) -> AppResult<Client> {
+    // Reuse TLS connections across per-camera tickets. Authentication stays on
+    // each request; neither account tokens nor payloads belong in this pool.
+    static POOL: OnceLock<Mutex<Option<(UserCenterClientConfig, Client)>>> = OnceLock::new();
+    let mut pool = POOL
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| AppError::Message("OUTBOUND_USER_CENTER_UNAVAILABLE".into()))?;
+    if let Some((cached, client)) = pool.as_ref() {
+        if cached == config {
+            return Ok(client.clone());
+        }
+    }
+    let client = client_for(config)?;
+    *pool = Some((config.clone(), client.clone()));
+    Ok(client)
 }
 
 fn read_client_config(path: &Path) -> AppResult<UserCenterClientConfig> {
