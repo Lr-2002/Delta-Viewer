@@ -735,6 +735,13 @@ async function main() {
       cargoCheckEnvironment,
     );
 
+    // The remote worker runs only on Debian D1; these fixtures mock every install.
+    if (process.platform === "linux") {
+      await runCommand(report, "isolated D1 SSH installer regression", "python3", [
+        "-B", "scripts/d1-ssh-upgrade.test.py",
+      ]);
+    }
+
     if (options.profile === "full") {
       await runCommand(
         report,

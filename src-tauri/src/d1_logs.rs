@@ -60,7 +60,7 @@ pub struct LevelCounts {
     pub debug: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadReceipt {
     pub report_id: String,
@@ -83,6 +83,7 @@ struct FrozenReport {
     body: Vec<u8>,
     entry_count: usize,
     created: Instant,
+    ota_source: Option<(String, String)>,
 }
 #[derive(Clone, Default)]
 pub struct ReportState(Arc<Mutex<Vec<Arc<FrozenReport>>>>);
@@ -302,7 +303,7 @@ fn component(value: &str) -> String {
     }
 }
 
-fn safe_message(value: &str) -> Option<String> {
+pub(crate) fn safe_message(value: &str) -> Option<String> {
     // Reuse the health-report redactor so credentials never reach an upload.
     safe_text(value).map(|text| clip(&text, MAX_MESSAGE_CHARS))
 }
@@ -548,6 +549,7 @@ pub fn preview_source(
         body: bytes,
         entry_count: preview.selected_entries,
         created: Instant::now(),
+        ota_source: None,
     });
     let mut reports = state
         .0
@@ -561,6 +563,127 @@ pub fn preview_source(
     Ok(preview)
 }
 
+/// Freeze a backend-owned OTA observation. Prefer its SSH hardware CID; old
+/// records can use a same-device recording. IPC never accepts a report body.
+pub fn ota_revision(record: &crate::d1_ota_log::OtaLogRecord) -> String {
+    use sha2::{Digest, Sha256};
+    let value = json!([
+        record.id,
+        record.device_id,
+        record.cid,
+        record.operation_id,
+        record.state,
+        record.result,
+        record.release_before,
+        record.release_target,
+        record.target_version,
+        record.started_at_ms,
+        record.updated_at_ms,
+        record.events,
+        record.truncated
+    ]);
+    format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
+}
+pub fn preview_ota_source(
+    state: &ReportState,
+    owner: &str,
+    source: &str,
+    record: &crate::d1_ota_log::OtaLogRecord,
+) -> AppResult<LogPreview> {
+    use sha2::{Digest, Sha256};
+    let (cid, device_id) = if let (Some(cid), Some(id)) = (&record.cid, &record.device_id) {
+        (cid.clone(), id.clone())
+    } else {
+        let (cid, id, _, _, _, _, _) =
+            read_session(Path::new(source)).map_err(AppError::Message)?;
+        (cid, id)
+    };
+    if cid.len() != 32 || !cid.bytes().all(|value| value.is_ascii_hexdigit()) {
+        return Err(AppError::Message(
+            "DIAGNOSTIC_CID_INVALID: 升级记录缺少完整硬件 CID，不能关联售后档案".into(),
+        ));
+    }
+    let observed_device = record.device_id.as_deref().ok_or_else(|| AppError::Message("OTA_LOG_DEVICE_UNKNOWN: 此升级记录未取得设备标识，不能自动关联售后档案。请连接可读取状态的设备后刷新升级记录。".into()))?;
+    if observed_device != device_id {
+        return Err(AppError::Message(
+            "DIAGNOSTIC_DEVICE_MISMATCH: 采集目录与升级记录属于不同设备".into(),
+        ));
+    }
+    let revision = ota_revision(record);
+    let token = format!(
+        "{:x}",
+        Sha256::digest(format!("{cid}/{revision}").as_bytes())
+    );
+    let report_id = format!("host-ota-{token}");
+    let entries: Vec<LogEntry> = record
+        .events
+        .iter()
+        .map(|event| LogEntry {
+            occurred_at: format_rfc3339(event.at_ms),
+            level: event.level.clone(),
+            component: "device-ota".into(),
+            message: event.message.clone(),
+        })
+        .collect();
+    let failed = record.result.as_deref() == Some("FAIL")
+        || matches!(record.state.as_str(), "FAILED" | "ROLLBACK_FAILED");
+    let passed = (record.state == "SUCCESS" && record.result.as_deref() == Some("PASS"))
+        || record.state == "UP_TO_DATE";
+    let mut body = json!({"cid":cid,"reportId":report_id,"reportType":"runtime-diagnostic",
+        "outcome":if failed {"failed"} else if passed {"passed"} else {"degraded"},
+        "observedStartedAt":format_rfc3339(record.started_at_ms),"observedCompletedAt":format_rfc3339(record.updated_at_ms.max(record.started_at_ms)),
+        "summary":format!("DOHC 应用升级观测：操作 {}；目标 {}；状态 {}。仅记录上位机实际接收的状态，发送成功不表示安装成功。",record.operation_id.as_deref().unwrap_or("回执未确认"),record.release_target.as_deref().unwrap_or("未提供"),record.state),
+        "stages":[{"name":"device-ota-observation","outcome":if failed {"failed"} else if passed {"passed"} else {"skipped"},
+            "summary":"来自本机持久升级记录；未知或中断保持未知，不生成硬件自检结论。","checks":[]}],
+        "alerts":[],"logs":entries});
+    let bytes = bounded_body(&mut body).map_err(AppError::Message)?;
+    let count = body["logs"].as_array().map_or(0, Vec::len);
+    let frozen = Arc::new(FrozenReport {
+        owner: owner.into(),
+        preview_id: token.clone(),
+        report_id: report_id.clone(),
+        idempotency_key: format!("diag-{report_id}"),
+        body: bytes,
+        entry_count: count,
+        created: Instant::now(),
+        ota_source: Some((record.id.clone(), revision)),
+    });
+    let mut reports = state
+        .0
+        .lock()
+        .map_err(|_| AppError::Message("DIAGNOSTIC_STATE_UNAVAILABLE".into()))?;
+    reports.retain(|v| v.created.elapsed() < Duration::from_secs(86400));
+    if !reports
+        .iter()
+        .any(|r| r.owner == owner && r.preview_id == token)
+    {
+        if reports.len() >= 8 {
+            reports.remove(0);
+        }
+        reports.push(frozen);
+    }
+    Ok(LogPreview {
+        preview_id: token,
+        report_type: "runtime-diagnostic".into(),
+        check_count: 0,
+        source: source.into(),
+        device_id: Some(device_id),
+        has_cid: true,
+        workspace_version: None,
+        release_id: record.release_target.clone(),
+        total_entries: entries.len(),
+        selected_entries: count,
+        levels: level_counts(&entries),
+        started_at: Some(format_rfc3339(record.started_at_ms)),
+        completed_at: Some(format_rfc3339(record.updated_at_ms)),
+        truncated: record.truncated || count < entries.len(),
+        file_count: 0,
+    })
+}
+pub fn ota_source(state: &ReportState, owner: &str, preview_id: &str) -> Option<(String, String)> {
+    state.get(owner, preview_id).ok()?.ota_source.clone()
+}
+
 fn append_run(
     body: &mut Value,
     collected: &Collected,
@@ -570,7 +693,10 @@ fn append_run(
     let device = run
         .device
         .as_ref()
-        .filter(|d| d.identity_verified)
+        // This flag describes cryptographic authentication, which the current
+        // device-report protocol does not provide. It is not an identity-read
+        // success flag. Match the actual report identity to the session instead.
+        .filter(|d| !d.id.is_empty() && d.id != "unknown")
         .ok_or("DIAGNOSTIC_DEVICE_UNKNOWN: 检测未读取真实设备身份，请重新检测")?;
     if device.id != collected.device_id {
         return Err(
@@ -618,8 +744,10 @@ fn append_run(
             "summary":clip(&safe_message(a.message.as_deref().unwrap_or(&a.code)).unwrap_or_else(||"告警内容已脱敏".into()),2000)
         })).collect::<Vec<_>>());
     }
-    body.as_object_mut().unwrap().remove("workspaceVersion");
-    body.as_object_mut().unwrap().remove("firmwareVersion");
+    if let Some(object) = body.as_object_mut() {
+        object.remove("workspaceVersion");
+        object.remove("firmwareVersion");
+    }
     if let Some(v) = &device.application_version {
         body["workspaceVersion"] = json!(clip(v, 80));
     }
@@ -952,7 +1080,7 @@ mod tests {
             architecture: None,
             channel: None,
             source: "fixture",
-            identity_verified: true,
+            identity_verified: false,
         };
         let mut run = DiagnosticRun {
             id: "fixture".into(),
@@ -1000,6 +1128,7 @@ mod tests {
             })
             .collect();
         let (base, worker) = serve(replies);
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let body = b"{\"reportId\":\"fixture-report\"}".to_vec();
         for status in [201, 200, 503] {

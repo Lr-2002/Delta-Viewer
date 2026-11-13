@@ -79,8 +79,8 @@ pub struct Origin {
 pub enum TrustStatus {
     /// A public key is configured and the release must verify against it.
     Configured,
-    /// No key is configured; the device performs the authoritative verification.
-    DeviceVerified,
+    /// No release key is configured; only file size and SHA-256 are checked.
+    DigestOnly,
 }
 
 #[derive(Debug, Clone, Serialize)]

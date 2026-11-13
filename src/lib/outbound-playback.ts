@@ -14,6 +14,7 @@ export class OutboundPlayback {
   private starting = false;
   private generation = 0;
   private speed = 1;
+  private masterId: number | null = null;
   private timer: ReturnType<typeof setInterval>;
 
   constructor(private report: (state: OutboundPlaybackState) => void, private failed: () => void) {
@@ -44,8 +45,10 @@ export class OutboundPlayback {
   }
 
   private master() {
-    return this.players.get(Math.min(...this.players.keys()));
+    return this.masterId === null ? this.players.get(Math.min(...this.players.keys())) : this.players.get(this.masterId);
   }
+
+  setMaster(id: number | null) { this.masterId = id; this.publish(); }
 
   private publish() {
     const master = this.master();

@@ -1,39 +1,42 @@
 import {useEffect,useRef,useState} from "react";
 import {AlertCircle,CheckCircle2,FileSearch,LoaderCircle,Upload} from "lucide-react";
-import {chooseSessionDirectory,getDiagnosticServiceStatus,previewDiagnosticLogs,uploadDiagnosticLogs} from "../lib/backend";
+import {chooseSessionDirectory,getDiagnosticServiceStatus,previewDiagnosticLogs,previewOtaLogs,uploadDiagnosticLogs} from "../lib/backend";
 import type {DeviceRun,DiagnosticServiceStatus,LogPreview,LogUploadReceipt} from "../lib/d1";
 
 type Operation={id:number;finish:()=>void};
-interface Props {run?:DeviceRun|null;busy:boolean;beginOperation:()=>Operation|null;onError:(message:string)=>void}
+interface Props {otaRecordId?:string;run?:DeviceRun|null;busy:boolean;beginOperation:()=>Operation|null;onError:(message:string)=>void}
 
-export function DiagnosticLogPanel({run,busy,beginOperation,onError}:Props){
+export function DiagnosticLogPanel({otaRecordId,run,busy,beginOperation,onError}:Props){
   const [service,setService]=useState<DiagnosticServiceStatus|null>(null);
+  const [error,setError]=useState("");
   const [source,setSource]=useState("");
   const [preview,setPreview]=useState<LogPreview|null>(null);
   const [receipt,setReceipt]=useState<LogUploadReceipt|null>(null);
   const [working,setWorking]=useState<"preview"|"upload"|null>(null);
   const operation=useRef<Operation|null>(null);
   const generation=useRef(0);
-  useEffect(()=>{generation.current++;setPreview(null);setReceipt(null);return()=>{generation.current++;};},[run?.id]);
+  useEffect(()=>{generation.current++;setPreview(null);setReceipt(null);return()=>{generation.current++;};},[run?.id,otaRecordId]);
 
-  useEffect(()=>{let active=true;getDiagnosticServiceStatus().then(value=>{if(active)setService(value);}).catch(()=>{});return()=>{active=false;};},[]);
+  useEffect(()=>{let active=true;getDiagnosticServiceStatus().then(value=>{if(active)setService(value);}).catch(cause=>{if(active)setError(String(cause));});return()=>{active=false;};},[]);
 
   async function pick(){
     if(busy||working)return;
     const current=generation.current;
-    const selection=await chooseSessionDirectory("选择一条采集会话目录（含 session.json）");
+    const selection=otaRecordId?"SSH 升级记录":source||await chooseSessionDirectory("选择一条采集会话目录（含 session.json）");
     if(!selection||current!==generation.current)return;
+    setError("");
     setSource(selection);setPreview(null);setReceipt(null);
     const owner=beginOperation();if(!owner){onError("请先完成当前任务。");return;}
     operation.current=owner;setWorking("preview");
-    try{const value=await previewDiagnosticLogs(selection,owner.id,run?.id);if(current===generation.current)setPreview(value);}
-    catch(cause){onError(String(cause instanceof Error?cause.message:cause));setSource("");}
+    try{const value=otaRecordId?await previewOtaLogs(otaRecordId,owner.id):await previewDiagnosticLogs(selection,owner.id,run?.id);if(current===generation.current)setPreview(value);}
+    catch(cause){if(current===generation.current)setError(String(cause instanceof Error?cause.message:cause));}
     finally{operation.current=null;owner.finish();setWorking(null);}
   }
 
   async function upload(){
     if(!preview||busy||working)return;
     setReceipt(null);
+    setError("");
     const current=generation.current;
     const owner=beginOperation();if(!owner){onError("请先完成当前任务。");return;}
     operation.current=owner;setWorking("upload");
@@ -42,21 +45,23 @@ export function DiagnosticLogPanel({run,busy,beginOperation,onError}:Props){
       if(current===generation.current)setReceipt(value);
     }catch(cause){
       // Keep the frozen report id and key so a retry stays idempotent.
-      onError(String(cause instanceof Error?cause.message:cause));
+      if(current===generation.current)setError(String(cause instanceof Error?cause.message:cause));
     }finally{operation.current=null;owner.finish();setWorking(null);}
   }
 
   const enabled=service?.enabled??false;
   return <section className="manager-card manager-support-upload" aria-label="上传诊断日志">
     <Upload size={26}/>
-    <h2>上传诊断日志</h2>
-    <p>{run?"上传本次设备检测结果与最近日志到售后 Device 设备档案。请选择同一台 D1 的任意采集目录，用于核对硬件身份。":"选择设备采集目录，上传最近日志到售后 Device 设备档案。运行设备检测后，可一并上传检测结果。"}</p>
+    <h2>{otaRecordId?"上传升级日志到售后":"上传诊断日志"}</h2>
+    <p>{otaRecordId?"使用此次升级读取的真实硬件 CID 关联售后 Device 档案；预览后由你主动上传，不自动上报。":run?"上传本次设备检测结果与最近日志到售后 Device 设备档案。请选择同一台 D1 的任意采集目录，用于核对硬件身份。":"选择设备采集目录，上传最近日志到售后 Device 设备档案。运行设备检测后，可一并上传检测结果。"}</p>
     <div className="manager-actions">
       <button className="button button-secondary" disabled={busy||working!==null||!enabled} onClick={()=>void pick()}>
-        {working==="preview"?<LoaderCircle size={17} className="spin"/>:<FileSearch size={17}/>}预览检测与日志
+        {working==="preview"?<LoaderCircle size={17} className="spin"/>:<FileSearch size={17}/>}{source?"重新预览":otaRecordId?"预览本次升级日志":"预览检测与日志"}
       </button>
-      <button className="button button-primary" disabled={busy||working!==null||!enabled||!preview||!!receipt} onClick={()=>void upload()}>{working==="upload"?<LoaderCircle size={17} className="spin"/>:<Upload size={17}/>}上传到售后</button>
+      <button className="button button-primary" disabled={busy||working!==null||!enabled||!preview?.hasCid||!!receipt} onClick={()=>void upload()}>{working==="upload"?<LoaderCircle size={17} className="spin"/>:<Upload size={17}/>}上传到售后</button>
     </div>
+    {error&&<p className="manager-ota-error" role="alert"><AlertCircle size={15}/>{error}</p>}
+    {source&&!otaRecordId&&<button className="text-button" disabled={busy||working!==null} onClick={()=>{setSource("");setPreview(null);setReceipt(null);}}>选择其他采集目录</button>}
     {source&&<p className="manager-upload-state" title={source}>来源：{source.split(/[\\/]/).filter(Boolean).pop()}</p>}
     {preview&&<div className="manager-log-preview" aria-label="日志预览">
       <dl className="manager-metadata">

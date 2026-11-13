@@ -10,10 +10,12 @@ mod d1_device;
 pub mod d1_link;
 mod d1_logs;
 mod d1_ota;
+mod d1_ota_log;
 mod d1_page;
 #[cfg(test)]
 mod d1_service_test;
 mod d1_services;
+mod d1_ssh;
 mod d1_wifi;
 mod dataset_layout;
 mod episode_metadata;
@@ -268,6 +270,7 @@ async fn d1_ota_preview(
 #[tauri::command]
 async fn d1_ota_submit(
     state: State<'_, d1_ota::OtaState>,
+    app: AppHandle,
     preview_id: String,
     auth: State<'_, AuthState>,
     control: State<'_, TaskControl>,
@@ -275,13 +278,20 @@ async fn d1_ota_submit(
     operation_id: u64,
 ) -> Result<d1_ota::OtaSubmitResult, String> {
     let owner = d1_owner(&auth)?;
+    let root = base_app_data_root(&app)?;
+    let history = user_center::d1_history_owner(&root, &auth).map_err(|e| e.to_string())?;
     let task = control.start(operation_id)?;
-    let result = d1_ota::submit(
+    let ssh = app.state::<d1_ssh::SshState>();
+    let result = d1_ssh::submit(
+        &ssh,
         &state,
-        &owner,
+        d1_ssh::UpgradeContext {
+            root: &root,
+            owner: &owner,
+            history_owner: &history,
+        },
         &preview_id,
         &request,
-        operation_id,
         &task.cancelled(),
     )
     .await;
@@ -293,13 +303,81 @@ async fn d1_ota_submit(
 
 #[tauri::command]
 async fn d1_ota_status(
-    state: State<'_, d1_ota::OtaState>,
+    ssh: State<'_, d1_ssh::SshState>,
+    app: AppHandle,
     auth: State<'_, AuthState>,
     request: d1_device::DeviceRequest,
-) -> Result<d1_ota::DeviceOtaStatus, String> {
+) -> Result<d1_ssh::SshStatus, String> {
     let owner = d1_owner(&auth)?;
-    let result = d1_ota::refresh_status(&state, &owner, &request).await;
+    let root = base_app_data_root(&app)?;
+    let history = user_center::d1_history_owner(&root, &auth).map_err(|e| e.to_string())?;
+    let mut status = d1_ssh::status(&ssh, &root, &owner, &request).await?;
     if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    let snapshot = status.clone();
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        d1_ota_log::sync_ssh(&root, &history, &snapshot)
+    })
+    .await
+    .map_err(|e| e.to_string());
+    status.log_error = match saved {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) | Err(error) => Some(format!("升级状态已读取，但本机日志保存失败：{error}")),
+    };
+    Ok(status)
+}
+
+#[tauri::command]
+async fn d1_ota_history(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<Vec<d1_ota_log::OtaLogRecord>, String> {
+    let session = d1_owner(&auth)?;
+    let root = base_app_data_root(&app)?;
+    let owner = user_center::d1_history_owner(&root, &auth).map_err(|e| e.to_string())?;
+    let result = tauri::async_runtime::spawn_blocking(move || d1_ota_log::list(&root, &owner))
+        .await
+        .map_err(|e| e.to_string())?;
+    if d1_owner(&auth)? != session {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_ota_log_preview(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    reports: State<'_, d1_logs::ReportState>,
+    control: State<'_, TaskControl>,
+    operation_id: u64,
+    record_id: String,
+    source: Option<String>,
+) -> Result<d1_logs::LogPreview, String> {
+    let session = d1_owner(&auth)?;
+    let root = base_app_data_root(&app)?;
+    let owner = user_center::d1_history_owner(&root, &auth).map_err(|e| e.to_string())?;
+    let task = control.start(operation_id)?;
+    let cancelled = task.cancelled();
+    let reports = reports.inner().clone();
+    let worker_session = session.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("DIAGNOSTIC_CANCELLED".into());
+        }
+        let record = d1_ota_log::get(&root, &owner, &record_id)?;
+        d1_logs::preview_ota_source(
+            &reports,
+            &worker_session,
+            source.as_deref().unwrap_or(""),
+            &record,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if d1_owner(&auth)? != session {
         return Err("D1_SESSION_CHANGED".into());
     }
     result
@@ -361,16 +439,27 @@ async fn d1_logs_upload(
 ) -> Result<d1_logs::UploadReceipt, String> {
     let owner = d1_owner(&auth)?;
     let task = control.start(operation_id)?;
-    let result = d1_logs::upload(&reports, &owner, request, task.cancelled()).await?;
+    let root = base_app_data_root(&app)?;
+    let history_owner = user_center::d1_history_owner(&root, &auth).map_err(|e| e.to_string())?;
+    let ota_source = d1_logs::ota_source(&reports, &owner, &request.preview_id);
+    let mut result = d1_logs::upload(&reports, &owner, request, task.cancelled()).await?;
     if d1_owner(&auth)? != owner {
         return Err("D1_SESSION_CHANGED".into());
     }
     // Server success remains success even when local receipt storage fails.
-    if let Ok(data_root) = base_app_data_root(&app) {
-        let receipt = result.clone();
-        let _ =
-            tauri::async_runtime::spawn_blocking(move || d1_logs::remember(&data_root, &receipt))
-                .await;
+    let receipt = result.clone();
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        d1_logs::remember(&root, &receipt).map_err(|e| e.to_string())?;
+        if let Some((id, revision)) = ota_source {
+            d1_ota_log::remember_receipt(&root, &history_owner, &id, &revision, &receipt)?;
+        }
+        Ok::<(), String>(())
+    })
+    .await;
+    if !matches!(saved, Ok(Ok(()))) {
+        result
+            .message
+            .push_str("；售后已接收，但本机回执保存失败，请保留报告编号。");
     }
     Ok(result)
 }
@@ -3104,6 +3193,7 @@ pub fn run() {
         .manage(AuthState::default())
         .manage(d1::DeviceState::default())
         .manage(d1_ota::OtaState::default())
+        .manage(d1_ssh::SshState::default())
         .manage(d1_logs::ReportState::default())
         .manage(TaskControl::default())
         .manage(updater::UpdateState::default())
@@ -3128,6 +3218,8 @@ pub fn run() {
             d1_ota_preview,
             d1_ota_submit,
             d1_ota_status,
+            d1_ota_history,
+            d1_ota_log_preview,
             d1_logs_service,
             d1_logs_preview,
             d1_logs_upload,

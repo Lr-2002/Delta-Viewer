@@ -432,6 +432,43 @@ async function nativePageFixture(context){
   await context.route("**/__d1-component-runtime",route=>route.fulfill({contentType:"application/javascript",body:runtime}));
 }
 
+test('HTTP page failure does not block the selected IP from SSH upgrade in any mode',async()=>{
+  for(const mode of ['lan','ap','type_c']){
+    const {page,context,errors,external}=await session({width:960,height:680},false,async context=>{
+      await nativePageFixture(context);
+      await context.addInitScript(()=>{window.upgradeStatusRequests=[];});
+      await context.route('**/src/components/DeviceOtaPanel.tsx',async route=>{
+        const response=await route.fetch();const original=await response.text();
+        const body=original.replace(/from "[^"\n]*\/backend\.ts[^"\n]*"/,'from "/__d1-upgrade-runtime"');
+        assert.notEqual(body,original);await route.fulfill({response,body});
+      });
+      await context.route('**/__d1-upgrade-runtime',route=>route.fulfill({contentType:'application/javascript',body:`
+        export * from '/src/lib/backend.ts';
+        export async function getOtaServiceStatus(){return {enabled:true,trust:'digest_only',detail:'本地 SSH 夹具'};}
+        export async function readDeviceOtaStatus(request){window.upgradeStatusRequests.push(request);return {available:true,state:'IDLE',active:false,finalState:false,failureCodes:[],detail:'SSH 就绪'};}
+      `}));
+    });
+    try{
+      await navigate(page,'首页');await page.evaluate(()=>window.pageFixtureMode='unreachable');
+      if(mode==='lan'){
+        await page.getByRole('button',{name:'局域网 IP',exact:true}).click();
+        await page.getByLabel('设备 IP',{exact:true}).fill('10.1.30.114');await page.getByRole('button',{name:'连接设备',exact:true}).click();
+      }else if(mode==='ap'){
+        await page.getByRole('button',{name:'设备热点（AP）',exact:true}).click();
+        await page.getByRole('button',{name:/Delta-D1-test001/}).click();await page.getByRole('button',{name:'连接热点并打开',exact:true}).click();
+      }else await page.evaluate(()=>window.deviceAvailabilityFailure={code:'D1_HEALTH_PAGE_ONLY',message:'HTTP 不可用'});
+      if(mode!=='type_c')await page.getByText('无法访问设备页面。',{exact:true}).waitFor();
+      await navigate(page,'设备信息');
+      await page.waitForFunction(mode=>window.upgradeStatusRequests.some(r=>r.connectionMode===mode),mode).catch(async error=>{throw Error(JSON.stringify({mode,requests:await page.evaluate(()=>window.upgradeStatusRequests),text:await page.locator('.manager-workspace').innerText(),errors})+' '+error.message);});
+      assert.equal(await page.getByRole('button',{name:'检查最新版本',exact:true}).isEnabled(),true);
+      const request=await page.evaluate(()=>window.upgradeStatusRequests.at(-1));
+      if(mode==='lan')assert.equal(request.apAddress,'10.1.30.114');
+      assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
+      evidence.push({status:'passed',mode,httpUnavailableSshStillAvailable:true});
+    }finally{await context.close();}
+  }
+});
+
 test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigation and isolate page actions",async()=>{
   for(const viewport of [{width:1440,height:920},{width:960,height:680},{width:390,height:844}]){
     const {page,context,errors,external}=await session(viewport,false,nativePageFixture);

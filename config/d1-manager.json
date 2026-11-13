@@ -10,12 +10,12 @@
     },
     "reservedAddress": "deltadevice.cn:4174/ota/v1",
     "scheme": "http",
-    "status": "relay_ready"
+    "status": "ssh_ready"
   },
   "productionOperations": [
     "read_health",
     "download_ota_release",
-    "relay_ota_bundle",
+    "ssh_install_release",
     "upload_diagnostic_logs"
   ],
   "diagnosticUpload": {

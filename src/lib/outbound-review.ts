@@ -21,18 +21,52 @@ export function outboundVideoParts(videos: OutboundVideo[]) {
     cameras.set(camera, files);
   }
   for (const files of cameras.values()) files.sort((a, b) => a.label.localeCompare(b.label, "en", { numeric: true }));
-  const count = Math.max(0, ...[...cameras.values()].map(files => files.length));
-  return { cameraCount: cameras.size, parts: Array.from({ length: count }, (_, index) =>
-    [...cameras.entries()].flatMap(([camera, files]) => files[index] ? [{ ...files[index], camera }] : [])) };
+  const order = ["cam0", "cam1", "cam2", "t265_left", "t265_right", "extension_left", "extension_right"];
+  const cameraNames = [...cameras.keys()].sort((a, b) => {
+    const rank = (name: string) => { const i = order.indexOf(name.split("/").at(-1) ?? name); return i < 0 ? order.length : i; };
+    return rank(a) - rank(b) || a.localeCompare(b, "en", { numeric: true });
+  });
+  // A missing file must leave a hole in its real part, not shift the next
+  // camera segment into the wrong time interval.
+  const partOf = (file: OutboundVideo, index: number) => Number(/-(\d+)\.mp4$/i.exec(file.label)?.[1] ?? index);
+  const keyed = new Map(cameraNames.map(camera => [camera, new Map(cameras.get(camera)!.map((file, index) => [partOf(file, index), file]))]));
+  const partNumbers = [...new Set([...keyed.values()].flatMap(files => [...files.keys()]))].sort((a, b) => a - b);
+  return { cameraCount: cameras.size, cameras: cameraNames, primaryCamera: cameraNames[0], partNumbers,
+    parts: partNumbers.map(part => cameraNames.flatMap(camera => {
+      const file = keyed.get(camera)!.get(part);
+      return file ? [{ ...file, camera }] : [];
+    })) };
 }
 
 const outboundCall = <T,>(input: Record<string, unknown>) => invoke<T>("outbound_review_call", { input });
-export const listOutboundBatches = () => outboundCall<{ batches: OutboundBatch[]; reasonOptions: string[] }>({ action: "list" });
+type BatchList = { batches: OutboundBatch[]; reasonOptions: string[] };
+export async function listOutboundBatches(datasetId?: string): Promise<BatchList> {
+  try { return await outboundCall<BatchList>({action:"list",...(datasetId?{datasetId}:{summary:true})}); }
+  catch (error) {
+    // The old service only accepts action:list. Fall back on an explicit
+    // validation rejection; never replay a mutation after an ambiguous error.
+    if (!String(error).includes("OUTBOUND_REQUEST_INVALID")) throw error;
+    const result = await outboundCall<BatchList>({action:"list"});
+    return datasetId?{...result,batches:result.batches.filter(batch=>batch.id===datasetId)}:result;
+  }
+}
 export const saveOutboundReasonOption = (reason: string) =>
   outboundCall<{ reasonOptions: string[] }>({ action: "save-reason-option", reason });
-export const changeOutboundBatch = (batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: "valid" | "invalid", reason?: string) =>
-  outboundCall<{ batch: OutboundBatch }>({ action, datasetId: batch.id, version: batch.version,
-    ...(recordingId ? { recordingId, value, ...(reason ? { reason } : {}) } : {}) });
+export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: "valid" | "invalid", reason?: string) {
+  const input={action,datasetId:batch.id,version:batch.version,
+    ...(recordingId?{recordingId,value,...(reason?{reason}:{})}:{})};
+  // Keep a full claim response so entering the workspace needs no second read.
+  const compact=action!=="claim";
+  let result:{batch:OutboundBatch};
+  try { result=await outboundCall({...input,...(compact?{compact:true}:{})}); }
+  catch(error) {
+    if(!compact||!String(error).includes("OUTBOUND_REQUEST_INVALID"))throw error;
+    result=await outboundCall(input);
+  }
+  const videos=new Map(batch.recordings.map(recording=>[recording.id,recording.videos]));
+  return {...result,batch:{...result.batch,recordings:result.batch.recordings.map(recording=>
+    ({...recording,videos:recording.videos??videos.get(recording.id)??[]}))}};
+}
 export async function fetchOutboundVideo(batch: OutboundBatch, recording: OutboundRecording, segment: number) {
   const result = await outboundCall<{ url: string }>({ action: "video-url", datasetId: batch.id, recordingId: recording.id, segment });
   const url = new URL(result.url);

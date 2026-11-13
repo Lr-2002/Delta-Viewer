@@ -1,12 +1,18 @@
-import {useEffect,useMemo,useRef,useState} from "react";
+import {memo,useEffect,useMemo,useRef,useState,type CSSProperties} from "react";
 import {ArrowLeft,Check,CheckCircle2,ChevronRight,Expand,Film,LoaderCircle,Pause,Play,RefreshCw,Save,Video,Volume2,VolumeX,X,XCircle} from "lucide-react";
 import type {UserIdentity} from "../types";
-import {changeOutboundBatch,fetchOutboundVideo,listOutboundBatches,OUTBOUND_INVALID_REASONS,outboundError,outboundVideoParts,saveOutboundReasonOption,type OutboundBatch} from "../lib/outbound-review";
+import {changeOutboundBatch,fetchOutboundVideo,listOutboundBatches,OUTBOUND_INVALID_REASONS,outboundError,outboundVideoParts,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording} from "../lib/outbound-review";
 import {OutboundPlayback} from "../lib/outbound-playback";
 import "./outbound-review.css";
 
 interface Props {currentUser:UserIdentity;workspaceBusy?:boolean;view?:"tasks"|"workspace";initialBatch?:OutboundBatch;onOpenReview?:(batch:OutboundBatch)=>Promise<void>;onReturnToTasks?:()=>void;suspended?:boolean}
 type VideoState={recordingId:string;part:number;urls:Record<number,string>;ready:number[];failed:boolean};
+
+// Playback publishes its clock frequently. The recording queue only changes
+// when selection, authority or a saved decision changes.
+const RecordingList=memo(function RecordingList({recordings,selectedId,disabled,onSelect}:{recordings:OutboundRecording[];selectedId:string;disabled:boolean;onSelect:(id:string)=>void}){
+  return <nav className="outbound-recordings" aria-label="录制列表">{recordings.map((item,index)=><button type="button" key={item.id} className={item.id===selectedId?"selected":""} aria-label={`${item.name||`录制 ${index+1}`} ${item.decision?.value==="valid"?"有效":item.decision?.value==="invalid"?"无效":"待审"}`} aria-pressed={item.id===selectedId} disabled={disabled} onClick={()=>onSelect(item.id)}><span className="outbound-recording-number">{String(index+1).padStart(2,"0")}</span><span className="outbound-recording-label" title={item.name}>{item.name||`录制 ${index+1}`}</span><strong className={item.decision?.value??""}>{item.decision?.value==="valid"?<><CheckCircle2 size={12}/>有效</>:item.decision?.value==="invalid"?<><XCircle size={12}/>无效</>:"待审"}</strong><ChevronRight className="outbound-recording-arrow" size={14}/></button>)}</nav>;
+});
 
 export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks",initialBatch,onOpenReview,onReturnToTasks,suspended=false}:Props){
   const [batches,setBatches]=useState<OutboundBatch[]>(initialBatch?[initialBatch]:[]);
@@ -40,7 +46,8 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
   const isOwner=batch?.claim===currentUser.username;
   const grouped=useMemo(()=>outboundVideoParts(recording?.videos??[]),[recording?.videos]);
   const partVideos=grouped.parts[partIndex]??[];
-  const videosReady=Boolean(recording&&videoState?.recordingId===recording.id&&videoState.part===partIndex&&!videoState.failed&&partVideos.length>0&&partVideos.every(video=>videoState.urls[video.segment]&&videoState.ready.includes(video.segment)));
+  const missingCameras=grouped.cameras.filter(camera=>!partVideos.some(video=>video.camera===camera));
+  const videosReady=Boolean(recording&&videoState?.recordingId===recording.id&&videoState.part===partIndex&&!videoState.failed&&partVideos.length>0&&!missingCameras.length&&partVideos.every(video=>videoState.urls[video.segment]&&videoState.ready.includes(video.segment)));
   const availableReasons=useMemo(()=>[...new Set([...OUTBOUND_INVALID_REASONS,...reasonOptions])],[reasonOptions]);
   const playerRefs=useMemo(()=>new Map(partVideos.map(video=>[video.segment,(element:HTMLVideoElement|null)=>{
     if(element)players.current.set(video.segment,element);else players.current.delete(video.segment);
@@ -60,7 +67,7 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
     const generation=++listGeneration.current;
     setLoading(true);setError("");
     try{
-      const value=await listOutboundBatches();
+      const value=await listOutboundBatches(view==="workspace"?batchId:undefined);
       if(generation!==listGeneration.current)return;
       setBatches(value.batches);
       setReasonOptions(value.reasonOptions??[]);
@@ -81,6 +88,7 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
     return()=>{requestGeneration.current++;playback.current?.pause();};
   },[view,batch?.id,recording?.id,isOwner,suspended]);
   useEffect(()=>{if(suspended)playback.current?.pause();},[suspended]);
+  useEffect(()=>{playback.current?.setMaster(partVideos.find(video=>video.camera===grouped.primaryCamera)?.segment??null);},[partVideos,grouped.primaryCamera]);
 
   function updateBatch(next:OutboundBatch){
     setBatches(previous=>previous.map(value=>value.id===next.id?next:value));
@@ -100,7 +108,7 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
       }
     }catch(cause){
       const message=outboundError(cause);
-      try{const fresh=await listOutboundBatches();setBatches(fresh.batches);setReasonOptions(fresh.reasonOptions??[]);}catch{/* Keep the original error and saved state available for an explicit refresh. */}
+      try{const fresh=await listOutboundBatches(view==="workspace"?batch.id:undefined);setBatches(fresh.batches);setReasonOptions(fresh.reasonOptions??[]);}catch{/* Keep the original error and saved state available for an explicit refresh. */}
       setError(message);
     }
     finally{busyRef.current=false;setBusyAction("");setBusy(false);}
@@ -146,7 +154,11 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
     if(busyRef.current||workspaceBusy)return;
     busyRef.current=true;++listGeneration.current;setLoading(false);setBusyAction(`${item.id}:${action}`);setBusy(true);setError("");
     try{
-      if(action==="open"){await onOpenReview?.({...item,reasonOptions});return;}
+      if(action==="open"){
+        const detail=item.recordings.length?item:(await listOutboundBatches(item.id)).batches[0];
+        if(!detail)throw new Error("OUTBOUND_BATCH_NOT_FOUND");
+        await onOpenReview?.({...detail,reasonOptions});return;
+      }
       const result=await changeOutboundBatch(item,action);updateBatch(result.batch);
       if(action==="claim")await onOpenReview?.({...result.batch,reasonOptions});
     }catch(cause){setError(outboundError(cause));}
@@ -164,7 +176,7 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
     finally{busyRef.current=false;setBusyAction("");setBusy(false);}
   }
 
-  const recordingList=<nav className="outbound-recordings" aria-label="录制列表">{batch?.recordings.map((item,index)=><button type="button" key={item.id} className={item.id===(recording?.id??"")?"selected":""} aria-label={`${item.name||`录制 ${index+1}`} ${item.decision?.value==="valid"?"有效":item.decision?.value==="invalid"?"无效":"待审"}`} aria-pressed={item.id===(recording?.id??"")} disabled={busy||workspaceBusy} onClick={()=>setRecordingId(item.id)}><span className="outbound-recording-number">{String(index+1).padStart(2,"0")}</span><span className="outbound-recording-label" title={item.name}>{item.name||`录制 ${index+1}`}</span><strong className={item.decision?.value??""}>{item.decision?.value==="valid"?<><CheckCircle2 size={12}/>有效</>:item.decision?.value==="invalid"?<><XCircle size={12}/>无效</>:"待审"}</strong><ChevronRight className="outbound-recording-arrow" size={14}/></button>)}</nav>;
+  const recordingList=batch?<RecordingList recordings={batch.recordings} selectedId={recording?.id??""} disabled={busy||workspaceBusy} onSelect={setRecordingId}/>:null;
   if(view==="tasks")return <section className="outbound-review" aria-label="外发审核任务">
     <div className="outbound-toolbar"><strong>外发审核</strong><span>按交付批次领取任务</span><button className="button button-secondary" type="button" aria-label="刷新外发批次" disabled={loading||busy||workspaceBusy} onClick={()=>void load()}><RefreshCw size={16}/></button></div>
     {error&&<div className="outbound-error" role="alert">{error}</div>}
@@ -185,11 +197,16 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
             <div className="outbound-player-heading"><div><strong>{recording.name}</strong><span>{grouped.cameraCount} 路原始视频{grouped.parts.length>1?` · 共 ${grouped.parts.length} 段`:""}</span></div>
               {isOwner&&(!videoState||videoState.failed)&&<button className="button button-secondary" type="button" disabled={opening||workspaceBusy||!recording.videos.length} onClick={()=>void openVideos()}>{opening?<LoaderCircle size={16} className="spin"/>:<Play size={16}/>}打开原始视频</button>}
             </div>
-            {grouped.parts.length>1&&<nav className="outbound-video-tabs" aria-label="视频分段">{grouped.parts.map((_,index)=><button key={index} type="button" aria-pressed={index===partIndex} disabled={!isOwner||opening||busy||workspaceBusy} onClick={()=>void openVideos(index)}>第 {index+1} 段</button>)}</nav>}
-            {videoState?.recordingId===recording.id&&videoState.part===partIndex?<div className={`outbound-video-grid cameras-${partVideos.length}`}>{partVideos.map((video,index)=><article className="outbound-video-item" key={`${recording.id}:${video.segment}`}>
+            {grouped.parts.length>1&&<nav className="outbound-video-tabs" aria-label="视频分段">{grouped.parts.map((_,index)=><button key={index} type="button" aria-pressed={index===partIndex} disabled={!isOwner||opening||busy||workspaceBusy} onClick={()=>void openVideos(index)}>第 {grouped.partNumbers[index]+1} 段</button>)}</nav>}
+            {missingCameras.length>0&&<p className="outbound-error" role="alert">本段缺少 {missingCameras.map(cameraName).join("、")} 的源文件，不能提交审核。其他分段仍可查看。</p>}
+            {videoState?.recordingId===recording.id&&videoState.part===partIndex?<div className={`outbound-video-grid cameras-${grouped.cameraCount}`} style={{"--outbound-camera-columns":grouped.cameraCount>1?`minmax(0,2.2fr) repeat(${Math.ceil((grouped.cameraCount-1)/2)},minmax(0,1fr))`:"minmax(0,1fr)"} as CSSProperties}>{grouped.cameras.map(camera=>{
+              const video=partVideos.find(item=>item.camera===camera);
+              const primary=camera===grouped.primaryCamera;
+              if(!video)return <article className={`outbound-video-item is-missing${primary?" is-primary":""}`} key={`${recording.id}:${camera}:missing`}><header><strong><Video size={13}/>{cameraName(camera)}</strong><span>本段缺失</span></header><div className="outbound-video-stage"><div className="outbound-video-loading">此相机没有本段源文件</div></div></article>;
+              return <article className={`outbound-video-item${primary?" is-primary":""}`} key={`${recording.id}:${video.segment}`}>
               <header><strong><Video size={13}/>{cameraName(video.camera)}</strong><span>{videoState.ready.includes(video.segment)?"已就绪":"加载中"}</span><button type="button" className="outbound-expand" title="放大视频" aria-label={`放大${cameraName(video.camera)}`} disabled={!videoState.urls[video.segment]} onClick={()=>void players.current.get(video.segment)?.requestFullscreen().catch(()=>setError("无法进入全屏，请重试。"))}><Expand size={14}/></button></header>
-              <div className="outbound-video-stage"><video ref={playerRefs.get(video.segment)} src={videoState.urls[video.segment]} aria-label={cameraName(video.camera)} playsInline muted={index!==0||muted} preload="auto" onCanPlay={()=>markReady(video.segment)} onLoadedMetadata={updateClock} onError={()=>{playback.current?.pause();setVideoState(previous=>previous?{...previous,failed:true}:null);setError(`原始视频读取失败：${video.label}，请重新打开。`);}}/>{!videoState.ready.includes(video.segment)&&<div className="outbound-video-loading"><LoaderCircle size={20} className="spin"/><span>{videoState.urls[video.segment]?"正在缓冲":"正在连接"}</span></div>}</div>
-            </article>)}</div>:<div className="outbound-video-placeholder"><Video size={22}/><span>{opening?"正在读取原始视频…":isOwner?"打开后将并列读取本条录制的全部相机":"领取批次后查看原始视频"}</span></div>}
+              <div className="outbound-video-stage"><video ref={playerRefs.get(video.segment)} src={videoState.urls[video.segment]} aria-label={cameraName(video.camera)} playsInline muted={!primary||muted} preload="auto" onCanPlay={()=>markReady(video.segment)} onLoadedMetadata={updateClock} onError={()=>{playback.current?.pause();setVideoState(previous=>previous?{...previous,failed:true}:null);setError(`原始视频读取失败：${video.label}，请重新打开。`);}}/>{!videoState.ready.includes(video.segment)&&<div className="outbound-video-loading"><LoaderCircle size={20} className="spin"/><span>{videoState.urls[video.segment]?"正在缓冲":"正在连接"}</span></div>}</div>
+            </article>;})}</div>:<div className="outbound-video-placeholder"><Video size={22}/><span>{opening?"正在读取原始视频…":isOwner?"打开后将并列读取本条录制的全部相机":"领取批次后查看原始视频"}</span></div>}
             <div className="outbound-transport" aria-label="回放控制"><button className="button outbound-play-button" type="button" aria-label={playing?"暂停":"全局播放"} disabled={!videosReady||busy||workspaceBusy||suspended} onClick={togglePlayback}>{playing?<Pause size={18}/>:<Play size={18}/>}</button><span className="outbound-time">{formatTime(position)}<span> / {formatTime(duration)}</span></span><input type="range" aria-label="视频播放位置" min={0} max={duration||1} step={0.01} value={Math.min(position,duration||1)} disabled={!videosReady||suspended} onChange={event=>seek(Number(event.target.value))}/><span className="outbound-playback-status" role="status">{buffering?<><LoaderCircle size={13} className="spin"/>正在缓冲</>:opening?`已就绪 ${videoState?.ready.length??0}/${partVideos.length}`:videosReady?"同步回放":"等待视频"}</span><button className="icon-button" type="button" title={muted?"开启主相机声音":"静音"} aria-label={muted?"开启主相机声音":"静音"} onClick={()=>setMuted(value=>!value)}>{muted?<VolumeX size={16}/>:<Volume2 size={16}/>}</button><select aria-label="播放速度" value={speed} onChange={event=>{const rate=Number(event.target.value);setSpeed(rate);playback.current?.setSpeed(rate);}}>{[.25,.5,1,2].map(rate=><option key={rate} value={rate}>{rate}×</option>)}</select></div>
             <div className="outbound-decision"><span>{recording.decision?`已由 ${recording.decision.actor} 于 ${new Date(recording.decision.at).toLocaleString("zh-CN",{hour12:false})} 判为${recording.decision.value==="valid"?"有效":"无效"}${recording.decision.reason?` · ${recording.decision.reason}`:""}`:videosReady?"请根据完整原始视频判断数据有效性":"视频全部就绪后可提交结论"}</span>
               <button className="button button-primary outbound-valid-button" type="button" disabled={!isOwner||busy||workspaceBusy||!videosReady||Boolean(recording.decision)} onClick={()=>void act("decide","valid")}><CheckCircle2 size={16}/>有效数据</button>

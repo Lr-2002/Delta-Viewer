@@ -18,18 +18,20 @@ before(async()=>{
 after(async()=>{await browser?.close();await server?.close();writeFileSync(resolve(reportRoot,'report.json'),JSON.stringify({syntheticOnly:true,realDeviceOperations:false,externalRequests:0,evidence},null,2));});
 
 const backend=`
-export async function getOtaServiceStatus(){return {enabled:true,origin:null,channel:'factory',trust:'device_verified',trustKeyId:null,detail:'本地测试夹具'};}
-export async function previewOtaRelease(){window.previewCalls++;return {previewId:'fixture-preview',releaseId:'fixture-release',version:'1.0.0',channel:'factory',keyId:null,rollbackIndex:null,artifactBytes:123,totalBytes:456,files:[],trust:'device_verified'};}
+export async function readOtaHistory(){return window.otaHistory??[];}
+export async function previewOtaLogs(id,operationId){window.otaPreviewRecord=id;return {...await previewDiagnosticLogs('SSH',operationId),previewId:'frozen-ota-preview'};}
+export async function getOtaServiceStatus(){return {enabled:true,origin:null,channel:'factory',trust:'digest_only',trustKeyId:null,detail:'本地测试夹具'};}
+export async function previewOtaRelease(){window.previewCalls++;return {previewId:'fixture-preview',releaseId:'fixture-release',version:'1.0.0',channel:'factory',keyId:null,rollbackIndex:null,artifactBytes:123,totalBytes:456,files:[],trust:'digest_only'};}
 export async function confirmDeviceOtaUpgrade(){window.confirmCalls++;return window.confirmUpgrade??false;}
 export async function submitOtaToDevice(){window.submitCalls++;if(window.submitResult)return window.submitResult;throw Error('fixture must not submit');}
-export async function readDeviceOtaStatus(){window.statusCalls++;if(window.statusError)throw Error('设备连接中断');return window.otaStatus??{available:true,failureCodes:[],reason:null,previousResult:false,state:'SUCCESS',result:'PASS',operationId:'fixture-op',releaseBefore:'fixture-before',releaseTarget:'fixture-after',targetVersion:'1.0.0',active:false,finalState:true,guidance:null,detail:'本地夹具成功'};}
+export async function readDeviceOtaStatus(){window.statusCalls++;(window.statusRequests??=[]).push(arguments[0]);if(window.statusError)throw Error('设备连接中断');return window.otaStatus??{available:true,failureCodes:[],reason:null,previousResult:false,state:'SUCCESS',result:'PASS',operationId:'fixture-op',releaseBefore:'fixture-before',releaseTarget:'fixture-after',targetVersion:'1.0.0',active:false,finalState:true,guidance:null,detail:'本地夹具成功'};}
 export async function getDiagnosticServiceStatus(){return {enabled:true,origin:null,detail:'本地测试夹具'};}
-export async function chooseSessionDirectory(){return '/synthetic/session';}
+export async function chooseSessionDirectory(){window.chooseSessionCalls=(window.chooseSessionCalls??0)+1;return '/synthetic/session';}
 export async function previewDiagnosticLogs(source,operationId){window.logPreviewOperation=operationId;return {previewId:'frozen-preview',checkCount:3,reportType:'runtime-diagnostic',source,deviceId:'synthetic-device',hasCid:true,workspaceVersion:'1.0.0',releaseId:null,totalEntries:3,selectedEntries:3,levels:{error:0,warning:0,info:3,debug:0},startedAt:null,completedAt:null,truncated:false,fileCount:2};}
 export async function uploadDiagnosticLogs(previewId,operationId){window.logRequests.push({previewId,operationId});if(window.logRequests.length===1)throw Error('夹具回执超时');return {reportId:'frozen-report',deviceId:'synthetic-device',entryCount:3,message:'本地夹具已接收'};}
 `;
 
-test('OTA status becomes unavailable on disconnect; Type-C never queries or submits; logs retry the same report',async()=>{
+test('OTA status becomes unavailable on disconnect; all three modes query SSH status; logs retry the same report',async()=>{
   for(const width of [1440,960,390]){
     const context=await browser.newContext({viewport:{width,height:920}}),page=await context.newPage();
     const errors=[],external=[];page.on('pageerror',e=>errors.push(e.message));
@@ -81,20 +83,41 @@ test('OTA status becomes unavailable on disconnect; Type-C never queries or subm
       await page.evaluate(()=>{window.statusError=true;});
       await page.getByText('设备连接中断',{exact:true}).waitFor();
       assert.equal(await page.getByText('设备报告升级成功。',{exact:false}).count(),0);
+      for(const mode of ['type_c','ap','lan']){
+        await page.evaluate(mode=>{window.statusError=false;window.renderPanel({interfaceId:mode,apAddress:mode==='type_c'?null:'192.168.4.1',connectionMode:mode},true);},mode);
+        await page.waitForFunction(mode=>window.statusRequests.at(-1)?.connectionMode===mode,mode);
+        await page.getByRole('button',{name:'检查最新版本',exact:true}).waitFor({state:'visible'});
+        assert.equal(await page.getByRole('button',{name:'检查最新版本',exact:true}).isDisabled(),false);
+      }
       await page.evaluate(()=>window.renderPanel(null,true));
-      await page.getByText('Type-C 不提供升级通道，请从首页连接设备热点或局域网 IP。',{exact:true}).waitFor();
+      await page.getByText('尚未取得设备网络地址，请回到首页重新连接。',{exact:true}).waitFor();
       assert.equal(await page.getByRole('button',{name:'检查最新版本',exact:true}).isDisabled(),true);
       const calls=await page.evaluate(()=>window.statusCalls);await page.waitForTimeout(3100);assert.equal(await page.evaluate(()=>window.statusCalls),calls);
-      await page.getByRole('button',{name:'预览检测与日志',exact:true}).click();
-      await page.getByText('synthetic-device',{exact:true}).waitFor();
+      await page.evaluate(()=>{window.otaHistory=[{id:'ssh-fixture-history',deviceId:'synthetic-device',cid:'0123456789abcdef0123456789abcdef',operationId:'synthetic-operation',targetVersion:'1.3.1',state:'FAILED',result:'FAIL',startedAtMs:Date.now()-2000,updatedAtMs:Date.now(),events:[{atMs:Date.now(),level:'error',message:'电压低于升级门限'}],truncated:false,receipt:null}];window.renderPanel({interfaceId:'usb-test',connectionMode:'type_c'},true);});
+      await page.getByText('升级日志与售后上传（1）',{exact:true}).click();
+      await page.getByRole('button',{name:'上传本次升级日志到售后',exact:true}).click();
+      const historyPanel=page.locator('.manager-ota-history .manager-support-upload');
+      await historyPanel.getByRole('button',{name:'预览本次升级日志',exact:true}).click();
+      assert.equal(await page.evaluate(()=>window.otaPreviewRecord),'ssh-fixture-history','upgrade history uses its backend record without a recording folder');
+      assert.equal(await page.evaluate(()=>window.chooseSessionCalls??0),0,'upgrade logs never ask for a session directory');
+      await historyPanel.getByRole('button',{name:'上传到售后',exact:true}).click();
+      await historyPanel.getByText('夹具回执超时',{exact:true}).waitFor();
+      await historyPanel.getByRole('button',{name:'上传到售后',exact:true}).click();
+      await historyPanel.getByText('本地夹具已接收',{exact:false}).waitFor();
+      assert.deepEqual(await page.evaluate(()=>window.logRequests.map(r=>r.previewId)),['frozen-ota-preview','frozen-ota-preview']);
+      // The ordinary support panel below still exercises immutable retry.
+      await page.evaluate(()=>{window.logRequests=[];window.renderPanel(null,false);});
+      const supportPanel=page.locator('main > .manager-support-upload');
+      await supportPanel.getByRole('button',{name:'预览检测与日志',exact:true}).click();
+      await supportPanel.getByText('synthetic-device',{exact:true}).waitFor();
       assert.ok(await page.evaluate(()=>window.logPreviewOperation>100));
-      await page.getByRole('button',{name:'上传到售后',exact:true}).click();
-      await page.waitForFunction(()=>window.lastError==='夹具回执超时');
-      await page.getByRole('button',{name:'上传到售后',exact:true}).click();
-      await page.getByText('本地夹具已接收',{exact:false}).waitFor();
+      await supportPanel.getByRole('button',{name:'上传到售后',exact:true}).click();
+      await supportPanel.getByText('夹具回执超时',{exact:true}).waitFor();
+      await supportPanel.getByRole('button',{name:'上传到售后',exact:true}).click();
+      await supportPanel.getByText('本地夹具已接收',{exact:false}).waitFor();
       const requests=await page.evaluate(()=>window.logRequests);assert.equal(requests.length,2);assert.equal(requests[0].previewId,requests[1].previewId);assert.equal(requests[0].previewId,"frozen-preview");
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
-      await page.screenshot({path:resolve(reportRoot,`services-${width}.png`),fullPage:true});evidence.push({width,status:'passed',staleStateCleared:true,updatedAt:true,typeCDisabled:true,cancelConfirmation:true,logRetrySameIdentity:true});
+      await page.screenshot({path:resolve(reportRoot,`services-${width}.png`),fullPage:true});evidence.push({width,status:'passed',staleStateCleared:true,updatedAt:true,allThreeModes:true,cancelConfirmation:true,logRetrySameIdentity:true});
     }finally{await context.close();}
   }
 });

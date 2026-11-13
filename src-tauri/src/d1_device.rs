@@ -337,6 +337,25 @@ pub(super) fn attempted_address(link: &LinkCandidate, request: &DeviceRequest) -
         .ok()
         .map(|target| target.peer)
 }
+
+/// Reuse the selected OS link for SSH, including the USB/RNDIS gateway.
+pub(crate) async fn ssh_target(
+    request: &DeviceRequest,
+    cancelled: &AtomicBool,
+) -> Result<(Ipv4Addr, Option<Ipv4Addr>), String> {
+    if request.validated_mode().map_err(|e| e.message)? != ConnectionMode::TypeC {
+        let (_, peer, local) = crate::d1_page::resolve_target(request, cancelled).await?;
+        return Ok((peer, local));
+    }
+    let links = inventory_for(false).await.map_err(|e| e.message)?;
+    let link = links
+        .candidates
+        .iter()
+        .find(|link| link.interface_id == request.interface_id)
+        .ok_or("D1_DISCONNECTED: 未找到所选 Type-C 网络连接")?;
+    let target = request_endpoint(link, request).map_err(|e| e.message)?;
+    Ok((target.peer, Some(target.local)))
+}
 fn endpoint(link: &LinkCandidate, ap_address: Option<&str>) -> Result<Endpoint, QueryError> {
     if ["link_down", "waiting_address"].contains(&link.state)
         || (ap_address.is_none()

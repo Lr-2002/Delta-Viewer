@@ -1,6 +1,6 @@
 [package]
 name = "dohc-viewer"
-version = "1.9.9"
+version = "1.10.0"
 description = "Inspect and export DOHC recordings from removable media"
 authors = ["DOHC"]
 edition = "2021"
@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 base64 = "0.22"
 ring = "0.17"
+russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa"] }
 blake3 = "1"
 bytes = "1"
 crc32fast = "1"
@@ -47,7 +48,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2.5.4"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["time", "macros"] }
+tokio = { version = "1", features = ["time", "macros", "net", "io-util"] }
 walkdir = "2"
 zeroize = "1.9"
 

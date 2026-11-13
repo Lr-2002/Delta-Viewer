@@ -316,6 +316,16 @@ pub async fn record_annotation_audit(
     Ok(())
 }
 
+pub(crate) fn d1_history_owner(data_root: &Path, state: &AuthState) -> AppResult<String> {
+    let user = state.require_user()?;
+    let service = if state.workspace_mode()? == Some(crate::model::WorkspaceMode::Offline) {
+        "offline-local-v1".into()
+    } else {
+        load_config(data_root)?.service_id
+    };
+    Ok(format!("{service}/{}", user.username))
+}
+
 pub(crate) fn source_review_owner(
     data_root: &Path,
     state: &AuthState,

@@ -64,7 +64,12 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
       window.fixtureInvoke = async (command, args) => {
         if (command !== 'outbound_review_call') throw Error('Unexpected command ' + command);
         const input = args.input; window.fixtureCalls.push(input);
-        if (input.action === 'list') return { batches: [structuredClone(window.fixtureBatch), ...(window.fixtureExtraBatches ? [1,2].map(i=>({...structuredClone(window.fixtureBatch),id:'other-'+i,name:'其他批次 '+i})) : [])], reasonOptions: [...window.fixtureReasonOptions] };
+        if (input.action === 'list') {
+          const batches=[structuredClone(window.fixtureBatch), ...(window.fixtureExtraBatches ? [1,2].map(i=>({...structuredClone(window.fixtureBatch),id:'other-'+i,name:'其他批次 '+i})) : [])]
+            .filter(batch=>!input.datasetId||input.datasetId===batch.id);
+          if(input.summary)for(const batch of batches)batch.recordings=[];
+          return {batches,reasonOptions:[...window.fixtureReasonOptions]};
+        }
         if (input.action === 'claim' && window.fixtureHoldClaim) await new Promise(resolve=>window.fixtureReleaseClaim=resolve);
         if (input.action === 'video-url') {
           if(input.segment===window.fixtureSlowSegment)await new Promise(resolve=>window.fixtureReleaseSlow=resolve);
@@ -88,7 +93,9 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
           window.fixtureBatch.invalid = reviewed.filter(row => row.decision.value === 'invalid').length;
           window.fixtureBatch.rate = reviewed.length === window.fixtureBatch.total ? window.fixtureBatch.valid / window.fixtureBatch.total : null;
         }
-        return { batch: structuredClone(window.fixtureBatch) };
+        const result=structuredClone(window.fixtureBatch);
+        if(input.compact)for(const recording of result.recordings)delete recording.videos;
+        return { batch: result };
       };
       if(location.pathname==="/__outbound")window.__TAURI_INTERNALS__={invoke:window.fixtureInvoke};
     });
@@ -154,6 +161,10 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.evaluate(() => { window.fixtureMediaAllowed = true; });
     await page.waitForFunction(() => [...document.querySelectorAll('video')].length === 7
       && [...document.querySelectorAll('video')].every(video => video.readyState >= 3));
+    const cameraSizes=await page.locator('.outbound-video-item').evaluateAll(items=>items.map(item=>({primary:item.classList.contains('is-primary'),width:item.getBoundingClientRect().width,height:item.getBoundingClientRect().height})));
+    assert.equal(cameraSizes.filter(item=>item.primary).length,1);
+    assert.ok(cameraSizes[0].width>cameraSizes[1].width*2,'main camera uses the original replay width ratio');
+    assert.ok(cameraSizes[0].height>cameraSizes[1].height*1.8,'main camera spans both peer rows');
     await page.getByRole('button', { name: '无效数据' }).click();
     await page.getByLabel('新增常用原因').fill('画面遮挡');
     await page.getByRole('button', { name: '保存常用项' }).click();
@@ -197,6 +208,42 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.waitForFunction(()=>document.querySelector('.outbound-player-heading strong')?.textContent==='录制 002');
     await page.waitForFunction(()=>document.querySelectorAll('video').length===7);
     assert.equal(await page.getByRole('button',{name:'录制 002 无效'}).getAttribute('aria-pressed'),'true','late URLs cannot change the selected recording');
+    await page.evaluate(()=>{
+      window.fixtureBatch.recordings[0].videos=window.fixtureBatch.recordings[0].videos.filter(video=>video.segment!==48);
+      window.fixtureCalls=[];
+    });
+    await page.getByRole('button',{name:'刷新外发批次'}).click();
+    await page.getByRole('button',{name:/录制 001/}).click();
+    await page.getByText('此相机没有本段源文件',{exact:true}).waitFor();
+    assert.equal(await page.locator('.outbound-video-item').count(),7,'a missing part keeps its real camera slot visible');
+    assert.equal(await page.locator('video').count(),6);
+    assert.equal(await page.getByRole('button',{name:'有效数据'}).isDisabled(),true,'missing camera blocks decisions');
+    assert.ok(!(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='video-url').map(x=>x.segment))).includes(49),'next segment must not shift into the missing first segment');
+    await page.getByRole('button',{name:'第 2 段',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('video').length===7);
+    assert.deepEqual(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='video-url').slice(-7).map(x=>x.segment)),[1,9,17,25,33,41,49]);
+    // Camera count comes from the recording; every slot must remain usable
+    // at both desktop and narrow widths, including even camera counts.
+    for(const width of [1440,960,390]){
+      await page.setViewportSize({width,height:920});
+      for(let count=1;count<=8;count++){
+        await page.evaluate(count=>{
+          const recording=window.fixtureBatch.recordings[0];recording.decision=null;
+          recording.videos=Array.from({length:count},(_,segment)=>({segment,label:`cam${segment}/video.mp4`,size:1024,sha256:null}));
+        },count);
+        await page.getByRole('button',{name:'刷新外发批次'}).click();
+        await page.getByRole('button',{name:/录制 001/}).click();
+        const grid=page.locator(`.outbound-video-grid.cameras-${count}`);await grid.waitFor();
+        const sizes=await grid.evaluate(grid=>{const box=grid.getBoundingClientRect();return [...grid.children].map(item=>{const r=item.getBoundingClientRect();return {x:r.x-box.x,y:r.y-box.y,width:r.width,height:r.height,inside:r.x>=box.x-.5&&r.right<=box.right+.5};});});
+        assert.equal(sizes.length,count);assert.ok(sizes.every(r=>r.inside&&r.width>40&&r.height>40),`${count} cameras remain visible at ${width}px`);
+        for(let i=0;i<sizes.length;i++)for(let j=i+1;j<sizes.length;j++){
+          const a=sizes[i],b=sizes[j];assert.ok(a.x+a.width<=b.x+.5||b.x+b.width<=a.x+.5||a.y+a.height<=b.y+.5||b.y+b.height<=a.y+.5,'camera tiles never overlap');
+        }
+        if(count>1)assert.ok(sizes[0].width*sizes[0].height>sizes[1].width*sizes[1].height*1.7,`primary camera remains larger: ${width}px/${count} ${JSON.stringify(sizes)}`);
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+        if(count===7&&process.env.OUTBOUND_SCREENSHOT_DIR)await page.screenshot({path:path.join(process.env.OUTBOUND_SCREENSHOT_DIR,`seven-cameras-${width}.png`)});
+      }
+    }
     // Exercise the actual App -> TaskCenter -> data workspace wiring as well
     // as the shared reviewer component. All accounts/media are isolated fixtures.
     await page.route('**/src/lib/outbound-review.ts',async route=>{
