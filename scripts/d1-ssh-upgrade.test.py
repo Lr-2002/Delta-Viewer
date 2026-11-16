@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import patch
@@ -33,6 +34,7 @@ class UpgradeTest(unittest.TestCase):
         self.patch('announce_current', lambda: self.announcements.append('up-to-date') or True)
         self.installs = []
         self.starts = 0
+        self.prompt_starts = []
         self.fail_install = False
         self.wrong_version = False
         self.run_real = subprocess.run
@@ -75,6 +77,9 @@ class UpgradeTest(unittest.TestCase):
             if args[-1].endswith('artifact.deb') and not self.wrong_version:
                 self.identity.update(version='1.3.1', releaseId='test-release')
             return types.SimpleNamespace(returncode=0)
+        if args[0] == 'systemd-run' and args[-1] == 'version-prompt':
+            self.prompt_starts.append(args)
+            return types.SimpleNamespace(returncode=0)
         if args[0] == 'systemd-run':
             self.starts += 1
             return types.SimpleNamespace(returncode=0)
@@ -104,6 +109,9 @@ class UpgradeTest(unittest.TestCase):
         self.assertEqual((result['state'], result['result']), ('UP_TO_DATE', 'UP_TO_DATE'))
         self.assertTrue(result['finalState'])
         self.assertFalse(result['active'])
+        self.assertEqual(self.announcements, [], 'version result returns before audio')
+        self.assertEqual(len(self.prompt_starts), 1)
+        upgrade.prompt_worker(self.root / self.payload['operationId'])
         self.assertEqual(self.announcements, ['up-to-date'])
         self.assertEqual(self.installs, [])
         self.assertEqual(self.starts, 0)
@@ -117,6 +125,7 @@ class UpgradeTest(unittest.TestCase):
     def test_direct_submit_same_release_skips_install_but_different_build_does_not(self):
         self.identity.update(version=self.payload['version'], releaseId=self.payload['releaseId'])
         self.assertEqual(upgrade.stage(self.payload)['state'], 'UP_TO_DATE')
+        upgrade.prompt_worker(self.root / self.payload['operationId'])
         self.assertEqual(self.starts, 0)
         self.payload['operationId'] = 'cd' * 16
         self.payload['releaseId'] = 'same-version-new-build'
@@ -132,12 +141,59 @@ class UpgradeTest(unittest.TestCase):
         self.assertFalse((self.root / self.payload['operationId']).exists())
         self.assertEqual(self.announcements, [])
         self.identity.update(version=self.payload['version'], releaseId=self.payload['releaseId'])
+        result = upgrade.stage(self.payload, check_only=True)
         with patch.object(upgrade, 'announce_current', return_value=False):
-            result = upgrade.stage(self.payload, check_only=True)
+            upgrade.prompt_worker(self.root / self.payload['operationId'])
+            result = upgrade.read()
         self.assertEqual((result['state'], result['result']), ('UP_TO_DATE', 'UP_TO_DATE'))
         self.assertEqual(result['failureCodes'], [])
         self.assertIn('语音提示未播放', result['guidance'])
         self.assertEqual(result['events'][-1]['level'], 'warning')
+
+    def test_slow_voice_does_not_hold_version_result_or_replay_on_receipt_retry(self):
+        self.identity.update(version=self.payload['version'], releaseId=self.payload['releaseId'])
+        started, release = threading.Event(), threading.Event()
+        def slow_voice():
+            self.announcements.append('up-to-date')
+            started.set()
+            if not release.wait(3):
+                raise AssertionError('fixture audio was never released')
+            return True
+        with patch.object(upgrade, 'announce_current', side_effect=slow_voice):
+            result = upgrade.stage(self.payload, check_only=True)
+            self.assertEqual((result['state'], result['audioState']), ('UP_TO_DATE', 'queued'))
+            directory = self.root / self.payload['operationId']
+            thread = threading.Thread(target=upgrade.prompt_worker, args=(directory,))
+            thread.start()
+            try:
+                self.assertTrue(started.wait(1))
+                self.assertEqual(upgrade.read()['state'], 'UP_TO_DATE')
+                self.assertEqual(upgrade.stage(self.payload, check_only=True)['state'], 'UP_TO_DATE')
+                self.assertEqual(len(self.prompt_starts), 1)
+                upgrade.prompt_worker(directory)
+                upgrade.prompt_start_failed(directory)
+                self.assertEqual(upgrade.load(directory / 'status.json')['audioState'], 'playing')
+                # A newer operation must not be replaced by late audio completion.
+                upgrade.write(self.root / 'latest.json', {'operationId': 'cd' * 16})
+            finally:
+                release.set()
+                thread.join(3)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(upgrade.load(directory / 'status.json')['audioState'], 'played')
+            upgrade.prompt_start_failed(directory)
+            self.assertEqual(upgrade.load(directory / 'status.json')['audioState'], 'played')
+            upgrade.prompt_worker(directory)
+            self.assertEqual(self.announcements, ['up-to-date'])
+            self.assertEqual(upgrade.load(self.root / 'latest.json')['operationId'], 'cd' * 16)
+
+    def test_prompt_start_failure_does_not_fail_the_verified_version(self):
+        self.identity.update(version=self.payload['version'], releaseId=self.payload['releaseId'])
+        with patch.object(upgrade.subprocess, 'run', return_value=types.SimpleNamespace(returncode=1)):
+            result = upgrade.stage(self.payload, check_only=True)
+        self.assertEqual((result['state'], result['result']), ('UP_TO_DATE', 'UP_TO_DATE'))
+        self.assertEqual(result['failureCodes'], [])
+        self.assertIn('语音提示未播放', result['guidance'])
+        self.assertEqual(self.installs, [])
 
     def test_version_check_cannot_replace_unknown_or_active_attempt_or_other_device(self):
         directory = self.launched()
@@ -154,6 +210,7 @@ class UpgradeTest(unittest.TestCase):
         directory = self.staged()
         self.identity.update(version=self.payload['version'], releaseId=self.payload['releaseId'])
         result = upgrade.launch(self.payload, '# fixture')
+        upgrade.prompt_worker(directory)
         self.assertEqual(result['state'], 'UP_TO_DATE')
         self.assertEqual(self.starts, 0)
         self.assertEqual(self.installs, [])

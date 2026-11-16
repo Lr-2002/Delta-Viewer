@@ -398,6 +398,11 @@ fn current_receipt(preview: &crate::d1_ota::OtaPreview, remote: SshStatus) -> Ot
     }
 }
 
+fn matches_current_release(preview: &crate::d1_ota::OtaPreview, current: &SshStatus) -> bool {
+    current.current_version.as_deref() == Some(preview.version.as_str())
+        && current.current_release_id.as_deref() == Some(preview.release_id.as_str())
+}
+
 /// Explicit version check: this action can only record/announce a matching build.
 /// A newer target never stages a file, downloads bytes or launches the installer.
 pub async fn check_release(
@@ -413,6 +418,11 @@ pub async fn check_release(
     let current = status(state, root, owner, request).await?;
     if current.status.active || current.status.state.as_deref() == Some("UNKNOWN") {
         return Err("OTA_DEVICE_NOT_READY: 设备正在升级或前次结果待确认".into());
+    }
+    if !matches_current_release(&preview, &current) {
+        // The pinned, fresh SSH read already identifies the installed build.
+        // Only a matching build needs the second action to record/announce it.
+        return Ok(current);
     }
     let (fingerprint, device_id, cid) = state
         .0

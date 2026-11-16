@@ -186,7 +186,46 @@ raise SystemExit(0 if play_runtime_prompt(PROMPT_OTA_UP_TO_DATE, config=config) 
         return False
 
 
-def current_record(directory, payload, actual):
+def finish_current_prompt(directory, record, played):
+    record['audioState'] = 'played' if played else 'failed'
+    record['updatedAtMs'] = int(time.time() * 1000)
+    record['events'].append(dict(atMs=record['updatedAtMs'], level='info' if played else 'warning',
+                                message='设备已播放当前已是最新版本提示。' if played else '设备语音提示未播放，请以页面版本状态为准。'))
+    if not played:
+        record['guidance'] += '设备语音提示未播放，请以页面状态为准。'
+    write(directory / 'status.json', record)
+
+
+def prompt_worker(directory):
+    # The separate operation directory and lock prevent receipt retries or a
+    # second service start from replaying an audible prompt.
+    with (directory / 'prompt.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        record = load(directory / 'status.json', {})
+        if record.get('operationId') != directory.name or record.get('state') != 'UP_TO_DATE' or record.get('audioState') != 'queued':
+            return
+        record['audioState'] = 'playing'
+        write(directory / 'status.json', record)
+        finish_current_prompt(directory, record, announce_current())
+
+
+def prompt_start_failed(directory):
+    # A timed-out systemd-run may already have started the worker. Share its
+    # lock and re-read status so a late receipt cannot overwrite its result.
+    with (directory / 'prompt.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        record = load(directory / 'status.json', {})
+        if record.get('operationId') == directory.name and record.get('state') == 'UP_TO_DATE' and record.get('audioState') == 'queued':
+            finish_current_prompt(directory, record, False)
+
+
+def current_record(directory, payload, actual, source=None):
     now = int(time.time() * 1000)
     message = '当前已是最新版本 %s，无需升级。' % payload['version']
     record = dict(available=True, state='UP_TO_DATE', result='UP_TO_DATE',
@@ -194,22 +233,31 @@ def current_record(directory, payload, actual):
                   releaseBefore=actual['version'], releaseTarget=payload['releaseId'],
                   targetVersion=payload['version'], active=False, finalState=True,
                   startedAtMs=now, updatedAtMs=now, failureCodes=[], reason=None,
-                  guidance=message, events=[dict(atMs=now, level='info', message=message)])
+                  guidance=message, audioState='queued',
+                  events=[dict(atMs=now, level='info', message=message)])
     write(directory / 'request.json', payload)
     write(directory / 'status.json', record)
     write(ROOT / 'latest.json', dict(operationId=payload['operationId']))
-    # Persist intent first: retries/polling never replay an audible prompt.
-    played = announce_current()
-    record['updatedAtMs'] = int(time.time() * 1000)
-    record['events'].append(dict(atMs=record['updatedAtMs'], level='info' if played else 'warning',
-                                message='设备已播放当前已是最新版本提示。' if played else '设备语音提示未播放，请以页面版本状态为准。'))
-    if not played:
-        record['guidance'] += '设备语音提示未播放，请以页面状态为准。'
-    write(directory / 'status.json', record)
-    return dict(record, **actual)
+    # Return the verified version without waiting for the installed audio
+    # player's shared lock or playback. Only this fixed script is executed.
+    try:
+        script = directory / 'prompt-worker.py'
+        script.write_text(source if source is not None else Path(__file__).read_text())
+        result = subprocess.run(['systemd-run', '--quiet', '--collect',
+                                 '--unit=dohc-manager-version-prompt-' + payload['operationId'],
+                                 '--property=Type=exec', '--property=RuntimeMaxSec=30',
+                                 '/usr/bin/python3', str(script), 'version-prompt'],
+                                capture_output=True, timeout=3)
+        if result.returncode:
+            prompt_start_failed(directory)
+    except (OSError, subprocess.TimeoutExpired):
+        prompt_start_failed(directory)
+    # The worker may have completed already; read its current result without
+    # overwriting its event log with our original queued snapshot.
+    return dict(load(directory / 'status.json', record), **actual)
 
 
-def stage(payload, check_only=False):
+def stage(payload, check_only=False, source=None):
     validate(payload)
     actual = identity()
     if actual['cid'] != payload['cid'] or actual['deviceId'] != payload['deviceId']:
@@ -231,7 +279,7 @@ def stage(payload, check_only=False):
             raise ValueError('OTA_ALREADY_RUNNING: 前次升级正在执行或结果待确认')
         if same_release(actual, payload):
             directory.mkdir(mode=0o700)
-            return current_record(directory, payload, actual)
+            return current_record(directory, payload, actual, source)
         if check_only:
             return read()
         if shutil.disk_usage(str(ROOT)).free < payload['size'] * 5 + 256 * 1024 * 1024:
@@ -325,7 +373,7 @@ def launch(payload, source):
         if previous.get('active') or previous.get('state') == 'UNKNOWN':
             raise ValueError('OTA_ALREADY_RUNNING: 前次升级正在执行或结果待确认')
         if same_release(actual, payload):
-            return current_record(directory, payload, actual)
+            return current_record(directory, payload, actual, source)
         package = directory / 'artifact.deb'
         verify(package, payload)
         (directory / 'worker.py').write_text(source)
@@ -470,7 +518,7 @@ def entry(action, payload=None, source=None):
     if action == 'read':
         result = read()
     elif action in ('stage', 'check'):
-        result = stage(payload, check_only=action == 'check')
+        result = stage(payload, check_only=action == 'check', source=source)
     elif action in ('download', 'receive'):
         result = transfer(payload, incoming=action == 'receive')
     elif action == 'launch':
@@ -480,5 +528,8 @@ def entry(action, payload=None, source=None):
     print(json.dumps(result, ensure_ascii=False))
 
 
-if __name__ == '__main__' and sys.argv[1:] == ['worker']:
-    worker(Path(__file__).parent)
+if __name__ == '__main__':
+    if sys.argv[1:] == ['worker']:
+        worker(Path(__file__).parent)
+    elif sys.argv[1:] == ['version-prompt']:
+        prompt_worker(Path(__file__).parent)

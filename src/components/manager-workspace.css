@@ -268,5 +268,30 @@
 @media(max-width:760px) {.manager-ota-status,.manager-ota-release dl {grid-template-columns:repeat(2,minmax(0,1fr));}.manager-ota {padding:16px;}}
 .manager-upload-state small {display:block;font-size:12px;color:#7b8794;margin-top:2px;}
 
-.manager-connected-actions {display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;}
-.manager-connection-success {display:flex;align-items:center;gap:7px;margin:12px 0 0;color:#217349;font-size:14px;}
+/* Home connection and action area share one visual frame. */
+.manager-section-home>.manager-page-heading,.manager-section-home>.manager-connection-area {max-width:1160px;margin-left:auto;margin-right:auto;}
+.manager-section-home>.manager-connection-area {padding:24px;background:#fff;border:1px solid #e0e5eb;border-radius:8px;box-shadow:0 4px 20px #192b4214;}
+.manager-section-home .manager-connection-guide {margin:20px 0 24px;padding:14px 18px;border-radius:8px;}
+.manager-device-access {border-top:1px solid #edf0f3;padding-top:22px;}
+.manager-access-heading {display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px;}
+.manager-access-heading h2 {font-size:17px;letter-spacing:0;}
+.manager-access-heading p {font-size:13px;margin-top:4px;color:#6b7785;}
+.manager-connection-success {display:inline-flex;align-items:center;gap:7px;flex-shrink:0;color:#23734f;font-size:13px;}
+.manager-status-dot {width:7px;height:7px;flex-shrink:0;border-radius:50%;background:#2e9368;box-shadow:0 0 0 3px #eaf6ef;}
+.manager-connected-address {font-variant-numeric:tabular-nums;color:#637181;border-left:1px solid #dce3e9;margin-left:3px;padding-left:10px;}
+.manager-connected-actions {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;}
+.manager-access-card {display:flex;align-items:center;gap:14px;width:100%;min-width:0;min-height:106px;padding:20px;text-align:left;color:#243446;background:#fff;border:1px solid #dce3eb;border-radius:8px;font:inherit;cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s,transform .15s;}
+.manager-access-icon {display:flex;align-items:center;justify-content:center;width:44px;height:44px;flex:0 0 44px;border-radius:8px;background:#eef4fb;color:#366aa1;}
+.manager-access-copy {display:flex;flex-direction:column;gap:6px;min-width:0;}
+.manager-access-copy strong {font-size:16px;font-weight:600;line-height:1.4;}
+.manager-access-copy small {font-size:12px;line-height:1.5;color:#758292;}
+.manager-access-arrow {margin-left:auto;flex-shrink:0;color:#8a9aae;}
+.manager-access-card:not(:disabled):hover {background:#f9fbfe;border-color:#9bb7d7;box-shadow:0 4px 12px #2c4f7710;transform:translateY(-1px);}
+.manager-access-card:not(:disabled):active {transform:translateY(0);background:#f0f5fb;}
+.manager-access-card:disabled {background:#fafbfc;border-color:#e8ecf1;color:#8b96a4;cursor:not-allowed;}
+.manager-access-card:disabled .manager-access-icon {background:#f0f2f5;color:#9aa6b3;}
+.manager-access-card:disabled small,.manager-access-card:disabled .manager-access-arrow {color:#9da7b3;}
+.manager-access-observation {font-size:12px!important;color:#7b8794!important;margin-top:14px!important;}
+@media(max-width:1050px) {.manager-access-card{padding:17px 14px;gap:10px;}.manager-access-icon{width:38px;height:38px;flex-basis:38px;border-radius:8px;}.manager-access-arrow{width:15px;}.manager-access-copy small{font-size:11px;}}
+@media(max-width:760px) {.manager-section-home>.manager-connection-area{padding:16px;border-radius:8px;}.manager-section-home .manager-connection-guide{margin:16px 0 20px;}.manager-access-heading{align-items:flex-start;flex-direction:column;gap:10px;}.manager-connected-actions{grid-template-columns:minmax(0,1fr);gap:10px;}.manager-access-card{min-height:82px;padding:16px;}.manager-access-icon{width:42px;height:42px;flex-basis:42px;}.manager-access-copy small{font-size:12px;}.manager-device-access{padding-top:18px;}}
+@media(prefers-reduced-motion:reduce) {.manager-access-card{transition:none;}}

@@ -749,7 +749,7 @@ test('Home verifies connections before enabling explicit management, information
     const {page,context,errors,external}=await session({width:960,height:680},false,nativePageFixture);
     try{
       const actions=page.getByRole('navigation',{name:'已连接设备操作'});
-      assert.deepEqual(await actions.getByRole('button').allTextContents(),['设备管理','设备信息','检测排障']);
+      assert.deepEqual(await actions.getByRole('button').evaluateAll(buttons=>buttons.map(b=>b.getAttribute('aria-label'))),['设备管理','设备信息','检测排障']);
       if(mode!=='type_c'){
         await page.getByRole('button',{name:mode==='lan'?'局域网 IP':'设备热点（AP）',exact:true}).click();
         for(const button of await actions.getByRole('button').all())assert.equal(await button.isDisabled(),true);
@@ -769,6 +769,7 @@ test('Home verifies connections before enabling explicit management, information
         assert.equal(await actions.getByRole('button',{name:'设备信息',exact:true}).isDisabled(),true);
         assert.match(await actions.getByRole('button',{name:'检测排障',exact:true}).getAttribute('title'),/未提供检测接口/);
       }
+      await page.screenshot({path:resolve(reportRoot,`home-connected-${mode}.png`),fullPage:true});
       await actions.getByRole('button',{name:'设备管理',exact:true}).click();
       await page.locator('iframe[title="D1 设备页面"]').waitFor();
       assert.equal(await page.evaluate(()=>window.nativePageCalls.at(-1).connectionMode),mode==='ap-config'?'ap':mode);
