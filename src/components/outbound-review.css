@@ -205,3 +205,5 @@
 @media (prefers-reduced-motion: reduce) { .outbound-recordings button { transition: none; } }
 .is-workspace .outbound-detail > header > .button { white-space: nowrap; }
 @media (max-width: 720px) { .outbound-progress > span { white-space: nowrap; } .outbound-toolbar .outbound-progress { margin-left: auto; } }
+
+.outbound-task-list .outbound-task-error{color:#a12d2d;}.outbound-task-list .outbound-task-feedback{color:#2d6d4a;}

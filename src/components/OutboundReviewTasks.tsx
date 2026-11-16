@@ -1,11 +1,13 @@
 import {memo,useEffect,useMemo,useRef,useState,type CSSProperties} from "react";
 import {ArrowLeft,Check,CheckCircle2,ChevronRight,Expand,Film,LoaderCircle,Pause,Play,RefreshCw,Save,Video,Volume2,VolumeX,X,XCircle} from "lucide-react";
 import type {UserIdentity} from "../types";
-import {changeOutboundBatch,fetchOutboundVideo,listOutboundBatches,OUTBOUND_INVALID_REASONS,outboundError,outboundResultUncertain,outboundVideoParts,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording} from "../lib/outbound-review";
+import {changeOutboundBatch,fetchOutboundVideo,listOutboundBatches,OUTBOUND_INVALID_REASONS,outboundError,outboundResultUncertain,outboundVideoParts,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording,type OutboundProtocol} from "../lib/outbound-review";
 import {OutboundPlayback} from "../lib/outbound-playback";
 import "./outbound-review.css";
 
-interface Props {currentUser:UserIdentity;workspaceBusy?:boolean;view?:"tasks"|"workspace";initialBatch?:OutboundBatch;onOpenReview?:(batch:OutboundBatch)=>Promise<void>;onReturnToTasks?:()=>void;suspended?:boolean}
+interface Props {currentUser:UserIdentity;workspaceBusy?:boolean;view?:"tasks"|"workspace";initialBatch?:OutboundBatch;onOpenReview?:(batch:OutboundBatch,isCurrent?:()=>boolean)=>Promise<void>;onReturnToTasks?:()=>void;suspended?:boolean}
+type TaskAction="claim"|"release"|"open"|"verify";
+type TaskFeedback={error:boolean;message:string};
 type VideoState={recordingId:string;part:number;urls:Record<number,string>;ready:number[];failed:Record<number,string>};
 
 // Playback publishes its clock frequently. The recording queue only changes
@@ -14,7 +16,12 @@ const RecordingList=memo(function RecordingList({recordings,selectedId,disabled,
   return <nav className="outbound-recordings" aria-label="录制列表">{recordings.map((item,index)=><button type="button" key={item.id} className={item.id===selectedId?"selected":""} aria-label={`${item.name||`录制 ${index+1}`} ${item.decision?.value==="valid"?"有效":item.decision?.value==="invalid"?"无效":"待审"}`} aria-pressed={item.id===selectedId} disabled={disabled} onClick={()=>onSelect(item.id)}><span className="outbound-recording-number">{String(index+1).padStart(2,"0")}</span><span className="outbound-recording-label" title={item.name}>{item.name||`录制 ${index+1}`}</span><strong className={item.decision?.value??""}>{item.decision?.value==="valid"?<><CheckCircle2 size={12}/>有效</>:item.decision?.value==="invalid"?<><XCircle size={12}/>无效</>:"待审"}</strong><ChevronRight className="outbound-recording-arrow" size={14}/></button>)}</nav>;
 });
 
-export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks",initialBatch,onOpenReview,onReturnToTasks,suspended=false}:Props){
+export function OutboundReviewTasks(props:Props){
+  const {currentUser,view="tasks"}=props;
+  return <OutboundReviewSession key={`${currentUser.username}:${currentUser.role}:${Boolean(currentUser.canManage)}:${view}`} {...props}/>;
+}
+
+function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",initialBatch,onOpenReview,onReturnToTasks,suspended=false}:Props){
   const [batches,setBatches]=useState<OutboundBatch[]>(initialBatch?[initialBatch]:[]);
   const [reasonOptions,setReasonOptions]=useState<string[]>(initialBatch?.reasonOptions??[]);
   const [batchId,setBatchId]=useState(initialBatch?.id??"");
@@ -22,8 +29,13 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
   const [videoState,setVideoState]=useState<VideoState|null>(null);
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState(false);
-  const [busyAction,setBusyAction]=useState("");
   const busyRef=useRef(false);
+  const protocol=useMemo<OutboundProtocol>(()=>({}),[currentUser.username,currentUser.role,currentUser.canManage]);
+  const [pendingTasks,setPendingTasks]=useState<Record<string,TaskAction>>({});
+  const [taskFeedback,setTaskFeedback]=useState<Record<string,TaskFeedback>>({});
+  const pendingTaskIds=useRef(new Set<string>());
+  const taskEpoch=useRef(0),openIntent=useRef(0);
+  useEffect(()=>{const ids=pendingTaskIds.current;taskEpoch.current++;return()=>{taskEpoch.current++;openIntent.current++;ids.clear();};},[view,currentUser.username]);
   const listGeneration=useRef(0);
   const listActive=useRef(false);
   const [lastUpdated,setLastUpdated]=useState<number|null>(null);
@@ -69,12 +81,12 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
 
 
   async function load(background=false){
-    if(listActive.current||busyRef.current||background&&(document.hidden||workspaceBusy))return;
+    if(listActive.current||busyRef.current||pendingTaskIds.current.size||background&&(document.hidden||workspaceBusy))return;
     listActive.current=true;
     const generation=++listGeneration.current;
     if(!background)setLoading(true);
     try{
-      const value=await listOutboundBatches(view==="workspace"?batchId:undefined);
+      const value=await listOutboundBatches(view==="workspace"?batchId:undefined,protocol);
       if(generation!==listGeneration.current)return;
       setBatches(value.batches);
       setReasonOptions(value.reasonOptions??[]);
@@ -115,9 +127,9 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
   }
   async function act(action:"claim"|"release"|"decide",value?:"valid"|"invalid",reason?:string){
     if(!batch||busyRef.current||workspaceUnconfirmed)return;
-    busyRef.current=true;setBusyAction(`${batch.id}:${action}`);setBusy(true);setError("");setNotice("");
+    busyRef.current=true;setBusy(true);setError("");setNotice("");
     try{
-      const result=await changeOutboundBatch(batch,action,action==="decide"?recording?.id:undefined,value,reason);
+      const result=await changeOutboundBatch(batch,action,action==="decide"?recording?.id:undefined,value,reason,protocol);
       updateBatch(result.batch);
       if(action==="claim"){setNotice("已领取批次。");if(onOpenReview)await onOpenReview(result.batch);}
       if(action==="release"){setNotice("已释放批次。");if(view==="workspace")onReturnToTasks?.();}
@@ -131,7 +143,7 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
         setWorkspaceUnconfirmed(true);
         setNotice("提交结果尚未确认，正在核对当前批次…");
         try{
-          const fresh=(await listOutboundBatches(batch.id)).batches.find(item=>item.id===batch.id);
+          const fresh=(await listOutboundBatches(batch.id,protocol)).batches.find(item=>item.id===batch.id);
           if(!fresh)throw new Error("OUTBOUND_BATCH_NOT_FOUND");
           updateBatch(fresh);
           setWorkspaceUnconfirmed(false);
@@ -144,7 +156,7 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
         setNotice("");setError("提交结果尚未确认，请刷新当前批次核对后再操作。"+outboundError(cause));
       }else setError(outboundError(cause));
     }
-    finally{busyRef.current=false;setBusyAction("");setBusy(false);}
+    finally{busyRef.current=false;setBusy(false);}
   }
   async function openVideos(nextPart=partIndex){
     if(!batch||!recording||!isOwner)return;
@@ -211,60 +223,70 @@ export function OutboundReviewTasks({currentUser,workspaceBusy=false,view="tasks
       return {...previous,failed,ready:previous.ready.includes(segment)?previous.ready:[...previous.ready,segment]};
     });
   }
-  async function taskAction(item:OutboundBatch,action:"claim"|"release"|"open"){
-    if(busyRef.current||workspaceBusy)return;
-    busyRef.current=true;++listGeneration.current;setLoading(false);setBusyAction(`${item.id}:${action}`);setBusy(true);setError("");setNotice("");
+  async function taskAction(item:OutboundBatch,action:TaskAction){
+    if(pendingTaskIds.current.has(item.id)||workspaceBusy)return;
+    const original=action==="verify"?unconfirmed[item.id]:action;
+    if(!original)return;
+    const epoch=taskEpoch.current;
+    const intent=original==="claim"||original==="open"?++openIntent.current:0;
+    const current=()=>epoch===taskEpoch.current;
+    const feedback=(message:string,error=false)=>{if(current())setTaskFeedback(previous=>({...previous,[item.id]:{message,error}}));};
+    const canOpen=()=>current()&&intent===openIntent.current;
+    const open=async(detail:OutboundBatch)=>{if(canOpen())await onOpenReview?.({...detail,reasonOptions},canOpen);};
+    pendingTaskIds.current.add(item.id);++listGeneration.current;setLoading(false);
+    setPendingTasks(previous=>({...previous,[item.id]:action}));
+    setTaskFeedback(previous=>{const next={...previous};delete next[item.id];return next;});
     try{
+      if(action==="verify"){await verifyTaskResult(item,original as "claim"|"release",current,feedback,open);return;}
       if(action==="open"){
-        const detail=item.recordings.length?item:(await listOutboundBatches(item.id)).batches[0];
+        const detail=item.recordings.length?item:(await listOutboundBatches(item.id,protocol)).batches.find(value=>value.id===item.id);
         if(!detail)throw new Error("OUTBOUND_BATCH_NOT_FOUND");
-        await onOpenReview?.({...detail,reasonOptions});return;
+        await open(detail);return;
       }
-      const result=await changeOutboundBatch(item,action);updateBatch(result.batch);
-      if(action==="claim")await onOpenReview?.({...result.batch,reasonOptions});
+      const result=await changeOutboundBatch(item,action,undefined,undefined,undefined,protocol);
+      if(!current())return;
+      updateBatch(result.batch);feedback(action==="claim"?"已领取，可打开审核。":"已释放批次。");
+      if(action==="claim")await open(result.batch);
     }catch(cause){
-      if(action!=="open"&&outboundResultUncertain(cause)){
+      if(!current())return;
+      if(action!=="open"&&action!=="verify"&&outboundResultUncertain(cause)){
         setUnconfirmed(previous=>({...previous,[item.id]:action}));
-        await verifyTaskResult(item,action);
-      }else setError(outboundError(cause));
+        await verifyTaskResult(item,action,current,feedback,open);
+      }else feedback(outboundError(cause),true);
     }
-    finally{busyRef.current=false;setBusyAction("");setBusy(false);}
+    finally{if(current()){pendingTaskIds.current.delete(item.id);setPendingTasks(previous=>{const next={...previous};delete next[item.id];return next;});}}
   }
-  async function verifyTaskResult(item:OutboundBatch,action:"claim"|"release"){
-    setNotice("提交结果尚未确认，正在核对当前批次…");setBusyAction(`${item.id}:verify`);
+  async function verifyTaskResult(item:OutboundBatch,action:"claim"|"release",current:()=>boolean,feedback:(message:string,error?:boolean)=>void,open:(batch:OutboundBatch)=>Promise<void>){
+    feedback("提交结果尚未确认，正在核对当前批次…");setPendingTasks(previous=>({...previous,[item.id]:"verify"}));
     let fresh:OutboundBatch|undefined;
-    try{fresh=(await listOutboundBatches(item.id)).batches.find(batch=>batch.id===item.id);if(!fresh)throw new Error("OUTBOUND_BATCH_NOT_FOUND");}
-    catch(cause){setNotice("");setError("批次操作结果尚未确认，请点击“核对结果”后再操作。"+outboundError(cause));return;}
-    updateBatch(fresh);setUnconfirmed(previous=>{const next={...previous};delete next[item.id];return next;});setError("");
+    try{fresh=(await listOutboundBatches(item.id,protocol)).batches.find(value=>value.id===item.id);if(!fresh)throw new Error("OUTBOUND_BATCH_NOT_FOUND");}
+    catch(cause){feedback("批次操作结果尚未确认，请点击“核对结果”后再操作。"+outboundError(cause),true);return;}
+    if(!current())return;
+    updateBatch(fresh);setUnconfirmed(previous=>{const next={...previous};delete next[item.id];return next;});
     if(action==="claim"&&fresh.claim===currentUser.username){
-      setNotice("已核对：批次已由你领取。");
-      try{await onOpenReview?.({...fresh,reasonOptions});}catch(cause){setError("批次已领取，打开审核失败。"+outboundError(cause));}
-    }else if(action==="release"&&!fresh.claim)setNotice("已核对：批次已释放。");
-    else {setNotice("");setError(fresh.claim?"已核对：批次当前由其他审核员领取，请刷新查看。":"已核对：批次尚未领取，可以重新领取。");}
-  }
-  async function verifyUnconfirmed(item:OutboundBatch){
-    const action=unconfirmed[item.id];if(!action||busyRef.current||workspaceBusy)return;
-    busyRef.current=true;setBusy(true);setError("");
-    try{await verifyTaskResult(item,action);}finally{busyRef.current=false;setBusy(false);setBusyAction("");}
+      feedback("已核对：批次已由你领取。");
+      try{await open(fresh);}catch(cause){feedback("批次已领取，打开审核失败。"+outboundError(cause),true);}
+    }else if(action==="release"&&!fresh.claim)feedback("已核对：批次已释放。");
+    else feedback(fresh.claim?"已核对：批次当前由其他审核员领取，请刷新查看。":"已核对：批次尚未领取，可以重新领取。",true);
   }
   async function addReason(){
     const value=customReason.trim();
     if(!value||busyRef.current)return;
-    busyRef.current=true;setBusyAction("reason");setBusy(true);setError("");
+    busyRef.current=true;setBusy(true);setError("");
     try{
       const result=await saveOutboundReasonOption(value);
       setReasonOptions(result.reasonOptions);
       setSelectedReason(value);setCustomReason("");setNotice("已保存为常用无效原因。");
     }catch(cause){setError(outboundError(cause));}
-    finally{busyRef.current=false;setBusyAction("");setBusy(false);}
+    finally{busyRef.current=false;setBusy(false);}
   }
 
   const recordingList=batch?<RecordingList recordings={batch.recordings} selectedId={recording?.id??""} disabled={busy||workspaceBusy} onSelect={setRecordingId}/>:null;
   if(view==="tasks")return <section className="outbound-review" aria-label="外发审核任务">
-    <div className="outbound-toolbar"><strong>外发审核</strong><span>{lastUpdated?`自动同步 · ${new Date(lastUpdated).toLocaleTimeString("zh-CN",{hour12:false})}`:"按交付批次领取任务"}</span><button className="button button-secondary" type="button" aria-label="刷新外发批次" disabled={loading||busy||workspaceBusy} onClick={()=>void load()}><RefreshCw size={16}/></button></div>
+    <div className="outbound-toolbar"><strong>外发审核</strong><span>{lastUpdated?`自动同步 · ${new Date(lastUpdated).toLocaleTimeString("zh-CN",{hour12:false})}`:"按交付批次领取任务"}</span><button className="button button-secondary" type="button" aria-label="刷新外发批次" disabled={loading||Object.keys(pendingTasks).length>0||workspaceBusy} onClick={()=>void load()}><RefreshCw size={16}/></button></div>
     {error&&<div className="outbound-error" role="alert">{error}</div>}
     {notice&&<div className="outbound-notice" role="status">{notice}</div>}
-    {loading&&!batches.length?<div className="outbound-empty">正在读取交付批次…</div>:!batches.length?<div className="outbound-empty">暂无可审核的星炬批次</div>:<div className="outbound-task-list">{batches.map(item=><article key={item.id}><div><strong>{item.name}</strong><p>已审 {item.reviewed}/{item.total} · 有效 {item.valid} · 无效 {item.invalid}{item.rate===null?"":` · 合格率 ${Math.round(item.rate*100)}%`}</p><small>{item.claim?`由 ${item.claim} 领取`:"未领取"}</small></div><div className="outbound-task-actions">{unconfirmed[item.id]?<button className="button button-secondary" disabled={busy||workspaceBusy} onClick={()=>void verifyUnconfirmed(item)}>{busyAction===`${item.id}:verify`?<LoaderCircle size={16} className="spin"/>:null}核对结果</button>:item.claim===currentUser.username?<><button className="button button-secondary" disabled={busy||workspaceBusy} onClick={()=>void taskAction(item,"release")}>{busyAction===`${item.id}:release`?<LoaderCircle size={16} className="spin"/>:null}释放批次</button><button className="button button-primary" disabled={busy||workspaceBusy||!onOpenReview||!item.total} onClick={()=>void taskAction(item,"open")}>{busyAction===`${item.id}:open`?<LoaderCircle size={16} className="spin"/>:null}打开审核</button></>:<button className="button button-primary" disabled={busy||workspaceBusy||Boolean(item.claim)||!onOpenReview||!item.total} onClick={()=>void taskAction(item,"claim")}>{busyAction===`${item.id}:claim`?<LoaderCircle size={16} className="spin"/>:null}{item.claim?"审核员处理中":"领取并打开"}</button>}</div></article>)}</div>}
+    {loading&&!batches.length?<div className="outbound-empty">正在读取交付批次…</div>:!batches.length?<div className="outbound-empty">暂无可审核的星炬批次</div>:<div className="outbound-task-list">{batches.map(item=><article key={item.id} aria-busy={Boolean(pendingTasks[item.id])}><div><strong>{item.name}</strong><p>已审 {item.reviewed}/{item.total} · 有效 {item.valid} · 无效 {item.invalid}{item.rate===null?"":` · 合格率 ${Math.round(item.rate*100)}%`}</p><small>{item.claim?`由 ${item.claim} 领取`:"未领取"}</small>{taskFeedback[item.id]&&<p className={taskFeedback[item.id].error?"outbound-task-error":"outbound-task-feedback"} role={taskFeedback[item.id].error?"alert":"status"}>{taskFeedback[item.id].message}</p>}</div><div className="outbound-task-actions">{unconfirmed[item.id]?<button className="button button-secondary" disabled={Boolean(pendingTasks[item.id])||workspaceBusy} onClick={()=>void taskAction(item,"verify")}>{pendingTasks[item.id]==="verify"?<LoaderCircle size={16} className="spin"/>:null}核对结果</button>:item.claim===currentUser.username?<><button className="button button-secondary" disabled={Boolean(pendingTasks[item.id])||workspaceBusy} onClick={()=>void taskAction(item,"release")}>{pendingTasks[item.id]==="release"?<LoaderCircle size={16} className="spin"/>:null}释放批次</button><button className="button button-primary" disabled={Boolean(pendingTasks[item.id])||workspaceBusy||!onOpenReview||!item.total} onClick={()=>void taskAction(item,"open")}>{pendingTasks[item.id]==="open"?<LoaderCircle size={16} className="spin"/>:null}打开审核</button></>:<button className="button button-primary" disabled={Boolean(pendingTasks[item.id])||workspaceBusy||Boolean(item.claim)||!onOpenReview||!item.total} onClick={()=>void taskAction(item,"claim")}>{pendingTasks[item.id]==="claim"?<LoaderCircle size={16} className="spin"/>:null}{item.claim?"审核员处理中":"领取并打开"}</button>}</div></article>)}</div>}
   </section>;
   return <section className="outbound-review is-workspace" aria-label="外发审核工作区">
     <div className="outbound-toolbar"><strong><Film size={17}/>外发审核</strong><div className="outbound-progress"><span>已审 <b>{batch?.reviewed??0}</b> / {batch?.total??0}</span><progress aria-label="批次审核进度" max={batch?.total||1} value={batch?.reviewed??0}/><span>有效 {batch?.valid??0} · 无效 {batch?.invalid??0}</span></div><button className="button button-secondary" type="button" aria-label="刷新外发批次" title="刷新外发批次" disabled={loading||busy||workspaceBusy} onClick={()=>void load()}>{loading?<LoaderCircle size={16} className="spin"/>:<RefreshCw size={16}/>}</button></div>

@@ -2101,13 +2101,16 @@ function App() {
     setManagerAdminHome(false);
     setManagementMode(true);
   }
-  async function openOutboundReview(batch:OutboundBatch) {
+  async function openOutboundReview(batch:OutboundBatch,isCurrent:()=>boolean=()=>true) {
+    if(!isCurrent())return;
     if(busy||reviewUnsaved.current)throw new Error("请先完成当前操作和草稿保存。");
     await flushMachineReviewSaves(data?.summary.root);
     await flushCloudMachineReviewSaves(data?.summary.root);
+    if(!isCurrent())return;
     if(reviewUnsaved.current)throw new Error("当前修改尚未保存，请先重试保存。");
     const resumeAudit=await pauseAndPersistReviewAudit();
     try{
+      if(!isCurrent())return;
       endReviewAudit();resetLoadedData();setQueuedEpisodeRoot(null);
       sourceNavigationVersion.current+=1;setPendingSourceRestore(null);
       setOutboundBatch(batch);setManagerSection("data");setManagerAdminHome(true);setManagementMode(false);

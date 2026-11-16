@@ -126,7 +126,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByRole('button', { name: '领取并打开' }).first().click();
     await page.waitForFunction(()=>typeof window.fixtureReleaseClaim==='function');
     assert.equal(await page.locator('.outbound-task-actions .spin').count(),1,'only the selected batch shows progress');
-    assert.equal(await page.getByRole('button',{name:'领取并打开'}).nth(1).isDisabled(),true);
+    assert.equal(await page.getByRole('button',{name:'领取并打开'}).nth(1).isDisabled(),false,'unrelated batches remain actionable while this batch is pending');
     await page.evaluate(()=>{window.fixtureExtraBatches=false;window.fixtureHoldClaim=false;window.fixtureReleaseClaim();});
     await page.getByRole('main',{name:'数据主工作区'}).waitFor();
     assert.equal(await page.getByRole('region',{name:'外发审核任务',exact:true}).count(),0,'claim closes task center');
@@ -358,4 +358,88 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page?.unrouteAll({behavior:'ignoreErrors'});
     await browser?.close(); await server.close(); rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+test('independent batches remain interactive; latest navigation and session protocol survive delayed replies', async () => {
+  const server=await createServer({server:{host:'127.0.0.1',port:0},logLevel:'error',plugins:[{
+    name:'outbound-concurrency-fixture',configureServer(server){server.middlewares.use(async(req,res,next)=>{
+      if(req.url!=='/__batch_concurrency')return next();
+      res.setHeader('content-type','text/html');res.end(await server.transformIndexHtml(req.url,`<!doctype html><html><body><div id="root"></div><script type="module">
+        import React from 'react';import {createRoot} from 'react-dom/client';
+        import {OutboundReviewTasks} from '/src/components/OutboundReviewTasks.tsx';
+        function Harness(){const [user,setUser]=React.useState('reviewer1'),[opened,setOpened]=React.useState('');
+          window.switchReviewer=()=>setUser('reviewer2');return React.createElement(React.Fragment,null,
+            React.createElement('output',{'aria-label':'打开的批次'},opened),
+            React.createElement(OutboundReviewTasks,{currentUser:{username:user,role:'operator'},onOpenReview:async(batch,isCurrent)=>{
+              if(window.holdNavigation===batch.id)await new Promise(resolve=>window.finishNavigation=resolve);
+              if(isCurrent()){window.openedIds.push(batch.id);setOpened(batch.id);}
+            }}));}
+        createRoot(document.getElementById('root')).render(React.createElement(Harness));
+      </script></body></html>`));
+    });}
+  }]});await server.listen();
+  const executablePath=process.env.PLAYWRIGHT_CHROMIUM??['/usr/bin/google-chrome','/usr/bin/chromium'].find(existsSync)??chromium.executablePath();
+  let browser;
+  try{
+    browser=await chromium.launch({executablePath,headless:true});const page=await browser.newPage();
+    await page.addInitScript(()=>{
+      window.openedIds=[];window.calls=[];window.holds={};window.resolvers={};
+      window.rows=['a','b','c'].map(id=>({id,name:'批次 '+id,version:0,claim:id==='b'?'reviewer1':null,total:1,reviewed:0,valid:0,invalid:0,rate:null,recordings:[]}));
+      window.__TAURI_INTERNALS__={invoke:async(command,{input})=>{
+        if(command!=='outbound_review_call')throw Error(command);window.calls.push(structuredClone(input));
+        if(window.legacy&&(input.summary||input.datasetId&&input.action==='list'||input.compact))throw Error('OUTBOUND_REQUEST_INVALID');
+        if(window.failNext===input.action){window.failNext=null;throw Error('OUTBOUND_USER_CENTER_TIMEOUT');}
+        if(input.action==='list')return {batches:structuredClone(window.rows.filter(row=>!input.datasetId||row.id===input.datasetId)),reasonOptions:[]};
+        if(window.holds[input.datasetId])await new Promise(resolve=>window.resolvers[input.datasetId]=resolve);
+        const row=window.rows.find(row=>row.id===input.datasetId);
+        if(row.version!==input.version)throw Error('OUTBOUND_VERSION_CONFLICT');
+        row.version++;row.claim=input.action==='claim'?'reviewer1':null;return {batch:structuredClone(row)};
+      }};
+    });
+    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__batch_concurrency`);
+    const row=id=>page.locator('article').filter({has:page.getByText('批次 '+id,{exact:true})});
+    await row('a').getByRole('button',{name:'领取并打开'}).waitFor();
+    await page.evaluate(()=>{window.holds.a=true;});
+    await row('a').getByRole('button',{name:'领取并打开'}).dblclick();
+    await page.waitForFunction(()=>Boolean(window.resolvers.a));
+    assert.equal(await row('b').getByRole('button',{name:'释放批次'}).isEnabled(),true);
+    await row('b').getByRole('button',{name:'释放批次'}).click();
+    await row('b').getByText('已释放批次。',{exact:true}).waitFor();
+    assert.equal(await row('a').getAttribute('aria-busy'),'true','unrelated release finishes while slow claim remains pending');
+    assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.action==='claim'&&c.datasetId==='a').length),1,'same-batch double click sends one mutation');
+    await row('c').getByRole('button',{name:'领取并打开'}).click();
+    await page.waitForFunction(()=>document.querySelector('output').textContent==='c');
+    await page.evaluate(()=>{window.holds.a=false;window.resolvers.a();});
+    await row('a').getByText('已领取，可打开审核。',{exact:true}).waitFor();
+    assert.deepEqual(await page.evaluate(()=>window.openedIds),['c'],'late first claim cannot replace latest opened batch');
+    await page.evaluate(()=>{window.holdNavigation='a';});
+    await row('a').getByRole('button',{name:'打开审核'}).click();
+    await page.waitForFunction(()=>Boolean(window.finishNavigation));
+    await row('c').getByRole('button',{name:'打开审核'}).click();
+    await page.waitForFunction(()=>window.openedIds.length===2);
+    await page.evaluate(()=>window.finishNavigation());
+    await page.waitForFunction(()=>document.querySelectorAll('article[aria-busy="true"]').length===0);
+    assert.deepEqual(await page.evaluate(()=>window.openedIds),['c','c'],'save/audit wait cannot let old navigation override newer intent');
+    await page.evaluate(()=>{window.holds.b=true;});
+    await row('b').getByRole('button',{name:'领取并打开'}).click();
+    await page.waitForFunction(()=>Boolean(window.resolvers.b));
+    await page.evaluate(()=>{window.switchReviewer();});
+    await row('a').getByRole('button',{name:'审核员处理中'}).waitFor();
+    await page.evaluate(()=>{window.holds.b=false;window.resolvers.b();});
+    await page.waitForFunction(()=>window.rows.find(row=>row.id==='b').claim==='reviewer1');
+    assert.deepEqual(await page.evaluate(()=>window.openedIds),['c','c'],'account switch invalidates in-flight open authority');
+    const negotiation=await page.evaluate(async()=>{
+      const {listOutboundBatches,changeOutboundBatch}=await import('/src/lib/outbound-review.ts');
+      window.legacy=true;window.calls=[];const protocol={};
+      await listOutboundBatches(undefined,protocol);await listOutboundBatches('a',protocol);await listOutboundBatches(undefined,protocol);
+      let batch=structuredClone(window.rows[0]);batch=(await changeOutboundBatch(batch,'release',undefined,undefined,undefined,protocol)).batch;
+      await changeOutboundBatch(batch,'release',undefined,undefined,undefined,protocol);
+      const negotiated=structuredClone(window.calls);window.calls=[];window.legacy=false;window.failNext='release';
+      let failed=false;try{await changeOutboundBatch(batch,'release',undefined,undefined,undefined,{});}catch{failed=true;}
+      return {negotiated,ambiguous:window.calls,failed};
+    });
+    assert.equal(negotiation.negotiated.filter(c=>c.summary||c.action==='list'&&c.datasetId).length,1,'one explicit old-protocol rejection per session');
+    assert.equal(negotiation.negotiated.filter(c=>c.compact).length,1,'compact mutation rejection is remembered');
+    assert.equal(negotiation.failed,true);assert.equal(negotiation.ambiguous.length,1,'timeout never replays a write or negotiates authority');
+  }finally{await browser?.close();await server.close();}
 });

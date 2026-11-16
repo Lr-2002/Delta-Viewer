@@ -18,7 +18,7 @@ interface Props {
   onClose?: () => void;
   cloudCurrentUser?: UserIdentity;
   onOpenCloudReview?: (root: string) => Promise<void>;
-  onOpenOutboundReview?: (batch: OutboundBatch) => Promise<void>;
+  onOpenOutboundReview?: (batch: OutboundBatch, isCurrent?: () => boolean) => Promise<void>;
   initialView?: "local" | "cloud" | "outbound";
   workspaceBusy?: boolean;
   beginCloudOperation?: () => CloudOperationHandle | null;

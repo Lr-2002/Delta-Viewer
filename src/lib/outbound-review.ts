@@ -40,27 +40,31 @@ export function outboundVideoParts(videos: OutboundVideo[]) {
 
 const outboundCall = <T,>(input: Record<string, unknown>) => invoke<T>("outbound_review_call", { input });
 type BatchList = { batches: OutboundBatch[]; reasonOptions: string[] };
-export async function listOutboundBatches(datasetId?: string): Promise<BatchList> {
+export type OutboundProtocol = {legacyList?:boolean;legacyMutation?:boolean};
+export async function listOutboundBatches(datasetId?: string, protocol?:OutboundProtocol): Promise<BatchList> {
+  const legacy=async()=>{const result=await outboundCall<BatchList>({action:"list"});return datasetId?{...result,batches:result.batches.filter(batch=>batch.id===datasetId)}:result;};
+  if(protocol?.legacyList)return legacy();
   try { return await outboundCall<BatchList>({action:"list",...(datasetId?{datasetId}:{summary:true})}); }
   catch (error) {
     // The old service only accepts action:list. Fall back on an explicit
     // validation rejection; never replay a mutation after an ambiguous error.
     if (!String(error).includes("OUTBOUND_REQUEST_INVALID")) throw error;
-    const result = await outboundCall<BatchList>({action:"list"});
-    return datasetId?{...result,batches:result.batches.filter(batch=>batch.id===datasetId)}:result;
+    if(protocol)protocol.legacyList=true;
+    return legacy();
   }
 }
 export const saveOutboundReasonOption = (reason: string) =>
   outboundCall<{ reasonOptions: string[] }>({ action: "save-reason-option", reason });
-export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: "valid" | "invalid", reason?: string) {
+export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: "valid" | "invalid", reason?: string, protocol?:OutboundProtocol) {
   const input={action,datasetId:batch.id,version:batch.version,
     ...(recordingId?{recordingId,value,...(reason?{reason}:{})}:{})};
   // Keep a full claim response so entering the workspace needs no second read.
-  const compact=action!=="claim";
+  const compact=action!=="claim"&&!protocol?.legacyMutation;
   let result:{batch:OutboundBatch};
   try { result=await outboundCall({...input,...(compact?{compact:true}:{})}); }
   catch(error) {
     if(!compact||!String(error).includes("OUTBOUND_REQUEST_INVALID"))throw error;
+    if(protocol)protocol.legacyMutation=true;
     result=await outboundCall(input);
   }
   const videos=new Map(batch.recordings.map(recording=>[recording.id,recording.videos]));

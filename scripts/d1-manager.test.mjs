@@ -536,7 +536,12 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
 });
 
 test("AP configuration keeps Wi-Fi interactive and opens the native OTA panel",async()=>{
-  const {page,context,errors,external}=await session({width:1440,height:920},false,nativePageFixture);
+  const {page,context,errors,external}=await session({width:1440,height:920},false,async context=>{
+    await nativePageFixture(context);
+    await context.addInitScript(()=>window.addEventListener("message",event=>{
+      if(!window.fixtureBridgeReady&&["d1-page-ready","d1-page-open-ota"].includes(event.data?.type))event.stopImmediatePropagation();
+    },true));
+  });
   try{
     await navigate(page,"首页");await page.getByRole("button",{name:"设备热点（AP）",exact:true}).click();
     await page.getByRole("button",{name:"手动输入密码",exact:true}).click();await page.getByLabel("热点密码",{exact:true}).fill("fixture-hotspot-password");
@@ -546,6 +551,7 @@ test("AP configuration keeps Wi-Fi interactive and opens the native OTA panel",a
     assert.equal(await frame.getByRole("button",{name:"打开应用升级"}).isEnabled(),true);
     assert.equal(await frame.getByRole("button",{name:"上传并升级"}).count(),0);
     await frame.getByRole("button",{name:"打开应用升级"}).click();
+    await page.evaluate(()=>window.fixtureBridgeReady=true);
     await page.getByRole("region",{name:"DOHC 应用升级"}).waitFor();
     assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0,"opening OTA must not submit an upgrade");
     for(const viewport of [{width:1440,height:920},{width:960,height:680},{width:390,height:844}]){

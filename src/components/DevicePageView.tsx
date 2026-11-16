@@ -1,18 +1,18 @@
-import {useEffect, useMemo, useRef, useState, type ReactNode} from "react";
+import {useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode} from "react";
 import {ArrowLeft, RefreshCw, LoaderCircle, CheckCircle2, AlertCircle} from "lucide-react";
 import type {DevicePage, DevicePageApiRequest, DevicePageApiResponse} from "../lib/d1";
 
 function bridgeScript(token:string):string {
   const script = `(function(){
-const token=__TOKEN__,pending=new Map();let serial=0,ready=false;
+const token=__TOKEN__,pending=new Map();let serial=0,ready=false,openOta=false;
 const hello=()=>window.parent.postMessage({type:"d1-page-ready",token},"*");
 const handshake=setInterval(hello,100);hello();
 function route(value){const url=new URL(value,"http://d1.invalid/");if(url.origin!=="http://d1.invalid"||url.search||!["/","/status","/config","/configure","/api/v1/runtime-config","/api/v1/camera-config","/api/v1/device-name","/api/v1/device-task"].includes(url.pathname))throw new Error("此设备功能暂不可用");return url.pathname}
 function request(path,method,headers,body,navigate=false){const id=String(++serial);return new Promise(resolve=>{const timer=setTimeout(()=>{pending.delete(id);resolve({status:504,contentType:"application/json",body:JSON.stringify({message:method==="GET"?"设备响应超时，请重试":"尚未确认是否保存成功，请先重新读取配置核对，勿重复提交"})})},method==="GET"?15000:75000);const message={type:"d1-page-request",token,id,path,method,headers,body,navigate};pending.set(id,{resolve,timer,message});if(ready)window.parent.postMessage(message,"*")})}
-window.addEventListener("message",event=>{const data=event.data;if(event.source!==window.parent||data?.token!==token)return;if(data.type==="d1-page-host-ready"){if(ready)return;ready=true;clearInterval(handshake);for(const item of pending.values())window.parent.postMessage(item.message,"*");return}if(data.type!=="d1-page-response"||!pending.has(data.id))return;const item=pending.get(data.id);pending.delete(data.id);clearTimeout(item.timer);item.resolve(data)});
+window.addEventListener("message",event=>{const data=event.data;if(event.source!==window.parent||data?.token!==token)return;if(data.type==="d1-page-host-ready"){if(ready)return;ready=true;clearInterval(handshake);for(const item of pending.values())window.parent.postMessage(item.message,"*");if(openOta)window.parent.postMessage({type:"d1-page-open-ota",token},"*");return}if(data.type!=="d1-page-response"||!pending.has(data.id))return;const item=pending.get(data.id);pending.delete(data.id);clearTimeout(item.timer);item.resolve(data)});
 window.fetch=async(input,init={})=>{try{const requestObject=input instanceof Request?input:null,raw=typeof input==="string"?input:input instanceof URL?input.href:input.url,path=route(raw),method=String(init.method??requestObject?.method??"GET").toUpperCase();if(!["GET","PUT","POST"].includes(method))throw new Error("设备页面操作不支持");const requestHeaders=new Headers(requestObject?.headers);new Headers(init.headers).forEach((value,key)=>requestHeaders.set(key,value));const headers=Object.fromEntries([...requestHeaders.entries()].filter(([key])=>["content-type","if-match"].includes(key.toLowerCase())));const sourceBody=Object.hasOwn(init,"body")?init.body:requestObject?await requestObject.clone().text():undefined;const body=method==="GET"||sourceBody===undefined?undefined:typeof sourceBody==="string"?sourceBody:await new Response(sourceBody).text();const reply=await request(path,method,headers,body);return new Response(reply.body||"",{status:reply.status,headers:{"Content-Type":reply.contentType||"text/plain"}})}catch(error){return new Response(JSON.stringify({message:error instanceof Error?error.message:"设备请求失败"}),{status:502,headers:{"Content-Type":"application/json"}})}};
 document.addEventListener("click",event=>{const link=event.target instanceof Element?event.target.closest("a"):null;if(!link)return;event.preventDefault();try{const raw=link.getAttribute("data-d1-route")||link.getAttribute("href");if(!raw||raw==="#")return;void request(route(raw),"GET",{},undefined,true)}catch{}});
-document.addEventListener("click",event=>{if(event.target instanceof Element&&event.target.closest("#ota-relay,#labMaint")){event.preventDefault();event.stopImmediatePropagation();window.parent.postMessage({type:"d1-page-open-ota",token},"*")}},true);
+document.addEventListener("click",event=>{if(event.target instanceof Element&&event.target.closest("#ota-relay,#labMaint")){event.preventDefault();event.stopImmediatePropagation();if(ready)window.parent.postMessage({type:"d1-page-open-ota",token},"*");else openOta=true;}},true);
 document.addEventListener("submit",event=>{event.preventDefault();const form=event.target;if(!(form instanceof HTMLFormElement)||form.getAttribute("data-d1-form")!=="configure")return;const fields=new FormData(form),body=JSON.stringify({ssid:fields.get("ssid"),password:fields.get("password")});const password=form.querySelector('input[name="password"]');if(password)password.value="";void request("/configure","POST",{"content-type":"application/json"},body,true)});
 })()`.replace("__TOKEN__",JSON.stringify(token));
   return script;
@@ -99,11 +99,11 @@ export function DevicePageView({page,busy,showConnectionMode,connectionModeLabel
   const [elapsed,setElapsed]=useState(0);
   const [newAddress,setNewAddress]=useState("");
   const [verifying,setVerifying]=useState(false);
-  useEffect(()=>{setNavigation(null);setNavigationError("");setProvisioning(null);setActivePanel("device");},[page]);
+  useLayoutEffect(()=>{setNavigation(null);setNavigationError("");setProvisioning(null);setActivePanel("device");},[page]);
   const token=useMemo(()=>crypto.randomUUID(),[page,navigation]);
   const requestHandler=useRef(onRequest);requestHandler.current=onRequest;
   const html=useMemo(()=>interactiveDeviceHtml(navigation?.html??page.html,navigation?{...page,status:null}:page,token),[page,token,navigation]);
-  useEffect(()=>{
+  useLayoutEffect(()=>{
     const onMessage=(event:MessageEvent)=>{
       if(event.source!==frame.current?.contentWindow)return;
       const message=event.data;

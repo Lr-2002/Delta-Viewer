@@ -24,7 +24,7 @@ struct WorkspaceModeRecord {
 pub fn restore(data_root: &Path, state: &AuthState) -> AppResult<()> {
     let directory = records_dir(data_root);
     if !directory.is_dir() {
-        return state.set_workspace_mode(None);
+        return state.restore_workspace_mode(None);
     }
     let mut latest: Option<(PathBuf, WorkspaceModeRecord)> = None;
     for entry in fs::read_dir(directory)? {
@@ -52,7 +52,7 @@ pub fn restore(data_root: &Path, state: &AuthState) -> AppResult<()> {
         }
     }
     let restored = latest.and_then(|(_, record)| record.selection);
-    state.set_workspace_mode(restored)
+    state.restore_workspace_mode(restored)
 }
 
 pub fn select(
@@ -139,6 +139,53 @@ mod tests {
     use crate::model::WorkspaceMode;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn reading_restored_mode_preserves_login_until_mode_changes_or_explicit_selection() {
+        let root = std::env::temp_dir().join(format!(
+            "dohc-mode-session-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = AuthState::default();
+        select(&root, &state, Some(WorkspaceMode::Managed)).unwrap();
+        let user = crate::model::UserIdentity {
+            username: "reviewer.fixture".into(),
+            display_name: "隔离回归".into(),
+            role: Some("operator".into()),
+            can_manage: false,
+        };
+        state
+            .set_managed_session(user.clone(), "fixture-token".into())
+            .unwrap();
+        for _ in 0..3 {
+            restore(&root, &state).unwrap();
+            assert_eq!(
+                state.managed_session().unwrap(),
+                (user.clone(), "fixture-token".into())
+            );
+        }
+        select(&root, &AuthState::default(), Some(WorkspaceMode::Offline)).unwrap();
+        restore(&root, &state).unwrap();
+        assert!(state.managed_session().is_err());
+        select(&root, &state, Some(WorkspaceMode::Managed)).unwrap();
+        state
+            .set_managed_session(user, "another-fixture-token".into())
+            .unwrap();
+        select(&root, &state, Some(WorkspaceMode::Managed)).unwrap();
+        assert!(
+            state.managed_session().is_err(),
+            "explicit mode selection still clears authority"
+        );
+        restore(&root, &state).unwrap();
+        assert!(
+            state.managed_session().is_err(),
+            "reading mode cannot restore a logged-out token"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn restores_the_latest_mode_selection() {

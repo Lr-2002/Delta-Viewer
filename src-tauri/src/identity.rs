@@ -125,6 +125,21 @@ impl AuthState {
         session.user_center_token = None;
         Ok(())
     }
+
+    pub(crate) fn restore_workspace_mode(&self, mode: Option<WorkspaceMode>) -> AppResult<()> {
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| AppError::Message("工作模式会话不可用".into()))?;
+        // Reading persisted preferences must not log out a live process. An
+        // explicit selection still clears authority through set_workspace_mode.
+        if session.workspace_mode != mode {
+            session.workspace_mode = mode;
+            session.current_user = (mode == Some(WorkspaceMode::Offline)).then(offline_identity);
+            session.user_center_token = None;
+        }
+        Ok(())
+    }
 }
 
 /// Local provenance only; never a user-center account or management grant.
