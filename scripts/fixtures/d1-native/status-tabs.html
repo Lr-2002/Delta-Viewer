@@ -1,0 +1,19 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;display:flex;flex-direction:column;overflow:hidden;background:#f5f6f7;font:15px/1.5 system-ui}
+main{flex:1;min-height:0;overflow-y:scroll;width:100%;max-width:760px;margin:0 auto;padding:10px 16px 20px}header{padding:8px 16px;border-bottom:1px solid #ddd}.head-row{display:flex;align-items:center;gap:6px}h1{margin:0;font-size:20px;flex:1}
+.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:8px 0}.summary>div,section{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px 15px;margin-bottom:8px}.label{display:block;color:#65707c;font-size:12px}.value{font-size:18px;font-weight:700}section h2{margin:0 0 6px;font-size:13px}.choice{display:flex;gap:6px;margin-top:6px}.choice select,.choice input{flex:1;min-width:0;min-height:44px;padding:0 12px}.config-status{display:block;color:#65707c;font-size:12px}.tabs{display:flex;background:#fff;border-top:1px solid #ddd}.tabs label{flex:1;text-align:center;line-height:48px}.kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.kv dd,.kv dt{margin:0}.led-row{display:flex;gap:8px}button{padding:0 14px;min-height:44px;background:#1769aa;color:#fff;border:0;border-radius:8px}
+</style></head><body>
+<header><div class="head-row"><h1>DOHC 设备状态</h1><a href="/config" class="config-link">运行配置</a><span id="health" class="badge">正常</span></div></header>
+<main><div id="viewHome">
+<section><h2>用户名字</h2><div class="choice"><select id="deviceName"><option>测试用户</option></select><button>保存</button></div><div class="choice"><input id="newName" placeholder="新增用户名字"><button>新增</button></div><span class="config-status">当前用户名字：测试用户</span></section>
+<section><h2>用户任务</h2><div class="choice"><select><option>测试任务</option></select><button>保存</button></div><div class="choice"><input placeholder="新增用户任务"><button>新增</button></div><span class="config-status">当前任务：测试任务</span></section>
+<div class="summary"><div><span class="label">运行阶段</span><span id="phase" class="value">空闲</span></div><div><span class="label">采集门禁</span><span id="admission" class="value">允许开始</span></div><div><span class="label">相机</span><span id="cameraSummary" class="value">5 / 5</span></div><div><span class="label">告警</span><span id="alertSummary" class="value">0</span></div></div>
+<section><h2>状态灯</h2><div class="led-row"><b>状态灯</b><span>白色 · 空闲</span></div><div class="led-row"><b>电池灯</b><span>绿色 · 正常</span></div></section>
+<section><h2>存储与采集</h2><dl class="kv"><div><dt>SD 卡</dt><dd>可写</dd></div><div><dt>采集会话</dt><dd>无</dd></div></dl></section>
+<section><h2>相机</h2><div id="cameraRows"></div></section>
+<section><h2>活动告警</h2><div id="alerts"></div></section>
+<section><h2>运行检查</h2><p>设备处于空闲状态，未启动新的检测。</p></section>
+</div><div id="viewDevice" style="display:none"><section><h2>设备与运行</h2><dl class="kv"><div><dt>设备 ID</dt><dd id="deviceId">测试设备</dd></div><div><dt>访问地址</dt><dd id="address">192.168.4.1</dd></div></dl></section><section><h2>电源与指示灯</h2><p>仅展示设备实际报告。</p></section></div><div id="viewMaint" style="display:none"><iframe src="/maintenance"></iframe></div></main>
+<nav class="tabs"><label id="labHome" class="tabSel">状态</label><label id="labDevice">设备信息</label><label id="labMaint">设备维护</label></nav>
+<script>const keys=['Home','Device','Maint'];for(const key of keys)document.getElementById('lab'+key).onclick=()=>{for(const item of keys){document.getElementById('view'+item).style.display=item===key?'':'none';document.getElementById('lab'+item).className=item===key?'tabSel':''}};</script>
+</body></html>

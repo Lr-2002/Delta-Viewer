@@ -24,6 +24,8 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
   const [observedAt,setObservedAt]=useState<string|null>(null);
   const [working,setWorking]=useState<"preview"|"submit"|"status"|null>(null);
   const [notice,setNotice]=useState<OtaSubmitResult|null>(null);
+  const [checkError,setCheckError]=useState("");
+  const [checkStage,setCheckStage]=useState<"source"|"device">("source");
   const [history,setHistory]=useState<OtaLogRecord[]>([]);
   const [historyError,setHistoryError]=useState("");
   const [selectedLog,setSelectedLog]=useState<string|null>(null);
@@ -42,7 +44,7 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
 
   useEffect(()=>{
     generation.current++;
-    setDevice(null);setDeviceError("");setObservedAt(null);setPreview(null);setNotice(null);
+    setDevice(null);setDeviceError("");setObservedAt(null);setPreview(null);setNotice(null);setCheckError("");
     if(!request||!connected||!service?.enabled)return;
     let active=true;let timer:ReturnType<typeof setTimeout>|undefined;
     async function refresh(){
@@ -60,20 +62,21 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
   async function run<T>(kind:"preview"|"submit",task:(owner:Operation)=>Promise<T>):Promise<T|undefined>{
     if(busy||working)return;
     const owner=beginOperation();if(!owner){onError("请先完成当前任务。");return;}
+    const current=generation.current;
     operation.current=owner;setWorking(kind);
     try{return await task(owner);}
-    catch(cause){onError(String(cause instanceof Error?cause.message:cause));return;}
+    catch(cause){if(current===generation.current){const message=String(cause instanceof Error?cause.message:cause);if(kind==="preview")setCheckError(message);else onError(message);}return;}
     finally{operation.current=null;owner.finish();setWorking(null);}
   }
 
   async function checkRelease(){
     const current=generation.current;
-    setNotice(null);
+    setNotice(null);setCheckError("");setPreview(null);setCheckStage("source");
     if(!request){onError("请先在设备信息页连接设备。");return;}
     await run("preview",async owner=>{
       const value=await previewOtaRelease(owner.id);
       if(current!==generation.current)return;
-      statusRevision.current++;
+      statusRevision.current++;setCheckStage("device");
       const status=await checkDeviceOtaRelease(request,value.previewId,owner.id);
       if(current===generation.current){statusRevision.current++;setPreview(value);setDevice(status);setObservedAt(new Date().toISOString());setDeviceError("");}
     });
@@ -106,7 +109,7 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
     <header className="manager-ota-heading">
       <ShieldCheck size={20}/>
       <div><h2>DOHC 应用升级</h2><p>{serviceError||(service?enabled?"连接设备后检查最新版本。":"升级服务暂不可用。":"正在读取升级服务…")}</p></div>
-      <span className={`manager-chip${canUpgrade?" is-ready":""}`}>{upToDate?"已是最新":canUpgrade?"可升级":device?.active||awaitingOperation?"升级中":"暂不可升级"}</span>
+      <span className={`manager-chip${canUpgrade?" is-ready":""}`}>{working==="preview"?"正在检查":upToDate?"已是最新":device?.active||awaitingOperation?"升级中":canUpgrade?preview?"可升级":"已连接":"暂不可升级"}</span>
     </header>
     <aside className="manager-ota-caution" aria-label="升级注意事项"><AlertCircle size={18}/><div><strong>升级前请确认</strong><ul><li>停止录制、自检和压力测试，保持设备连接。</li><li>保持稳定供电，升级过程中请勿关机或断电。</li><li>设备默认要求电压 ≥ 7.3V、温度低于 75℃；实际要求以设备提示为准。</li></ul></div></aside>
     {!connected&&<p className="manager-ota-note">请先连接设备，再检查最新版本。</p>}
@@ -117,6 +120,8 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
       <div><span>升级操作</span><strong>{(notice?.operationId??device?.operationId)?.slice(0,12)||"无"}</strong></div>
     </div>}
     {deviceError&&connected&&<p className="manager-ota-error" role="alert"><AlertCircle size={15}/>{deviceError}</p>}
+    {checkError&&<div className="manager-ota-failure" role="alert"><p className="manager-ota-error"><AlertCircle size={17}/><strong>未能完成版本检查</strong></p><p>{checkError.startsWith("OTA_DOWNLOAD_TIMEOUT:")?"OTA 源站连接或响应超时。请稍后重试；若持续出现，请联系管理员检查升级服务。":checkError.replace(/^[A-Z][A-Z0-9_]+:\s*/,"")}</p><details><summary>技术详情</summary><p>{checkError}</p></details></div>}
+    {working==="preview"&&<p className="manager-ota-note" role="status">{checkStage==="source"?"正在读取最新版本…":"正在核对设备版本…"}</p>}
     {device?.logError&&<p className="manager-ota-error" role="alert">{device.logError}</p>}
     {device?.guidance&&!failed&&!awaitingOperation&&device.state!=="UP_TO_DATE"&&<p className="manager-ota-note">{device.guidance}</p>}
     {enabled&&<>

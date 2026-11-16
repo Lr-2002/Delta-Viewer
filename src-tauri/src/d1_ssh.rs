@@ -409,7 +409,7 @@ pub async fn check_release(
     request: &DeviceRequest,
     cancelled: &AtomicBool,
 ) -> Result<SshStatus, String> {
-    let (preview, _) = ota.device_package(owner, preview_id)?;
+    let (preview, _) = ota.device_release(owner, preview_id)?;
     let current = status(state, root, owner, request).await?;
     if current.status.active || current.status.state.as_deref() == Some("UNKNOWN") {
         return Err("OTA_DEVICE_NOT_READY: 设备正在升级或前次结果待确认".into());
@@ -472,7 +472,7 @@ pub async fn submit(
         owner,
         history_owner,
     } = context;
-    let (preview, package) = ota.device_package(owner, preview_id)?;
+    let (preview, url) = ota.device_release(owner, preview_id)?;
     let release = preview.release_id.clone();
     let version = preview.version.clone();
     let operation = journal(root, history_owner, move |root, owner| {
@@ -491,8 +491,6 @@ pub async fn submit(
         let artifact=preview.files.iter().find(|file|file.name=="artifact.deb")
             .ok_or("OTA_DEB_REQUIRED: SSH 升级仅支持正式 Debian 安装包")?;
         let sha256=artifact.sha256.as_deref().ok_or("OTA_ARTIFACT_DIGEST_MISSING")?;
-        let origin=crate::d1_services::load().map_err(|e|e.to_string())?.device_ota.origin.ok_or("OTA_ORIGIN_UNCONFIGURED")?;
-        let url=crate::d1_services::ota_url(&crate::d1_services::origin(&origin)?,&artifact.path)?;
         let payload=json!({"operationId":operation,"releaseId":preview.release_id,"version":preview.version,"url":url,
             "size":artifact.size,"sha256":sha256,"deviceId":device_id,"cid":cid});
         let (staged,_) = call(request,Some(fingerprint.clone()),"stage",&payload,cancelled,None).await?;
@@ -508,6 +506,7 @@ pub async fn submit(
             let log_operation=operation.clone();
             journal(root,history_owner,move|root,owner|crate::d1_ota_log::note(root,owner,&log_operation,"warning",
                 "设备无法完成源站下载，改为通过 SSH 发送管理端已核对的同一安装包。")).await?;
+            let package = ota.device_package(owner, preview_id, cancelled).await?;
             call(request,Some(fingerprint.clone()),"receive",&payload,cancelled,Some(package.bytes())).await?;
         }
         let (value,_)=call(request,Some(fingerprint),"launch",&payload,cancelled,None).await?;

@@ -11,7 +11,8 @@ const MANIFEST_SCHEMA: &str = "dohc.ota.release-manifest.v1";
 const SIGNATURE_BYTES: usize = 64;
 const MAX_JSON_BYTES: usize = 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
+const PACKAGE_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,37 +67,49 @@ pub struct DeviceOtaStatus {
     pub detail: String,
 }
 
-struct Downloaded {
-    name: String,
-    bytes: Vec<u8>,
-}
-
 struct Release {
     preview: OtaPreview,
-    files: Vec<Downloaded>,
+    origin: Origin,
 }
 
-pub(crate) struct DevicePackage(Arc<Release>, usize);
+pub(crate) struct DevicePackage(Vec<u8>);
 impl DevicePackage {
     pub(crate) fn bytes(&self) -> &[u8] {
-        &self.0.files[self.1].bytes
+        &self.0
     }
 }
 #[derive(Default)]
 pub struct OtaState(Mutex<Option<(String, Instant, Arc<Release>)>>);
 impl OtaState {
-    pub(crate) fn device_package(
+    pub(crate) fn device_release(
         &self,
         owner: &str,
         id: &str,
-    ) -> Result<(OtaPreview, DevicePackage), String> {
+    ) -> Result<(OtaPreview, String), String> {
         let release = self.get(owner, id)?;
-        let index = release
-            .files
-            .iter()
-            .position(|file| file.name == "artifact.deb")
-            .ok_or("OTA_DEB_REQUIRED: Factory 通道不是 Debian 安装包")?;
-        Ok((release.preview.clone(), DevicePackage(release, index)))
+        let artifact = deb_descriptor(&release.preview)?;
+        let url = d1_services::ota_url(&release.origin, &artifact.path)?;
+        Ok((release.preview.clone(), url))
+    }
+    /// Only called after the user confirms an upgrade and device download fails.
+    pub(crate) async fn device_package(
+        &self,
+        owner: &str,
+        id: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<DevicePackage, String> {
+        let release = self.get(owner, id)?;
+        let artifact = deb_descriptor(&release.preview)?;
+        let bytes = fetch(
+            &client()?,
+            &release.origin,
+            &artifact.path,
+            artifact.size,
+            cancelled,
+        )
+        .await?;
+        verify_file(artifact, &bytes)?;
+        Ok(DevicePackage(bytes))
     }
     fn remember(&self, owner: &str, release: Release) -> Result<OtaPreview, String> {
         let preview = release.preview.clone();
@@ -117,6 +130,34 @@ impl OtaState {
         }
         Ok(Arc::clone(release))
     }
+}
+
+fn deb_descriptor(preview: &OtaPreview) -> Result<&FileDescriptor, String> {
+    preview
+        .files
+        .iter()
+        .find(|file| file.name == "artifact.deb")
+        .ok_or_else(|| "OTA_DEB_REQUIRED: Factory 通道不是 Debian 安装包".into())
+}
+
+fn verify_file(file: &FileDescriptor, bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() as u64 != file.size {
+        return Err(format!(
+            "OTA_SIZE_MISMATCH: {} 大小与发布清单不一致，请重新检查版本",
+            file.name
+        ));
+    }
+    if file
+        .sha256
+        .as_ref()
+        .is_some_and(|expected| sha256_hex(bytes) != *expected)
+    {
+        return Err(format!(
+            "OTA_HASH_MISMATCH: {} 摘要校验失败，已停止升级，请联系管理员核查发布文件",
+            file.name
+        ));
+    }
+    Ok(())
 }
 
 fn failure(message: impl Into<String>) -> String {
@@ -167,8 +208,9 @@ fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(DOWNLOAD_TIMEOUT)
+        .connect_timeout(Duration::from_secs(5))
+        .read_timeout(Duration::from_secs(30))
+        .timeout(METADATA_TIMEOUT)
         .build()
         .map_err(|_| "OTA_CLIENT_UNAVAILABLE: 无法建立升级服务连接".to_string())
 }
@@ -185,7 +227,72 @@ async fn fetch(
         .0)
 }
 
+fn source_resource(path: &str) -> &'static str {
+    if path.ends_with(".sig") || path.contains(".sig?") {
+        "发布签名"
+    } else if path.contains("/channels/") {
+        "版本通道"
+    } else if path.ends_with("manifest.json") {
+        "版本清单"
+    } else if path.contains("/artifacts/") {
+        "安装包"
+    } else {
+        "更新说明"
+    }
+}
+
+fn source_error(error: reqwest::Error, path: &str) -> String {
+    let resource = source_resource(path);
+    if error.is_timeout() {
+        format!("OTA_SOURCE_TIMEOUT: OTA 源站连接或响应超时（{resource}）。请稍后重试；若持续出现，请联系管理员检查升级服务。")
+    } else if error.is_connect() {
+        format!("OTA_SOURCE_UNREACHABLE: 无法连接 OTA 源站（{resource}）。请检查电脑网络；若网络正常，请联系管理员检查升级服务。")
+    } else {
+        format!("OTA_SOURCE_INTERRUPTED: OTA 源站传输中断（{resource}）。请稍后重试；若持续出现，请联系管理员检查升级服务。")
+    }
+}
+
+async fn wait_cancelled(cancelled: &AtomicBool) {
+    while !cancelled.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn retryable(error: &str) -> bool {
+    [
+        "OTA_SOURCE_TIMEOUT:",
+        "OTA_SOURCE_UNREACHABLE:",
+        "OTA_SOURCE_INTERRUPTED:",
+        "OTA_HTTP_502:",
+        "OTA_HTTP_503:",
+        "OTA_HTTP_504:",
+    ]
+    .iter()
+    .any(|code| error.starts_with(code))
+}
+
 async fn fetch_with_etag(
+    client: &reqwest::Client,
+    origin: &Origin,
+    path: &str,
+    limit: u64,
+    cancelled: &AtomicBool,
+) -> Result<(Vec<u8>, Option<String>), String> {
+    for attempt in 0..2 {
+        match fetch_once(client, origin, path, limit, cancelled).await {
+            Err(error) if attempt == 0 && retryable(&error) => {
+                tokio::select! {
+                    _ = wait_cancelled(cancelled) => return Err("OTA_CANCELLED: 升级已取消".into()),
+                    _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                }
+            }
+            result => return result,
+        }
+    }
+    unreachable!()
+}
+
+async fn fetch_once(
     client: &reqwest::Client,
     origin: &Origin,
     path: &str,
@@ -196,30 +303,33 @@ async fn fetch_with_etag(
         return Err("OTA_CANCELLED: 升级已取消".into());
     }
     let url = d1_services::ota_url(origin, path)?;
-    let response = client
-        .get(url)
-        .header("Accept", "application/octet-stream")
-        .send()
-        .await
-        .map_err(|error| {
-            if error.is_timeout() {
-                "OTA_DOWNLOAD_TIMEOUT: 升级服务响应超时".to_string()
-            } else {
-                "OTA_DOWNLOAD_FAILED: 无法连接升级服务，请检查网络".to_string()
-            }
-        })?;
-    if response.status().as_u16() != 200 {
+    let timeout = if path.contains("/artifacts/") {
+        PACKAGE_TIMEOUT
+    } else {
+        METADATA_TIMEOUT
+    };
+    let response = tokio::select! {
+        _ = wait_cancelled(cancelled) => return Err("OTA_CANCELLED: 升级已取消".into()),
+        response = client.get(url).timeout(timeout).header("Accept", "application/octet-stream").send() => response.map_err(|error| source_error(error, path))?,
+    };
+    let status = response.status().as_u16();
+    if status != 200 {
+        let reason = match status {
+            404 => "当前发布资源不存在，请稍后重试；若持续出现，请联系管理员检查发布内容",
+            401 | 403 => "OTA 源站拒绝访问，请联系管理员检查下载权限",
+            502..=504 => "OTA 源站暂不可用，请稍后重试；若持续出现，请联系管理员检查升级服务",
+            _ => "OTA 源站响应异常，请稍后重试或联系管理员",
+        };
         return Err(format!(
-            "OTA_HTTP_{}: 升级服务返回 HTTP {}，暂不可下载",
-            response.status().as_u16(),
-            response.status().as_u16()
+            "OTA_HTTP_{status}: {reason}（HTTP {status}，{}）。",
+            source_resource(path)
         ));
     }
     if response
         .content_length()
         .is_some_and(|length| length > limit)
     {
-        return Err("OTA_RESPONSE_TOO_LARGE: 升级资源超过大小限制".into());
+        return Err("OTA_RESPONSE_TOO_LARGE: OTA 发布资源超过大小限制，已停止读取，请联系管理员检查发布内容".into());
     }
     let etag = response
         .headers()
@@ -229,13 +339,17 @@ async fn fetch_with_etag(
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        if cancelled.load(Ordering::Acquire) {
-            return Err("OTA_CANCELLED: 升级已取消".into());
-        }
-        let chunk = chunk.map_err(|_| "OTA_DOWNLOAD_INCOMPLETE: 升级资源下载中断".to_string())?;
+    loop {
+        let next = tokio::select! {
+            _ = wait_cancelled(cancelled) => return Err("OTA_CANCELLED: 升级已取消".into()),
+            next = stream.next() => next,
+        };
+        let Some(chunk) = next else {
+            break;
+        };
+        let chunk = chunk.map_err(|error| source_error(error, path))?;
         if bytes.len() as u64 + chunk.len() as u64 > limit {
-            return Err("OTA_RESPONSE_TOO_LARGE: 升级资源超过大小限制".into());
+            return Err("OTA_RESPONSE_TOO_LARGE: OTA 发布资源超过大小限制，已停止读取，请联系管理员检查发布内容".into());
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -431,73 +545,15 @@ async fn resolve(
         sha256: None,
     };
 
-    let mut files = vec![
-        Downloaded {
-            name: "manifest.json".into(),
-            bytes: manifest_bytes,
-        },
-        Downloaded {
-            name: "manifest.json.sig".into(),
-            bytes: fetch(
-                client,
-                origin,
-                &signature.path,
-                SIGNATURE_BYTES as u64 + 1,
-                cancelled,
-            )
-            .await?,
-        },
-        Downloaded {
-            name: "changelog.json".into(),
-            bytes: fetch(
-                client,
-                origin,
-                &changelog_json.path,
-                MAX_JSON_BYTES as u64,
-                cancelled,
-            )
-            .await?,
-        },
-        Downloaded {
-            name: "changelog.md".into(),
-            bytes: fetch(
-                client,
-                origin,
-                &changelog_md.path,
-                MAX_JSON_BYTES as u64,
-                cancelled,
-            )
-            .await?,
-        },
-        Downloaded {
-            name: artifact.name.clone(),
-            bytes: fetch(client, origin, &artifact.path, artifact.size, cancelled).await?,
-        },
-    ];
-    let declared = [&changelog_json, &changelog_md, &signature, &artifact];
-    for file in files.iter_mut().skip(1) {
-        if file.name == "manifest.json.sig" {
-            if file.bytes.len() != SIGNATURE_BYTES {
-                return Err("OTA_SIGNATURE_INVALID: manifest 签名不是 64 字节".into());
-            }
-            continue;
-        }
-        let Some(descriptor) = declared.iter().find(|item| item.name == file.name) else {
-            return Err("OTA_MANIFEST_INVALID: 制品描述缺失".into());
-        };
-        if file.bytes.len() as u64 != descriptor.size {
-            return Err(format!(
-                "OTA_SIZE_MISMATCH: {} 大小与 manifest 不一致",
-                file.name
-            ));
-        }
-        if let Some(expected) = &descriptor.sha256 {
-            if &sha256_hex(&file.bytes) != expected {
-                return Err(format!("OTA_HASH_MISMATCH: {} 摘要校验失败", file.name));
-            }
-        }
-    }
-    verify_signature(&files[0].bytes, &files[1].bytes)?;
+    let manifest_signature = fetch(
+        client,
+        origin,
+        &signature.path,
+        SIGNATURE_BYTES as u64,
+        cancelled,
+    )
+    .await?;
+    verify_signature(&manifest_bytes, &manifest_signature)?;
     if let Some(expected) = d1_services::load()
         .map_err(|e| e.to_string())?
         .device_ota
@@ -509,12 +565,21 @@ async fn resolve(
         }
     }
 
-    let total_bytes = files.iter().map(|file| file.bytes.len() as u64).sum();
+    let total_bytes = [
+        &manifest,
+        &signature,
+        &changelog_json,
+        &changelog_md,
+        &artifact,
+    ]
+    .iter()
+    .map(|file| file.size)
+    .sum();
     Ok(Release {
         preview: OtaPreview {
             preview_id: format!(
                 "{}-{}",
-                sha256_hex(&files[0].bytes),
+                sha256_hex(&manifest_bytes),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -558,7 +623,7 @@ async fn resolve(
                 TrustStatus::DigestOnly
             },
         },
-        files,
+        origin: origin.clone(),
     })
 }
 
@@ -661,9 +726,6 @@ mod tests {
             ),
             (format!("{root}/manifest.json"), manifest),
             (format!("{root}/manifest.json.sig"), vec![8; 64]),
-            (format!("{root}/changelog.json"), changes),
-            (format!("{root}/changelog.md"), markdown),
-            (format!("/ota/v1/artifacts/{id}.deb"), artifact.clone()),
         ];
         let replies = resources
             .drain(..)
@@ -687,11 +749,10 @@ mod tests {
             &AtomicBool::new(false),
         ))
         .unwrap();
-        assert_eq!(worker.join().unwrap().len(), 7);
+        assert_eq!(worker.join().unwrap().len(), 4);
         assert_eq!(release.preview.version, "1.3.1");
-        assert_eq!(release.files.len(), 5);
-        assert_eq!(release.files[4].name, "artifact.deb");
-        assert_eq!(release.files[4].bytes, artifact);
+        assert_eq!(release.preview.files.len(), 5);
+        assert_eq!(release.preview.artifact_bytes, artifact.len() as u64);
         let cache = OtaState::default();
         let preview = cache.remember("reviewer", release).unwrap();
         assert!(cache.get("other", &preview.preview_id).is_err());
@@ -709,5 +770,172 @@ mod tests {
     #[test]
     fn channel_name_rejects_traversal_and_case() {
         assert_eq!(channel_name().unwrap(), "factory");
+    }
+
+    #[test]
+    fn source_gateway_failure_retries_once_but_missing_release_does_not() {
+        use crate::d1_service_test::{serve, Reply};
+        let path = "/ota/v1/channels/factory.json";
+        for (codes, expected) in [
+            (vec![503, 200], None),
+            (vec![504, 504], Some("OTA_HTTP_504:")),
+            (vec![404], Some("OTA_HTTP_404:")),
+        ] {
+            let (base, worker) = serve(
+                codes
+                    .iter()
+                    .map(|status| Reply {
+                        method: "GET",
+                        path: path.into(),
+                        status: *status,
+                        headers: vec![],
+                        body: b"fixture".to_vec(),
+                    })
+                    .collect(),
+            );
+            let result = tauri::async_runtime::block_on(fetch(
+                &client().unwrap(),
+                &Origin { base },
+                path,
+                100,
+                &AtomicBool::new(false),
+            ));
+            if let Some(code) = expected {
+                let error = result.unwrap_err();
+                assert!(error.starts_with(code), "{error}");
+                assert!(error.contains("管理员"));
+            } else {
+                assert_eq!(result.unwrap(), b"fixture");
+            }
+            assert_eq!(worker.join().unwrap().len(), codes.len());
+        }
+    }
+
+    #[test]
+    fn stalled_source_reports_timeout_and_cancellation_interrupts_the_body() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        for cancel in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = Origin {
+                base: format!("http://{}", listener.local_addr().unwrap()),
+            };
+            let worker = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() <= 4096);
+                }
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                std::thread::sleep(Duration::from_millis(350));
+                let _ = stream.write_all(b"test");
+            });
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&cancelled);
+            let error = tauri::async_runtime::block_on(async {
+                let http = reqwest::Client::builder()
+                    .no_proxy()
+                    .read_timeout(Duration::from_millis(if cancel { 2000 } else { 40 }))
+                    .build()
+                    .unwrap();
+                let signal = tokio::spawn(async move {
+                    if cancel {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        flag.store(true, Ordering::Release);
+                    }
+                });
+                let result = fetch_once(
+                    &http,
+                    &origin,
+                    "/ota/v1/channels/factory.json",
+                    100,
+                    &cancelled,
+                )
+                .await;
+                signal.await.unwrap();
+                result.unwrap_err()
+            });
+            assert!(
+                error.starts_with(if cancel {
+                    "OTA_CANCELLED:"
+                } else {
+                    "OTA_SOURCE_TIMEOUT:"
+                }),
+                "{error}"
+            );
+            if !cancel {
+                assert!(error.contains("版本通道"));
+                assert!(error.contains("管理员"));
+            }
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn deferred_fallback_stays_on_frozen_artifact_and_rejects_digest_changes() {
+        use crate::d1_service_test::{serve, Reply};
+        for valid in [true, false] {
+            let body = b"frozen package".to_vec();
+            let path = "/ota/v1/artifacts/frozen-release.deb";
+            let (base, worker) = serve(vec![Reply {
+                method: "GET",
+                path: path.into(),
+                status: 200,
+                headers: vec![],
+                body: body.clone(),
+            }]);
+            let cache = OtaState::default();
+            let preview = OtaPreview {
+                preview_id: "frozen-preview".into(),
+                release_id: "frozen-release".into(),
+                version: "1.3.1".into(),
+                channel: "factory".into(),
+                key_id: None,
+                rollback_index: None,
+                artifact_bytes: body.len() as u64,
+                total_bytes: body.len() as u64,
+                trust: TrustStatus::DigestOnly,
+                files: vec![FileDescriptor {
+                    name: "artifact.deb".into(),
+                    path: path.into(),
+                    size: body.len() as u64,
+                    sha256: Some(if valid {
+                        sha256_hex(&body)
+                    } else {
+                        "0".repeat(64)
+                    }),
+                }],
+            };
+            let origin = Origin { base: base.clone() };
+            cache
+                .remember("owner", Release { preview, origin })
+                .unwrap();
+            assert!(cache
+                .device_release("other-owner", "frozen-preview")
+                .is_err());
+            assert_eq!(
+                cache.device_release("owner", "frozen-preview").unwrap().1,
+                format!("{base}{path}")
+            );
+            let result = tauri::async_runtime::block_on(cache.device_package(
+                "owner",
+                "frozen-preview",
+                &AtomicBool::new(false),
+            ));
+            if valid {
+                assert_eq!(result.unwrap().bytes(), body);
+            } else {
+                assert!(result.err().unwrap().starts_with("OTA_HASH_MISMATCH:"));
+            }
+            assert_eq!(worker.join().unwrap().len(), 1);
+        }
     }
 }

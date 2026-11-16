@@ -12,7 +12,7 @@ function request(path,method,headers,body,navigate=false){const id=String(++seri
 window.addEventListener("message",event=>{const data=event.data;if(event.source!==window.parent||data?.token!==token)return;if(data.type==="d1-page-host-ready"){if(ready)return;ready=true;clearInterval(handshake);for(const item of pending.values())window.parent.postMessage(item.message,"*");return}if(data.type!=="d1-page-response"||!pending.has(data.id))return;const item=pending.get(data.id);pending.delete(data.id);clearTimeout(item.timer);item.resolve(data)});
 window.fetch=async(input,init={})=>{try{const requestObject=input instanceof Request?input:null,raw=typeof input==="string"?input:input instanceof URL?input.href:input.url,path=route(raw),method=String(init.method??requestObject?.method??"GET").toUpperCase();if(!["GET","PUT","POST"].includes(method))throw new Error("设备页面操作不支持");const requestHeaders=new Headers(requestObject?.headers);new Headers(init.headers).forEach((value,key)=>requestHeaders.set(key,value));const headers=Object.fromEntries([...requestHeaders.entries()].filter(([key])=>["content-type","if-match"].includes(key.toLowerCase())));const sourceBody=Object.hasOwn(init,"body")?init.body:requestObject?await requestObject.clone().text():undefined;const body=method==="GET"||sourceBody===undefined?undefined:typeof sourceBody==="string"?sourceBody:await new Response(sourceBody).text();const reply=await request(path,method,headers,body);return new Response(reply.body||"",{status:reply.status,headers:{"Content-Type":reply.contentType||"text/plain"}})}catch(error){return new Response(JSON.stringify({message:error instanceof Error?error.message:"设备请求失败"}),{status:502,headers:{"Content-Type":"application/json"}})}};
 document.addEventListener("click",event=>{const link=event.target instanceof Element?event.target.closest("a"):null;if(!link)return;event.preventDefault();try{const raw=link.getAttribute("data-d1-route")||link.getAttribute("href");if(!raw||raw==="#")return;void request(route(raw),"GET",{},undefined,true)}catch{}});
-document.addEventListener("click",event=>{if(event.target instanceof Element&&event.target.closest("#ota-relay")){event.preventDefault();window.parent.postMessage({type:"d1-page-open-ota",token},"*")}});
+document.addEventListener("click",event=>{if(event.target instanceof Element&&event.target.closest("#ota-relay,#labMaint")){event.preventDefault();event.stopImmediatePropagation();window.parent.postMessage({type:"d1-page-open-ota",token},"*")}},true);
 document.addEventListener("submit",event=>{event.preventDefault();const form=event.target;if(!(form instanceof HTMLFormElement)||form.getAttribute("data-d1-form")!=="configure")return;const fields=new FormData(form),body=JSON.stringify({ssid:fields.get("ssid"),password:fields.get("password")});const password=form.querySelector('input[name="password"]');if(password)password.value="";void request("/configure","POST",{"content-type":"application/json"},body,true)});
 })()`.replace("__TOKEN__",JSON.stringify(token));
   return script;
@@ -39,6 +39,7 @@ export function interactiveDeviceHtml(html:string,page:DevicePage,token:string):
     // send firmware through the text-only configuration request bridge.
     if(element.id==="ota-relay"){element.removeAttribute("disabled");element.textContent="打开应用升级";}
     if(element.matches('#ota-form,#ota-file,#ota-submit'))element.remove();
+    if(element.id==="labMaint")element.textContent="应用升级";
     if(element.id==="ota-status")element.textContent="在 D1 Manager 中检查版本并升级。";
   }
   if(page?.status)fillStatus(template.content,page);
@@ -48,6 +49,23 @@ export function interactiveDeviceHtml(html:string,page:DevicePage,token:string):
     }
   }
   for(const script of template.content.querySelectorAll("script"))script.textContent=script.textContent?.replaceAll("location.hostname",JSON.stringify(page.address))??"";
+  if(template.content.querySelector('#viewHome')){
+    const home=template.content.querySelector('#viewHome')!;
+    const summary=home.querySelector('.summary');if(summary)home.prepend(summary);
+    for(const id of ['cameraRows','alerts','cameraConfigRows','components'])template.content.querySelector(`#${id}`)?.closest('section')?.classList.add('d1-host-wide');
+  }
+  const theme=document.createElement("style");theme.textContent=`
+html,body{height:100%;min-width:0}body{font:14px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0;background:#f5f7fa}
+body>header{order:-2;padding:18px max(24px,calc((100% - 1192px)/2));background:#fff;border-bottom:1px solid #e2e7ec}h1{font-size:21px;letter-spacing:0}.head-row{gap:14px}
+body>main{width:100%;max-width:1240px;min-width:0;padding:20px 24px 28px;margin:0 auto}
+body>nav.tabs{order:-1;border-top:0;border-bottom:1px solid #e2e7ec;background:#fff;padding:0 max(24px,calc((100% - 1192px)/2));gap:24px}
+.tabs label{flex:0 1 auto;min-width:72px;font-size:14px;line-height:44px;cursor:pointer;border-bottom:2px solid transparent}.tabs label.tabSel{border-bottom-color:#216da8}
+#labMaint{display:none}#viewHome,#viewDevice{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}#viewHome[style*="none"],#viewDevice[style*="none"]{display:none}
+#viewHome>.summary,.d1-host-wide{grid-column:1/-1}.summary{gap:12px;margin:0;background:transparent;border:0}.summary>div{border:1px solid #e0e6ec!important;border-radius:8px;padding:16px;background:#fff}.summary .value{font-size:18px}
+section{min-width:0;border:1px solid #e0e6ec;border-radius:8px;background:#fff;padding:18px;margin:0}section h2{font-size:14px;color:#34465a;margin:0 0 12px}.kv{gap:0 16px}.kv>div{min-width:0}.choice{gap:8px}.choice input,.choice select{min-height:38px;font-size:14px}.choice button,button{min-height:36px;font-size:14px;border-radius:6px}.badge{border-radius:5px}
+#identity{overflow-wrap:anywhere}.led-row{padding:12px 0}.led-swatch{width:16px;height:16px}.config-grid input,.config-grid select{font-size:14px}.config-link{font-size:13px}
+@media(max-width:760px){body>header{padding:14px 16px}body>main{padding:16px}body>nav.tabs{padding:0 16px}#viewHome,#viewDevice{grid-template-columns:minmax(0,1fr);gap:12px}.summary{grid-template-columns:repeat(2,minmax(0,1fr))}.summary>div{padding:12px}section{padding:14px}.head-row{flex-wrap:wrap}}
+`;template.content.append(theme);
   const bridge=document.createElement("script");bridge.textContent=bridgeScript(token);template.content.prepend(bridge);
   return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; script-src \'unsafe-inline\'; connect-src \'none\'; img-src \'none\'; form-action \'none\'; base-uri \'none\'; frame-src \'none\'; object-src \'none\'"></head><body>'+template.innerHTML+'</body></html>';
 }
@@ -74,13 +92,14 @@ function fillStatus(root:DocumentFragment,page:DevicePage) {
 export function DevicePageView({page,busy,showConnectionMode,connectionModeLabel,onBack,onRefresh,onRequest,onVerifyAddress,otaPanel}:{page:DevicePage;busy:boolean;showConnectionMode:boolean;connectionModeLabel:string;onBack:()=>void;onRefresh:()=>void;onRequest:(request:DevicePageApiRequest)=>Promise<DevicePageApiResponse>;onVerifyAddress:(address:string)=>Promise<DevicePage>;otaPanel?:ReactNode}) {
   const frame=useRef<HTMLIFrameElement>(null);
   const otaContainer=useRef<HTMLDivElement>(null);
+  const [activePanel,setActivePanel]=useState<"device"|"upgrade">("device");
   const [navigation,setNavigation]=useState<{html:string;version:number}|null>(null);
   const [navigationError,setNavigationError]=useState("");
   const [provisioning,setProvisioning]=useState<{started:number;state:"waiting"|"failed"|"unconfirmed";message:string}|null>(null);
   const [elapsed,setElapsed]=useState(0);
   const [newAddress,setNewAddress]=useState("");
   const [verifying,setVerifying]=useState(false);
-  useEffect(()=>{setNavigation(null);setNavigationError("");setProvisioning(null);},[page]);
+  useEffect(()=>{setNavigation(null);setNavigationError("");setProvisioning(null);setActivePanel("device");},[page]);
   const token=useMemo(()=>crypto.randomUUID(),[page,navigation]);
   const requestHandler=useRef(onRequest);requestHandler.current=onRequest;
   const html=useMemo(()=>interactiveDeviceHtml(navigation?.html??page.html,navigation?{...page,status:null}:page,token),[page,token,navigation]);
@@ -89,7 +108,7 @@ export function DevicePageView({page,busy,showConnectionMode,connectionModeLabel
       if(event.source!==frame.current?.contentWindow)return;
       const message=event.data;
       if(message?.type==="d1-page-ready"&&message.token===token){frame.current?.contentWindow?.postMessage({type:"d1-page-host-ready",token},"*");return;}
-      if(message?.type==="d1-page-open-ota"&&message.token===token){otaContainer.current?.scrollIntoView({behavior:"smooth",block:"start"});otaContainer.current?.querySelector("button")?.focus({preventScroll:true});return;}
+      if(message?.type==="d1-page-open-ota"&&message.token===token){setActivePanel("upgrade");requestAnimationFrame(()=>otaContainer.current?.querySelector("button")?.focus({preventScroll:true}));return;}
       if(message?.type!=="d1-page-request"||message.token!==token||typeof message.id!=="string"||typeof message.path!=="string"||!(["GET","PUT","POST"] as string[]).includes(message.method))return;
       const request:DevicePageApiRequest={path:message.path,method:message.method,body:typeof message.body==="string"?message.body:undefined,ifMatch:typeof message.headers?.["if-match"]==="string"?message.headers["if-match"]:undefined};
       void requestHandler.current(request).then(reply=>{
@@ -135,7 +154,8 @@ export function DevicePageView({page,busy,showConnectionMode,connectionModeLabel
     <header><button className="button button-secondary" disabled={busy} onClick={onBack}><ArrowLeft size={17}/>返回设备管理</button><div><strong>设备页面 · {page.address}</strong><span>设备端页面 · {new Date(page.observedAtMs).toLocaleTimeString("zh-CN",{hour12:false})}</span></div><button className="button button-secondary" disabled={busy} onClick={onRefresh}><RefreshCw size={17} className={busy?"spin":undefined}/>刷新页面</button></header>
     {showConnectionMode&&<p className="manager-actual-connection manager-device-page-connection" role="status"><span>实际连接方式</span><strong>{connectionModeLabel}</strong></p>}
     {(navigationError||page.statusError)&&<p className="manager-error" role="status">{navigationError||page.statusError}</p>}
-    {provisioning?<section className={`manager-provisioning is-${provisioning.state}`} aria-label="设备配网进度" aria-live="polite"><div className="manager-provisioning-symbol">{provisioning.state==="waiting"?<LoaderCircle className="spin" size={38}/>:<AlertCircle size={38}/>}</div><h1>{provisioning.state==="waiting"?"设备正在配网":provisioning.state==="failed"?"配网失败":"等待确认配网结果"}</h1><p>{provisioning.message}</p>{provisioning.state==="waiting"&&<><div className="manager-progress-indeterminate" role="progressbar" aria-label="等待设备配网结果"/><span>已等待 {elapsed} 秒</span></>}<ol><li><CheckCircle2 size={17}/>配置已提交</li><li>设备连接 Wi-Fi · 热点可能暂时关闭</li><li>核对设备播报，读取联网状态</li></ol><form onSubmit={event=>{event.preventDefault();void verifyAddress();}}><label htmlFor="d1-configured-address">设备联网后的 IP</label><input id="d1-configured-address" placeholder="输入设备语音播报的 IP" inputMode="decimal" value={newAddress} onChange={event=>setNewAddress(event.target.value)} disabled={verifying}/><button className="button button-primary" disabled={verifying||!newAddress.trim()}>{verifying?"正在核对…":"读取联网状态"}</button></form><small>设备当前固件不提供配网结果查询接口；热点断开和提交成功均不能单独证明配网成功。</small>{provisioning.state==="failed"&&<button className="button button-secondary" onClick={()=>{setProvisioning(null);onRefresh();}}>重新填写配网信息</button>}</section>:<iframe key={token} ref={frame} title="D1 设备页面" sandbox="allow-scripts allow-forms allow-modals" srcDoc={html}/>}
-    {!provisioning&&otaPanel&&<div className="manager-device-ota-panel" ref={otaContainer}>{otaPanel}</div>}
+    {!provisioning&&otaPanel&&<nav className="manager-device-page-tabs" aria-label="设备页面功能"><button type="button" aria-pressed={activePanel==="device"} onClick={()=>setActivePanel("device")}>设备页面</button><button type="button" aria-pressed={activePanel==="upgrade"} onClick={()=>setActivePanel("upgrade")}>应用升级</button></nav>}
+    {provisioning?<section className={`manager-provisioning is-${provisioning.state}`} aria-label="设备配网进度" aria-live="polite"><div className="manager-provisioning-symbol">{provisioning.state==="waiting"?<LoaderCircle className="spin" size={38}/>:<AlertCircle size={38}/>}</div><h1>{provisioning.state==="waiting"?"设备正在配网":provisioning.state==="failed"?"配网失败":"等待确认配网结果"}</h1><p>{provisioning.message}</p>{provisioning.state==="waiting"&&<><div className="manager-progress-indeterminate" role="progressbar" aria-label="等待设备配网结果"/><span>已等待 {elapsed} 秒</span></>}<ol><li><CheckCircle2 size={17}/>配置已提交</li><li>设备连接 Wi-Fi · 热点可能暂时关闭</li><li>核对设备播报，读取联网状态</li></ol><form onSubmit={event=>{event.preventDefault();void verifyAddress();}}><label htmlFor="d1-configured-address">设备联网后的 IP</label><input id="d1-configured-address" placeholder="输入设备语音播报的 IP" inputMode="decimal" value={newAddress} onChange={event=>setNewAddress(event.target.value)} disabled={verifying}/><button className="button button-primary" disabled={verifying||!newAddress.trim()}>{verifying?"正在核对…":"读取联网状态"}</button></form><small>设备当前固件不提供配网结果查询接口；热点断开和提交成功均不能单独证明配网成功。</small>{provisioning.state==="failed"&&<button className="button button-secondary" onClick={()=>{setProvisioning(null);onRefresh();}}>重新填写配网信息</button>}</section>:<iframe hidden={!!otaPanel&&activePanel!=="device"} key={token} ref={frame} title="D1 设备页面" sandbox="allow-scripts allow-forms allow-modals" srcDoc={html}/>}
+    {!provisioning&&otaPanel&&<div hidden={activePanel!=="upgrade"} className="manager-device-ota-panel" ref={otaContainer}>{otaPanel}</div>}
   </main>;
 }

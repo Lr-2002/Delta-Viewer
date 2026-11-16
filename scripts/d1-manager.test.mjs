@@ -409,7 +409,7 @@ test("Type-C diagnostic port limitation remains explicit",async()=>{
   }finally{await context.close();}
 });
 
-async function nativePageFixture(context){
+async function nativePageFixture(context,htmlOverride){
   await desktopPhysicalContractFixture(context);
   await context.addInitScript(()=>{window.nativePageCalls=[];window.wifiConnectCalls=[];window.pageApiCalls=[];window.pageFixtureMode="success";window.wifiFixtureConnected=false;});
   const pageHtml=[
@@ -428,7 +428,7 @@ async function nativePageFixture(context){
     export async function getWifiInventory(){return {supported:true,message:null,observedAtMs:Date.now(),networks:[{interfaceId:"22",ssid:"Delta-D1-test001",signal:92,connected:window.wifiFixtureConnected,recommended:true,connectable:true},{interfaceId:"22",ssid:"Office",signal:99,connected:false,recommended:false,connectable:false}]};}
     export async function connectDeviceWifi(request){window.wifiConnectCalls.push({ssid:request.ssid,interfaceId:request.interfaceId,passwordLength:request.password.length});if(window.pageFixtureMode==="wrong-password")throw new Error("热点连接未完成。请核对密码后重试。");return {interfaceId:request.interfaceId,ssid:request.ssid,connected:true};}
     export async function readDevicePage(request){window.nativePageCalls.push(request);if(window.pageFixtureMode==="unreachable")throw new Error("无法访问设备页面。");if(window.pageFixtureMode==="provisioning")return {address:"192.168.4.1",observedAtMs:Date.now(),html:'<html><body><h1>设备维护</h1><form method="post" action="/configure"><label>Wi-Fi 名称<input name="ssid" required maxlength="32"></label><label>Wi-Fi 密码<input type="password" name="password" required minlength="8" maxlength="63"></label><button type="submit">连接网络</button></form><button id="ota-relay">在线下载并升级</button><input id="ota-file" type="file"><button id="ota-submit">上传并升级</button></body></html>'};return {address:request.apAddress??"192.168.4.1",observedAtMs:Date.now(),status:nativeStatus(),html:JSON_HTML};}
-  `.replace("JSON_HTML",JSON.stringify(pageHtml));
+  `.replace("JSON_HTML",JSON.stringify(htmlOverride??pageHtml));
   await context.route("**/__d1-component-runtime",route=>route.fulfill({contentType:"application/javascript",body:runtime}));
 }
 
@@ -545,13 +545,14 @@ test("AP configuration keeps Wi-Fi interactive and opens the native OTA panel",a
     assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0,"opening OTA must not submit an upgrade");
     for(const viewport of [{width:1440,height:920},{width:960,height:680},{width:390,height:844}]){
       await page.setViewportSize(viewport);
-      assert.ok(await page.locator('iframe[title="D1 设备页面"]').evaluate(element=>element.getBoundingClientRect().height>=360),"OTA panel must not collapse the device configuration page");
+      assert.equal(await page.locator('iframe[title="D1 设备页面"]').isVisible(),false,"device page and upgrade use separate panels");
       const ota=page.getByRole("region",{name:"DOHC 应用升级"});await ota.scrollIntoViewIfNeeded();
       const bounds=await ota.boundingBox();assert.ok(bounds.y<viewport.height&&bounds.y+bounds.height>0,"OTA panel is reachable in the device page scroll area");
       await noOverflow(page);
       await page.screenshot({path:resolve(reportRoot,`native-ota-${viewport.width}.png`),fullPage:true});
     }
     await page.setViewportSize({width:1440,height:920});
+    await page.getByRole("navigation",{name:"设备页面功能"}).getByRole("button",{name:"设备页面",exact:true}).click();
     await frame.getByLabel("Wi-Fi 名称",{exact:true}).fill("Office fixture");await frame.getByLabel("Wi-Fi 密码",{exact:true}).fill("fixture-network-password");
     page.once("dialog",dialog=>dialog.dismiss());await frame.getByRole("button",{name:"连接网络",exact:true}).click();
     assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0);
@@ -703,4 +704,36 @@ test('Type-C runtime summary keeps port exemption, unknown fields and disconnect
     assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
     evidence.push({status:'passed',typeCRuntimePortExemption:true,missingFieldsUnknown:true,disconnectClearsSummary:true});
   }finally{await context.close();}
+});
+
+
+test('Tabbed device status and upgrade have one scroll area and retain configuration drafts',async()=>{
+  const html=readFileSync(resolve('scripts/fixtures/d1-native/status-tabs.html'),'utf8');
+  for(const viewport of [{width:1920,height:1080},{width:1440,height:920},{width:960,height:680},{width:390,height:844}]){
+    const {page,context,errors,external}=await session(viewport,false,context=>nativePageFixture(context,html));
+    try{
+      await page.getByRole('button',{name:'局域网 IP',exact:true}).click();
+      await page.getByLabel('设备 IP',{exact:true}).fill('192.168.1.100');
+      await page.getByRole('button',{name:'连接设备',exact:true}).click();
+      const frame=page.frameLocator('iframe[title="D1 设备页面"]');await frame.getByRole('heading',{name:'DOHC 设备状态'}).waitFor();
+      await frame.getByPlaceholder('新增用户名字').fill('保留未提交内容');
+      const layout=await frame.locator('main').evaluate(main=>({width:main.clientWidth,scrollable:main.scrollHeight>main.clientHeight,firstId:main.querySelector('#viewHome')?.firstElementChild?.className,bodyScroll:document.body.scrollHeight>document.body.clientHeight}));
+      assert.ok(layout.width<=1240);assert.equal(layout.bodyScroll,false);assert.equal(layout.firstId,'summary');
+      if(viewport.width>=1440)assert.ok(layout.width>=1100,'desktop uses the available working width');
+      await page.screenshot({path:resolve(reportRoot,`native-layout-${viewport.width}.png`),fullPage:true});
+      const tabs=page.getByRole('navigation',{name:'设备页面功能'});
+      await tabs.getByRole('button',{name:'应用升级',exact:true}).click();
+      assert.equal(await page.locator('iframe[title="D1 设备页面"]').isVisible(),false);
+      await page.getByRole('region',{name:'DOHC 应用升级'}).waitFor();
+      const region=await page.locator('.manager-device-ota-panel').evaluate(el=>({overflow:getComputedStyle(el).overflowY,height:el.clientHeight,parentOverflow:getComputedStyle(el.parentElement).overflowY}));
+      assert.equal(region.overflow,'auto');assert.equal(region.parentOverflow,'hidden');assert.ok(region.height>200);
+      await noOverflow(page);await page.screenshot({path:resolve(reportRoot,`upgrade-layout-${viewport.width}.png`),fullPage:true});
+      await tabs.getByRole('button',{name:'设备页面',exact:true}).click();
+      assert.equal(await frame.getByPlaceholder('新增用户名字').inputValue(),'保留未提交内容');
+      await frame.getByText('设备信息',{exact:true}).click();await frame.getByRole('heading',{name:'设备与运行'}).waitFor();
+      assert.equal(await frame.getByRole('heading',{name:'用户名字'}).isVisible(),false);
+      assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0,'layout navigation never saves configuration or starts installation');
+      assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
+    }finally{await context.close();}
+  }
 });
