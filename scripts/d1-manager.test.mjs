@@ -538,9 +538,15 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
 test("AP configuration keeps Wi-Fi interactive and opens the native OTA panel",async()=>{
   const {page,context,errors,external}=await session({width:1440,height:920},false,async context=>{
     await nativePageFixture(context);
-    await context.addInitScript(()=>window.addEventListener("message",event=>{
-      if(!window.fixtureBridgeReady&&["d1-page-ready","d1-page-open-ota"].includes(event.data?.type))event.stopImmediatePropagation();
-    },true));
+    await context.addInitScript(()=>{
+      window.fixtureBridgeMessages=[];
+      window.addEventListener("message",event=>{
+        if(event.data?.type?.startsWith("d1-page"))window.fixtureBridgeMessages.push({type:event.data.type,token:event.data.token,at:performance.now(),blocked:!window.fixtureBridgeReady});
+        if(!window.fixtureBridgeReady&&["d1-page-ready","d1-page-open-ota"].includes(event.data?.type))event.stopImmediatePropagation();
+        if(event.data?.type==="d1-page-open-ota"&&window.fixtureDropOpen){window.fixtureDropOpen=false;window.fixtureDroppedOpen=true;event.stopImmediatePropagation();}
+      },true);
+      document.addEventListener("click",event=>window.fixtureBridgeMessages.push({click:event.target?.id,at:performance.now()}),true);
+    });
   });
   try{
     await navigate(page,"首页");await page.getByRole("button",{name:"设备热点（AP）",exact:true}).click();
@@ -553,6 +559,15 @@ test("AP configuration keeps Wi-Fi interactive and opens the native OTA panel",a
     await frame.getByRole("button",{name:"打开应用升级"}).click();
     await page.evaluate(()=>window.fixtureBridgeReady=true);
     await page.getByRole("region",{name:"DOHC 应用升级"}).waitFor();
+    await page.getByRole("navigation",{name:"设备页面功能"}).getByRole("button",{name:"设备页面",exact:true}).click();
+    await page.evaluate(()=>window.fixtureDropOpen=true);
+    await frame.getByRole("button",{name:"打开应用升级"}).click();
+    await page.getByRole("region",{name:"DOHC 应用升级"}).waitFor();
+    assert.equal(await page.evaluate(()=>window.fixtureDroppedOpen),true,"first navigation message was deliberately lost");
+    await frame.locator("body").evaluate(()=>new Promise(resolve=>setTimeout(resolve,220)));
+    const acknowledgedCount=await page.evaluate(()=>window.fixtureBridgeMessages.filter(message=>message.type==="d1-page-open-ota").length);
+    await page.waitForTimeout(250);
+    assert.equal(await page.evaluate(()=>window.fixtureBridgeMessages.filter(message=>message.type==="d1-page-open-ota").length),acknowledgedCount,"navigation resend stops after the matching host acknowledgment");
     assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0,"opening OTA must not submit an upgrade");
     for(const viewport of [{width:1440,height:920},{width:960,height:680},{width:390,height:844}]){
       await page.setViewportSize(viewport);
@@ -580,7 +595,7 @@ test("AP configuration keeps Wi-Fi interactive and opens the native OTA panel",a
     await page.getByRole("heading",{name:"配网失败",exact:true}).waitFor();
     assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
     evidence.push({status:"passed",apProvisioningForm:true,confirmationRequired:true,nativeOtaEntry:true,provisioningFailureFromDevice:true,externalRequests:0});
-  }finally{await context.close();}
+  }catch(cause){console.error("AP_BRIDGE_TRACE",JSON.stringify(await Promise.all(page.frames().map(async frame=>({url:frame.url(),state:await frame.evaluate(()=>({ready:window.fixtureBridgeReady,messages:window.fixtureBridgeMessages,button:document.getElementById("ota-relay")?.outerHTML})).catch(String)})))));throw cause;}finally{await context.close();}
 });
 
 async function actualNativeMarkupFixture(context){
