@@ -411,6 +411,7 @@ function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [managementMode, setManagementMode] = useState(false);
   const [managerSection, setManagerSection] = useState<ManagerSection>("home");
+  const [managerNavigationRevision,setManagerNavigationRevision]=useState(0);
   const [outboundBatch,setOutboundBatch]=useState<OutboundBatch|null>(null);
   const [managerAdminHome, setManagerAdminHome] = useState(false);
   const [managerNavigationBusy, setManagerNavigationBusy] = useState(false);
@@ -2114,8 +2115,9 @@ function App() {
     }finally{resumeAudit();}
   }
   async function navigateManager(next: ManagerSection) {
-    if (next === managerSection || managerNavigationLock.current) return;
+    if (managerNavigationLock.current) return;
     if (busy || document.querySelector("dialog[open]")) {setManagerNavigationError("请先完成当前任务或关闭窗口。"); return;}
+    if (next === managerSection) {if(next!=="data")setManagerNavigationRevision(value=>value+1);return;}
     if (next === "data" && currentUser?.role === "admin") {openManagement();return;}
     managerNavigationLock.current = true; setManagerNavigationBusy(true);
     setManagerNavigationError("");
@@ -2335,7 +2337,7 @@ function App() {
 
       {managerNavigationError && <div className="alert-banner alert-error" role="alert"><CircleAlert size={17}/><span>{managerNavigationError}</span><button className="text-button" onClick={()=>setManagerNavigationError("")}>关闭</button></div>}
       <ManagerWorkspace key={`${workspaceMode}:${currentUser?.username ?? "local"}:${authStatus.userCenter.serviceId ?? "local"}`}
-        section={managerSection} busy={busy} beginOperation={beginManagerOperation} onNavigate={next => void navigateManager(next)} />
+        section={managerSection} navigationRevision={managerNavigationRevision} busy={busy} beginOperation={beginManagerOperation} onNavigate={next => void navigateManager(next)} />
       {managerSection==="data"&&outboundBatch&&currentUser&&!showManagement&&<OutboundReviewTasks key={`${authStatus.userCenter.serviceId}:${currentUser.username}:${outboundBatch.id}`} currentUser={currentUser} initialBatch={outboundBatch} view="workspace" workspaceBusy={busy} suspended={personalTaskOpen} onReturnToTasks={()=>setPersonalTaskOpen(true)}/>}
       <div className={`workspace${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`} hidden={managerSection !== "data"||!!outboundBatch} inert={managerSection !== "data"||!!outboundBatch}>
         <aside className="sidebar" style={{ "--sidebar-scale": sidebarScale } as CSSProperties}>

@@ -77,6 +77,14 @@ export async function fetchOutboundVideo(batch: OutboundBatch, recording: Outbou
 
 export function outboundError(reason: unknown) {
   const raw = String(reason);
+  if (raw.includes("OUTBOUND_USER_CENTER_TIMEOUT")) return "等待外发审核服务响应超时。请稍后重试；若持续出现，请联系管理员检查用户中心和交付服务。";
+  if (raw.includes("OUTBOUND_USER_CENTER_TLS")) return "用户中心安全连接校验失败，请联系管理员核对连接配置和证书。";
+  if (raw.includes("OUTBOUND_USER_CENTER_UNREACHABLE")) return "无法连接用户中心。请检查公司网络；若网络正常，请联系管理员检查用户中心服务。";
+  if (raw.includes("OUTBOUND_RESPONSE_INTERRUPTED")) return "用户中心响应传输中断，请稍后重试；提交结果需重新核对。";
+  if (raw.includes("OUTBOUND_NETWORK_UNAVAILABLE") || /OUTBOUND_HTTP_50[234]/.test(raw)) return "用户中心暂未取得交付服务响应。请稍后重试；若持续出现，请联系管理员检查外发审核服务。";
+  if (raw.includes("OUTBOUND_BRIDGE_BUSY")) return "外发审核服务繁忙，请稍后重试。";
+  if (raw.includes("AUTH_REQUIRED") || raw.includes("OUTBOUND_HTTP_401")) return "登录会话已失效，请保存当前工作后重新登录。";
+  if (raw.includes("OUTBOUND_ACCOUNT_CHANGED")) return "登录账号或权限已变化，请重新打开任务中心核对。";
   if (raw.includes("OUTBOUND_NOT_CONFIGURED")) return "外发审核服务尚未开通，请联系管理员。";
   if (raw.includes("OUTBOUND_ALREADY_CLAIMED")) return "此批次已被其他审核员领取。";
   if (raw.includes("OUTBOUND_VERSION_CONFLICT")) return "批次状态已更新，请刷新后重试。";
@@ -84,6 +92,10 @@ export function outboundError(reason: unknown) {
   if (raw.includes("OUTBOUND_SOURCE_CHANGED")) return "原始视频来源发生变化，未用于审核。";
   if (raw.includes("OUTBOUND_REASON_INVALID")) return "请选择有效原因，或先保存自定义原因。";
   if (raw.includes("OUTBOUND_REASON_LIMIT")) return "常用原因数量已满，请联系管理员整理。";
-  if (raw.includes("OUTBOUND_USER_CENTER_UNAVAILABLE")) return "无法连接用户中心，请检查网络后重试。";
+  if (raw.includes("OUTBOUND_USER_CENTER_UNAVAILABLE")) return "用户中心请求未完成，请核对网络和服务状态后重试。";
   return `外发审核暂不可用：${raw}`;
+}
+
+export function outboundResultUncertain(reason: unknown) {
+  return /OUTBOUND_(?:USER_CENTER_(?:TIMEOUT|UNAVAILABLE)|RESPONSE_(?:INTERRUPTED|INVALID|TOO_LARGE)|NETWORK_UNAVAILABLE|HTTP_50[0234]|REQUEST_FAILED(?::\s*OUTBOUND_HTTP_50[0234])?$)/.test(String(reason));
 }

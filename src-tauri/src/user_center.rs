@@ -1353,36 +1353,125 @@ pub(crate) async fn outbound_review_request(
     let config = load_config(data_root)?;
     let client = outbound_client_for(&config)?;
     let url = endpoint(&config, "api/v1/outbound-review/proxy")?;
-    let response = client
-        .post(url)
-        .bearer_auth(&session.1)
-        .json(&input)
-        .send()
-        .await
-        .map_err(|_| AppError::Message("OUTBOUND_USER_CENTER_UNAVAILABLE".into()))?;
-    let status = response.status();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|_| AppError::Message("OUTBOUND_RESPONSE_INVALID".into()))?;
-    if bytes.len() > 2 * 1024 * 1024 {
-        return Err(AppError::Message("OUTBOUND_RESPONSE_TOO_LARGE".into()));
-    }
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| AppError::Message("OUTBOUND_RESPONSE_INVALID".into()))?;
+    let result = outbound_response(&client, url, &session.1, &input, Duration::from_secs(40)).await;
     if state.managed_session()? != session {
         return Err(AppError::Message("OUTBOUND_ACCOUNT_CHANGED".into()));
     }
+    result
+}
+
+fn outbound_transport_error(error: reqwest::Error) -> AppError {
+    // Keep credentials and request URLs out of diagnostics returned to the UI.
+    let mut detail = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        detail.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    let detail = detail.to_ascii_lowercase();
+    let code = if error.is_timeout() {
+        "OUTBOUND_USER_CENTER_TIMEOUT"
+    } else if [
+        "certificate",
+        "cert verify",
+        "unknownissuer",
+        "unknown issuer",
+        "certnotvalid",
+    ]
+    .iter()
+    .any(|part| detail.contains(part))
+    {
+        "OUTBOUND_USER_CENTER_TLS"
+    } else if error.is_connect() {
+        "OUTBOUND_USER_CENTER_UNREACHABLE"
+    } else {
+        "OUTBOUND_RESPONSE_INTERRUPTED"
+    };
+    AppError::Message(code.into())
+}
+
+async fn outbound_response(
+    client: &Client,
+    url: Url,
+    token: &str,
+    input: &serde_json::Value,
+    timeout: Duration,
+) -> AppResult<serde_json::Value> {
+    // The relay may wait 30 seconds for the delivery service. Its caller must
+    // also allow authentication and response transfer; ordinary identity APIs
+    // retain their 12-second deadline. Never replay a mutation after an error.
+    let readonly = matches!(input["action"].as_str(), Some("list" | "video-url"));
+    for attempt in 0..2 {
+        let result = outbound_response_once(client, url.clone(), token, input, timeout).await;
+        let retry = result.as_ref().err().is_some_and(|error| {
+            let code = error.to_string();
+            code == "OUTBOUND_USER_CENTER_UNREACHABLE" || code == "OUTBOUND_RESPONSE_INTERRUPTED"
+        });
+        if !readonly || attempt != 0 || !retry {
+            return result;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    unreachable!()
+}
+
+async fn outbound_response_once(
+    client: &Client,
+    url: Url,
+    token: &str,
+    input: &serde_json::Value,
+    timeout: Duration,
+) -> AppResult<serde_json::Value> {
+    let response = client
+        .post(url)
+        .bearer_auth(token)
+        .json(input)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(outbound_transport_error)?;
+    let status = response.status();
+    const LIMIT: usize = 2 * 1024 * 1024;
+    if response
+        .content_length()
+        .is_some_and(|size| size > LIMIT as u64)
+    {
+        return Err(AppError::Message("OUTBOUND_RESPONSE_TOO_LARGE".into()));
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(outbound_transport_error)?;
+        if bytes.len() + chunk.len() > LIMIT {
+            return Err(AppError::Message("OUTBOUND_RESPONSE_TOO_LARGE".into()));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let value = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
     if !status.is_success() {
-        let code = value["error"]
-            .as_str()
-            .or_else(|| value["error"]["code"].as_str())
-            .unwrap_or("OUTBOUND_REQUEST_FAILED");
+        let code = value
+            .as_ref()
+            .and_then(|value| {
+                value["error"]
+                    .as_str()
+                    .or_else(|| value["error"]["code"].as_str())
+            })
+            .filter(|code| {
+                !code.is_empty()
+                    && code.len() <= 100
+                    && code.bytes().all(|byte| {
+                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                    })
+            });
+        let code = code
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("OUTBOUND_HTTP_{}", status.as_u16()));
         return Err(AppError::Message(format!(
             "OUTBOUND_REQUEST_FAILED: {code}"
         )));
     }
-    Ok(value)
+    value.ok_or_else(|| AppError::Message("OUTBOUND_RESPONSE_INVALID".into()))
 }
 
 fn outbound_client_for(config: &UserCenterClientConfig) -> AppResult<Client> {
@@ -1401,6 +1490,136 @@ fn outbound_client_for(config: &UserCenterClientConfig) -> AppResult<Client> {
     let client = client_for(config)?;
     *pool = Some((config.clone(), client.clone()));
     Ok(client)
+}
+
+#[cfg(test)]
+mod outbound_transport_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn delayed_reply(
+        delay: Duration,
+        body: &'static [u8],
+        declared_size: Option<usize>,
+    ) -> (Url, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!("http://{}/proxy", listener.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() <= 8192);
+            }
+            let headers = String::from_utf8(request).unwrap();
+            let size = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .map(str::to_string)
+                })
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            let mut request_body = vec![0; size];
+            stream.read_exact(&mut request_body).unwrap();
+            std::thread::sleep(delay);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                declared_size.unwrap_or(body.len())
+            );
+            if stream.write_all(header.as_bytes()).is_ok() {
+                let _ = stream.write_all(body);
+            }
+        });
+        (url, worker)
+    }
+
+    #[test]
+    fn outbound_accepts_response_after_ordinary_identity_deadline() {
+        let (url, worker) = delayed_reply(Duration::from_millis(12200), br#"{"batches":[]}"#, None);
+        // Reproduce the production client default; the outbound request must
+        // explicitly override it, rather than merely change an error message.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(12))
+            .build()
+            .unwrap();
+        let result = tauri::async_runtime::block_on(outbound_response(
+            &client,
+            url,
+            "isolated-token",
+            &serde_json::json!({"action":"list"}),
+            Duration::from_secs(40),
+        ))
+        .unwrap();
+        assert_eq!(result["batches"], serde_json::json!([]));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn ambiguous_claim_timeout_does_not_replay_the_mutation() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let (url, worker) = delayed_reply(Duration::from_millis(250), br#"{"batch":{}}"#, None);
+        let result = tauri::async_runtime::block_on(outbound_response(
+            &Client::new(),
+            url,
+            "isolated-token",
+            &serde_json::json!({"action":"claim"}),
+            Duration::from_millis(60),
+        ));
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "OUTBOUND_USER_CENTER_TIMEOUT"
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn upstream_plain_http_failure_keeps_status_and_large_body_is_rejected() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        use crate::d1_service_test::{serve, Reply};
+        for status in [500, 502] {
+            let expected = format!("OUTBOUND_REQUEST_FAILED: OUTBOUND_HTTP_{status}");
+            let (base, worker) = serve(vec![Reply {
+                method: "POST",
+                path: "/proxy".into(),
+                status,
+                headers: vec![],
+                body: b"gateway unavailable".to_vec(),
+            }]);
+            let result = tauri::async_runtime::block_on(outbound_response(
+                &Client::new(),
+                Url::parse(&format!("{base}/proxy")).unwrap(),
+                "isolated-token",
+                &serde_json::json!({"action":"claim"}),
+                Duration::from_secs(2),
+            ));
+            assert_eq!(result.unwrap_err().to_string(), expected);
+            assert_eq!(worker.join().unwrap().len(), 1);
+        }
+        let (url, worker) = delayed_reply(Duration::ZERO, b"{}", Some(2097153));
+        let result = tauri::async_runtime::block_on(outbound_response(
+            &Client::new(),
+            url,
+            "isolated-token",
+            &serde_json::json!({"action":"claim"}),
+            Duration::from_secs(2),
+        ));
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "OUTBOUND_RESPONSE_TOO_LARGE"
+        );
+        worker.join().unwrap();
+    }
 }
 
 fn read_client_config(path: &Path) -> AppResult<UserCenterClientConfig> {

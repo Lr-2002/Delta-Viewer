@@ -280,7 +280,7 @@ pub(crate) async fn resolve_target(
             }
             selected.ok_or("未找到设备热点连接，请先连接 Delta-D1 热点并等待获得地址。")?
         }
-        ConnectionMode::TypeC => return Err("请选择设备热点或局域网 IP。".into()),
+        ConnectionMode::TypeC => d1_device::usb_target(request, cancelled).await?,
     };
     if cancelled.load(Ordering::Acquire) {
         return Err("页面读取已取消。".into());
@@ -305,6 +305,12 @@ pub(crate) async fn verify_ap_target(
     local: Option<Ipv4Addr>,
     address: Ipv4Addr,
 ) -> Result<(), String> {
+    if mode == ConnectionMode::TypeC {
+        let current = d1_device::usb_target(request, &AtomicBool::new(false)).await?;
+        if current != (address, local) {
+            return Err("Type-C 连接已变化，请重新连接。".into());
+        }
+    }
     if let Some(local) = local.filter(|_| mode == ConnectionMode::Ap) {
         let links = d1_device::inventory_for(true)
             .await

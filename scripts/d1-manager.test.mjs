@@ -37,6 +37,11 @@ async function navigate(page,name){
   await parent.getByRole("button",{name:"设备管理区",exact:true}).click();
   await page.getByRole("navigation",{name:"设备功能"}).getByRole("button",{name:name==="设备管理"?"设备信息":name,exact:true}).click();
 }
+async function openManagement(page){
+  await page.locator('.manager-connection-success').waitFor();
+  assert.equal(await page.locator('iframe[title="D1 设备页面"]').count(),0,'connection succeeds on home without automatic navigation');
+  await page.getByRole('navigation',{name:'已连接设备操作'}).getByRole('button',{name:'设备管理',exact:true}).click();
+}
 async function noOverflow(page){assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);}
 
 test("Account entry retains registration, login and offline access at all viewports",async()=>{
@@ -456,7 +461,7 @@ test('HTTP page failure does not block the selected IP from SSH upgrade in any m
         await page.getByLabel('设备 IP',{exact:true}).fill('10.1.30.114');await page.getByRole('button',{name:'连接设备',exact:true}).click();
       }else if(mode==='ap'){
         await page.getByRole('button',{name:'设备热点（AP）',exact:true}).click();
-        await page.getByRole('button',{name:/Delta-D1-test001/}).click();await page.getByRole('button',{name:'连接热点并打开',exact:true}).click();
+        await page.getByRole('button',{name:/Delta-D1-test001/}).click();await page.getByRole('button',{name:'连接热点',exact:true}).click();
       }else await page.evaluate(()=>window.deviceAvailabilityFailure={code:'D1_HEALTH_PAGE_ONLY',message:'HTTP 不可用'});
       if(mode!=='type_c')await page.getByText('无法访问设备页面。',{exact:true}).waitFor();
       await navigate(page,'设备信息');
@@ -480,7 +485,7 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       assert.equal(await guide.locator("summary").count(),0,"guide must remain expanded");
       await page.getByLabel("设备 IP",{exact:true}).fill("http://10.1.30.114");await page.getByRole("button",{name:"连接设备",exact:true}).click();
       await page.getByRole("alert").filter({hasText:"请输入设备的 IPv4 地址"}).waitFor();assert.equal(await page.evaluate(()=>window.nativePageCalls.length),0);
-      await page.getByLabel("设备 IP",{exact:true}).fill("10.1.30.114");await page.getByRole("button",{name:"连接设备",exact:true}).click();
+      await page.getByLabel("设备 IP",{exact:true}).fill("10.1.30.114");await page.getByRole("button",{name:"连接设备",exact:true}).click();await openManagement(page);
       const frame=page.frameLocator('iframe[title="D1 设备页面"]');await frame.getByRole("heading",{name:"DOHC 设备状态"}).waitFor();
       await frame.getByText("native-fixture-device",{exact:true}).waitFor();await frame.getByText("STREAMING",{exact:true}).waitFor();assert.equal(await page.locator('iframe[title="D1 设备页面"]').getAttribute("sandbox"),"allow-scripts allow-forms allow-modals");
       assert.equal(await frame.locator("img,iframe,svg,script[src]").count(),0);
@@ -498,7 +503,7 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       await page.getByRole("button",{name:"刷新页面",exact:true}).click();assert.equal(await page.evaluate(()=>window.nativePageCalls.length),2);
       await page.getByRole("button",{name:"返回设备管理",exact:true}).click();
       await navigate(page,"首页");
-      await page.getByRole("button",{name:"连接设备",exact:true}).click();await frame.getByRole("heading",{name:"DOHC 设备状态"}).waitFor();
+      await page.getByRole("button",{name:"连接设备",exact:true}).click();await openManagement(page);await frame.getByRole("heading",{name:"DOHC 设备状态"}).waitFor();
       await page.getByRole("button",{name:"返回设备管理",exact:true}).click();
       await navigate(page,"首页");
       await page.getByRole("button",{name:"设备热点（AP）",exact:true}).click();
@@ -515,11 +520,11 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       assert.ok((await manualPassword.getAttribute("class")).includes("button-secondary"));
       assert.equal(await manualPassword.evaluate(e=>getComputedStyle(e).textDecorationLine),"none");
       await manualPassword.click();await page.getByLabel("热点密码",{exact:true}).fill("fixture-password");
-      await page.evaluate(()=>window.pageFixtureMode="wrong-password");await page.getByRole("button",{name:"连接热点并打开",exact:true}).click();
+      await page.evaluate(()=>window.pageFixtureMode="wrong-password");await page.getByRole("button",{name:"连接热点",exact:true}).click();
       await page.getByRole("alert").filter({hasText:"热点连接未完成"}).waitFor();assert.equal(await page.getByLabel("热点密码",{exact:true}).inputValue(),"");
       await page.evaluate(()=>window.pageFixtureMode="success");await page.getByLabel("热点密码",{exact:true}).fill("fixture-password");
       await noOverflow(page);await page.screenshot({path:resolve(reportRoot,`native-ap-wifi-${viewport.width}.png`),fullPage:true});
-      await page.getByRole("button",{name:"连接热点并打开",exact:true}).click();await frame.getByRole("heading",{name:"DOHC 设备状态"}).waitFor();
+      await page.getByRole("button",{name:"连接热点",exact:true}).click();await openManagement(page);await frame.getByRole("heading",{name:"DOHC 设备状态"}).waitFor();
       assert.equal(await page.evaluate(()=>window.nativePageCalls.at(-1).connectionMode),"ap");
       assert.equal(await page.evaluate(()=>window.nativePageCalls.at(-1).apAddress),undefined);
       await page.getByText("设备页面 · 192.168.4.1",{exact:true}).waitFor();
@@ -536,7 +541,7 @@ test("AP configuration keeps Wi-Fi interactive and opens the native OTA panel",a
     await navigate(page,"首页");await page.getByRole("button",{name:"设备热点（AP）",exact:true}).click();
     await page.getByRole("button",{name:"手动输入密码",exact:true}).click();await page.getByLabel("热点密码",{exact:true}).fill("fixture-hotspot-password");
     await page.evaluate(()=>window.pageFixtureMode="provisioning");
-    await page.getByRole("button",{name:"连接热点并打开",exact:true}).click();
+    await page.getByRole("button",{name:"连接热点",exact:true}).click();await openManagement(page);
     const frame=page.frameLocator('iframe[title="D1 设备页面"]');await frame.getByRole("heading",{name:"设备维护"}).waitFor();
     assert.equal(await frame.getByRole("button",{name:"打开应用升级"}).isEnabled(),true);
     assert.equal(await frame.getByRole("button",{name:"上传并升级"}).count(),0);
@@ -597,7 +602,7 @@ test('actual device HTML loads all startup APIs, navigates configuration repeate
   const {page,context,errors,external}=await session(viewport,false,actualNativeMarkupFixture);
   try{
     await navigate(page,'首页');await page.getByRole('button',{name:'局域网 IP',exact:true}).click();
-    await page.getByLabel('设备 IP',{exact:true}).fill('10.1.50.81');await page.getByRole('button',{name:'连接设备',exact:true}).click();
+    await page.getByLabel('设备 IP',{exact:true}).fill('10.1.50.81');await page.getByRole('button',{name:'连接设备',exact:true}).click();await openManagement(page);
     const frame=page.frameLocator('iframe[title="D1 设备页面"]');
     await frame.locator('#cameraConfigRows input').first().waitFor();
     await frame.locator('#deviceName').getByRole('option',{name:'测试人员'}).waitFor({state:'attached'});
@@ -648,8 +653,8 @@ test('AP and LAN both expose the same Chinese device information and complete di
     try{
       await navigate(page,'首页');await page.getByRole('button',{name:mode==='ap'?'设备热点（AP）':'局域网 IP',exact:true}).click();
       if(mode==='lan'){
-        await page.getByLabel('设备 IP',{exact:true}).fill('10.1.30.114');await page.getByRole('button',{name:'连接设备',exact:true}).click();
-      }else await page.getByRole('button',{name:'连接热点并打开',exact:true}).click();
+        await page.getByLabel('设备 IP',{exact:true}).fill('10.1.30.114');await page.getByRole('button',{name:'连接设备',exact:true}).click();await openManagement(page);
+      }else {await page.getByRole('button',{name:'连接热点',exact:true}).click();await openManagement(page);}
       await page.frameLocator('iframe[title="D1 设备页面"]').locator('#cameraConfigRows input').first().waitFor();
       await navigate(page,'设备信息');
       const runtime=page.getByRole('region',{name:'设备实时运行状态'});await runtime.waitFor();
@@ -671,7 +676,7 @@ test('D1 hotspot uses factory default on explicit user connection and retains ma
     await navigate(page,'首页');await page.getByRole('button',{name:'设备热点（AP）',exact:true}).click();
     await page.getByRole('button',{name:/Delta-D1-test001/}).waitFor();
     assert.equal(await page.getByLabel('热点密码',{exact:true}).count(),0);
-    await page.getByRole('button',{name:'连接热点并打开',exact:true}).click();
+    await page.getByRole('button',{name:'连接热点',exact:true}).click();await openManagement(page);
     await page.frameLocator('iframe[title="D1 设备页面"]').getByRole('heading',{name:'DOHC 设备状态'}).waitFor();
     assert.equal(await page.evaluate(()=>window.wifiConnectCalls[0].passwordLength),0,'empty override delegates to the Rust factory default');
     await navigate(page,'设备信息');await page.getByText('实际连接方式',{exact:true}).waitFor();await page.locator('.manager-actual-connection').getByText('设备热点（AP）',{exact:true}).waitFor();
@@ -714,7 +719,7 @@ test('Tabbed device status and upgrade have one scroll area and retain configura
     try{
       await page.getByRole('button',{name:'局域网 IP',exact:true}).click();
       await page.getByLabel('设备 IP',{exact:true}).fill('192.168.1.100');
-      await page.getByRole('button',{name:'连接设备',exact:true}).click();
+      await page.getByRole('button',{name:'连接设备',exact:true}).click();await openManagement(page);
       const frame=page.frameLocator('iframe[title="D1 设备页面"]');await frame.getByRole('heading',{name:'DOHC 设备状态'}).waitFor();
       await frame.getByPlaceholder('新增用户名字').fill('保留未提交内容');
       const layout=await frame.locator('main').evaluate(main=>({width:main.clientWidth,scrollable:main.scrollHeight>main.clientHeight,firstId:main.querySelector('#viewHome')?.firstElementChild?.className,bodyScroll:document.body.scrollHeight>document.body.clientHeight}));
@@ -732,8 +737,53 @@ test('Tabbed device status and upgrade have one scroll area and retain configura
       assert.equal(await frame.getByPlaceholder('新增用户名字').inputValue(),'保留未提交内容');
       await frame.getByText('设备信息',{exact:true}).click();await frame.getByRole('heading',{name:'设备与运行'}).waitFor();
       assert.equal(await frame.getByRole('heading',{name:'用户名字'}).isVisible(),false);
-      assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0,'layout navigation never saves configuration or starts installation');
+      assert.equal(await page.evaluate(()=>window.pageApiCalls.filter(api=>api.method!=='GET').length),0,'layout navigation never saves configuration or starts installation');
       assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
+    }finally{await context.close();}
+  }
+});
+
+
+test('Home verifies connections before enabling explicit management, information and diagnostics navigation',async()=>{
+  for(const mode of ['lan','ap','type_c','ap-config']){
+    const {page,context,errors,external}=await session({width:960,height:680},false,nativePageFixture);
+    try{
+      const actions=page.getByRole('navigation',{name:'已连接设备操作'});
+      assert.deepEqual(await actions.getByRole('button').allTextContents(),['设备管理','设备信息','检测排障']);
+      if(mode!=='type_c'){
+        await page.getByRole('button',{name:mode==='lan'?'局域网 IP':'设备热点（AP）',exact:true}).click();
+        for(const button of await actions.getByRole('button').all())assert.equal(await button.isDisabled(),true);
+        if(mode==='lan'){
+          await page.getByLabel('设备 IP',{exact:true}).fill('10.1.30.114');
+          await page.getByRole('button',{name:'连接设备',exact:true}).click();
+        }else{
+          if(mode==='ap-config')await page.evaluate(()=>window.pageFixtureMode='provisioning');
+          await page.getByRole('button',{name:'连接热点',exact:true}).click();
+        }
+        await page.locator('.manager-connection-success').waitFor();
+      }
+      await page.waitForFunction(()=>!document.querySelector('.manager-connected-actions button')?.disabled);
+      assert.equal(await page.locator('iframe[title="D1 设备页面"]').count(),0);
+      assert.equal(await page.getByRole('heading',{name:'D1 设备工作台',exact:true}).isVisible(),true);
+      if(mode==='ap-config'){
+        assert.equal(await actions.getByRole('button',{name:'设备信息',exact:true}).isDisabled(),true);
+        assert.match(await actions.getByRole('button',{name:'检测排障',exact:true}).getAttribute('title'),/未提供检测接口/);
+      }
+      await actions.getByRole('button',{name:'设备管理',exact:true}).click();
+      await page.locator('iframe[title="D1 设备页面"]').waitFor();
+      assert.equal(await page.evaluate(()=>window.nativePageCalls.at(-1).connectionMode),mode==='ap-config'?'ap':mode);
+      await navigate(page,'首页');
+      if(mode!=='ap-config'){
+        await actions.getByRole('button',{name:'设备信息',exact:true}).click();
+        await page.getByRole('heading',{name:'设备信息',exact:true}).waitFor();
+        await navigate(page,'首页');await actions.getByRole('button',{name:'检测排障',exact:true}).click();
+        await page.getByRole('heading',{name:'检测排障',exact:true}).waitFor();
+        await navigate(page,'首页');
+      }
+      await page.getByRole('button',{name:mode==='lan'?'设备热点（AP）':'局域网 IP',exact:true}).click();
+      for(const button of await actions.getByRole('button').all())assert.equal(await button.isDisabled(),true,'switching mode clears confirmed connection');
+      assert.equal(await page.locator('.manager-connection-success').count(),0);
+      await noOverflow(page);assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
     }finally{await context.close();}
   }
 });

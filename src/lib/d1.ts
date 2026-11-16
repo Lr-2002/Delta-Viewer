@@ -5,7 +5,7 @@ export const deviceSections: {id: ManagerSection; label: string}[] = [
 export type DeviceConnectionMode = "type_c" | "ap" | "lan";
 export interface DevicePage {address:string;html:string;observedAtMs:number;status?:Record<string,unknown>|null;statusError?:string|null}
 export interface DeviceUpgradeRequest {interfaceId:string;apAddress?:string;connectionMode:DeviceConnectionMode}
-export interface DevicePageRequest extends DeviceUpgradeRequest {connectionMode:"ap"|"lan"}
+export type DevicePageRequest = DeviceUpgradeRequest;
 export interface DevicePageApiRequest {path:string;method:"GET"|"PUT"|"POST";body?:string;ifMatch?:string}
 export interface DevicePageApiResponse {status:number;contentType:string;body:string}
 export interface WifiNetwork {interfaceId:string;ssid:string;signal:number;connected:boolean;recommended:boolean;connectable:boolean}

@@ -65,10 +65,17 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
         if (command !== 'outbound_review_call') throw Error('Unexpected command ' + command);
         const input = args.input; window.fixtureCalls.push(input);
         if (input.action === 'list') {
+          window.fixtureListActive=(window.fixtureListActive||0)+1;
+          window.fixtureListPeak=Math.max(window.fixtureListPeak||0,window.fixtureListActive);
+          try {
+          if(window.fixtureHoldList)await new Promise(resolve=>window.fixtureReleaseList=resolve);
+          if(window.fixtureListFails)throw Error('OUTBOUND_USER_CENTER_TIMEOUT');
           const batches=[structuredClone(window.fixtureBatch), ...(window.fixtureExtraBatches ? [1,2].map(i=>({...structuredClone(window.fixtureBatch),id:'other-'+i,name:'其他批次 '+i})) : [])]
             .filter(batch=>!input.datasetId||input.datasetId===batch.id);
+          if(window.fixtureNewBatch)batches.push({...structuredClone(window.fixtureBatch),id:'new-upload',name:'新完成的星炬上传'});
           if(input.summary)for(const batch of batches)batch.recordings=[];
           return {batches,reasonOptions:[...window.fixtureReasonOptions]};
+          }finally{window.fixtureListActive--;}
         }
         if (input.action === 'claim' && window.fixtureHoldClaim) await new Promise(resolve=>window.fixtureReleaseClaim=resolve);
         if (input.action === 'video-url') {
@@ -93,6 +100,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
           window.fixtureBatch.invalid = reviewed.filter(row => row.decision.value === 'invalid').length;
           window.fixtureBatch.rate = reviewed.length === window.fixtureBatch.total ? window.fixtureBatch.valid / window.fixtureBatch.total : null;
         }
+        if(window.fixtureUncertainAction===input.action){window.fixtureUncertainAction=null;throw Error('OUTBOUND_USER_CENTER_TIMEOUT');}
         const result=structuredClone(window.fixtureBatch);
         if(input.compact)for(const recording of result.recordings)delete recording.videos;
         return { batch: result };
@@ -102,6 +110,19 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__outbound`);
     assert.equal(await page.locator('video').count(),0,'task center never embeds review players');
     assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).count(),0);
+    await page.getByRole('button',{name:'领取并打开'}).first().waitFor();
+    await page.evaluate(()=>{window.fixtureHoldList=true;window.dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('focus'));});
+    await page.waitForFunction(()=>typeof window.fixtureReleaseList==='function');
+    await page.waitForTimeout(5200);
+    assert.equal(await page.evaluate(()=>window.fixtureListPeak),1,'poll and focus requests never overlap');
+    await page.evaluate(()=>{window.fixtureNewBatch=true;window.fixtureHoldList=false;window.fixtureReleaseList();});
+    await page.getByText('新完成的星炬上传',{exact:true}).waitFor();
+    await page.evaluate(()=>{window.fixtureListFails=true;window.dispatchEvent(new Event('focus'));});
+    await page.getByRole('alert').filter({hasText:'响应超时'}).waitFor();
+    assert.equal(await page.getByText('新完成的星炬上传',{exact:true}).isVisible(),true,'failed background refresh preserves the existing queue');
+    await page.evaluate(()=>{window.fixtureListFails=false;window.fixtureNewBatch=false;window.dispatchEvent(new Event('focus'));});
+    await page.getByText('新完成的星炬上传',{exact:true}).waitFor({state:'detached'});
+    const initialLists=await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='list').length);
     await page.getByRole('button', { name: '领取并打开' }).first().click();
     await page.waitForFunction(()=>typeof window.fixtureReleaseClaim==='function');
     assert.equal(await page.locator('.outbound-task-actions .spin').count(),1,'only the selected batch shows progress');
@@ -119,7 +140,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.waitForFunction(() => [...document.querySelectorAll('video')].length === 5
       && [...document.querySelectorAll('video')].every(video => video.readyState >= 3));
     await page.waitForFunction(()=>!document.querySelector('.outbound-valid-button')?.disabled);
-    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='list').length),1,'workspace does not refetch every batch');
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='list').length),initialLists,'workspace does not refetch every batch');
     await page.waitForTimeout(220);
     const followerClock = await page.evaluate(()=>{
       const videos=[...document.querySelectorAll('video')];
@@ -154,6 +175,23 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await slider.click({position:{x:sliderBox.width*.55,y:sliderBox.height/2}});
     await page.waitForFunction(()=>{const videos=[...document.querySelectorAll('video')];return videos.every(v=>!v.paused&&!v.seeking&&v.currentTime>4)&&Math.max(...videos.map(v=>v.currentTime))-Math.min(...videos.map(v=>v.currentTime))<.15;});
     await page.getByRole('button',{name:'暂停',exact:true}).click();
+    const healthyBefore=await page.locator('video').evaluateAll(videos=>videos.map(v=>({src:v.currentSrc,time:v.currentTime})));
+    await page.evaluate(()=>{const v=document.querySelectorAll('video')[4];Object.defineProperty(v,'error',{configurable:true,value:{code:2}});v.dispatchEvent(new Event('error'));});
+    await page.getByText('读取失败',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'有效数据'}).isDisabled(),true);
+    assert.equal(await page.locator('.outbound-video-item').nth(4).getByText('已就绪',{exact:true}).count(),0,'failed camera cannot remain ready');
+    await page.evaluate(()=>{const v=document.querySelectorAll('video')[4];delete v.error;v.dispatchEvent(new Event('canplay'));});
+    await page.getByText('读取失败',{exact:true}).waitFor({state:'detached'});
+    await page.waitForFunction(()=>!document.querySelector('.outbound-valid-button').disabled);
+    await page.evaluate(()=>{const v=document.querySelectorAll('video')[4];Object.defineProperty(v,'error',{configurable:true,value:{code:2}});v.dispatchEvent(new Event('error'));});
+    await page.getByRole('button',{name:'重试失败视频',exact:true}).waitFor();
+    await page.evaluate(()=>{delete document.querySelectorAll('video')[4].error;});
+    await page.getByRole('button',{name:'重试失败视频',exact:true}).click();
+    await page.waitForFunction(()=>!document.querySelector('.outbound-valid-button').disabled);
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='video-url').length),6,'only the failed camera requests a new ticket');
+    const afterRetry=await page.locator('video').evaluateAll(videos=>videos.map(v=>({src:v.currentSrc,time:v.currentTime})));
+    assert.deepEqual(afterRetry.slice(0,4),healthyBefore.slice(0,4),'healthy camera sources and positions survive recovery');
+    assert.ok(Math.abs(afterRetry[4].time-healthyBefore[0].time)<.2,'retried camera resumes at the master position');
     await page.evaluate(() => { window.fixtureMediaAllowed = false; });
     await page.getByRole('button', { name: '有效数据' }).click();
     await page.waitForFunction(() => document.querySelectorAll('video').length === 7);
@@ -171,7 +209,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByRole('button', { name: '画面遮挡' }).click();
     await page.getByRole('button', { name: '确认无效' }).click();
     await page.getByText('合格率 50%', { exact: false }).waitFor();
-    assert.equal(await page.evaluate(() => window.fixtureCalls.filter(input => input.action === 'video-url').length), 12);
+    assert.equal(await page.evaluate(() => window.fixtureCalls.filter(input => input.action === 'video-url').length), 13);
     assert.equal(await page.evaluate(() => window.fixtureCalls.filter(input => input.action === 'decide').length), 2);
     assert.deepEqual(await page.evaluate(() => window.fixtureBatch.recordings.map(row => row.decision.value)), ['valid', 'invalid']);
     assert.equal(await page.evaluate(() => window.fixtureBatch.recordings[1].decision.reason), '画面遮挡');
@@ -244,6 +282,35 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
         if(count===7&&process.env.OUTBOUND_SCREENSHOT_DIR)await page.screenshot({path:path.join(process.env.OUTBOUND_SCREENSHOT_DIR,`seven-cameras-${width}.png`)});
       }
     }
+    // The server may commit a claim and lose its response. Read authority,
+    // never send the claim twice; preserve an explicit unknown state if reads fail.
+    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__outbound`);
+    await page.getByRole('button',{name:'领取并打开'}).first().waitFor();
+    await page.evaluate(()=>{window.fixtureHoldClaim=false;window.fixtureUncertainAction='claim';window.fixtureMediaAllowed=true;window.fixtureSlowSegment=null;});
+    await page.getByRole('button',{name:'领取并打开'}).first().click();
+    await page.getByRole('region',{name:'外发审核工作区',exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='claim').length),1,'accepted but timed-out claim is reconciled without replay');
+    assert.ok(await page.evaluate(()=>window.fixtureCalls.some(x=>x.action==='list'&&x.datasetId==='star-batch')));
+    await page.waitForFunction(()=>!document.querySelector('.outbound-valid-button')?.disabled);
+    await page.evaluate(()=>{window.fixtureUncertainAction='decide';window.fixtureListFails=true;});
+    await page.getByRole('button',{name:'有效数据',exact:true}).click();
+    await page.getByRole('alert').filter({hasText:'提交结果尚未确认'}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'释放批次',exact:true}).isDisabled(),true,'unknown decision result blocks further mutations');
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='decide').length),1);
+    await page.evaluate(()=>window.fixtureListFails=false);
+    await page.getByRole('button',{name:'刷新外发批次',exact:true}).click();
+    await page.getByText(/已由 reviewer1 .* 判为有效/).waitFor();
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='decide').length),1,'read reconciliation never resubmits a conclusion');
+    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__outbound`);
+    await page.getByRole('button',{name:'领取并打开'}).first().waitFor();
+    await page.evaluate(()=>{window.fixtureHoldClaim=false;window.fixtureUncertainAction='claim';window.fixtureListFails=true;window.fixtureMediaAllowed=true;window.fixtureSlowSegment=null;});
+    await page.getByRole('button',{name:'领取并打开'}).first().click();
+    await page.getByRole('button',{name:'核对结果',exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='claim').length),1);
+    await page.evaluate(()=>window.fixtureListFails=false);
+    await page.getByRole('button',{name:'核对结果',exact:true}).click();
+    await page.getByRole('region',{name:'外发审核工作区',exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='claim').length),1);
     // Exercise the actual App -> TaskCenter -> data workspace wiring as well
     // as the shared reviewer component. All accounts/media are isolated fixtures.
     await page.route('**/src/lib/outbound-review.ts',async route=>{
@@ -281,6 +348,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
       if(process.env.OUTBOUND_SCREENSHOT_DIR)await page.screenshot({path:path.join(process.env.OUTBOUND_SCREENSHOT_DIR,`actual-app-${viewport.width}.png`)});
     }
     await workspace.getByRole('button',{name:'返回任务中心',exact:true}).click();await tasks.waitFor();
+    await tasks.getByRole('button',{name:'打开审核',exact:true}).waitFor();
     assert.equal(await tasks.getByRole('button',{name:'打开审核',exact:true}).count(),1);
     assert.equal(await workspace.locator('video').evaluateAll(videos=>videos.every(video=>video.paused)),true);
     await tasks.getByRole('button',{name:'打开审核',exact:true}).click();await workspace.waitFor();

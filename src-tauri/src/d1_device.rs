@@ -347,6 +347,15 @@ pub(crate) async fn ssh_target(
         let (_, peer, local) = crate::d1_page::resolve_target(request, cancelled).await?;
         return Ok((peer, local));
     }
+    usb_target(request, cancelled).await
+}
+pub(crate) async fn usb_target(
+    request: &DeviceRequest,
+    cancelled: &AtomicBool,
+) -> Result<(Ipv4Addr, Option<Ipv4Addr>), String> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err("设备查询已取消。".into());
+    }
     let links = inventory_for(false).await.map_err(|e| e.message)?;
     let link = links
         .candidates

@@ -1,7 +1,7 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {AlertCircle, ArrowRight, Cable, CheckCircle2, CircleDashed, ClipboardList, Download, FileArchive, KeyRound, LoaderCircle, MinusCircle, RefreshCw, ShieldCheck, Wifi, X, XCircle} from "lucide-react";
 import {cancelTask, chooseDirectory, confirmDevicePageOperation, exportDeviceBundle, getDeviceAvailability, isTauriRuntime, getWifiInventory, connectDeviceWifi, readDevicePage, requestDevicePageApi, requestDevicePageBatch, previewDeviceBundle, revealOutput, runDeviceDiagnostics, renewUsbDeviceAddress} from "../lib/backend";
-import {deviceResultLabels, deviceTaskLabels, type DevicePage, type DevicePageApiRequest, type DevicePageApiResponse, type WifiSnapshot, type DeviceConnectionMode, type DeviceCheck, type DeviceResultStatus, type DeviceAvailability, type DeviceBundlePreview, type DeviceRun, type HealthSnapshot, type ManagerSection} from "../lib/d1";
+import {deviceResultLabels, deviceTaskLabels, type DevicePage, type DevicePageRequest, type DevicePageApiRequest, type DevicePageApiResponse, type WifiSnapshot, type DeviceConnectionMode, type DeviceCheck, type DeviceResultStatus, type DeviceAvailability, type DeviceBundlePreview, type DeviceRun, type HealthSnapshot, type ManagerSection} from "../lib/d1";
 import {linkSummary} from "./DeviceLinkPanel";
 import {cameraLabel, checkLabel, checkObservation, deviceStateLabel, deviceText, resultOrder} from "../lib/d1-presentation";
 import "./manager-workspace.css";
@@ -11,7 +11,7 @@ import {DeviceOtaPanel} from "./DeviceOtaPanel";
 import {DiagnosticLogPanel} from "./DiagnosticLogPanel";
 
 type Operation={id:number;finish:()=>void};
-interface Props {section:ManagerSection;busy:boolean;beginOperation:()=>Operation|null;onNavigate:(section:ManagerSection)=>void}
+interface Props {section:ManagerSection;navigationRevision?:number;busy:boolean;beginOperation:()=>Operation|null;onNavigate:(section:ManagerSection)=>void}
 const time=(ms:number|null)=>ms===null?"未观测":new Date(ms).toLocaleString("zh-CN",{hour12:false});
 const errorText=(error:unknown)=>error instanceof Error?error.message:String(error);
 const healthLabel=(value:string|null)=>value==="OK"?"状态正常":value==="FAILED"?"存在异常":value==="DEGRADED"?"需要检查":"状态待确认";
@@ -69,7 +69,7 @@ function DeviceSummary({snapshot,onOpenDiagnostics}:{snapshot:HealthSnapshot;onO
     <p className="manager-observed">观测于 {time(snapshot.observedAtMs)} · 设备自报信息，尚未配对认证</p>
   </section>;
 }
-export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props) {
+export function ManagerWorkspace({section,navigationRevision=0,busy,beginOperation,onNavigate}:Props) {
   const [availability,setAvailability]=useState<DeviceAvailability|null>(null);
   const [interfaceId,setInterfaceId]=useState<string>();
   const [connectionMode,setConnectionMode]=useState<DeviceConnectionMode>("type_c");
@@ -85,7 +85,8 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
   const [runtimeError,setRuntimeError]=useState("");
   const [runtimeRevision,setRuntimeRevision]=useState(0);
   const [pageView,setPageView]=useState<DevicePage|null>(null);
-  const [pageRequest,setPageRequest]=useState<{interfaceId:string;apAddress?:string;connectionMode:"ap"|"lan"}|null>(null);
+  const [pageRequest,setPageRequest]=useState<DevicePageRequest|null>(null);
+  const [confirmedPage,setConfirmedPage]=useState<DevicePage|null>(null);
   const [run,setRun]=useState<DeviceRun|null>(null);
   const [preview,setPreview]=useState<DeviceBundlePreview|null>(null);
   const [output,setOutput]=useState("");
@@ -110,7 +111,7 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
   const connected=!runtimeError&&((availability?.connection==="connected"&&observation!==null)||!!runtimePage?.status);
   const pageOnly=availability?.error?.code==="D1_HEALTH_PAGE_ONLY";
   const connectionLabel=connected?"已连接 D1":availability?.error?.message??linkSummary(availability?.linkDiscovery??null);
-  useEffect(()=>{setPageView(null);},[section]);
+  useEffect(()=>{setPageView(null);},[section,navigationRevision]);
   useEffect(()=>{
     if(section==="data"||pageView||working!==null||apConfiguration||(connectionMode!=="type_c"&&!pageRequest))return;
     let active=true;
@@ -172,7 +173,7 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
     return()=>{active=false;if(timer)clearTimeout(timer);window.removeEventListener("focus",focus);};
   },[connectionMode,section,pageView,working]);
   useEffect(()=>()=>{requestGeneration.current++;clearTimeout(batchTimer.current);pendingReads.current.splice(0).forEach(item=>item.resolve({status:409,contentType:"application/json",body:'{"message":"设备连接已结束"}'}));if(operation.current)void cancelTask(operation.current.id);},[]);
-  function selectInterface(value:string){requestGeneration.current++;setInterfaceId(value||undefined);setAvailability(null);setRun(null);setPreview(null);setOutput("");setError("");setRuntimePage(null);setRuntimeError("");setPageRequest(null);}
+  function selectInterface(value:string){requestGeneration.current++;setInterfaceId(value||undefined);setAvailability(null);setRun(null);setPreview(null);setOutput("");setError("");setRuntimePage(null);setRuntimeError("");setPageRequest(null);setConfirmedPage(null);}
   async function detect(){
     if(disabled||!target||apConfiguration)return;
     const owner=beginOperation();if(!owner){setError("请先完成当前任务。");return;}
@@ -208,14 +209,15 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
     const value=addressInput.trim();
     const parts=value.split(".");
     if(parts.length!==4||parts.some(part=>!/^\d{1,3}$/.test(part)||Number(part)>255)) {setError("请输入设备的 IPv4 地址，不含端口或路径。");return;}
-    selectInterface("");setApAddress(value);await openPage({interfaceId:"",apAddress:value,connectionMode:"lan"});
+    selectInterface("");setApAddress(value);await openPage({interfaceId:"",apAddress:value,connectionMode:"lan"},false);
   }
-  async function openPage(request:{interfaceId:string;apAddress?:string;connectionMode:"ap"|"lan"}) {
+  async function openPage(request:DevicePageRequest,show=true) {
     if(disabled)return;
     const owner=beginOperation();if(!owner){setError("请先完成当前任务。");return;}
+    const generation=++requestGeneration.current;
     operation.current=owner;setWorking("page");setError("");setPageRequest(request);
-    try{const result=await readDevicePage(request,owner.id);setRuntimeError("");setPageRequest(request);setPageView(result);setRuntimePage(result.status?result:null);}
-    catch(cause){setError(errorText(cause));}
+    try{const result=await readDevicePage(request,owner.id);if(generation!==requestGeneration.current)return;setRuntimeError("");setPageRequest(request);setConfirmedPage(result);if(show)setPageView(result);setRuntimePage(result.status?result:null);}
+    catch(cause){if(generation===requestGeneration.current){setError(errorText(cause));setRuntimeError(errorText(cause));setConfirmedPage(null);setRuntimePage(null);setAvailability(null);}}
     finally{operation.current=null;owner.finish();setWorking(null);}
   }
   async function refreshWifi() {
@@ -258,13 +260,16 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
   async function connectWifi() {
     if(disabled||!selectedWifi)return;
     const owner=beginOperation();if(!owner){setError("请先完成当前任务。");return;}
+    const generation=++requestGeneration.current;
+    setConfirmedPage(null);setRuntimePage(null);setAvailability(null);setPageRequest(null);
     operation.current=owner;setWorking("wifi");setError("");
     try{
       const network=await connectDeviceWifi({interfaceId:selectedWifi.interfaceId,ssid:selectedWifi.ssid,password:manualWifiPassword?wifiPassword:""},owner.id);
+      if(generation!==requestGeneration.current)return;
       setWifiPassword("");setWorking("page");
       const request={interfaceId:network.interfaceId,connectionMode:"ap" as const};
       setPageRequest(request);
-      const result=await readDevicePage(request,owner.id);setRuntimeError("");setPageView(result);setPageRequest(request);setRuntimePage(result.status?result:null);
+      const result=await readDevicePage(request,owner.id);if(generation!==requestGeneration.current)return;setRuntimeError("");setConfirmedPage(result);setPageRequest(request);setRuntimePage(result.status?result:null);
     }catch(cause){setError(errorText(cause));}finally{setWifiPassword("");operation.current=null;owner.finish();setWorking(null);}
   }
   async function verifyProvisionedAddress(address:string):Promise<DevicePage> {
@@ -297,7 +302,7 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
     void refresh();return()=>{active=false;clearTimeout(timer);};
   },[pageRequest,pageView,section,working,runtimeRevision,apConfiguration]);
   if(section==="data")return null;
-  if(pageView&&(section==="home"||section==="device"))return <><DevicePageView page={pageView} busy={working!==null} showConnectionMode={section==="device"||apConfiguration} connectionModeLabel={apConfiguration?"热点配置模式 · 配网与应用升级":pageRequest?.connectionMode==="ap"?"设备热点（AP）":"局域网 IP"} onBack={()=>{requestGeneration.current++;setPageView(null);onNavigate(apConfiguration?"home":"device");}} onRefresh={()=>{if(pageRequest)void openPage(pageRequest);}} onRequest={requestPageApi} onVerifyAddress={verifyProvisionedAddress} otaPanel={<DeviceOtaPanel request={pageRequest} connected={true} busy={disabled} beginOperation={beginOperation} onError={setError}/>}/>{error&&<ManagerErrorToast message={error} onDismiss={()=>setError("")}/>}</>;
+  if(pageView&&(section==="home"||section==="device"))return <><DevicePageView page={pageView} busy={working!==null} showConnectionMode={section==="device"||apConfiguration} connectionModeLabel={apConfiguration?"热点配置模式 · 配网与应用升级":connectionMode==="ap"?"设备热点（AP）":connectionMode==="type_c"?"Type-C 连接":"局域网 IP"} onBack={()=>{requestGeneration.current++;setPageView(null);onNavigate(apConfiguration?"home":"device");}} onRefresh={()=>{if(pageRequest)void openPage(pageRequest);}} onRequest={requestPageApi} onVerifyAddress={verifyProvisionedAddress} otaPanel={<DeviceOtaPanel request={pageRequest} connected={true} busy={disabled} beginOperation={beginOperation} onError={setError}/>}/>{error&&<ManagerErrorToast message={error} onDismiss={()=>setError("")}/>}</>;
   const limited=observation?.cameraPortLimited??false;
   const counts=Object.fromEntries(resultOrder.map(status=>[status,run?.checks.filter(check=>check.status===status).length??0]));
   const connectionHelp=connectionMode==="ap"?"长按录制键，听到进入 AP 的语音后，连接设备标签对应的热点。":connectionMode==="lan"?"输入设备联网后语音播报的 IP，电脑需与设备处于同一网段。":"通过 Type-C 数据线连接已开机的 D1。";
@@ -309,7 +314,7 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
         <button type="button" aria-pressed={connectionMode==="ap"} disabled={disabled} onClick={()=>changeConnection("ap")}><Wifi size={17}/>设备热点（AP）</button>
         <button type="button" aria-pressed={connectionMode==="lan"} disabled={disabled} onClick={()=>changeConnection("lan")}><Wifi size={17}/>局域网 IP</button>
       </div>
-      {connectionMode==="ap"?<button className="button button-secondary" disabled={disabled||!isTauriRuntime()} onClick={()=>void openPage({interfaceId:selectedWifi?.connected?selectedWifi.interfaceId:interfaceId??"",connectionMode:"ap"})}>连接设备</button>:connectionMode==="lan"?<form className="manager-ap-form" onSubmit={event=>{event.preventDefault();void connectLan();}}><label htmlFor="d1-lan-ip">设备 IP</label><input id="d1-lan-ip" value={addressInput} inputMode="decimal" placeholder="输入语音播报的 IP" disabled={disabled} onChange={event=>setAddressInput(event.target.value)}/><button className="button button-secondary" disabled={disabled||!isTauriRuntime()||!addressInput.trim()} type="submit">连接设备</button></form>:<span className="manager-connect-hint" role="status">{working==="usb"?<><LoaderCircle size={15} className="spin"/>正在获取 USB 网络地址…</>:"自动识别 · 只读设备状态"}</span>}
+      {connectionMode==="ap"?<button className="button button-secondary" disabled={disabled||!isTauriRuntime()} onClick={()=>void openPage({interfaceId:selectedWifi?.connected?selectedWifi.interfaceId:interfaceId??"",connectionMode:"ap"},false)}>连接设备</button>:connectionMode==="lan"?<form className="manager-ap-form" onSubmit={event=>{event.preventDefault();void connectLan();}}><label htmlFor="d1-lan-ip">设备 IP</label><input id="d1-lan-ip" value={addressInput} inputMode="decimal" placeholder="输入语音播报的 IP" disabled={disabled} onChange={event=>setAddressInput(event.target.value)}/><button className="button button-secondary" disabled={disabled||!isTauriRuntime()||!addressInput.trim()} type="submit">连接设备</button></form>:<span className="manager-connect-hint" role="status">{working==="usb"?<><LoaderCircle size={15} className="spin"/>正在获取 USB 网络地址…</>:"自动识别 · 只读设备状态"}</span>}
       {(availability?.linkDiscovery.candidates.length??0)>1&&<label className="manager-device-select">{connectionMode==="ap"?"Wi-Fi 网卡":"连接网卡"}<select aria-label="选择设备连接" value={interfaceId??target??""} disabled={disabled} onChange={event=>selectInterface(event.target.value)}><option value="">请选择连接</option>{availability?.linkDiscovery.candidates.map(link=><option key={link.interfaceId} value={link.interfaceId}>{link.name}</option>)}</select></label>}
     </div>
     {connectionMode==="ap"&&<section className="manager-wifi" aria-label="可用 Wi-Fi">
@@ -318,13 +323,18 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
       {wifi?.supported&&<><div className="manager-wifi-list">{wifi.networks.length===0&&!wifiLoading?<p>暂未发现可用 Wi-Fi，请确认电脑无线网卡已开启。</p>:wifi.networks.map(n=><button key={`${n.interfaceId}:${n.ssid}`} aria-pressed={wifiSelection===`${n.interfaceId}:${n.ssid}`} disabled={disabled||!n.recommended||(!n.connectable&&!n.connected)} onClick={()=>{setWifiSelection(`${n.interfaceId}:${n.ssid}`);setWifiPassword("");setManualWifiPassword(false);}}><Wifi size={17}/><strong>{n.ssid}</strong>{n.recommended&&<span className="manager-wifi-recommend">设备热点 · 推荐</span>}<span className="manager-wifi-signal">信号质量 {n.signal}%</span>{n.connected&&<span className="manager-wifi-connected">已连接</span>}</button>)}</div>
       <small className="manager-wifi-observed">列表更新于 {new Date(wifi.observedAtMs).toLocaleTimeString("zh-CN",{hour12:false})}</small>
       {!wifi.networks.some(n=>n.recommended)&&!wifiLoading&&<p>未发现 D1 热点。请确认设备已进入 AP 模式后刷新。</p>}
-      {selectedWifi&&<form className="manager-wifi-form" onSubmit={event=>{event.preventDefault();void connectWifi();}}>{!selectedWifi.connected&&<><button type="button" className="button button-secondary manager-wifi-password-toggle" onClick={()=>{setManualWifiPassword(v=>!v);setWifiPassword("");}}><KeyRound size={15}/>{manualWifiPassword?"使用默认密码":"手动输入密码"}</button>{manualWifiPassword&&<><label htmlFor="d1-wifi-password">热点密码</label><input id="d1-wifi-password" type="password" autoComplete="off" maxLength={63} value={wifiPassword} disabled={disabled} onChange={event=>setWifiPassword(event.target.value)}/></>}</>}<button className="button button-primary" type="submit" disabled={disabled||(!selectedWifi.connected&&manualWifiPassword&&!wifiPassword)}>{working==="wifi"?"正在连接…":working==="page"?"正在打开…":selectedWifi.connected?"进入设备页面":"连接热点并打开"}</button><small>连接热点会切换电脑 Wi-Fi；密码仅用于本次连接。</small></form>}</>}
+      {selectedWifi&&<form className="manager-wifi-form" onSubmit={event=>{event.preventDefault();void connectWifi();}}>{!selectedWifi.connected&&<><button type="button" className="button button-secondary manager-wifi-password-toggle" onClick={()=>{setManualWifiPassword(v=>!v);setWifiPassword("");}}><KeyRound size={15}/>{manualWifiPassword?"使用默认密码":"手动输入密码"}</button>{manualWifiPassword&&<><label htmlFor="d1-wifi-password">热点密码</label><input id="d1-wifi-password" type="password" autoComplete="off" maxLength={63} value={wifiPassword} disabled={disabled} onChange={event=>setWifiPassword(event.target.value)}/></>}</>}<button className="button button-primary" type="submit" disabled={disabled||(!selectedWifi.connected&&manualWifiPassword&&!wifiPassword)}>{working==="wifi"?"正在连接…":working==="page"?"正在核对连接…":selectedWifi.connected?"确认设备连接":"连接热点"}</button><small>连接热点会切换电脑 Wi-Fi；密码仅用于本次连接。</small></form>}</>}
     </section>}
     <aside className="manager-connection-guide" aria-label={connectionMode==="ap"?"热点连接教程":connectionMode==="lan"?"局域网连接教程":"Type-C 连接提示"}>
       <strong>{connectionMode==="ap"?"如何连接设备热点":connectionMode==="lan"?"如何获取设备 IP":"Type-C 连接提示"}</strong>
-      {connectionMode==="type_c"?<><p>请使用支持数据传输的 USB-A 转 Type-C 数据线，将电脑 A 口连接到 D1 的 Type-C 口。</p><p>D1 唯一的 Type-C 口连接电脑期间，扩展相机将暂时断开；需要检测相机时，请改用局域网连接。</p></>:connectionMode==="ap"?<><p>设备未在采集时，长按录制键，等待语音确认进入 AP 模式。</p><p>选择设备标签对应的 <b>Delta-D1-***</b> 热点；热点无需联网，默认密码自动填写。</p><p>热点配置模式用于配网和应用升级。查看完整设备信息、检测相机，请配网后使用局域网 IP，或切换 Type-C。</p></>:<><p>先按设备操作手册完成配网，确认设备已联网。</p><p>长按录制键后接短按，等待设备语音播报本机 IP。</p><p>输入播报的 IP 后连接，在软件内打开设备状态页面。</p></>}
+      {connectionMode==="type_c"?<><p>请使用支持数据传输的 USB-A 转 Type-C 数据线，将电脑 A 口连接到 D1 的 Type-C 口。</p><p>D1 唯一的 Type-C 口连接电脑期间，扩展相机将暂时断开；需要检测相机时，请改用局域网连接。</p></>:connectionMode==="ap"?<><p>设备未在采集时，长按录制键，等待语音确认进入 AP 模式。</p><p>选择设备标签对应的 <b>Delta-D1-***</b> 热点；热点无需联网，默认密码自动填写。</p><p>热点配置模式用于配网和应用升级。查看完整设备信息、检测相机，请配网后使用局域网 IP，或切换 Type-C。</p></>:<><p>先按设备操作手册完成配网，确认设备已联网。</p><p>长按录制键后接短按，等待设备语音播报本机 IP。</p><p>输入播报的 IP 后连接，成功后使用下方按钮进入所需功能。</p></>}
     </aside>
-
+    <nav className="manager-connected-actions" aria-label="已连接设备操作">
+      <button className="button button-primary" disabled={disabled||!(connected||confirmedPage&&!runtimeError)} onClick={()=>{const request=pageRequest??(target?{interfaceId:target,connectionMode}:null);if(confirmedPage&&!runtimeError)setPageView(confirmedPage);else if(request)void openPage(request);}}>设备管理<ArrowRight size={15}/></button>
+      <button className="button button-secondary" disabled={disabled||!connected||apConfiguration} title={apConfiguration?"当前热点仅支持配置和升级，请使用局域网 IP 或 Type-C 查看":undefined} onClick={()=>onNavigate("device")}>设备信息</button>
+      <button className="button button-secondary" disabled={disabled||!connected||apConfiguration} title={apConfiguration?"当前热点未提供检测接口，请使用局域网 IP 或 Type-C 检测":undefined} onClick={()=>onNavigate("diagnostics")}>检测排障</button>
+    </nav>
+    {confirmedPage&&!runtimeError&&<p className="manager-connection-success" role="status"><CheckCircle2 size={16}/>连接成功 · {confirmedPage.address}，请选择需要的功能。</p>}
   </section>;
   return <main className={`manager-workspace manager-section-${section}`} aria-label="D1 设备工作区">
     {error&&<ManagerErrorToast message={error} onDismiss={()=>setError("")}/>}
@@ -332,7 +342,7 @@ export function ManagerWorkspace({section,busy,beginOperation,onNavigate}:Props)
     {section==="home"&&connectionControls}
     {section==="device"&&connected&&<p className="manager-actual-connection" role="status"><span>实际连接方式</span><strong>{connectionModeLabel}</strong></p>}
     {section==="home"?<>
-      <section className="manager-home-device"><div><Cable size={24}/><div><h2>{apConfiguration?"热点配置模式":connected?"D1 已连接":"连接你的 D1"}</h2>{(observation||availability?.error)&&<p>{observation?`应用 ${observation.device.applicationVersion??"版本未提供"} · ${observation.connectionLimitedOnly?"相机连接受限":healthLabel(observation.health)}`:availability?.error?.message}</p>}</div></div><div className="manager-actions"><button className="button button-primary" disabled={apConfiguration} title={apConfiguration?"热点配置模式不提供完整检测，请使用局域网 IP 或 Type-C":undefined} onClick={()=>onNavigate("diagnostics")}><ShieldCheck size={17}/>检测设备</button></div></section>
+      <section className="manager-home-device"><div><Cable size={24}/><div><h2>{apConfiguration?"热点配置模式":connected?"D1 已连接":"连接你的 D1"}</h2>{(observation||availability?.error)&&<p>{observation?`应用 ${observation.device.applicationVersion??"版本未提供"} · ${observation.connectionLimitedOnly?"相机连接受限":healthLabel(observation.health)}`:availability?.error?.message}</p>}</div></div></section>
 
     </>:null}
     {(section==="device"||section==="diagnostics")&&apConfiguration&&<section className="manager-empty compact" aria-label="热点配置模式"><Wifi size={30}/><h2>热点配置模式</h2><p>此模式用于 Wi-Fi 配网和应用升级，当前设备未提供完整运行状态，设备信息和检测暂不可用。</p><p>配网后使用局域网 IP，或切换 Type-C 查看设备信息与检测。</p><button className="button button-primary" disabled={disabled||!pageRequest} onClick={()=>{if(pageRequest)void openPage(pageRequest);}}>打开配置与升级</button><button className="button button-secondary" onClick={()=>onNavigate("home")}>选择其他连接方式</button></section>}
