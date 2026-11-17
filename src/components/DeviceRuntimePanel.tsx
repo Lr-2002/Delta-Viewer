@@ -1,3 +1,4 @@
+import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import type {DevicePage, DeviceResultStatus} from "../lib/d1";
 import {cameraLabel, deviceStateLabel, deviceText} from "../lib/d1-presentation";
 import {ArrowRight, HardDrive, Lightbulb, Radio, Video, Wifi} from "lucide-react";
@@ -77,36 +78,38 @@ function summaryGroups(readings:RuntimeReading[]):SummaryGroup[] {
 }
 
 function SummaryCard({group,onOpen}:{group:SummaryGroup;onOpen?:()=>void}) {
+  useLanguage();
   const Icon=group.icon;
   return <article className={`manager-check manager-summary-card manager-summary-${group.id}`}>
-    <header><h3><Icon size={18}/>{group.name}</h3><span className={`manager-result result-${group.status}`}>{statusLabels[group.status]}</span></header>
+    <header><h3><Icon size={18}/>{group.name}</h3><span className={`manager-result result-${group.status}`}>{tr(statusLabels[group.status])}</span></header>
     <div className="manager-summary-lines">{group.readings.map(reading=><section key={reading.id}>
-      {group.readings.length>1&&<strong>{reading.name}</strong>}
-      {reading.values.slice(0,group.id==="cameras"?2:group.id==="indicators"?2:3).map(([label,value])=><p key={label}><span>{label}</span><b>{value}</b></p>)}
+      {group.readings.length>1&&<strong>{tr(reading.name)}</strong>}
+      {reading.values.slice(0,group.id==="cameras"?2:group.id==="indicators"?2:3).map(([label,value])=><p key={label}><span>{tr(label)}</span><b>{tr(value)}</b></p>)}
     </section>)}</div>
-    {onOpen&&<button className="button button-secondary" type="button" onClick={onOpen}>完整检测结果<ArrowRight size={15}/></button>}
+    {onOpen&&<button className="button button-secondary" type="button" onClick={onOpen}>{t("完整检测结果")}<ArrowRight size={15}/></button>}
   </article>;
 }
 
 export function DeviceRuntimePanel({page,diagnostics=false,error,refresh,onConfigure,onNavigate,cameraPortLimited=false,connectionLimitedOnly=false}:{cameraPortLimited?:boolean;connectionLimitedOnly?:boolean;page:DevicePage|null;diagnostics?:boolean;error:string;refresh:()=>void;onConfigure?:()=>void;onNavigate?:()=>void}) {
-  if(!page?.status)return <section className="manager-card" role="status"><h2>设备运行状态</h2><p>{error||"正在读取设备运行状态…"}</p><button className="button button-secondary" onClick={refresh}>重新读取状态</button></section>;
+  useLanguage();
+  if(!page?.status)return <section className="manager-card" role="status"><h2>{t("设备运行状态")}</h2><p>{tr(error) || t("正在读取设备运行状态…")}</p><button className="button button-secondary" onClick={refresh}>{t("重新读取状态")}</button></section>;
   const s=page.status,d=object(s.device),telemetry=object(s.telemetry),alerts=object(s.alerts),items=list(alerts.items);
   const readings=runtimeReadings(s,cameraPortLimited).map(reading=>error?{...reading,status:"indeterminate" as const}:reading);
   const tones={health:healthTone(s,error,connectionLimitedOnly),phase:phaseTone(s,error),voltage:telemetryTone(s,alerts,/voltage|battery|power/i,error),temperature:telemetryTone(s,alerts,/temp|thermal/i,error)};
-  return <section className="manager-runtime" aria-label="设备实时运行状态">
-    <header className="manager-runtime-heading"><div><h2>{diagnostics?"设备状态检查":"设备运行状态"}</h2><small>来自设备状态页 · {new Date(page.observedAtMs).toLocaleTimeString("zh-CN",{hour12:false})} · 应用 {text(d.workspace_version)}</small></div><div className="manager-actions"><button className="button button-secondary" onClick={refresh}>刷新状态</button>{onConfigure&&<button className="button button-secondary" onClick={onConfigure}>打开设备配置</button>}</div></header>
-    {error&&<p className="manager-error" role="status">{error} · 下方为上次读取结果，当前状态无法判断。</p>}
-    <div className="manager-runtime-overview"><div className={`overview-health tone-${tones.health}`}><span>设备总体状态</span><strong>{error||s.heartbeat_stale!==false?"无法判断":connectionLimitedOnly?"连接受限":state(s.health)}</strong></div><div className={`overview-phase tone-${tones.phase}`}><span>运行阶段</span><strong>{state(s.phase)}</strong></div><div className={`overview-voltage tone-${tones.voltage}`}><span>电压</span><strong>{number(telemetry.vcc_voltage," V",2)}</strong></div><div className={`overview-temperature tone-${tones.temperature}`}><span>芯片温度</span><strong>{number(telemetry.chip_temp," °C")}</strong></div></div>
-    {!diagnostics&&<dl className="manager-metadata manager-card"><div><dt>连接 IP</dt><dd>{page.address}</dd></div><div><dt>设备标识</dt><dd>{text(d.device_id)}</dd></div><div><dt>应用版本</dt><dd>{text(d.workspace_version)}</dd></div><div><dt>板端版本</dt><dd>{text(d.firmware_version)}</dd></div><div><dt>发布版本</dt><dd>{text(d.release_id)}</dd></div><div><dt>发布通道</dt><dd>{d.channel==="factory"?"出厂通道":text(d.channel)}</dd></div><div><dt>运行时间</dt><dd>{number(object(s.runtime).uptime_seconds," 秒",0)}</dd></div><div><dt>心跳间隔</dt><dd>{number(s.heartbeat_age_seconds," 秒",3)}</dd></div><div><dt>采集门禁</dt><dd>{error||s.heartbeat_stale!==false?"无法判断":s.can_start===true?"允许开始":s.can_start===false?"暂不可开始":"设备未提供"}</dd></div></dl>}
-    {!diagnostics?<>
-      {cameraPortLimited&&<p className="manager-port-note">Type-C 当前用于连接电脑，扩展双目相机未检查；设备原始告警和灯色保留。</p>}
+  return <section className="manager-runtime" aria-label={t("设备实时运行状态")}>
+    <header className="manager-runtime-heading"><div><h2>{diagnostics ? t("设备状态检查") : t("设备运行状态")}</h2><small>{t("来自设备状态页 ·") + " "}{tr(new Date(page.observedAtMs).toLocaleTimeString(localeTag(),{hour12:false}))}{" " + t("· 应用") + " "}{tr(text(d.workspace_version))}</small></div><div className="manager-actions"><button className="button button-secondary" onClick={refresh}>{t("刷新状态")}</button>{onConfigure&&<button className="button button-secondary" onClick={onConfigure}>{t("打开设备配置")}</button>}</div></header>
+    {tr(error&&<p className="manager-error" role="status">{tr(error)}{" " + t("· 下方为上次读取结果，当前状态无法判断。")}</p>)}
+    <div className="manager-runtime-overview"><div className={`overview-health tone-${tones.health}`}><span>{t("设备总体状态")}</span><strong>{error||s.heartbeat_stale!==false ? t("无法判断") : connectionLimitedOnly ? t("连接受限") : tr(state(s.health))}</strong></div><div className={`overview-phase tone-${tones.phase}`}><span>{t("运行阶段")}</span><strong>{tr(state(s.phase))}</strong></div><div className={`overview-voltage tone-${tones.voltage}`}><span>{t("电压")}</span><strong>{tr(number(telemetry.vcc_voltage," V",2))}</strong></div><div className={`overview-temperature tone-${tones.temperature}`}><span>{t("芯片温度")}</span><strong>{tr(number(telemetry.chip_temp," °C"))}</strong></div></div>
+    {!diagnostics&&<dl className="manager-metadata manager-card"><div><dt>{t("连接 IP")}</dt><dd>{page.address}</dd></div><div><dt>{t("设备标识")}</dt><dd>{tr(text(d.device_id))}</dd></div><div><dt>{t("应用版本")}</dt><dd>{tr(text(d.workspace_version))}</dd></div><div><dt>{t("板端版本")}</dt><dd>{tr(text(d.firmware_version))}</dd></div><div><dt>{t("发布版本")}</dt><dd>{tr(text(d.release_id))}</dd></div><div><dt>{t("发布通道")}</dt><dd>{d.channel==="factory" ? t("出厂通道") : tr(text(d.channel))}</dd></div><div><dt>{t("运行时间")}</dt><dd>{tr(number(object(s.runtime).uptime_seconds," 秒",0))}</dd></div><div><dt>{t("心跳间隔")}</dt><dd>{tr(number(s.heartbeat_age_seconds," 秒",3))}</dd></div><div><dt>{t("采集门禁")}</dt><dd>{error||s.heartbeat_stale!==false ? t("无法判断") : s.can_start===true ? t("允许开始") : s.can_start===false ? t("暂不可开始") : t("设备未提供")}</dd></div></dl>}
+    {!diagnostics ? <>
+      {cameraPortLimited&&<p className="manager-port-note">{t("Type-C 当前用于连接电脑，扩展双目相机未检查；设备原始告警和灯色保留。")}</p>}
       <div className="manager-summary-grid">{summaryGroups(readings).map(group=><SummaryCard key={group.id} group={group} onOpen={onNavigate}/>)}</div>
-      {onNavigate&&<button className="button button-secondary manager-runtime-details" type="button" onClick={onNavigate}>查看完整检测结果<ArrowRight size={16}/></button>}
-    </>:<>
-      {cameraPortLimited&&<p className="manager-port-note">Type-C 当前用于连接电脑，扩展双目相机未检查；设备原始告警和灯色保留。</p>}
-      <div className="manager-runtime-alerts" role="status">{items.length?items.map((alert,index)=><article key={index}><strong>{translated(alert.severity)} · {deviceText(text(alert.code))}</strong><p>{deviceText(text(alert.message))}</p><p>{deviceText(text(alert.action))}</p><details><summary>设备原始证据</summary><pre>{JSON.stringify(alert,null,2)}</pre></details></article>):<p>{alerts.total===0?"设备未报告活动告警":"告警状态未提供"}</p>}</div>
-      <div className="manager-checks">{readings.map(reading=><article className={`manager-check check-${error?"indeterminate":reading.status}`} key={reading.id}><header><h3>{reading.name}</h3><span className={`manager-result result-${error?"indeterminate":reading.status}`}>{statusLabels[error?"indeterminate":reading.status]}</span></header><dl className="manager-runtime-values">{reading.values.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>{reading.note&&<small>{reading.note}</small>}</article>)}</div>
-      <p className="manager-observed">所有项目均来自设备已有报告。观测时间和设备版本如上；缺少字段保持未知。</p>
+      {onNavigate&&<button className="button button-secondary manager-runtime-details" type="button" onClick={onNavigate}>{t("查看完整检测结果")}<ArrowRight size={16}/></button>}
+    </> : <>
+      {cameraPortLimited&&<p className="manager-port-note">{t("Type-C 当前用于连接电脑，扩展双目相机未检查；设备原始告警和灯色保留。")}</p>}
+      <div className="manager-runtime-alerts" role="status">{items.length ? items.map((alert,index)=><article key={index}><strong>{tr(translated(alert.severity))} · {tr(deviceText(text(alert.code)))}</strong><p>{tr(deviceText(text(alert.message)))}</p><p>{tr(deviceText(text(alert.action)))}</p><details><summary>{t("设备原始证据")}</summary><pre>{tr(JSON.stringify(alert,null,2))}</pre></details></article>) : <p>{alerts.total===0 ? t("设备未报告活动告警") : t("告警状态未提供")}</p>}</div>
+      <div className="manager-checks">{readings.map(reading=><article className={`manager-check check-${error?"indeterminate":reading.status}`} key={reading.id}><header><h3>{tr(reading.name)}</h3><span className={`manager-result result-${error?"indeterminate":reading.status}`}>{tr(statusLabels[error?"indeterminate":reading.status])}</span></header><dl className="manager-runtime-values">{reading.values.map(([label,value])=><div key={label}><dt>{tr(label)}</dt><dd>{tr(value)}</dd></div>)}</dl>{tr(reading.note&&<small>{tr(reading.note)}</small>)}</article>)}</div>
+      <p className="manager-observed">{t("所有项目均来自设备已有报告。观测时间和设备版本如上；缺少字段保持未知。")}</p>
     </>}
   </section>;
 }

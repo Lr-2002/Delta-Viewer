@@ -22,3 +22,6 @@ artifacts/stress-check/
 artifacts/windows-cross-check/
 artifacts/nas-playback/
 artifacts/machine-annotation/
+
+# Local test reports and screenshots may contain private workspace data.
+artifacts/

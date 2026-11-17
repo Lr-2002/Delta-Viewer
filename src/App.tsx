@@ -1,3 +1,4 @@
+import { localeTag, t, tr, useLanguage } from "./lib/i18n";
 import { PreviewPriority } from "./lib/preview-priority";
 import { usePlaybackIntent } from "./lib/use-playback-intent";
 import { BrandMark } from "./components/BrandMark";
@@ -408,6 +409,7 @@ function parseReleaseHistory(markdown: string): ReleaseHistoryEntry[] {
 }
 
 function App() {
+  useLanguage();
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [managementMode, setManagementMode] = useState(false);
   const [managerSection, setManagerSection] = useState<ManagerSection>("home");
@@ -2034,12 +2036,11 @@ function App() {
     return (
       <main className="auth-shell auth-loading">
         <LoaderCircle className={authStartupError ? undefined : "spin"} size={24} />
-        <strong>{authStartupError ? "无法载入用户中心状态" : "正在载入用户中心状态"}</strong>
-        {authStartupError ? <span>{authStartupError}</span> : null}
+        <strong>{authStartupError ? t("无法载入用户中心状态") : t("正在载入用户中心状态")}</strong>
+        {authStartupError ? <span>{tr(authStartupError)}</span> : null}
         {authStartupError ? (
-          <><button className="button button-primary" onClick={() => void activateWorkspaceMode("offline")}>离线模式 · 直接进入</button><button className="button button-secondary" type="button" onClick={() => void refreshAuthStatus()}>
-            重试
-          </button></>
+          <><button className="button button-primary" onClick={() => void activateWorkspaceMode("offline")}>{t("离线模式 · 直接进入")}</button><button className="button button-secondary" type="button" onClick={() => void refreshAuthStatus()}>
+            {t("重试")}</button></>
         ) : null}
       </main>
     );
@@ -2069,7 +2070,7 @@ function App() {
 
   const currentUser = authStatus.currentUser;
   const updateControls = (taskBusy: boolean) => !IS_DEVELOPMENT_EDITION ? <AppUpdates version={APP_VERSION}
-    currentSummary={RELEASE_SUMMARIES_ZH[APP_VERSION] ?? "查看本次版本的改进与修复。"}
+    currentSummary={tr(RELEASE_SUMMARIES_ZH[APP_VERSION]) ?? t("查看本次版本的改进与修复。")}
     currentNotes={releaseHistory.find(item => item.version === APP_VERSION)?.notes ?? []} busy={taskBusy}
     onDownload={downloadAvailableUpdate} onInstall={installAvailableUpdate} onViewHistory={() => setReleaseHistoryOpen(true)} /> : null;
   const canManage = currentUser?.canManage || currentUser?.role === "admin";
@@ -2152,22 +2153,22 @@ function App() {
   }
   const playbackControls = data ? <>
                           <div className="transport-buttons">
-                            <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title="上一帧" aria-label="上一帧"><SkipBack size={17} /></button>
-                            <button className="play-button" type="button" onClick={() => { if (playing && !machinePreviewRange) setPlaying(false); else playGlobal(); }} title={playing && !machinePreviewRange ? "暂停" : "全局播放"} aria-label={playing && !machinePreviewRange ? "暂停" : "全局播放"}>{playing && !machinePreviewRange ? <Pause size={17} /> : <Play size={17} />}</button>
-                            <button className="icon-button" type="button" onClick={() => moveFrame(1)} title="下一帧" aria-label="下一帧"><SkipForward size={17} /></button>
+                            <button className="icon-button" type="button" onClick={() => moveFrame(-1)} title={t("上一帧")} aria-label={t("上一帧")}><SkipBack size={17} /></button>
+                            <button className="play-button" type="button" onClick={() => { if (playing && !machinePreviewRange) setPlaying(false); else playGlobal(); }} title={playing && !machinePreviewRange ? t("暂停") : t("全局播放")} aria-label={playing && !machinePreviewRange ? t("暂停") : t("全局播放")}>{playing && !machinePreviewRange ? <Pause size={17} /> : <Play size={17} />}</button>
+                            <button className="icon-button" type="button" onClick={() => moveFrame(1)} title={t("下一帧")} aria-label={t("下一帧")}><SkipForward size={17} /></button>
                           </div>
-                          <span className="segment-frame-readout">帧 {currentFrame} / {maxFrame}</span>
-                          <span className="time-readout">{currentState ? formatStateTime(data, currentState.captureTimeNs) : "—"}</span>
+                          <span className="segment-frame-readout">{t("帧") + " "}{currentFrame} / {maxFrame}</span>
+                          <span className="time-readout">{currentState ? tr(formatStateTime(data, currentState.captureTimeNs)) : "—"}</span>
                           <label className="speed-control">
                             <Gauge size={16} />
-                            <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label="播放速度">
-                              <option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>1×（正常速度）</option><option value={2}>2×</option>
+                            <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label={t("播放速度")}>
+                              <option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>{t("1×（正常速度）")}</option><option value={2}>2×</option>
                             </select>
                           </label>
-                          <label className="fps-control" title="播放帧率">
+                          <label className="fps-control" title={t("播放帧率")}>
                             <Timer size={16} />
-                            <select value={fpsOverride ?? "auto"} onChange={(event) => setFpsOverride(event.target.value === "auto" ? null : Number(event.target.value))} aria-label="播放帧率">
-                              <option value="auto">自动 {estimatedFps.toFixed(1)} FPS</option><option value={15}>15 FPS</option><option value={24}>24 FPS</option><option value={30}>30 FPS</option><option value={60}>60 FPS</option>
+                            <select value={fpsOverride ?? "auto"} onChange={(event) => setFpsOverride(event.target.value === "auto" ? null : Number(event.target.value))} aria-label={t("播放帧率")}>
+                              <option value="auto">{t("自动") + " "}{tr(estimatedFps.toFixed(1))} FPS</option><option value={15}>15 FPS</option><option value={24}>24 FPS</option><option value={30}>30 FPS</option><option value={60}>60 FPS</option>
                             </select>
                           </label>
   </> : null;
@@ -2199,41 +2200,40 @@ function App() {
           </div>
 
         </div>
-        <nav className="workspace-navigation" aria-label="主导航">
-          <button type="button" aria-current={managerSection!=="data"?"page":undefined} disabled={busy} onClick={()=>void navigateManager(lastDeviceSection.current)}>设备管理区</button>
-          <button type="button" aria-current={managerSection==="data"?"page":undefined} disabled={busy} onClick={()=>void navigateManager("data")}>数据工作区</button>
+        <nav className="workspace-navigation" aria-label={t("主导航")}>
+          <button type="button" aria-current={managerSection!=="data"?"page":undefined} disabled={busy} onClick={()=>void navigateManager(lastDeviceSection.current)}>{t("设备管理区")}</button>
+          <button type="button" aria-current={managerSection==="data"?"page":undefined} disabled={busy} onClick={()=>void navigateManager("data")}>{t("数据工作区")}</button>
         </nav>
         {managerSection === "data" && <div className="source-display">
           <HardDrive size={16} />
-          <span title={outboundBatch?.name??sourcePath}>{outboundBatch?`外发审核 · ${outboundBatch.name}`:sourcePath ? shortPath(sourcePath, 58) : isManagedWorkspace && currentUser?.role === "operator" ? "首次使用请配置本机 NAS 目录" : "未选择 SD 卡"}</span>
+          <span title={outboundBatch?.name ?? sourcePath}>{outboundBatch ? t("外发审核 · {0}", [outboundBatch.name]) : sourcePath ? shortPath(sourcePath, 58) : isManagedWorkspace && currentUser?.role === "operator" ? t("首次使用请配置本机 NAS 目录") : t("未选择 SD 卡")}</span>
           {sourcePath ? <span className="source-dot" /> : null}
         </div>}
         <div className="topbar-actions">
-          <button className="icon-button version-history-trigger" type="button" onClick={() => setReleaseHistoryOpen(true)} title="查看历史版本" aria-label="查看历史版本"><BookOpenText size={16}/></button>
-          {managerSection === "data" && canManage && <button className="button button-secondary management-mode-button" disabled={busy || reviewHasUnsaved} onClick={openManagement}>管理模式</button>}
+          <button className="icon-button version-history-trigger" type="button" onClick={() => setReleaseHistoryOpen(true)} title={t("查看历史版本")} aria-label={t("查看历史版本")}><BookOpenText size={16}/></button>
+          {managerSection === "data" && canManage && <button className="button button-secondary management-mode-button" disabled={busy || reviewHasUnsaved} onClick={openManagement}>{t("管理模式")}</button>}
           {managerSection === "data" && !outboundBatch && <StatusBadge status={status} />}
           {isManagedWorkspace && currentUser && !showManagement ? updateControls(busy) : null}
-          {managerSection === "data" && currentUser?.role !== "admin" && <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy} aria-label={isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}>
+          {managerSection === "data" && currentUser?.role !== "admin" && <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy} aria-label={isManagedWorkspace && currentUser?.role === "operator" ? t("选择数据目录") : t("选择 SD 卡")}>
             <FolderOpen size={16} />
-            {isManagedWorkspace && currentUser?.role === "operator" ? "选择数据目录" : "选择 SD 卡"}
+            {isManagedWorkspace && currentUser?.role === "operator" ? t("选择数据目录") : t("选择 SD 卡")}
           </button>}
           {managerSection === "data" && isManagedWorkspace && currentUser ? (
-            <button className="button button-secondary workbench-trigger" type="button" onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`审核总览打开失败：${toMessage(reason)}`))} title="打开审核总览">
-              <Activity size={16} />审核总览
-            </button>
+            <button className="button button-secondary workbench-trigger" type="button" onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`审核总览打开失败：${toMessage(reason)}`))} title={t("打开审核总览")}>
+              <Activity size={16} />{t("审核总览")}</button>
           ) : null}
           {managerSection === "data" && <button
             className="icon-button history-trigger"
             type="button"
             onClick={() => setHistoryOpen((current) => !current)}
-            title="操作错误历史"
-            aria-label="操作错误历史"
+            title={t("操作错误历史")}
+            aria-label={t("操作错误历史")}
             aria-expanded={historyOpen}
           >
             <History size={16} />
             {operationErrors.length ? <span>{Math.min(operationErrors.length, 99)}</span> : null}
           </button>}
-          {isOfflineWorkspace ? <span className="workspace-mode-indicator" title="本地回放、编辑、审核与导出可用；不连接用户中心，不参与公司统计">离线模式 · 仅本机</span> : null}
+          {isOfflineWorkspace ? <span className="workspace-mode-indicator" title={t("本地回放、编辑、审核与导出可用；不连接用户中心，不参与公司统计")}>{t("离线模式 · 仅本机")}</span> : null}
           {isManagedWorkspace && currentUser ? (
             <>
               {currentUser.role === "operator" ? (
@@ -2241,37 +2241,36 @@ function App() {
                   className="account-summary account-summary-button"
                   type="button"
                   onClick={() => setProfileEditorOpen(true)}
-                  title="修改当前显示名称"
-                  aria-label={`修改当前显示名称，当前为 ${currentUser.displayName}`}
+                  title={t("修改当前显示名称")}
+                  aria-label={t("修改当前显示名称，当前为 {0}", [currentUser.displayName])}
                 >
                   <UserRound size={16} />
                   <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
                   <Pencil className="account-edit-mark" size={12} />
                 </button>
               ) : (
-                <div className="account-summary" title={`@${currentUser.username}`}>
+                <div className="account-summary" title={t("@{0}", [currentUser.username])}>
                   <UserRound size={16} />
                   <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
                 </div>
               )}
               {managerSection === "data" && currentUser.role === "operator" ? (
-                <button className="button button-secondary personal-task-trigger" type="button" onClick={() => setPersonalTaskOpen((open) => !open)} title="任务中心" aria-label="任务中心" aria-expanded={personalTaskOpen}>
-                  <ListChecks size={16} />任务中心
-                </button>
+                <button className="button button-secondary personal-task-trigger" type="button" onClick={() => setPersonalTaskOpen((open) => !open)} title={t("任务中心")} aria-label={t("任务中心")} aria-expanded={personalTaskOpen}>
+                  <ListChecks size={16} />{t("任务中心")}</button>
               ) : null}
-              <button className="icon-button" type="button" onClick={() => void logout()} disabled={busy} title="退出登录" aria-label="退出登录">
+              <button className="icon-button" type="button" onClick={() => void logout()} disabled={busy} title={t("退出登录")} aria-label={t("退出登录")}>
                 <LogOut size={16} />
               </button>
             </>
           ) : null}
-          <button className="icon-button" type="button" onClick={() => void chooseWorkspaceMode()} disabled={busy} title="切换工作模式" aria-label="切换工作模式">
+          <button className="icon-button" type="button" onClick={() => void chooseWorkspaceMode()} disabled={busy} title={t("切换工作模式")} aria-label={t("切换工作模式")}>
             <Workflow size={16} />
           </button>
         </div>
       </header>
-      {managerSection!=="data" && <nav className="manager-navigation" aria-label="设备功能">
+      {managerSection!=="data" && <nav className="manager-navigation" aria-label={t("设备功能")}>
         {deviceSections.map(item => <button type="button" key={item.id} aria-current={managerSection === item.id ? "page" : undefined}
-          disabled={busy} onClick={() => void navigateManager(item.id)}>{item.label}</button>)}
+          disabled={busy} onClick={() => void navigateManager(item.id)}>{tr(item.label)}</button>)}
       </nav>}
       <div id={showManagement ? undefined : "app-update-notices"} />
 
@@ -2317,28 +2316,28 @@ function App() {
         />
       ) : null}
 
-      {batchRenamePath && <BatchRenameDialog path={batchRenamePath} onRename={renameCurrentBatch} onClose={() => setBatchRenamePath(null)} />}
+      {tr(batchRenamePath && <BatchRenameDialog path={batchRenamePath} onRename={renameCurrentBatch} onClose={() => setBatchRenamePath(null)} />)}
 
       {!showManagement && managerSection === "data" && syncNotice}
       {managerSection === "data" && error && !workspaceAuthError ? (
         <div className="alert-banner alert-error" role="alert">
           <CircleAlert size={17} />
-          <span>{error}</span>
+          <span>{tr(error)}</span>
           <span className="alert-actions">
-            <button type="button" className="text-button" onClick={() => setHistoryOpen(true)}>错误历史</button>
-            <button type="button" className="text-button" onClick={() => setError("")}>关闭</button>
+            <button type="button" className="text-button" onClick={() => setHistoryOpen(true)}>{t("错误历史")}</button>
+            <button type="button" className="text-button" onClick={() => setError("")}>{t("关闭")}</button>
           </span>
         </div>
       ) : null}
       {managerSection === "data" && notice ? (
         <div className="alert-banner alert-notice" role="status">
           <Check size={17} />
-          <span>{notice}</span>
-          <button type="button" className="text-button" onClick={() => setNotice("")}>关闭</button>
+          <span>{tr(notice)}</span>
+          <button type="button" className="text-button" onClick={() => setNotice("")}>{t("关闭")}</button>
         </div>
       ) : null}
 
-      {managerNavigationError && <div className="alert-banner alert-error" role="alert"><CircleAlert size={17}/><span>{managerNavigationError}</span><button className="text-button" onClick={()=>setManagerNavigationError("")}>关闭</button></div>}
+      {tr(managerNavigationError && <div className="alert-banner alert-error" role="alert"><CircleAlert size={17}/><span>{tr(managerNavigationError)}</span><button className="text-button" onClick={()=>setManagerNavigationError("")}>{t("关闭")}</button></div>)}
       <ManagerWorkspace key={`${workspaceMode}:${currentUser?.username ?? "local"}:${authStatus.userCenter.serviceId ?? "local"}`}
         section={managerSection} navigationRevision={managerNavigationRevision} busy={busy} beginOperation={beginManagerOperation} onNavigate={next => void navigateManager(next)} />
       {managerSection==="data"&&outboundBatch&&currentUser&&!showManagement&&<OutboundReviewTasks key={`${authStatus.userCenter.serviceId}:${currentUser.username}:${outboundBatch.id}`} currentUser={currentUser} initialBatch={outboundBatch} view="workspace" workspaceBusy={busy} suspended={personalTaskOpen} onReturnToTasks={()=>setPersonalTaskOpen(true)}/>}
@@ -2346,15 +2345,15 @@ function App() {
         <aside className="sidebar" style={{ "--sidebar-scale": sidebarScale } as CSSProperties}>
           <div className="sidebar-heading">
             <div>
-              <span className="section-kicker">SOURCE</span>
-              <h1>记录</h1>
+              <span className="section-kicker">{t("源数据")}</span>
+              <h1>{t("记录")}</h1>
             </div>
             <div className="sidebar-heading-actions">
-              <button className="icon-button" type="button" onClick={() => setSidebarCollapsed((value) => !value)} title={sidebarCollapsed ? "展开目录" : "收起目录"} aria-label={sidebarCollapsed ? "展开目录" : "收起目录"}>
+              <button className="icon-button" type="button" onClick={() => setSidebarCollapsed((value) => !value)} title={sidebarCollapsed ? t("展开目录") : t("收起目录")} aria-label={sidebarCollapsed ? t("展开目录") : t("收起目录")}>
                 {sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
               </button>
               {skippedEpisodeCount ? (
-                <button className="icon-button" type="button" onClick={restoreSkippedEpisodes} disabled={busy} title="恢复跳过的数据" aria-label="恢复跳过的数据">
+                <button className="icon-button" type="button" onClick={restoreSkippedEpisodes} disabled={busy} title={t("恢复跳过的数据")} aria-label={t("恢复跳过的数据")}>
                   <RotateCcw size={17} />
                 </button>
               ) : null}
@@ -2363,22 +2362,22 @@ function App() {
                 type="button"
                 onClick={() => void (sourcePath ? openSource(sourcePath, true) : chooseSource())}
                 disabled={busy}
-                title="重新扫描"
-                aria-label="重新扫描"
+                title={t("重新扫描")}
+                aria-label={t("重新扫描")}
               >
                 <RotateCcw size={17} />
               </button>
             </div>
           </div>
-          {!sidebarCollapsed ? <label className="sidebar-zoom">目录缩放<input aria-label="目录缩放" type="range" min="0.75" max="1.35" step="0.05" value={sidebarScale} onChange={(event) => setSidebarScale(event.currentTarget.valueAsNumber)} /><output>{Math.round(sidebarScale * 100)}%</output></label> : null}
-          <div className="sidebar-path" title={sourcePath}>{sourcePath ? shortPath(sourcePath, 38) : "等待 SD 卡"}</div>
-          {!sidebarCollapsed && scan && !cloudWorkspaceNumber(scan.sourceRoot) && <button type="button" className="button button-secondary sidebar-rename-button" disabled={busy || reviewHasUnsaved} onClick={() => setBatchRenamePath(scan.sourceRoot)}><Pencil size={14} />修改批次名称</button>}
-          {!sidebarCollapsed && currentUser?.role === "operator" && scan && <div className="sidebar-review-toolbar" aria-label="当前目录批量审核">
+          {!sidebarCollapsed ? <label className="sidebar-zoom">{t("目录缩放")}<input aria-label={t("目录缩放")} type="range" min="0.75" max="1.35" step="0.05" value={sidebarScale} onChange={(event) => setSidebarScale(event.currentTarget.valueAsNumber)} /><output>{Math.round(sidebarScale * 100)}%</output></label> : null}
+          <div className="sidebar-path" title={sourcePath}>{sourcePath ? shortPath(sourcePath, 38) : t("等待 SD 卡")}</div>
+          {!sidebarCollapsed && scan && !cloudWorkspaceNumber(scan.sourceRoot) && <button type="button" className="button button-secondary sidebar-rename-button" disabled={busy || reviewHasUnsaved} onClick={() => setBatchRenamePath(scan.sourceRoot)}><Pencil size={14} />{t("修改批次名称")}</button>}
+          {!sidebarCollapsed && currentUser?.role === "operator" && scan && <div className="sidebar-review-toolbar" aria-label={t("当前目录批量审核")}>
             <div className="sidebar-review-actions">
-              <button type="button" className="button button-secondary" disabled={busy || !Object.keys(batchRejectionSelection).length} onClick={() => startBatchRejection()}><X size={14} />批量不通过</button>
-              <button type="button" className="button button-secondary" disabled={busy} onClick={() => startBatchRejection(scan.sourceRoot)}><FolderOpen size={14} />整文件夹不通过</button>
+              <button type="button" className="button button-secondary" disabled={busy || !Object.keys(batchRejectionSelection).length} onClick={() => startBatchRejection()}><X size={14} />{t("批量不通过")}</button>
+              <button type="button" className="button button-secondary" disabled={busy} onClick={() => startBatchRejection(scan.sourceRoot)}><FolderOpen size={14} />{t("整文件夹不通过")}</button>
             </div>
-            <label><input type="checkbox" aria-label="全选当前目录列表" disabled={busy || !displayedEpisodes.length} checked={displayedEpisodes.length > 0 && displayedEpisodes.every(episode => Boolean(batchRejectionSelection[episode.root]))} onChange={event => setBatchRejectionSelection(event.target.checked ? Object.fromEntries(displayedEpisodes.map(episode => [episode.root, { path: episode.root, name: episode.name }])) : {})} />全选<span>已选 {Object.keys(batchRejectionSelection).length} 条</span></label>
+            <label><input type="checkbox" aria-label={t("全选当前目录列表")} disabled={busy || !displayedEpisodes.length} checked={displayedEpisodes.length > 0 && displayedEpisodes.every(episode => Boolean(batchRejectionSelection[episode.root]))} onChange={event => setBatchRejectionSelection(event.target.checked ? Object.fromEntries(displayedEpisodes.map(episode => [episode.root, { path: episode.root, name: episode.name }])) : {})} />{t("全选")}<span>{t("已选") + " "}{Object.keys(batchRejectionSelection).length}{" " + t("条")}</span></label>
           </div>}
           {progress ? <ProgressStrip progress={progress} onCancel={() => void cancelCurrentOperation()} /> : null}
           <div className="episode-list">
@@ -2394,21 +2393,21 @@ function App() {
             ) : skippedEpisodeCount ? (
               <div className="sidebar-empty sidebar-skipped">
                 <EyeOff size={23} />
-                <span>已跳过 {skippedEpisodeCount} 条数据</span>
-                <button className="text-button" type="button" onClick={restoreSkippedEpisodes}>恢复显示</button>
+                <span>{t("已跳过") + " "}{skippedEpisodeCount}{" " + t("条数据")}</span>
+                <button className="text-button" type="button" onClick={restoreSkippedEpisodes}>{t("恢复显示")}</button>
               </div>
             ) : (
               <div className="sidebar-empty">
                 <HardDrive size={23} />
-                <span>未加载记录</span>
+                <span>{t("未加载记录")}</span>
               </div>
             )}
           </div>
           <div className="sidebar-footer">
-            <div><span>文件</span><strong>{selectedEpisode?.indexed ? selectedEpisode.totalFiles : "—"}</strong></div>
-            <div><span>容量</span><strong>{selectedEpisode?.indexed ? formatBytes(selectedEpisode.totalBytes) : "—"}</strong></div>
-            <div><span>介质</span><strong>{scan ? driveTypeLabel(scan.volume.driveType) : "—"}</strong></div>
-            <div><span>文件系统</span><strong>{scan?.volume.filesystem ?? "未知"}</strong></div>
+            <div><span>{t("文件")}</span><strong>{selectedEpisode?.indexed ? selectedEpisode.totalFiles : "—"}</strong></div>
+            <div><span>{t("容量")}</span><strong>{selectedEpisode?.indexed ? tr(formatBytes(selectedEpisode.totalBytes)) : "—"}</strong></div>
+            <div><span>{t("介质")}</span><strong>{scan ? tr(driveTypeLabel(scan.volume.driveType)) : "—"}</strong></div>
+            <div><span>{t("文件系统")}</span><strong>{tr(scan?.volume.filesystem) ?? t("未知")}</strong></div>
           </div>
         </aside>
 
@@ -2417,24 +2416,20 @@ function App() {
 
           {data || view === "batch" ? (
             <>
-              <nav className="view-tabs" aria-label="工作区视图">
+              <nav className="view-tabs" aria-label={t("工作区视图")}>
                 {data ? (
                   <>
                     <button type="button" className={proofreading ? "active" : ""} onClick={() => changeView("proofread")}>
-                      <FileSearch size={17} />校对
-                    </button>
+                      <FileSearch size={17} />{t("校对")}</button>
                     <button type="button" className={view === "checks" ? "active" : ""} onClick={() => changeView("checks")}>
-                      <ShieldCheck size={17} />检查
-                      {report?.status === "warning" ? <span className="tab-alert" /> : null}
+                      <ShieldCheck size={17} />{t("检查")}{report?.status === "warning" ? <span className="tab-alert" /> : null}
                     </button>
                     <button type="button" className={view === "export" ? "active" : ""} onClick={() => changeView("export")}>
-                      <PackageOpen size={17} />导出
-                    </button>
+                      <PackageOpen size={17} />{t("导出")}</button>
                   </>
                 ) : null}
                 <button type="button" className={view === "batch" ? "active" : ""} onClick={() => { if (machinePreviewRange) exitMachinePreview(); openBatchExport(); }}>
-                  <ListChecks size={17} />批量
-                </button>
+                  <ListChecks size={17} />{t("批量")}</button>
                 <span className="view-tab-spacer" />
                 {data ? (
                   <span className="loaded-label"><span className="source-dot" />{shortPath(data.summary.root, 52)}</span>
@@ -2465,15 +2460,14 @@ function App() {
                   <section className="camera-section">
                     <div className="section-heading compact-heading">
                       <div>
-                        <span className="section-kicker">SYNCHRONIZED FRAMES</span>
-                        <h2>多路回放</h2>
+                        <span className="section-kicker">{t("同步画面")}</span>
+                        <h2>{t("多路回放")}</h2>
                       </div>
-                      <span className="frame-counter">帧 {currentFrame} / {maxFrame}</span>
+                      <span className="frame-counter">{t("帧") + " "}{currentFrame} / {maxFrame}</span>
                       {isTauriRuntime() && scan?.volume.driveType === "remote" && <button type="button" className="button local-playback-button"
                         disabled={busy || reviewHasUnsaved} onClick={() => void enableLocalPlayback()}
-                        title="将当前录制的视频临时缓存到本机，缓解 NAS 波动；审核结果仍写回原目录。退出后清理缓存。">
-                        <HardDrive size={15} />本地流畅播放
-                      </button>}
+                        title={t("将当前录制的视频临时缓存到本机，缓解 NAS 波动；审核结果仍写回原目录。退出后清理缓存。")}>
+                        <HardDrive size={15} />{t("本地流畅播放")}</button>}
                       <PreviewSettings />
                     </div>
                     <div className={`replay-visual-row${data.skeleton || data.skeletonError ? " with-skeleton" : ""}`}>
@@ -2516,9 +2510,9 @@ function App() {
                             onBufferingChange={handleNativeBufferingChange}
                           />
                         ) : (
-                          <figure key={name} className={`frame-panel camera-${index} camera-placeholder`} aria-label={`${name} 未接入`}>
-                            <div className="camera-placeholder-content"><Video size={22} /><span>未接入</span></div>
-                            <figcaption><span className="frame-camera-name" title={name}>{name.startsWith("cam") ? `Camera ${name.slice(3)}` : name === "t265_left" ? "T265 Left" : name === "t265_right" ? "T265 Right" : name}</span></figcaption>
+                          <figure key={name} className={`frame-panel camera-${index} camera-placeholder`} aria-label={t("{0} 未接入", [name])}>
+                            <div className="camera-placeholder-content"><Video size={22} /><span>{t("未接入")}</span></div>
+                            <figcaption><span className="frame-camera-name" title={name}>{name.startsWith("cam") ? t("Camera {0}", [tr(name.slice(3))]) : name === "t265_left" ? "T265 Left" : name === "t265_right" ? "T265 Right" : name}</span></figcaption>
                           </figure>
                         );})}
                       </div>
@@ -2538,9 +2532,9 @@ function App() {
                           />
                         ) : null}
                         {!data.skeleton && data.skeletonError ? (
-                          <section className="skeleton-load-error" aria-label="骨架数据">
-                            <strong>骨架数据不可用</strong>
-                            <span>{data.skeletonError}</span>
+                          <section className="skeleton-load-error" aria-label={t("骨架数据")}>
+                            <strong>{t("骨架数据不可用")}</strong>
+                            <span>{tr(data.skeletonError)}</span>
                           </section>
                         ) : null}
                       </div>
@@ -2557,11 +2551,11 @@ function App() {
                     <div id="episode-special-tags" />
                   </section>
                     {annotationReadyRoot !== data.summary.root ? <div className="quality-workspace quality-embedded">
-                      <section className="quality-timeline" aria-label="只读视频预览">
+                      <section className="quality-timeline" aria-label={t("只读视频预览")}>
                         <div className="proofreading-transport">{playbackControls}</div>
-                        <input type="range" aria-label="预览播放帧" min={minFrame} max={maxFrame} value={currentFrame}
+                        <input type="range" aria-label={t("预览播放帧")} min={minFrame} max={maxFrame} value={currentFrame}
                           onChange={event => seekFrame(event.currentTarget.valueAsNumber)} />
-                        <p role="status">正在读取视频与编辑记录，请稍候。</p>
+                        <p role="status">{t("正在读取视频与编辑记录，请稍候。")}</p>
                       </section>
                     </div> : <ReviewPanel username={reviewStorageUsername} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement || managerSection !== "data"} busy={busy || showManagement || managerSection !== "data" || annotationReadyRoot !== data.summary.root}
                       playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onPlay: playSegment, onToggle: togglePlayback, controls: (
@@ -2590,20 +2584,18 @@ function App() {
                   <section className="telemetry-section">
                     <div className="section-heading compact-heading">
                       <div>
-                        <span className="section-kicker">STATE TELEMETRY</span>
-                        <h2>状态数据</h2>
+                        <span className="section-kicker">{t("状态遥测")}</span>
+                        <h2>{t("状态数据")}</h2>
                       </div>
-                      <div className="metric-switcher" role="tablist" aria-label="状态数据类型">
+                      <div className="metric-switcher" role="tablist" aria-label={t("状态数据类型")}>
                         {METRICS.map((item) => (
                           <button key={item.key} type="button" className={metric === item.key ? "active" : ""} onClick={() => setMetric(item.key)}>
-                            {item.label}
+                            {tr(item.label)}
                           </button>
                         ))}
                       </div>
                     </div>
-                    {data.statesPartial
-                      ? <p role="status">完整状态数据检查中，当前先预览视频；检查完成后显示完整曲线。</p>
-                      : <TelemetryChart states={data.states} metric={metric} frameId={currentFrame} />}
+                    {data.statesPartial ? <p role="status">{t("完整状态数据检查中，当前先预览视频；检查完成后显示完整曲线。")}</p> : <TelemetryChart states={data.states} metric={metric} frameId={currentFrame} />}
                   </section>
                 </div>
               ) : view === "checks" ? (
@@ -2666,12 +2658,13 @@ function EmptyWorkspace({
   onBatch: () => void;
   onReject?: () => void;
 }) {
+  useLanguage();
   return (
       <div className="empty-workspace">
         <div className="empty-header">
-        <span className="section-kicker">READ-ONLY SOURCE</span>
-        <h2>从 SD 卡载入记录</h2>
-        <p>记录直接从源目录只读打开，不占用额外副本空间。</p>
+        <span className="section-kicker">{t("只读源数据")}</span>
+        <h2>{t("从 SD 卡载入记录")}</h2>
+        <p>{t("记录直接从源目录只读打开，不占用额外副本空间。")}</p>
       </div>
       {selectedEpisode ? (
         <div className="selected-episode-line">
@@ -2681,34 +2674,29 @@ function EmptyWorkspace({
           <div>
             <strong>{selectedEpisode.name}</strong>
             <span>
-              {busy
-                ? "正在扫描或检查源记录"
-                : selectedEpisode.indexed
-                  ? `${selectedEpisode.stateCount} 条状态 · ${formatBytes(selectedEpisode.totalBytes)} · ${selectedEpisode.streams.length} 路流`
-                  : "待读取"}
+              {busy ? t("正在扫描或检查源记录") : selectedEpisode.indexed ? t("{0} 条状态 · {1} · {2} 路流", [selectedEpisode.stateCount, tr(formatBytes(selectedEpisode.totalBytes)), selectedEpisode.streams.length]) : t("待读取")}
             </span>
           </div>
         </div>
       ) : (
         <button className="empty-action" type="button" onClick={() => void onChoose()} disabled={busy}>
           <HardDrive size={30} />
-          <span>选择 SD 卡目录</span>
-          <small>支持包含一个或多个记录目录的卷</small>
+          <span>{t("选择 SD 卡目录")}</span>
+          <small>{t("支持包含一个或多个记录目录的卷")}</small>
         </button>
       )}
-      {onReject && <button className="button button-secondary" type="button" disabled={busy} onClick={onReject}><X size={16} />不通过</button>}
+      {onReject && <button className="button button-secondary" type="button" disabled={busy} onClick={onReject}><X size={16} />{t("不通过")}</button>}
       <button
         className="button button-secondary empty-batch-action"
         type="button"
         onClick={onBatch}
         disabled={busy}
       >
-        <ListChecks size={16} />批量导出已标注数据
-      </button>
+        <ListChecks size={16} />{t("批量导出已标注数据")}</button>
       <div className="empty-facts">
-        <span><ShieldCheck size={16} />源目录只读</span>
-        <span><Activity size={16} />状态与帧序列检查</span>
-        <span><Images size={16} />多路同步回放</span>
+        <span><ShieldCheck size={16} />{t("源目录只读")}</span>
+        <span><Activity size={16} />{t("状态与帧序列检查")}</span>
+        <span><Images size={16} />{t("多路同步回放")}</span>
       </div>
     </div>
   );
@@ -2737,6 +2725,7 @@ const EpisodeListRow = memo(function EpisodeListRow({
   }>;
   buttonRefs: RefObject<Map<string, HTMLButtonElement>>;
 }) {
+  useLanguage();
   const activationHint = sourceState === "error"
     ? "单击选择；双击或按 Enter/空格重试读取"
     : "单击选择；双击或按 Enter/空格进入回放";
@@ -2745,14 +2734,14 @@ const EpisodeListRow = memo(function EpisodeListRow({
   const episodeTitle = completed && savedAnnotation
     ? `已标注 · ${savedAnnotation.trajectoryCode}；${activationHint}` : activationHint;
   return <div className={`episode-entry${rejectionSelectable ? " episode-entry-selectable" : ""}`}>
-    {rejectionSelectable && <input type="checkbox" className="episode-rejection-select" aria-label={`选择 ${episode.name}`} checked={rejectionSelected} disabled={busy} onChange={event => actions.current.toggleRejection(episode, event.target.checked)} />}
+    {rejectionSelectable && <input type="checkbox" className="episode-rejection-select" aria-label={t("选择 {0}", [episode.name])} checked={rejectionSelected} disabled={busy} onChange={event => actions.current.toggleRejection(episode, event.target.checked)} />}
     <button type="button" className={`episode-item${selected ? " selected" : ""}`}
       ref={(element) => {
         if (element) buttonRefs.current.set(episode.root, element);
         else buttonRefs.current.delete(episode.root);
       }}
-      aria-pressed={selected} disabled={busy} title={episodeTitle}
-      aria-label={`${episode.name}：${activationHint}`}
+      aria-pressed={selected} disabled={busy} title={tr(episodeTitle)}
+      aria-label={t("{0}：{1}", [episode.name, tr(activationHint)])}
       onClick={() => actions.current.select(episode)}
       onDoubleClick={() => void actions.current.load(episode, false, true)}
       onKeyDown={(event) => {
@@ -2763,33 +2752,32 @@ const EpisodeListRow = memo(function EpisodeListRow({
       <span className="episode-item-top">
         <Images size={16} /><strong>{episode.name}</strong>
         {completed && savedAnnotation ? <span className="episode-annotation-tag"
-          title={`已标注 · ${savedAnnotation.trajectoryCode} · r${savedAnnotation.revision}`}
-          aria-label="已标注">已标注</span> : null}
-        {reviewStatus && !pendingReviewStatus ? <span className="episode-annotation-tag" aria-label="已审核">我已审·{reviewStatus === "pending" ? "待复审" : reviewStatus === "approved" ? "通过" : "不通过"}</span> : null}
+          title={t("已标注 · {0} · r{1}", [tr(savedAnnotation.trajectoryCode), savedAnnotation.revision])}
+          aria-label={t("已标注")}>{t("已标注")}</span> : null}
+        {reviewStatus && !pendingReviewStatus ? <span className="episode-annotation-tag" aria-label={t("已审核")}>{t("我已审·")}{reviewStatus === "pending" ? t("待复审") : reviewStatus === "approved" ? t("通过") : t("不通过")}</span> : null}
         <EpisodeSourceMark state={sourceState} /><ChevronRight size={15} />
       </span>
-      {pendingReviewStatus && <span className="episode-annotation-tag episode-local-pending" aria-label={pendingReviewStatus === "pending" ? "本机草稿" : "本机待写回"}>{pendingReviewStatus === "pending" ? "本机草稿 · 待审核" : pendingReviewStatus === "conflict" ? "本机结论冲突 · 待核对" : `本机${pendingReviewStatus === "approved" ? "通过" : "不通过"} · 待写回 NAS`}</span>}
-      <span className="episode-item-meta">{episode.indexed
-        ? `${episode.stateCount} states · ${formatBytes(episode.totalBytes)}`
-        : episode.stateCount ? `${episode.stateCount} states · 快速预览` : "待读取"}</span>
+      {tr(pendingReviewStatus && <span className="episode-annotation-tag episode-local-pending" aria-label={pendingReviewStatus === "pending" ? t("本机草稿") : t("本机待写回")}>{pendingReviewStatus === "pending" ? t("本机草稿 · 待审核") : pendingReviewStatus === "conflict" ? t("本机结论冲突 · 待核对") : t("本机{0} · 待写回 NAS", [pendingReviewStatus === "approved" ? t("通过") : t("不通过")])}</span>)}
+      <span className="episode-item-meta">{episode.indexed ? t("{0} states · {1}", [episode.stateCount, tr(formatBytes(episode.totalBytes))]) : episode.stateCount ? t("{0} states · 快速预览", [episode.stateCount]) : t("待读取")}</span>
       <span className="stream-dots">{episode.streams.map((stream) => <i
         className={episode.indexed ? stream.frameCount ? "dot-ok" : "dot-error" : stream.frameCount ? "dot-ok" : ""}
-        key={stream.name} title={stream.label} />)}</span>
+        key={stream.name} title={tr(stream.label)} />)}</span>
     </button>
     <button className="icon-button episode-skip" type="button" onClick={() => actions.current.skip(episode)}
-      disabled={busy} title="跳过数据" aria-label={`跳过 ${episode.name}`}><EyeOff size={15} /></button>
+      disabled={busy} title={t("跳过数据")} aria-label={t("跳过 {0}", [episode.name])}><EyeOff size={15} /></button>
   </div>;
 });
 
 function EpisodeSourceMark({ state }: { state: EpisodeSourceState }) {
+  useLanguage();
   if (state === "loading") {
-    return <span className="episode-source-state"><LoaderCircle className="spin" size={13} />读取中</span>;
+    return <span className="episode-source-state"><LoaderCircle className="spin" size={13} />{t("读取中")}</span>;
   }
   if (state === "available") {
-    return <span className="episode-source-state"><Check size={13} />可用</span>;
+    return <span className="episode-source-state"><Check size={13} />{t("可用")}</span>;
   }
   if (state === "error") {
-    return <span className="episode-source-state state-error"><CircleAlert size={13} />失败</span>;
+    return <span className="episode-source-state state-error"><CircleAlert size={13} />{t("失败")}</span>;
   }
   return null;
 }
@@ -2803,16 +2791,17 @@ function FrameRenderProgress({
   settled: number;
   total: number;
 }) {
+  useLanguage();
   if (!total) return null;
   const boundedSettled = Math.max(0, Math.min(total, settled));
   const percent = Math.round((boundedSettled / total) * 100);
   return (
     <div className="frame-render-progress" role="status" aria-live="polite">
-      <span className="frame-render-progress-label">右侧画面</span>
-      <div className="frame-render-track" aria-label={`帧 ${frameId} 已渲染 ${boundedSettled}/${total} 路`}>
+      <span className="frame-render-progress-label">{t("右侧画面")}</span>
+      <div className="frame-render-track" aria-label={t("帧 {0} 已渲染 {1}/{2} 路", [frameId, boundedSettled, total])}>
         <span style={{ width: `${percent}%` }} />
       </div>
-      <span className="frame-render-progress-count">帧 {frameId} · {boundedSettled}/{total} 路</span>
+      <span className="frame-render-progress-count">{t("帧") + " "}{frameId} · {boundedSettled}/{total}{" " + t("路")}</span>
     </div>
   );
 }
@@ -2824,11 +2813,12 @@ function OperationHistoryPanel({
   records: OperationErrorRecord[];
   onClose: () => void;
 }) {
+  useLanguage();
   return (
-    <section className="operation-history" aria-label="操作错误历史">
+    <section className="operation-history" aria-label={t("操作错误历史")}>
       <header>
-        <span><History size={17} /><strong>操作错误历史</strong></span>
-        <button className="icon-button" type="button" onClick={onClose} title="关闭" aria-label="关闭错误历史">
+        <span><History size={17} /><strong>{t("操作错误历史")}</strong></span>
+        <button className="icon-button" type="button" onClick={onClose} title={t("关闭")} aria-label={t("关闭错误历史")}>
           <X size={16} />
         </button>
       </header>
@@ -2836,10 +2826,10 @@ function OperationHistoryPanel({
         <div className="operation-history-list">
           {records.map((record) => (
             <article className="operation-history-row" key={record.id}>
-              <span className="history-time">{formatHistoryTime(record.occurredAtMs)}</span>
-              <span className="history-code">{operationErrorLabel(record.code)}</span>
-              <span className="history-operation">{operationLabel(record.operation)}</span>
-              <span className="history-message" title={record.message}>{record.message}</span>
+              <span className="history-time">{tr(formatHistoryTime(record.occurredAtMs))}</span>
+              <span className="history-code">{tr(operationErrorLabel(record.code))}</span>
+              <span className="history-operation">{tr(operationLabel(record.operation))}</span>
+              <span className="history-message" title={tr(record.message)}>{tr(record.message)}</span>
               <span className="history-source" title={record.sourcePath ?? undefined}>
                 {record.sourcePath ? shortPath(record.sourcePath, 48) : "—"}
               </span>
@@ -2848,15 +2838,16 @@ function OperationHistoryPanel({
           ))}
         </div>
       ) : (
-        <div className="operation-history-empty"><Check size={16} />暂无操作错误</div>
+        <div className="operation-history-empty"><Check size={16} />{t("暂无操作错误")}</div>
       )}
     </section>
   );
 }
 
 function StatusBadge({ status }: { status: "ok" | "warning" | "error" | "idle" }) {
+  useLanguage();
   const labels = { ok: "检查通过", warning: "有警告", error: "有错误", idle: "未载入" };
-  return <span className={`top-status top-status-${status}`}><span />{labels[status]}</span>;
+  return <span className={`top-status top-status-${status}`}><span />{tr(labels[status])}</span>;
 }
 
 function getMaxFrame(data: EpisodeData): number {
@@ -2905,7 +2896,7 @@ function presentOperationError(message: string): string {
 
 
 function formatHistoryTime(value: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(localeTag(), {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -2962,6 +2953,7 @@ function DisplayNameDialog({
   onSave: (displayName: string) => Promise<void>;
   onClose: () => void;
 }) {
+  useLanguage();
   const [displayName, setDisplayName] = useState(currentUser.displayName);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -2995,16 +2987,16 @@ function DisplayNameDialog({
       <section className="profile-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-editor-title">
         <header>
           <div>
-            <span className="section-kicker">ACCOUNT PROFILE</span>
-            <h2 id="profile-editor-title">修改显示名称</h2>
-            <p>监管端以此名称识别当前标注员工，账号 @{currentUser.username} 保持不变。</p>
+            <span className="section-kicker">{t("账号资料")}</span>
+            <h2 id="profile-editor-title">{t("修改显示名称")}</h2>
+            <p>{t("监管端以此名称识别当前标注员工，账号 @")}{currentUser.username}{" " + t("保持不变。")}</p>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} disabled={saving} title="关闭" aria-label="关闭显示名称编辑">
+          <button className="icon-button" type="button" onClick={onClose} disabled={saving} title={t("关闭")} aria-label={t("关闭显示名称编辑")}>
             <X size={16} />
           </button>
         </header>
         <form onSubmit={(event) => void submit(event)}>
-          <label htmlFor="current-display-name">显示名称</label>
+          <label htmlFor="current-display-name">{t("显示名称")}</label>
           <input
             id="current-display-name"
             value={displayName}
@@ -3015,11 +3007,11 @@ function DisplayNameDialog({
             required
           />
           <div className="profile-editor-meta"><span>@{currentUser.username}</span><span>{[...displayName].length} / 40</span></div>
-          {error ? <div className="auth-error" role="alert">{error}</div> : null}
+          {error ? <div className="auth-error" role="alert">{tr(error)}</div> : null}
           <footer>
-            <button className="button button-secondary" type="button" onClick={onClose} disabled={saving}>取消</button>
+            <button className="button button-secondary" type="button" onClick={onClose} disabled={saving}>{t("取消")}</button>
             <button className="button button-primary" type="submit" disabled={!normalized || normalized === currentUser.displayName || saving}>
-              {saving ? "保存中" : "保存名称"}
+              {saving ? t("保存中") : t("保存名称")}
             </button>
           </footer>
         </form>
@@ -3041,6 +3033,7 @@ function ReleaseHistoryDialog({
   onDownload:(version:string,platform:string)=>Promise<string|null>;
   onClose: () => void;
 }) {
+  useLanguage();
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const node = dialog.current;
@@ -3057,11 +3050,11 @@ function ReleaseHistoryDialog({
       }}>
         <header>
           <div>
-            <span className="section-kicker">发布记录</span>
-            <h2 id="version-history-title">历史版本</h2>
-            <p>查看更新记录，或通过公司内网下载对应版本安装包。</p>
+            <span className="section-kicker">{t("发布记录")}</span>
+            <h2 id="version-history-title">{t("历史版本")}</h2>
+            <p>{t("查看更新记录，或通过公司内网下载对应版本安装包。")}</p>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} title="关闭历史版本" aria-label="关闭历史版本" autoFocus>
+          <button className="icon-button" type="button" onClick={onClose} title={t("关闭历史版本")} aria-label={t("关闭历史版本")} autoFocus>
             <X size={16} />
           </button>
         </header>
@@ -3070,17 +3063,17 @@ function ReleaseHistoryDialog({
             <article className="version-history-entry" key={release.version}>
               <div className="version-history-meta">
                 <strong>v{release.version}</strong>
-                {release.version === currentVersion ? <span>当前版本</span> : null}
-                <time dateTime={release.date}>{release.date}</time>
+                {release.version === currentVersion ? <span>{t("当前版本")}</span> : null}
+                <time dateTime={release.date}>{tr(release.date)}</time>
               </div>
               <p className="version-history-summary">
-                {RELEASE_SUMMARIES_ZH[release.version] ?? (release.notes.filter((note) => /[\u3400-\u9fff]/.test(note)).join("；") || "此版本没有中文更新摘要。")}
+                {tr(RELEASE_SUMMARIES_ZH[release.version]) ?? tr((release.notes.filter((note) => /[\u3400-\u9fff]/.test(note)).join("；") || "此版本没有中文更新摘要。"))}
               </p>
               {release.notes.length ? (
                 <details className="version-history-details">
-                  <summary>展开完整更新记录（{release.notes.length} 项）</summary>
+                  <summary>{t("展开完整更新记录（")}{release.notes.length}{" " + t("项）")}</summary>
                   <ul>
-                    {release.notes.map((note, index) => <li key={`${release.version}-${index}`}>{note}</li>)}
+                    {release.notes.map((note, index) => <li key={`${release.version}-${index}`}>{tr(note)}</li>)}
                   </ul>
                 </details>
               ) : null}

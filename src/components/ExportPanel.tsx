@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import {
   Bot,
   CheckCircle2,
@@ -77,6 +78,7 @@ export function ExportPanel({
   onExport: () => void;
   onReveal: (path: string) => void;
 }) {
+  useLanguage();
   const blocked = !validationReady || rangeStatus === "error";
   const selected = FORMATS.find((format) => format.id === selectedFormat) ?? FORMATS[0];
 
@@ -84,41 +86,35 @@ export function ExportPanel({
     <div className="export-view">
       <div className="section-heading export-heading">
         <div>
-          <span className="section-kicker">DATA ADAPTERS</span>
-          <h2>导出数据</h2>
+          <span className="section-kicker">{t("导出格式")}</span>
+          <h2>{t("导出数据")}</h2>
         </div>
         <span className={`status-mark status-${rangeStatus}`}>
-          {!validationReady
-            ? "等待检查"
-            : rangeStatus === "error"
-              ? "检查未通过"
-              : rangeStatus === "warning"
-                ? "带警告导出"
-                : "可导出"}
+          {!validationReady ? t("等待检查") : rangeStatus === "error" ? t("检查未通过") : rangeStatus === "warning" ? t("带警告导出") : t("可导出")}
         </span>
       </div>
 
       <div className="export-source-band">
         <div>
-          <span>{annotation ? "轨迹编码" : "记录"}</span>
-          <strong>{annotation?.trajectoryCode ?? data.summary.name}</strong>
+          <span>{annotation ? t("轨迹编码") : t("记录")}</span>
+          <strong>{tr(annotation?.trajectoryCode) ?? data.summary.name}</strong>
         </div>
         <div>
-          <span>裁剪范围</span>
-          <strong>帧 {range.startFrame}–{range.endFrame}</strong>
+          <span>{t("裁剪范围")}</span>
+          <strong>{t("帧") + " "}{range.startFrame}–{range.endFrame}</strong>
         </div>
         <div>
-          <span>片段状态</span>
-          <strong>{rangeStateCount} 条 · {formatDuration(rangeDurationMs)}</strong>
+          <span>{t("片段状态")}</span>
+          <strong>{rangeStateCount}{" " + t("条 ·") + " "}{tr(formatDuration(rangeDurationMs))}</strong>
         </div>
         <div>
-          <span>任务</span>
-          <strong>{annotation?.taskId ?? "未标注"}</strong>
+          <span>{t("任务")}</span>
+          <strong>{tr(annotation?.taskId) ?? t("未标注")}</strong>
         </div>
       </div>
 
       <fieldset className="format-picker" disabled={busy}>
-        <legend>目标格式</legend>
+        <legend>{t("目标格式")}</legend>
         {FORMATS.map((format) => {
           const Icon = format.icon;
           const checked = selectedFormat === format.id;
@@ -134,9 +130,9 @@ export function ExportPanel({
               <span className="format-icon"><Icon size={20} /></span>
               <span className="format-copy">
                 <strong>{format.name}</strong>
-                <small>{format.contents}</small>
+                <small>{tr(format.contents)}</small>
               </span>
-              <code>{format.extension}</code>
+              <code>{tr(format.extension)}</code>
               <span className="radio-mark" aria-hidden="true" />
             </label>
           );
@@ -145,7 +141,7 @@ export function ExportPanel({
 
       <div className="export-action-row">
         <div>
-          <span>当前 adapter</span>
+          <span>{t("当前 adapter")}</span>
           <strong>{selected.name}</strong>
         </div>
         <button
@@ -155,7 +151,7 @@ export function ExportPanel({
           disabled={busy || (validationReady && blocked)}
         >
           {busy ? <LoaderCircle className="spin" size={17} /> : <FolderOutput size={17} />}
-          {validationReady ? "选择目录并导出" : "检查数据后导出"}
+          {validationReady ? t("选择目录并导出") : t("检查数据后导出")}
         </button>
       </div>
 
@@ -163,21 +159,21 @@ export function ExportPanel({
         <div className="export-result" role="status">
           <CheckCircle2 size={21} />
           <div>
-            <strong>导出完成</strong>
-            <span title={result.outputPath}>{shortPath(result.outputPath, 86)}</span>
-            {result.metadataPath ? <small title={result.metadataPath}>Metadata 已写入：{shortPath(result.metadataPath, 72)}</small> : null}
+            <strong>{t("导出完成")}</strong>
+            <span title={tr(result.outputPath)}>{shortPath(result.outputPath, 86)}</span>
+            {result.metadataPath ? <small title={tr(result.metadataPath)}>{t("Metadata 已写入：")}{shortPath(result.metadataPath, 72)}</small> : null}
           </div>
           <div className="export-result-meta">
-            <span>{result.totalFiles} 个文件</span>
-            <span>{formatBytes(result.totalBytes)}</span>
-            <span>{(result.elapsedMs / 1000).toFixed(1)} s</span>
+            <span>{result.totalFiles}{" " + t("个文件")}</span>
+            <span>{tr(formatBytes(result.totalBytes))}</span>
+            <span>{tr((result.elapsedMs / 1000).toFixed(1))} s</span>
           </div>
           <button
             className="icon-button export-reveal"
             type="button"
             onClick={() => onReveal(result.outputPath)}
-            title="在文件管理器中显示"
-            aria-label="在文件管理器中显示"
+            title={t("在文件管理器中显示")}
+            aria-label={t("在文件管理器中显示")}
           >
             <FolderOpen size={17} />
           </button>
@@ -186,9 +182,7 @@ export function ExportPanel({
 
       {blocked ? (
         <div className="export-blocked">
-          {validationReady
-            ? "当前裁剪片段包含错误。请先在“检查”中处理解码、空流或状态数据问题。"
-            : "数据检查完成后才可导出。"}
+          {validationReady ? t("当前裁剪片段包含错误。请先在“检查”中处理解码、空流或状态数据问题。") : t("数据检查完成后才可导出。")}
         </div>
       ) : null}
     </div>

@@ -1,3 +1,4 @@
+import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw, X } from "lucide-react";
 import { getPendingSourceReviews, publishPendingSourceReviews } from "../lib/backend";
@@ -5,6 +6,7 @@ import type { PendingSourceReviewStatus } from "../types";
 import { WRITEBACK_ACTIVITY, type WritebackActivity } from "../lib/writeback-coordination";
 
 export function SourceReviewNotice({ disabled, onBusy, onWritten, owner }: { disabled: boolean; onBusy: (busy: boolean) => void; onWritten: () => void; owner?: {username:string;serviceId:string} }) {
+  useLanguage();
   const [status, setStatus] = useState<PendingSourceReviewStatus | null>(null);
   const [error, setError] = useState("");
   const [queryError, setQueryError] = useState("");
@@ -73,17 +75,17 @@ export function SourceReviewNotice({ disabled, onBusy, onWritten, owner }: { dis
   const issue = [error, queryError].filter(Boolean).join("；");
   if (!status?.pending && !issue) return null;
   return <>
-    <div className="source-review-notice" role="status"><AlertTriangle size={17} /><span><strong>{status?.pending ? `${status.pending} 条结果已保存本机，待写回数据目录` : "本机待写结果状态未知，请重新检查"}</strong><br />{status?.ready ? "存储检查已通过，可确认写回。" : "后台每 30 秒检查存储恢复；恢复后提醒确认写回。"}任务进度以 NAS 已写入 QC 为准。</span><button className="button button-secondary" onClick={() => { manual.current=true; setOpen(true); void refresh(); }}>查看待写结果</button></div>
-    {issue && !open && <p role="alert" className="machine-message">{issue}</p>}
-    {open && <dialog className="rejection-dialog source-review-dialog" aria-label="本机审核结果待写回" ref={node => { dialog.current=node; if (node && !node.open) node.showModal(); }} onPointerDown={()=>{manual.current=true;}} onKeyDown={()=>{manual.current=true;}} onWheel={()=>{manual.current=true;}} onCancel={event => { event.preventDefault(); if (!busy) { dismissed.current = true; setOpen(false); } }}>
-      <header><h2>本机审核结果待写回</h2><button className="icon-button" title="稍后写回" aria-label="关闭待写回提示" disabled={busy} onClick={() => { dismissed.current = true; setOpen(false); }}><X size={18} /></button></header>
-      <p>{status?.ready ? "数据目录容量和连接检查已通过。" : "数据目录尚未确认恢复。"}共有 {status?.pending ?? "未知"} 条本机结果，包含已提交的审核结论或骨架描述；未通过审核的动作草稿不在写回范围。</p>
-      <p>点击写回后才会更新共享目录；审核结论写回后更新任务进度，骨架描述不计审核进度。若其他人已修改结果，会保留本机记录并提示冲突。请勿卸载软件或清理应用数据。</p>
-      {status?.storageError && <p className="machine-message">{status.storageError}</p>}
-      {status && status.pending > status.items.length && <p>以下显示前 {status.items.length} 条；确认写回会依次处理全部 {status.pending} 条。</p>}
-      <ul className="batch-rejection-results">{status?.items.map(item => <li key={`${item.sourcePath}:${item.channel ?? "action"}`}><span>{item.name} · {item.channel === "skeleton" ? "骨架描述" : item.status === "approved" ? "本机通过" : item.status === "rejected" ? "本机不通过" : "本机草稿"}</span><span>{new Date(item.createdAtMs).toLocaleString("zh-CN")}</span><small>{item.error}</small></li>)}</ul>
-      {issue && <p role="alert" className="machine-message">{issue}</p>}
-      <footer><button className="button button-secondary" disabled={busy} onClick={() => { dismissed.current = true; setOpen(false); }}>稍后</button><button className="button button-secondary" disabled={busy} onClick={() => void refresh()}>重新检查</button><button className="button button-primary" disabled={busy || disabled || !status?.pending} onClick={() => void publish()}><RefreshCw size={15} />{busy ? "正在写回…" : "确认写回数据目录"}</button></footer>
+    <div className="source-review-notice" role="status"><AlertTriangle size={17} /><span><strong>{status?.pending ? t("{0} 条结果已保存本机，待写回数据目录", [status.pending]) : t("本机待写结果状态未知，请重新检查")}</strong><br />{status?.ready ? t("存储检查已通过，可确认写回。") : t("后台每 30 秒检查存储恢复；恢复后提醒确认写回。")}{t("任务进度以 NAS 已写入 QC 为准。")}</span><button className="button button-secondary" onClick={() => { manual.current=true; setOpen(true); void refresh(); }}>{t("查看待写结果")}</button></div>
+    {tr(issue && !open && <p role="alert" className="machine-message">{tr(issue)}</p>)}
+    {open && <dialog className="rejection-dialog source-review-dialog" aria-label={t("本机审核结果待写回")} ref={node => { dialog.current=node; if (node && !node.open) node.showModal(); }} onPointerDown={()=>{manual.current=true;}} onKeyDown={()=>{manual.current=true;}} onWheel={()=>{manual.current=true;}} onCancel={event => { event.preventDefault(); if (!busy) { dismissed.current = true; setOpen(false); } }}>
+      <header><h2>{t("本机审核结果待写回")}</h2><button className="icon-button" title={t("稍后写回")} aria-label={t("关闭待写回提示")} disabled={busy} onClick={() => { dismissed.current = true; setOpen(false); }}><X size={18} /></button></header>
+      <p>{status?.ready ? t("数据目录容量和连接检查已通过。") : t("数据目录尚未确认恢复。")}{t("共有") + " "}{status?.pending ?? t("未知")}{" " + t("条本机结果，包含已提交的审核结论或骨架描述；未通过审核的动作草稿不在写回范围。")}</p>
+      <p>{t("点击写回后才会更新共享目录；审核结论写回后更新任务进度，骨架描述不计审核进度。若其他人已修改结果，会保留本机记录并提示冲突。请勿卸载软件或清理应用数据。")}</p>
+      {tr(status?.storageError && <p className="machine-message">{tr(status.storageError)}</p>)}
+      {status && status.pending > status.items.length && <p>{t("以下显示前") + " "}{status.items.length}{" " + t("条；确认写回会依次处理全部") + " "}{status.pending}{" " + t("条。")}</p>}
+      <ul className="batch-rejection-results">{status?.items.map(item => <li key={`${item.sourcePath}:${item.channel ?? "action"}`}><span>{item.name} · {item.channel === "skeleton" ? t("骨架描述") : item.status === "approved" ? t("本机通过") : item.status === "rejected" ? t("本机不通过") : t("本机草稿")}</span><span>{tr(new Date(item.createdAtMs).toLocaleString(localeTag()))}</span><small>{tr(item.error)}</small></li>)}</ul>
+      {tr(issue && <p role="alert" className="machine-message">{tr(issue)}</p>)}
+      <footer><button className="button button-secondary" disabled={busy} onClick={() => { dismissed.current = true; setOpen(false); }}>{t("稍后")}</button><button className="button button-secondary" disabled={busy} onClick={() => void refresh()}>{t("重新检查")}</button><button className="button button-primary" disabled={busy || disabled || !status?.pending} onClick={() => void publish()}><RefreshCw size={15} />{busy ? t("正在写回…") : t("确认写回数据目录")}</button></footer>
     </dialog>}
   </>;
 }

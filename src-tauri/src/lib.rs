@@ -31,6 +31,7 @@ mod model;
 mod mp4_clock;
 mod mp4_preview_cache;
 mod operation_history;
+mod outbound_media;
 mod outbound_review;
 mod playback_cache;
 mod recording_timing;
@@ -1637,11 +1638,17 @@ async fn cloud_qc_call(
 async fn outbound_review_call(
     app: AppHandle,
     auth: State<'_, AuthState>,
+    media: State<'_, Option<outbound_media::OutboundMediaServer>>,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    outbound_review::call(&app_data_root(&app)?, auth.inner(), input)
-        .await
-        .map_err(|e| e.to_string())
+    outbound_review::call(
+        &app_data_root(&app)?,
+        auth.inner(),
+        media.inner().as_ref(),
+        input,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3226,6 +3233,7 @@ pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let media_stream_server = MediaStreamServer::start().ok();
+    let outbound_media_server = outbound_media::OutboundMediaServer::start().ok();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -3244,6 +3252,7 @@ pub fn run() {
         .manage(SourceIndexCache::default())
         .manage(Mp4PreviewCache::default())
         .manage(media_stream_server)
+        .manage(outbound_media_server)
         .manage(playback_cache::PlaybackCache::default())
         .manage(review_catalog::ReviewCatalogCache::default())
         .invoke_handler(tauri::generate_handler![

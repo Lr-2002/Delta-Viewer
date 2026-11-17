@@ -1249,14 +1249,19 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         const input = await parseJsonBody(request, 4096);
         const latest = await authorize(request);
         if (!latest) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
+        const controller = new AbortController();
+        const disconnected = () => { if (!response.writableEnded) controller.abort(); };
+        response.once('close', disconnected);
         try {
-          const result = await outboundReview.request(latest.user, input);
+          const result = await outboundReview.request(latest.user, input, { signal: controller.signal });
           const final = await authorize(request);
           if (!final || final.user.canManage !== latest.user.canManage || final.user.displayName !== latest.user.displayName)
             return sendJson(response, 409, { error: "OUTBOUND_ACCOUNT_CHANGED" });
           return sendJson(response, 200, result);
         } catch (error) {
           return sendJson(response, error.status ?? 502, { error: /^[A-Z0-9_]+$/.test(error.message) ? error.message : "OUTBOUND_NETWORK_UNAVAILABLE" });
+        } finally {
+          response.off('close', disconnected);
         }
       }
       if (request.method === "POST" && url.pathname === "/api/v1/auth/logout") {

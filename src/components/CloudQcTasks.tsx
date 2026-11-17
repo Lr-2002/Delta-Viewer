@@ -1,12 +1,14 @@
+import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Cloud, Folder, LoaderCircle, RefreshCw, UserRound } from "lucide-react";
 import { cloudBatchName, cloudBatchNumber, cloudQcCall, cloudQcError, cancelCloudQc, fetchCloudQc, syncCloudQc, type CloudPlan, type CloudPolicy, type CloudOperationHandle } from "../lib/cloud-qc";
 import type { UserIdentity } from "../types";
 
 const planStates: Record<string, string> = { sampling: "抽检中", sample_passed: "抽检通过", blocked: "审核不通过", full_review: "全量审查中", full_review_complete: "全量审查通过", invalidated: "标注已变化 · 暂停" };
-const dateLabel = (value?: string) => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "时间未提供";
+const dateLabel = (value?: string) => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString(localeTag(), { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "时间未提供";
 
 export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, beginOperation }: { currentUser: UserIdentity; onOpen?: (directory: string) => Promise<void>; workspaceBusy?: boolean; beginOperation?: () => CloudOperationHandle | null }) {
+  useLanguage();
   const [admin, setAdmin] = useState(false);
   const [companies, setCompanies] = useState<string[]>([]);
   const [company, setCompany] = useState("");
@@ -90,34 +92,34 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
   }
   const backfillReady = Boolean(policy?.policy.enabled && policy.policy.sample_percent === 5
     && draft && JSON.stringify(draft) === JSON.stringify(policy.policy));
-  return <div className="cloud-qc-tasks" aria-label="云端任务">
+  return <div className="cloud-qc-tasks" aria-label={t("云端任务")}>
     <div className="cloud-qc-toolbar">
-      <div className="cloud-qc-toolbar-copy"><Cloud size={17} /><span><strong>云端审核任务</strong></span></div>
+      <div className="cloud-qc-toolbar-copy"><Cloud size={17} /><span><strong>{t("云端审核任务")}</strong></span></div>
       <div className="cloud-qc-toolbar-actions">
-        <button type="button" className="button button-secondary" disabled={Boolean(busy) || fetching} onClick={() => void run("refresh", refresh)}><RefreshCw size={14} className={fetching ? "spin" : ""} />刷新云端任务</button>
+        <button type="button" className="button button-secondary" disabled={Boolean(busy) || fetching} onClick={() => void run("refresh", refresh)}><RefreshCw size={14} className={fetching ? "spin" : ""} />{t("刷新云端任务")}</button>
       </div>
     </div>
-    {workspaceBusy && !busy && <p role="status" className="cloud-qc-notice">正在恢复或处理数据，完成后可打开云端任务。</p>}
-    {busy && operation && <div className="cloud-qc-notice" role="status"><LoaderCircle size={15} className="spin" /><span>正在加载审核预览…</span><button className="button button-secondary" type="button" onClick={() => void cancelCloudQc(operation!)}>取消</button></div>}
-    {(error || refreshError) && <div role="alert" className="cloud-qc-notice cloud-qc-error">{error && <span>{error}</span>}{refreshError && <span>任务刷新失败{checkedAt ? "，保留上次结果" : ""}：{refreshError}</span>}</div>}
-    {notice && <p role="status" className="cloud-qc-notice"><Check size={15} />{notice}</p>}
-    <div className="cloud-qc-list" aria-label="云端批次列表" aria-busy={Boolean(busy) || (!checkedAt && fetching)}>
-    {admin && <details className="cloud-qc-admin-tools"><summary>管理员工具<ChevronDown size={13} /></summary>
-    {companies.length > 1 && <label className="cloud-qc-company">抽样策略公司 <select aria-label="抽样策略公司" value={company} disabled={Boolean(busy) || fetching} onChange={event => {
+    {workspaceBusy && !busy && <p role="status" className="cloud-qc-notice">{t("正在恢复或处理数据，完成后可打开云端任务。")}</p>}
+    {tr(busy && operation && <div className="cloud-qc-notice" role="status"><LoaderCircle size={15} className="spin" /><span>{t("正在加载审核预览…")}</span><button className="button button-secondary" type="button" onClick={() => void cancelCloudQc(operation!)}>{t("取消")}</button></div>)}
+    {tr((error || refreshError) && <div role="alert" className="cloud-qc-notice cloud-qc-error">{tr(error && <span>{tr(error)}</span>)}{tr(refreshError && <span>{t("任务刷新失败")}{checkedAt ? t("，保留上次结果") : ""}：{tr(refreshError)}</span>)}</div>)}
+    {tr(notice && <p role="status" className="cloud-qc-notice"><Check size={15} />{tr(notice)}</p>)}
+    <div className="cloud-qc-list" aria-label={t("云端批次列表")} aria-busy={Boolean(busy) || (!checkedAt && fetching)}>
+    {admin && <details className="cloud-qc-admin-tools"><summary>{t("管理员工具")}<ChevronDown size={13} /></summary>
+    {companies.length > 1 && <label className="cloud-qc-company">{t("抽样策略公司") + " "}<select aria-label={t("抽样策略公司")} value={company} disabled={Boolean(busy) || fetching} onChange={event => {
       companyRef.current = event.target.value; setCompany(event.target.value); setPolicy(null); setDraft(null); setReason(""); setBackfillReason(""); void refresh();
-    }}>{companies.map(id => <option key={id} value={id}>{id}</option>)}</select></label>}
+    }}>{companies.map(id => <option key={id} value={id}>{tr(id)}</option>)}</select></label>}
     {draft && policy && <form className="cloud-qc-policy" onSubmit={event => { event.preventDefault(); void run("policy", async () => {
       const result = await cloudQcCall<{ version: number; policy: CloudPolicy }>("set_policy", { company_id: company, base_version: policy.version, policy: draft, reason });
       setPolicy(result); setDraft(result.policy); setReason(""); setNotice("策略已保存，仅对后续新订单生效；已有批次的名单保持固定。");
     }); }}>
-      <strong>公司抽样策略</strong>
-      <label><input type="checkbox" checked={draft.enabled} onChange={event => setDraft({ ...draft, enabled: event.target.checked })} />新订单启用抽检</label>
-      <label>比例 <span className="cloud-qc-percent"><input type="number" min="1" max="100" value={draft.sample_percent} onChange={event => setDraft({ ...draft, sample_percent: Number(event.target.value) })} /><span>%</span></span></label>
-      <label>批次 <select value={draft.batch_scope} onChange={event => setDraft({ ...draft, batch_scope: event.target.value as CloudPolicy["batch_scope"] })}><option value="sealed_order">一次封存订单</option><option value="recording_parent">每个录制父文件夹</option></select></label>
-      <label>通过后 <select value={draft.release_mode} onChange={event => setDraft({ ...draft, release_mode: event.target.value as CloudPolicy["release_mode"] })}><option value="batch_on_sample_pass">抽检通过后放行整批</option><option value="sampled_only">仅交付逐条通过的数据</option></select></label>
-      <label>不通过时 <select value={draft.failure_action} onChange={event => setDraft({ ...draft, failure_action: event.target.value as CloudPolicy["failure_action"] })}><option value="hold">阻断并等待管理员决定</option><option value="full_review">转管理员全量审查</option></select></label>
-      <label>变更原因 <input value={reason} onChange={event => setReason(event.target.value)} maxLength={500} required /></label>
-      <button className="button button-primary" disabled={Boolean(busy) || !reason.trim()}>保存策略</button>
+      <strong>{t("公司抽样策略")}</strong>
+      <label><input type="checkbox" checked={draft.enabled} onChange={event => setDraft({ ...draft, enabled: event.target.checked })} />{t("新订单启用抽检")}</label>
+      <label>{t("比例") + " "}<span className="cloud-qc-percent"><input type="number" min="1" max="100" value={draft.sample_percent} onChange={event => setDraft({ ...draft, sample_percent: Number(event.target.value) })} /><span>%</span></span></label>
+      <label>{t("批次") + " "}<select value={draft.batch_scope} onChange={event => setDraft({ ...draft, batch_scope: event.target.value as CloudPolicy["batch_scope"] })}><option value="sealed_order">{t("一次封存订单")}</option><option value="recording_parent">{t("每个录制父文件夹")}</option></select></label>
+      <label>{t("通过后") + " "}<select value={draft.release_mode} onChange={event => setDraft({ ...draft, release_mode: event.target.value as CloudPolicy["release_mode"] })}><option value="batch_on_sample_pass">{t("抽检通过后放行整批")}</option><option value="sampled_only">{t("仅交付逐条通过的数据")}</option></select></label>
+      <label>{t("不通过时") + " "}<select value={draft.failure_action} onChange={event => setDraft({ ...draft, failure_action: event.target.value as CloudPolicy["failure_action"] })}><option value="hold">{t("阻断并等待管理员决定")}</option><option value="full_review">{t("转管理员全量审查")}</option></select></label>
+      <label>{t("变更原因") + " "}<input value={reason} onChange={event => setReason(event.target.value)} maxLength={500} required /></label>
+      <button className="button button-primary" disabled={Boolean(busy) || !reason.trim()}>{t("保存策略")}</button>
     </form>}
     {policy && <form className="cloud-qc-policy cloud-qc-backfill" onSubmit={event => { event.preventDefault();
       if (!backfillReason.trim() || !backfillReady || busy) return;
@@ -128,36 +130,36 @@ export function CloudQcTasks({ currentUser, onOpen, workspaceBusy = false, begin
         setNotice(`历史订单抽检回填完成：新建 ${result.created} 个计划，跳过 ${result.skipped} 个订单。`);
       });
     }}>
-      <strong>已处理订单抽检</strong>
-      <label>回填原因 <input aria-label="历史抽检回填原因" value={backfillReason} onChange={event => setBackfillReason(event.target.value)} maxLength={500} required /></label>
-      <small>仅对未创建抽检计划且标注与审核材料完整的历史订单抽样；既有人工结论和订单策略快照保留。</small>
+      <strong>{t("已处理订单抽检")}</strong>
+      <label>{t("回填原因") + " "}<input aria-label={t("历史抽检回填原因")} value={backfillReason} onChange={event => setBackfillReason(event.target.value)} maxLength={500} required /></label>
+      <small>{t("仅对未创建抽检计划且标注与审核材料完整的历史订单抽样；既有人工结论和订单策略快照保留。")}</small>
       <button className="button button-primary" disabled={Boolean(busy) || !backfillReason.trim() || !backfillReady}>
-        {backfillReady ? "抽检已处理订单（5%）" : "先保存启用的 5% 策略"}
+        {backfillReady ? t("抽检已处理订单（5%）") : t("先保存启用的 5% 策略")}
       </button>
     </form>}
     </details>}
-    {!plans.length && !error && !refreshError && <p className="task-empty">{fetching ? "正在读取云端批次…" : "暂无已完成处理和标注的云端 QC 批次。"}</p>}
+    {!plans.length && !error && !refreshError && <p className="task-empty">{fetching ? t("正在读取云端批次…") : t("暂无已完成处理和标注的云端 QC 批次。")}</p>}
     {[...plans].sort((a, b) => (Date.parse(b.created_at ?? "") || 0) - (Date.parse(a.created_at ?? "") || 0)).map(plan => {
       const backfill = plan.audit?.find(item => item.action === "historical_backfill");
-      return <section className="cloud-qc-plan" key={plan.id} aria-label={`${cloudBatchName(plan)} · ${cloudBatchNumber(plan)}`}>
+      return <section className="cloud-qc-plan" key={plan.id} aria-label={t("{0} · {1}", [tr(cloudBatchName(plan)), tr(cloudBatchNumber(plan))])}>
       <header>
-        <div className="cloud-qc-plan-title"><Folder size={17} /><div><h3>{cloudBatchName(plan)}</h3><small>{!plan.batch_path?.trim() ? "抽检目录 · " : ""}创建 {dateLabel(plan.created_at)} · #{cloudBatchNumber(plan)}</small></div></div>
-        <span className={`cloud-qc-badge cloud-qc-state-${plan.state}`}>{planStates[plan.state] ?? plan.state}</span>
-        {admin && !plan.full_review && <details className="cloud-qc-admin-action"><summary>管理员操作<ChevronDown size={13} /></summary><button type="button" className="button button-secondary" disabled={Boolean(busy)} onClick={() => {
+        <div className="cloud-qc-plan-title"><Folder size={17} /><div><h3>{tr(cloudBatchName(plan))}</h3><small>{!plan.batch_path?.trim() ? t("抽检目录 · ") : ""}{t("创建") + " "}{tr(dateLabel(plan.created_at))} · #{tr(cloudBatchNumber(plan))}</small></div></div>
+        <span className={`cloud-qc-badge cloud-qc-state-${plan.state}`}>{tr(planStates[plan.state]) ?? tr(plan.state)}</span>
+        {admin && !plan.full_review && <details className="cloud-qc-admin-action"><summary>{t("管理员操作")}<ChevronDown size={13} /></summary><button type="button" className="button button-secondary" disabled={Boolean(busy)} onClick={() => {
           const cause=window.prompt("升级该批次全量审查的原因"); if (!cause?.trim()) return;
           void run(plan.id, async () => { await cloudQcCall("full_review", { job_id: plan.job_id, plan_id: plan.id, body: { base_version: plan.version, reason: cause.trim() } }); });
-        }}>转全量审查</button></details>}
+        }}>{t("转全量审查")}</button></details>}
       </header>
-      <div className="cloud-qc-plan-summary"><details className="cloud-qc-details"><summary>批次详情<ChevronDown size={13} /></summary><dl><dt>抽检</dt><dd>{plan.sample_count} / {plan.population_count}</dd><dt>通过 / 不通过</dt><dd>{plan.sample_approved} / {plan.sample_rejected}</dd><dt>计划来源</dt><dd>{backfill ? "历史订单抽检回填" : "订单处理策略"}</dd>{backfill && <><dt>回填账号</dt><dd>{backfill.actor}</dd><dt>回填原因</dt><dd>{backfill.reason}</dd><dt>回填时间（北京时间）</dt><dd>{dateLabel(backfill.occurred_at)}</dd></>}<dt>名称依据</dt><dd>{plan.batch_path?.trim() ? "服务端批次目录" : "已抽中数据的共同父目录，不代表整批全部目录"}</dd><dt>完整订单号</dt><dd>{plan.external_order_id}</dd><dt>上传版本</dt><dd>{plan.source_revision}</dd><dt>任务编号</dt><dd>{plan.job_id}</dd><dt>创建时间（北京时间）</dt><dd>{plan.created_at && Number.isFinite(Date.parse(plan.created_at)) ? new Date(plan.created_at).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai",hour12:false}) : "未提供"}</dd></dl></details></div>
+      <div className="cloud-qc-plan-summary"><details className="cloud-qc-details"><summary>{t("批次详情")}<ChevronDown size={13} /></summary><dl><dt>{t("抽检")}</dt><dd>{plan.sample_count} / {plan.population_count}</dd><dt>{t("通过 / 不通过")}</dt><dd>{plan.sample_approved} / {plan.sample_rejected}</dd><dt>{t("计划来源")}</dt><dd>{backfill ? t("历史订单抽检回填") : t("订单处理策略")}</dd>{backfill && <><dt>{t("回填账号")}</dt><dd>{backfill.actor}</dd><dt>{t("回填原因")}</dt><dd>{backfill.reason}</dd><dt>{t("回填时间（北京时间）")}</dt><dd>{tr(dateLabel(backfill.occurred_at))}</dd></>}<dt>{t("名称依据")}</dt><dd>{plan.batch_path?.trim() ? t("服务端批次目录") : t("已抽中数据的共同父目录，不代表整批全部目录")}</dd><dt>{t("完整订单号")}</dt><dd>{tr(plan.external_order_id)}</dd><dt>{t("上传版本")}</dt><dd>{tr(plan.source_revision)}</dd><dt>{t("任务编号")}</dt><dd>{tr(plan.job_id)}</dd><dt>{t("创建时间（北京时间）")}</dt><dd>{plan.created_at && Number.isFinite(Date.parse(plan.created_at)) ? tr(new Date(plan.created_at).toLocaleString(localeTag(), {timeZone:"Asia/Shanghai",hour12:false})) : t("未提供")}</dd></dl></details></div>
       <div className="cloud-qc-scroll">{plan.tasks.map(task => {
         const directory = directories[task.recording_id];
         const mine = task.assignee === currentUser.username;
         return <div className="cloud-qc-row" key={task.recording_id}>
-          <div className="cloud-qc-recording"><strong title={task.path}>{task.path.split("/").at(-1) || task.path}</strong><div className="cloud-qc-recording-meta"><span className={`cloud-qc-decision-${task.qc.decision}`}>{task.qc.decision === "approved" ? "通过" : task.qc.decision === "rejected" ? "不通过" : "待审核"}</span><span><UserRound size={12} />{task.assignee ? (mine ? `我 · ${task.assignee}` : task.assignee) : "未领取"}</span></div>{task.qc.reason && <small className="cloud-qc-rejection">{task.qc.reason}</small>}</div>
+          <div className="cloud-qc-recording"><strong title={task.path}>{task.path.split("/").at(-1) || task.path}</strong><div className="cloud-qc-recording-meta"><span className={`cloud-qc-decision-${task.qc.decision}`}>{task.qc.decision === "approved" ? t("通过") : task.qc.decision === "rejected" ? t("不通过") : t("待审核")}</span><span><UserRound size={12} />{task.assignee ? tr((mine ? `我 · ${task.assignee}` : task.assignee)) : t("未领取")}</span></div>{tr(task.qc.reason && <small className="cloud-qc-rejection">{tr(task.qc.reason)}</small>)}</div>
           <div className="cloud-qc-row-actions"><button className="button button-primary" type="button" disabled={workspaceBusy || Boolean(busy) || Boolean(task.assignee && !mine)} onClick={() => void run(task.recording_id, () => directory && mine ? openDownloaded(directory) : download(plan.job_id, task.recording_id, async () => {
             if (!mine) await cloudQcCall("claim", { job_id: plan.job_id, plan_id: plan.id, body: { base_version: plan.version, action: "claim", recording_ids: [task.recording_id], reason: "Viewer 任务中心领取" } });
-          }))}>{busy === task.recording_id ? "正在加载…" : mine ? "打开审核" : "领取并打开"}</button>
-          {directory && mine && <details className="cloud-qc-row-more"><summary>更多<ChevronDown size={13} /></summary><button className="button button-secondary" type="button" disabled={Boolean(busy)} onClick={() => void run("sync", async () => { await syncCloudQc(directory); setNotice("已同步 Viewer 保存的真实审核结论。"); })}>同步已保存的结论</button></details>}
+          }))}>{busy === task.recording_id ? t("正在加载…") : mine ? t("打开审核") : t("领取并打开")}</button>
+          {tr(directory && mine && <details className="cloud-qc-row-more"><summary>{t("更多")}<ChevronDown size={13} /></summary><button className="button button-secondary" type="button" disabled={Boolean(busy)} onClick={() => void run("sync", async () => { await syncCloudQc(directory); setNotice("已同步 Viewer 保存的真实审核结论。"); })}>{t("同步已保存的结论")}</button></details>)}
           </div>
         </div>;
       })}</div>

@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { Bell, X } from "lucide-react";
 
@@ -5,6 +6,7 @@ export function UpdateToast({ title, message, primaryLabel, secondaryLabel, onPr
   title: string; message: string; primaryLabel: string; secondaryLabel: string;
   onPrimary: () => void; onDismiss: () => void; autoDismiss?: boolean; className?: string; ariaLabel?: string;
 }) {
+  useLanguage();
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const [hidden, setHidden] = useState(document.hidden);
@@ -38,16 +40,16 @@ export function UpdateToast({ title, message, primaryLabel, secondaryLabel, onPr
     afterClose.current = action ?? null;
     setClosing(true);
   }
-  return <aside className={`update-notice ${className}${closing ? " update-notice-closing" : ""}`} aria-label={ariaLabel} role="status" aria-live="polite" aria-atomic="true"
+  return <aside className={`update-notice ${className}${closing ? " update-notice-closing" : ""}`} aria-label={tr(ariaLabel)} role="status" aria-live="polite" aria-atomic="true"
     onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
     onFocusCapture={() => setFocused(true)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}>
-    <header><span className="update-notice-icon" aria-hidden="true"><Bell size={17} /></span><strong>{title}</strong>
-      <button type="button" className="icon-button" aria-label="关闭更新提示" title="关闭更新提示" onClick={() => close()}><X size={16} /></button>
+    <header><span className="update-notice-icon" aria-hidden="true"><Bell size={17} /></span><strong>{tr(title)}</strong>
+      <button type="button" className="icon-button" aria-label={t("关闭更新提示")} title={t("关闭更新提示")} onClick={() => close()}><X size={16} /></button>
     </header>
-    <p>{message}</p>
+    <p>{tr(message)}</p>
     <div className="update-actions">
-      <button type="button" className="text-button" onClick={() => close(onPrimary)}>{primaryLabel}</button>
-      <button type="button" className="text-button" onClick={() => close()}>{secondaryLabel}</button>
+      <button type="button" className="text-button" onClick={() => close(onPrimary)}>{tr(primaryLabel)}</button>
+      <button type="button" className="text-button" onClick={() => close()}>{tr(secondaryLabel)}</button>
     </div>
   </aside>;
 }

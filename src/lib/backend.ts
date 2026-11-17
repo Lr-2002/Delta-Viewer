@@ -1,3 +1,4 @@
+import { tr } from "./i18n";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
@@ -46,7 +47,7 @@ export async function previewDiagnosticLogs(source:string,operationId:number,run
 }
 export async function confirmDeviceOtaUpgrade(version:string):Promise<boolean> {
   const message=`即将升级设备至${version}。请先停止录制、自检和压力测试，并保持供电及设备连接。升级过程中请勿关机或断电。是否继续？`;
-  return isTauriRuntime()?confirm(message,{title:"确认设备升级",kind:"warning"}):window.confirm(message);
+  return isTauriRuntime()?confirm(tr(message),{title:tr("确认设备升级"),kind:"warning",okLabel:tr("确认"),cancelLabel:tr("取消")}):window.confirm(tr(message));
 }
 export async function uploadDiagnosticLogs(previewId:string,operationId:number):Promise<LogUploadReceipt> {
   if(!isTauriRuntime())throw new Error("请在桌面客户端上传诊断日志。");
@@ -54,7 +55,7 @@ export async function uploadDiagnosticLogs(previewId:string,operationId:number):
 }
 export async function chooseSessionDirectory(title:string):Promise<string|null> {
   if(!isTauriRuntime())return null;
-  const selection = await open({directory:true,multiple:false,title});
+  const selection = await open({directory:true,multiple:false,title:tr(title)});
   return typeof selection === "string" ? selection : null;
 }
 export async function getDeviceAvailability(interfaceId?:string,apAddress?:string,connectionMode?:DeviceConnectionMode): Promise<DeviceAvailability> {
@@ -102,7 +103,7 @@ export async function requestDevicePageBatch(request:DevicePageRequest,apis:Devi
 }
 export async function confirmDevicePageOperation(path:string):Promise<boolean> {
   const message=path==="/configure"?"设备将连接所填 Wi-Fi，当前热点会断开。是否继续？":path==="/api/v1/camera-config"||path==="/api/v1/runtime-config"?"保存配置会重启相关设备服务。请先停止采集、自检和压力测试，是否继续？":"此操作会修改设备配置。是否继续？";
-  return isTauriRuntime()?confirm(message,{title:"确认设备配置",kind:"warning"}):window.confirm(message);
+  return isTauriRuntime()?confirm(tr(message),{title:tr("确认设备配置"),kind:"warning",okLabel:tr("确认"),cancelLabel:tr("取消")}):window.confirm(tr(message));
 }
 import { REJECTION_REASONS } from "./rejection-reasons";
 import { findReviewOverlap } from "./machine-annotation";
@@ -191,7 +192,7 @@ export async function openCaptureWorkbench(): Promise<void> {
   }
   const workbench = new WebviewWindow("capture-workbench", {
     url: CAPTURE_WORKBENCH_URL,
-    title: "审核总览 · D1 Manager",
+    title: tr("审核总览 · D1 Manager"),
     width: 1600,
     height: 1000,
     minWidth: 1120,
@@ -295,7 +296,7 @@ export async function configureUserCenter(): Promise<UserCenterStatus> {
     const selection = await open({
       directory: false,
       multiple: false,
-      title: "导入管理员提供的用户中心配置",
+      title: tr("导入管理员提供的用户中心配置"),
       filters: [{ name: "Delta User Center", extensions: ["json"] }],
     });
     if (typeof selection !== "string") throw new Error("未选择用户中心配置文件");
@@ -481,7 +482,7 @@ export async function chooseAndScanSupervisionTasks(): Promise<SupervisionTaskCa
   const selection = await open({
     directory: true,
     multiple: false,
-    title: "选择 NAS 导出的任务根目录（例如 Seed_sample）",
+    title: tr("选择 NAS 导出的任务根目录（例如 Seed_sample）"),
   });
   if (typeof selection !== "string") return null;
   return invoke<SupervisionTaskCatalog>("scan_supervision_tasks", {
@@ -500,7 +501,7 @@ export async function importSupervisionTaskDetails(): Promise<SupervisionTaskImp
   const selection = await open({
     directory: false,
     multiple: false,
-    title: "导入任务详情 JSON",
+    title: tr("导入任务详情 JSON"),
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
   if (typeof selection !== "string") return null;
@@ -512,7 +513,7 @@ export async function importSupervisionAnnotations(): Promise<SupervisionAnnotat
   const selection = await open({
     directory: false,
     multiple: false,
-    title: "导入标注汇总 JSON",
+    title: tr("导入标注汇总 JSON"),
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
   if (typeof selection !== "string") return null;
@@ -585,7 +586,7 @@ export async function importTaskTemplateConfig(): Promise<TaskDefinition[]> {
     const selection = await open({
       directory: false,
       multiple: false,
-      title: "导入任务模板配置",
+      title: tr("导入任务模板配置"),
       filters: [{ name: "Delta Task Templates", extensions: ["json"] }],
     });
     if (typeof selection !== "string") throw new Error("未选择任务模板配置文件");
@@ -958,17 +959,17 @@ export function isTauriRuntime(): boolean {
 
 export async function chooseDirectory(title: string): Promise<string | null> {
   if (!isTauriRuntime()) return DEMO_ROOT;
-  const selection = await open({ directory: true, multiple: false, title });
+  const selection = await open({ directory: true, multiple: false, title: tr(title) });
   return typeof selection === "string" ? selection : null;
 }
 
 export async function confirmAction(message: string, title: string): Promise<boolean> {
-  if (!isTauriRuntime()) return window.confirm(message);
-  return confirm(message, {
-    title,
+  if (!isTauriRuntime()) return window.confirm(tr(message));
+  return confirm(tr(message), {
+    title: tr(title),
     kind: "warning",
-    okLabel: "确认",
-    cancelLabel: "取消",
+    okLabel: tr("确认"),
+    cancelLabel: tr("取消"),
   });
 }
 
@@ -1755,7 +1756,7 @@ export const cloudQcInvoke = <T,>(command: string, args: Record<string, unknown>
   return invoke<T>(command, args);
 };
 
-export const chooseCloudQcConfig = () => open({ multiple: false, filters: [{ name: "云端 QC 接入配置", extensions: ["json"] }] });
+export const chooseCloudQcConfig = () => open({ multiple: false, filters: [{ name: tr("云端 QC 接入配置"), extensions: ["json"] }] });
 
 
 export async function renameBatchFolder(sourcePath: string, name: string, operationId: number): Promise<import("../types").BatchRenameResult> {

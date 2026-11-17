@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useState, type FormEvent } from "react";
 import { BrandMark } from "./BrandMark";
 import { ArrowLeft, ChevronRight, Eye, EyeOff, FolderOpen, KeyRound, LogIn, Network, UserPlus, WifiOff } from "lucide-react";
@@ -27,6 +28,7 @@ export function AuthScreen({
   onUserCenterConfigured,
   onAuthenticated,
 }: AuthScreenProps) {
+  useLanguage();
   const [mode, setMode] = useState<"login" | "register">(allowDemoRegistration ? "register" : "login");
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -115,24 +117,24 @@ export function AuthScreen({
           <div className="auth-heading">
             <span className="auth-icon"><Network size={20} /></span>
             <div>
-              <span className="section-kicker">开始使用</span>
-              <h1 id="workspace-mode-title">选择工作模式</h1>
+              <span className="section-kicker">{t("开始使用")}</span>
+              <h1 id="workspace-mode-title">{t("选择工作模式")}</h1>
             </div>
           </div>
-          <p className="auth-intro">连接设备，或进入你的数据工作区。</p>
+          <p className="auth-intro">{t("连接设备，或进入你的数据工作区。")}</p>
           <div className="workspace-mode-options">
             <button className="workspace-mode-option" type="button" onClick={() => void selectMode("offline")} disabled={busy}>
               <WifiOff size={18} />
-              <span><strong>离线模式</strong><small>无需账号或网络，直接回放、编辑、审核与导出本地数据</small></span>
+              <span><strong>{t("离线模式")}</strong><small>{t("无需账号或网络，直接回放、编辑、审核与导出本地数据")}</small></span>
             </button>
             <button className="workspace-mode-option" type="button" onClick={() => void selectMode("managed")} disabled={busy}>
               <Network size={18} />
-              <span><strong>登录工作区</strong><small>使用局域网用户中心账号，审核操作纳入审计</small></span>
+              <span><strong>{t("登录工作区")}</strong><small>{t("使用局域网用户中心账号，审核操作纳入审计")}</small></span>
             </button>
           </div>
-          {error ? <div className="auth-error" role="alert">{error}</div> : null}
+          {error ? <div className="auth-error" role="alert">{tr(error)}</div> : null}
         </section>
-        <footer className="auth-footer">离线结果仅在本机处理，不关联公司账号或审核统计</footer>
+        <footer className="auth-footer">{t("离线结果仅在本机处理，不关联公司账号或审核统计")}</footer>
       </main>
     );
   }
@@ -147,23 +149,23 @@ export function AuthScreen({
         <div className="auth-heading">
           <span className="auth-icon"><KeyRound size={20} /></span>
           <div>
-            <span className="section-kicker">数据工作区</span>
-            <h1 id="auth-title">{userCenter.configured ? mode === "login" ? "欢迎回来" : "创建审核员账号" : "连接用户中心"}</h1>
+            <span className="section-kicker">{t("数据工作区")}</span>
+            <h1 id="auth-title">{userCenter.configured ? mode === "login" ? t("欢迎回来") : t("创建审核员账号") : t("连接用户中心")}</h1>
           </div>
         </div>
-        <p className="auth-intro">{userCenter.configured ? mode === "login" ? "使用工作账号登录，继续标注与审核。" : "填写账号信息，即可进入工作区。" : "导入配置后，即可使用工作账号登录。"}</p>
+        <p className="auth-intro">{userCenter.configured ? mode === "login" ? t("使用工作账号登录，继续标注与审核。") : t("填写账号信息，即可进入工作区。") : t("导入配置后，即可使用工作账号登录。")}</p>
         {!userCenter.configured ? (
           <div className="auth-connect">
-            <p>请导入管理员在局域网服务主机生成的用户中心配置文件。</p>
+            <p>{t("请导入管理员在局域网服务主机生成的用户中心配置文件。")}</p>
             <button className="button button-primary auth-submit" type="button" onClick={() => void importUserCenter()} disabled={configuring}>
               <FolderOpen size={17} />
-              {configuring ? "连接中" : "导入用户中心配置"}
+              {configuring ? t("连接中") : t("导入用户中心配置")}
             </button>
           </div>
         ) : <form onSubmit={(event) => void submit(event)}>
             {mode === "register" ? (
               <label>
-                <span>显示名称</span>
+                <span>{t("显示名称")}</span>
                 <input
                   type="text"
                   value={displayName}
@@ -177,7 +179,7 @@ export function AuthScreen({
               </label>
             ) : null}
             <label>
-              <span>账号</span>
+              <span>{t("账号")}</span>
               <input
                 type="text"
                 value={username}
@@ -192,7 +194,7 @@ export function AuthScreen({
               />
             </label>
             <label className="auth-password-label" htmlFor="auth-password">
-              <span>密码</span>
+              <span>{t("密码")}</span>
             </label>
             <div className="auth-password-field">
               <input
@@ -209,9 +211,9 @@ export function AuthScreen({
               <button
                 className="auth-password-toggle"
                 type="button"
-                aria-label={passwordVisible ? "隐藏密码" : "显示密码"}
+                aria-label={passwordVisible ? t("隐藏密码") : t("显示密码")}
                 aria-pressed={passwordVisible}
-                title={passwordVisible ? "隐藏密码" : "显示密码"}
+                title={passwordVisible ? t("隐藏密码") : t("显示密码")}
                 disabled={busy || configuring}
                 onClick={() => setPasswordVisible((visible) => !visible)}
               >
@@ -220,7 +222,7 @@ export function AuthScreen({
             </div>
             {mode === "register" ? (
               <label>
-                <span>确认密码</span>
+                <span>{t("确认密码")}</span>
                 <input
                   type="password"
                   value={confirmation}
@@ -235,34 +237,33 @@ export function AuthScreen({
             ) : null}
             <button className="button button-primary auth-submit" type="submit" disabled={busy || configuring}>
               {mode === "login" ? <LogIn size={17} /> : <UserPlus size={17} />}
-              {busy ? "处理中" : mode === "login" ? "登录" : "创建并登录"}
+              {busy ? t("处理中") : mode === "login" ? t("登录") : t("创建并登录")}
             </button>
           </form>}
-        {error ? <div className="auth-error" role="alert">{error}</div> : null}
+        {error ? <div className="auth-error" role="alert">{tr(error)}</div> : null}
         <div className="auth-switch">
           <button type="button" className="auth-offline-entry" onClick={() => void selectMode("offline")} disabled={busy || configuring}>
-            <WifiOff size={16} /><span>离线模式 · 直接进入</span><ChevronRight size={15} />
+            <WifiOff size={16} /><span>{t("离线模式 · 直接进入")}</span><ChevronRight size={15} />
           </button>
           <div className="auth-utilities">
             <button type="button" className="text-button" onClick={() => void returnToModeChoice()} disabled={busy || configuring}>
-              <ArrowLeft size={14} />选择工作模式
-            </button>
+              <ArrowLeft size={14} />{t("选择工作模式")}</button>
             {userCenter.configured ? (
               <button type="button" className="text-button" onClick={() => switchLoginMode(mode === "login" ? "register" : "login")} disabled={busy || configuring}>
                 {mode === "login" ? <UserPlus size={14} /> : <LogIn size={14} />}
-                {mode === "login" ? "注册审核员账号" : "返回登录"}
+                {mode === "login" ? t("注册审核员账号") : t("返回登录")}
               </button>
             ) : null}
           </div>
           {userCenter.configured ? (
             <button type="button" className="text-button auth-config-entry" onClick={() => void importUserCenter()} disabled={busy || configuring}>
               <FolderOpen size={14} />
-              {configuring ? "验证并更新中" : "重新导入用户中心配置"}
+              {configuring ? t("验证并更新中") : t("重新导入用户中心配置")}
             </button>
           ) : null}
         </div>
       </section>
-      <footer className="auth-footer">账号由局域网用户中心管理；采集数据仍只在本机处理</footer>
+      <footer className="auth-footer">{t("账号由局域网用户中心管理；采集数据仍只在本机处理")}</footer>
     </main>
   );
 }

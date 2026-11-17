@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -60,6 +61,7 @@ export const SkeletonViewer = memo(function SkeletonViewer({
   timelineFps = 30,
   onFramePresenterChange,
 }: SkeletonViewerProps) {
+  useLanguage();
   const mountRef = useRef<HTMLDivElement>(null);
   const frameLabelRef = useRef<HTMLSpanElement>(null);
   const rendererRef = useRef<RendererState | null>(null);
@@ -189,8 +191,8 @@ export const SkeletonViewer = memo(function SkeletonViewer({
       if (frameLabelRef.current) {
         const primary = Math.round(latestFrameRef.current);
         frameLabelRef.current.textContent = catchupRef.current.rate === 1
-          ? `帧 ${Math.round(displayedFrame)} · ${skeleton.jointCount} 关节`
-          : `视频 ${primary} / 骨架 ${Math.round(displayedFrame)}`;
+          ? t("帧 {0} · {1} 关节", [Math.round(displayedFrame), skeleton.jointCount])
+          : t("视频 {0} / 骨架 {1}", [primary, Math.round(displayedFrame)]);
       }
       render();
       return bounds;
@@ -213,7 +215,7 @@ export const SkeletonViewer = memo(function SkeletonViewer({
         skeleton.usesTimelineFrameIds,
       );
       if (sample && (Math.abs(sample.sourcePosition - displayedSourcePosition) > 1e-4
-        || frameLabelRef.current?.textContent?.startsWith("视频") !== (rate !== 1))) paintFrame(targetFrame, sample);
+        || frameLabelRef.current?.textContent?.startsWith(t("视频")) !== (rate !== 1))) paintFrame(targetFrame, sample);
     };
     const initialBounds = paintFrame(displayedFrame);
     const targetY = floorY + bodyHeight * 0.55;
@@ -276,23 +278,23 @@ export const SkeletonViewer = memo(function SkeletonViewer({
   }, [catchupRate, playbackStartFrame, playbackEndFrame, timelineFps]);
 
   return (
-    <section className="skeleton-viewer" aria-label="SMPL 骨架">
+    <section className="skeleton-viewer" aria-label={t("SMPL 骨架")}>
       <header className="skeleton-heading">
         <div>
-          <span className="section-kicker">SMPL / SKELETON</span>
-          <h2>三维骨架</h2>
+          <span className="section-kicker">{t("SMPL / 骨架")}</span>
+          <h2>{t("三维骨架")}</h2>
         </div>
-        <span ref={frameLabelRef}>帧 {frameId} · {skeleton.jointCount} 关节</span>
+        <span ref={frameLabelRef}>{t("帧") + " "}{frameId} · {skeleton.jointCount}{" " + t("关节")}</span>
       </header>
       <div className="skeleton-sync-controls">
-        <select aria-label="骨架追赶速度" value={catchupRate} onChange={event => setCatchupRate(Number(event.target.value))}>
-          {SKELETON_CATCHUP_RATES.map(rate => <option key={rate} value={rate}>{rate === 1 ? "原速同步" : `追赶 ${rate.toFixed(2)}×`}</option>)}
+        <select aria-label={t("骨架追赶速度")} value={catchupRate} onChange={event => setCatchupRate(Number(event.target.value))}>
+          {SKELETON_CATCHUP_RATES.map(rate => <option key={rate} value={rate}>{rate === 1 ? t("原速同步") : t("追赶 {0}×", [tr(rate.toFixed(2))])}</option>)}
         </select>
-        <span role="status">{catchupRate === 1 ? "原始时间轴" : "显示试验 · 最多提前 0.8 秒"}</span>
+        <span role="status">{catchupRate === 1 ? t("原始时间轴") : t("显示试验 · 最多提前 0.8 秒")}</span>
       </div>
       <div ref={mountRef} className="skeleton-canvas" />
-      {unavailable ? <p className="skeleton-unavailable">当前设备不支持 3D 渲染</p> : null}
-      <footer>{skeleton.sourceName} · {skeleton.frameCount} 帧 · {skeleton.jointSource === "raw_smpl_joints" ? "原始同帧估计 · " : skeleton.jointSource === "smpl_joints" ? "滤波估计 · " : ""}估计地面参照</footer>
+      {unavailable ? <p className="skeleton-unavailable">{t("当前设备不支持 3D 渲染")}</p> : null}
+      <footer>{skeleton.sourceName} · {skeleton.frameCount}{" " + t("帧 ·") + " "}{skeleton.jointSource === "raw_smpl_joints" ? t("原始同帧估计 · ") : skeleton.jointSource === "smpl_joints" ? t("滤波估计 · ") : ""}{t("估计地面参照")}</footer>
     </section>
   );
 });

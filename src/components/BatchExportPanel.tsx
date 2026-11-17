@@ -1,3 +1,4 @@
+import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import { useState } from "react";
 import {
   Bot,
@@ -59,6 +60,7 @@ export function BatchExportPanel({
   onExport: () => void;
   onReveal: (path: string) => void;
 }) {
+  useLanguage();
   const selected = new Set(selectedIds);
   const availableItems = items.filter((item) => item.sourceAvailable);
   const allAvailableSelected = availableItems.length > 0
@@ -73,25 +75,25 @@ export function BatchExportPanel({
     <div className="batch-export-view">
       <div className="section-heading batch-export-heading">
         <div>
-          <span className="section-kicker">LOCAL ANNOTATIONS</span>
-          <h2>批量导出</h2>
+          <span className="section-kicker">{t("本机标注")}</span>
+          <h2>{t("批量导出")}</h2>
         </div>
         <button
           className="icon-button"
           type="button"
           onClick={onRefresh}
           disabled={busy || loading}
-          title="刷新本地标注"
-          aria-label="刷新本地标注"
+          title={t("刷新本地标注")}
+          aria-label={t("刷新本地标注")}
         >
           {loading ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
         </button>
       </div>
 
       <div className="batch-summary-band">
-        <div><span>本地标注</span><strong>{items.length}</strong></div>
-        <div><span>源可用</span><strong>{availableItems.length}</strong></div>
-        <div><span>已选择</span><strong>{selectedIds.length}</strong></div>
+        <div><span>{t("本地标注")}</span><strong>{items.length}</strong></div>
+        <div><span>{t("源可用")}</span><strong>{availableItems.length}</strong></div>
+        <div><span>{t("已选择")}</span><strong>{selectedIds.length}</strong></div>
       </div>
 
       <div className="batch-toolbar">
@@ -102,9 +104,9 @@ export function BatchExportPanel({
             disabled={busy || !availableItems.length}
             onChange={onToggleAll}
           />
-          <span>全选可用项</span>
+          <span>{t("全选可用项")}</span>
         </label>
-        <div className="batch-format-picker" role="radiogroup" aria-label="批量导出格式">
+        <div className="batch-format-picker" role="radiogroup" aria-label={t("批量导出格式")}>
           {BATCH_FORMATS.map((format) => {
             const Icon = format.icon;
             return (
@@ -117,21 +119,21 @@ export function BatchExportPanel({
                 onClick={() => onSelectFormat(format.id)}
                 key={format.id}
               >
-                <Icon size={14} />{format.label}
+                <Icon size={14} />{tr(format.label)}
               </button>
             );
           })}
         </div>
       </div>
 
-      <div className="batch-table" aria-label="本地已标注数据">
+      <div className="batch-table" aria-label={t("本地已标注数据")}>
         <div className="batch-table-head" aria-hidden="true">
           <span />
-          <span>轨迹</span>
-          <span>任务</span>
-          <span>源路径</span>
-          <span>最近处理</span>
-          <span>状态</span>
+          <span>{t("轨迹")}</span>
+          <span>{t("任务")}</span>
+          <span>{t("源路径")}</span>
+          <span>{t("最近处理")}</span>
+          <span>{t("状态")}</span>
         </div>
         {items.length ? items.map(({ annotation, sourceAvailable }) => (
           <label
@@ -143,40 +145,40 @@ export function BatchExportPanel({
               checked={selected.has(annotation.episodeId)}
               disabled={busy || !sourceAvailable}
               onChange={() => onToggle(annotation.episodeId)}
-              aria-label={`选择轨迹 ${annotation.trajectoryCode}`}
+              aria-label={t("选择轨迹 {0}", [tr(annotation.trajectoryCode)])}
             />
             <span className="batch-trajectory">
-              <strong>{annotation.trajectoryCode}</strong>
+              <strong>{tr(annotation.trajectoryCode)}</strong>
               <small>r{annotation.revision}</small>
             </span>
-            <span className="batch-task" title={annotation.taskDescription}>
-              <strong>{taskLabels.get(annotation.taskId) ?? annotation.taskId}</strong>
-              <small>{annotation.taskDescription}</small>
+            <span className="batch-task" title={tr(annotation.taskDescription)}>
+              <strong>{tr(taskLabels.get(annotation.taskId)) ?? tr(annotation.taskId)}</strong>
+              <small>{tr(annotation.taskDescription)}</small>
             </span>
-            <span className="batch-source" title={annotation.episodeRoot}>
+            <span className="batch-source" title={tr(annotation.episodeRoot)}>
               {shortPath(annotation.episodeRoot, 48)}
             </span>
             <span className="batch-processor">
               <strong>{annotation.processedBy.displayName}</strong>
-              <small>{formatUpdatedAt(annotation.updatedAtMs)}</small>
+              <small>{tr(formatUpdatedAt(annotation.updatedAtMs))}</small>
             </span>
             <span className={`batch-source-status ${sourceAvailable ? "available" : "missing"}`}>
               {sourceAvailable ? <Check size={13} /> : <CircleAlert size={13} />}
-              {sourceAvailable ? "可用" : "源断开"}
+              {sourceAvailable ? t("可用") : t("源断开")}
             </span>
           </label>
         )) : (
           <div className="batch-empty">
             {loading ? <LoaderCircle className="spin" size={18} /> : <FileArchive size={18} />}
-            <span>{loading ? "正在读取本地标注" : "暂无已保存标注"}</span>
+            <span>{loading ? t("正在读取本地标注") : t("暂无已保存标注")}</span>
           </div>
         )}
       </div>
 
       <div className="batch-action-row">
         <div>
-          <span>完整轨迹</span>
-          <strong>{selectedIds.length} 条 · {batchFormatLabel(selectedFormat)}</strong>
+          <span>{t("完整轨迹")}</span>
+          <strong>{selectedIds.length}{" " + t("条 ·") + " "}{tr(batchFormatLabel(selectedFormat))}</strong>
         </div>
         <button
           className="button button-primary batch-export-button"
@@ -185,21 +187,20 @@ export function BatchExportPanel({
           disabled={busy || loading || !selectedIds.length}
         >
           {busy ? <LoaderCircle className="spin" size={17} /> : <FolderOutput size={17} />}
-          选择目录并批量导出
-        </button>
+          {t("选择目录并批量导出")}</button>
       </div>
 
       {result ? (
-        <section className="batch-result" aria-label="批量导出结果">
+        <section className="batch-result" aria-label={t("批量导出结果")}>
           <header>
             <div>
-              <strong>{result.cancelled ? "批量导出已停止" : "批量导出完成"}</strong>
+              <strong>{result.cancelled ? t("批量导出已停止") : t("批量导出完成")}</strong>
               <span>
-                成功 {result.exportedCount} · 失败 {result.failedCount}
-                {result.cancelled ? ` · 未处理 ${result.requestedCount - result.items.length}` : ""}
+                {t("成功") + " "}{result.exportedCount}{" " + t("· 失败") + " "}{result.failedCount}
+                {result.cancelled ? t(" · 未处理 {0}", [result.requestedCount - result.items.length]) : ""}
               </span>
             </div>
-            <span>{result.totalFiles} 个文件 · {formatBytes(result.totalBytes)} · {(result.elapsedMs / 1000).toFixed(1)} s</span>
+            <span>{result.totalFiles}{" " + t("个文件 ·") + " "}{tr(formatBytes(result.totalBytes))} · {tr((result.elapsedMs / 1000).toFixed(1))} s</span>
           </header>
           <div className="batch-result-list">
             {result.items.map((item) => (
@@ -207,15 +208,13 @@ export function BatchExportPanel({
                 <span className="batch-result-status-icon">
                   {item.status === "exported" ? <Check size={15} /> : <CircleAlert size={15} />}
                 </span>
-                <strong>{item.trajectoryCode}</strong>
+                <strong>{tr(item.trajectoryCode)}</strong>
                 <div className="batch-result-copy">
-                  <span title={item.result?.outputPath ?? item.error ?? undefined}>
-                    {item.result
-                      ? shortPath(item.result.outputPath, 72)
-                      : item.error ?? "导出失败"}
+                  <span title={tr(item.result?.outputPath) ?? tr(item.error) ?? undefined}>
+                    {item.result ? shortPath(item.result.outputPath, 72) : tr(item.error) ?? t("导出失败")}
                   </span>
                   {item.errorLogPath ? (
-                    <small title={item.errorLogPath}>日志：{shortPath(item.errorLogPath, 72)}</small>
+                    <small title={tr(item.errorLogPath)}>{t("日志：")}{shortPath(item.errorLogPath, 72)}</small>
                   ) : null}
                 </div>
                 <div className="batch-result-actions">
@@ -224,20 +223,20 @@ export function BatchExportPanel({
                       className="button button-secondary batch-result-action"
                       type="button"
                       onClick={() => onReveal(item.result?.outputPath ?? "")}
-                      title="打开导出文件所在位置"
+                      title={t("打开导出文件所在位置")}
                     >
                       <FolderOpen size={14} />
-                      <span>打开文件所在位置</span>
+                      <span>{t("打开文件所在位置")}</span>
                     </button>
                   ) : (
                     <button
                       className="button button-secondary batch-result-action"
                       type="button"
                       onClick={() => setSelectedFailureId(item.episodeId)}
-                      aria-label={`查看 ${item.trajectoryCode} 失败日志`}
+                      aria-label={t("查看 {0} 失败日志", [tr(item.trajectoryCode)])}
                     >
                       <FileText size={14} />
-                      <span>查看失败日志</span>
+                      <span>{t("查看失败日志")}</span>
                     </button>
                   )}
                 </div>
@@ -245,28 +244,26 @@ export function BatchExportPanel({
             ))}
           </div>
           {selectedFailure ? (
-            <section className="batch-failure-log" aria-label={`${selectedFailure.trajectoryCode} 失败日志`}>
+            <section className="batch-failure-log" aria-label={t("{0} 失败日志", [tr(selectedFailure.trajectoryCode)])}>
               <header>
                 <div>
-                  <strong>{selectedFailure.trajectoryCode} · 失败日志</strong>
+                  <strong>{tr(selectedFailure.trajectoryCode)}{" " + t("· 失败日志")}</strong>
                   <span title={selectedFailure.sourcePath}>{shortPath(selectedFailure.sourcePath, 80)}</span>
                 </div>
                 <button
                   className="icon-button"
                   type="button"
                   onClick={() => setSelectedFailureId(null)}
-                  title="关闭失败日志"
-                  aria-label="关闭失败日志"
+                  title={t("关闭失败日志")}
+                  aria-label={t("关闭失败日志")}
                 >
                   <X size={14} />
                 </button>
               </header>
-              <code>{selectedFailure.error ?? "导出失败"}</code>
+              <code>{tr(selectedFailure.error) ?? t("导出失败")}</code>
               <footer>
-                <span title={selectedFailure.errorLogPath ?? undefined}>
-                  {selectedFailure.errorLogPath
-                    ? shortPath(selectedFailure.errorLogPath, 88)
-                    : "失败日志文件未生成"}
+                <span title={tr(selectedFailure.errorLogPath) ?? undefined}>
+                  {selectedFailure.errorLogPath ? shortPath(selectedFailure.errorLogPath, 88) : t("失败日志文件未生成")}
                 </span>
                 {selectedFailure.errorLogPath ? (
                   <button
@@ -275,7 +272,7 @@ export function BatchExportPanel({
                     onClick={() => onReveal(selectedFailure.errorLogPath ?? "")}
                   >
                     <FolderOpen size={14} />
-                    <span>打开日志所在位置</span>
+                    <span>{t("打开日志所在位置")}</span>
                   </button>
                 ) : null}
               </footer>
@@ -292,7 +289,7 @@ function batchFormatLabel(format: ExportFormat): string {
 }
 
 function formatUpdatedAt(value: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(localeTag(), {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",

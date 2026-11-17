@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { rejectPendingMachineReview } from "../lib/backend";
 import { AlertTriangle, LoaderCircle, Square, X } from "lucide-react";
@@ -15,6 +16,7 @@ interface Props {
 type Result = RejectionTarget & { status: "rejected" | "local" | "skipped" | "failed"; message: string };
 
 export function BatchRejectionDialog({ username, folder, selected, onSaved, onClose }: Props) {
+  useLanguage();
   const [targets, setTargets] = useState<RejectionTarget[]>(selected ?? []);
   const [preparing, setPreparing] = useState(Boolean(folder));
   const [running, setRunning] = useState(false);
@@ -89,18 +91,18 @@ export function BatchRejectionDialog({ username, folder, selected, onSaved, onCl
   return <dialog className="batch-rejection-dialog rejection-dialog" aria-labelledby="batch-rejection-title"
     ref={node => { if (node && !node.open) node.showModal(); }} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
     <form onSubmit={event => { event.preventDefault(); void submit(); }}>
-      <header><h2 id="batch-rejection-title">{folder ? "文件夹不通过" : "批量不通过"}</h2><button type="button" className="icon-button" title="关闭" aria-label="关闭批量不通过" disabled={busy} onClick={onClose}><X size={18} /></button></header>
-      <p className="batch-rejection-warning"><AlertTriangle size={18} />此操作会将待处理数据标记为不通过，并记录审核人和原因。已有审核结果保持不变。</p>
-      {folder && <p className="batch-rejection-path">{folder}</p>}
-      <p role="status">{preparing ? `正在检查目录 QC · ${progress}` : `待处理 ${targets.length} 条${excluded ? ` · 已排除已审核或异常数据 ${excluded} 条` : ""}`}</p>
+      <header><h2 id="batch-rejection-title">{folder ? t("文件夹不通过") : t("批量不通过")}</h2><button type="button" className="icon-button" title={t("关闭")} aria-label={t("关闭批量不通过")} disabled={busy} onClick={onClose}><X size={18} /></button></header>
+      <p className="batch-rejection-warning"><AlertTriangle size={18} />{t("此操作会将待处理数据标记为不通过，并记录审核人和原因。已有审核结果保持不变。")}</p>
+      {tr(folder && <p className="batch-rejection-path">{folder}</p>)}
+      <p role="status">{preparing ? t("正在检查目录 QC · {0}", [tr(progress)]) : t("待处理 {0} 条{1}", [targets.length, excluded ? t(" · 已排除已审核或异常数据 {0} 条", [excluded]) : ""])}</p>
       <RejectionReasons key={username} username={username} value={reasonChoice} onChange={setReasonChoice} disabled={busy || finished} />
-      {reasonChoice === "其他原因" && <label className="rejection-detail">其他原因<textarea autoFocus aria-label="批量不通过原因" required maxLength={1000} value={reason} disabled={busy || finished} onChange={event => setReason(event.target.value)} /></label>}
-      <label className="batch-rejection-confirm"><input type="checkbox" checked={confirmed} disabled={busy || finished} onChange={event => setConfirmed(event.target.checked)} />我已确认这些未审核数据应判为不通过</label>
-      {error && <p role="alert" className="task-center-error">{error}</p>}
-      {(running || finished) && <p role="status">成功 {success} · 本机待写 {local} · 跳过 {skipped} · 失败 {failed} · 未执行 {targets.length - results.length}{running ? ` · ${progress}` : ""}</p>}
-      {results.length > 0 && <ul className="batch-rejection-results">{results.map(item => <li key={item.path} className={item.status === "failed" ? "task-qc-error" : ""}><span>{item.name}</span><span>{item.message}</span></li>)}</ul>}
-      <footer>{busy ? <button type="button" className="button button-secondary" onClick={() => void cancel()}><Square size={14} />停止</button> : <button type="button" className="button button-secondary" onClick={onClose}>{finished ? "完成" : "取消"}</button>}
-        {!finished && <button type="submit" className="button button-primary" disabled={busy || Boolean(error) || !targets.length || !confirmed || !resolvedReason}>{busy ? <LoaderCircle className="spin" size={16} /> : <X size={16} />}确认不通过</button>}</footer>
+      {reasonChoice === "其他原因" && <label className="rejection-detail">{t("其他原因")}<textarea autoFocus aria-label={t("批量不通过原因")} required maxLength={1000} value={reason} disabled={busy || finished} onChange={event => setReason(event.target.value)} /></label>}
+      <label className="batch-rejection-confirm"><input type="checkbox" checked={confirmed} disabled={busy || finished} onChange={event => setConfirmed(event.target.checked)} />{t("我已确认这些未审核数据应判为不通过")}</label>
+      {tr(error && <p role="alert" className="task-center-error">{tr(error)}</p>)}
+      {(running || finished) && <p role="status">{t("成功") + " "}{success}{" " + t("· 本机待写") + " "}{local}{" " + t("· 跳过") + " "}{skipped}{" " + t("· 失败") + " "}{failed}{" " + t("· 未执行") + " "}{targets.length - results.length}{running ? t(" · {0}", [tr(progress)]) : ""}</p>}
+      {results.length > 0 && <ul className="batch-rejection-results">{results.map(item => <li key={item.path} className={item.status === "failed" ? "task-qc-error" : ""}><span>{item.name}</span><span>{tr(item.message)}</span></li>)}</ul>}
+      <footer>{busy ? <button type="button" className="button button-secondary" onClick={() => void cancel()}><Square size={14} />{t("停止")}</button> : <button type="button" className="button button-secondary" onClick={onClose}>{finished ? t("完成") : t("取消")}</button>}
+        {!finished && <button type="submit" className="button button-primary" disabled={busy || Boolean(error) || !targets.length || !confirmed || !resolvedReason}>{busy ? <LoaderCircle className="spin" size={16} /> : <X size={16} />}{t("确认不通过")}</button>}</footer>
     </form>
   </dialog>;
 }

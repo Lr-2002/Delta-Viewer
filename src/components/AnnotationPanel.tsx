@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardPen, FileUp, Plus, Save, Tag, Trash2, UserRound, X } from "lucide-react";
 import {
@@ -47,6 +48,7 @@ export function AnnotationPanel({
   onNotice,
   onActivity,
 }: AnnotationPanelProps) {
+  useLanguage();
   const firstTask = tasks[0] ?? null;
   const [taskId, setTaskId] = useState("");
   const [trajectoryCode, setTrajectoryCode] = useState("");
@@ -298,22 +300,22 @@ export function AnnotationPanel({
     <section className="annotation-section" aria-labelledby="annotation-title">
       <header className="annotation-heading">
         <div>
-          <span className="section-kicker">DATA ANNOTATION</span>
-          <h2 id="annotation-title">数据标注</h2>
+          <span className="section-kicker">{t("数据标注")}</span>
+          <h2 id="annotation-title">{t("数据标注")}</h2>
         </div>
         <div className="annotation-heading-actions">
           {!offlineMode && lastProcessor ? (
             <div className="annotation-processor">
               <UserRound size={15} />
               <span>
-                <small>{annotation ? "最近处理" : "本次处理"}</small>
+                <small>{annotation ? t("最近处理") : t("本次处理")}</small>
                 <strong>{lastProcessor.displayName}</strong>
                 <code>@{lastProcessor.username}</code>
               </span>
             </div>
           ) : null}
           <span className={`annotation-state${annotation && !dirty ? " saved" : ""}`}>
-            {annotation && !dirty ? `已保存 · r${annotation.revision}` : draftRestored ? "已恢复本机草稿" : "草稿已自动保存"}
+            {annotation && !dirty ? t("已保存 · r{0}", [annotation.revision]) : draftRestored ? t("已恢复本机草稿") : t("草稿已自动保存")}
           </span>
           <button
             className="button button-primary"
@@ -322,16 +324,16 @@ export function AnnotationPanel({
             disabled={busy || saving || creatingTask || importingTemplates || !dirty || !taskId || !description.trim()}
           >
             <Save size={16} />
-            {saving ? "保存中" : "保存标注"}
+            {saving ? t("保存中") : t("保存标注")}
           </button>
         </div>
       </header>
       <div className="annotation-layout">
         <div className="annotation-fields">
           <div className="annotation-task-field">
-            <span className="annotation-field-label"><ClipboardPen size={14} />任务</span>
+            <span className="annotation-field-label"><ClipboardPen size={14} />{t("任务")}</span>
             <div className="annotation-task-control">
-              <select value={taskId} onChange={(event) => void changeTask(event.target.value)} disabled={!tasks.length || saving || creatingTask || importingTemplates} aria-label="任务">
+              <select value={taskId} onChange={(event) => void changeTask(event.target.value)} disabled={!tasks.length || saving || creatingTask || importingTemplates} aria-label={t("任务")}>
                 {tasks.map((task) => <option value={task.id} key={task.id}>{task.label}</option>)}
               </select>
               <button
@@ -339,8 +341,8 @@ export function AnnotationPanel({
                 type="button"
                 onClick={() => setTaskCreatorOpen((value) => !value)}
                 disabled={busy || saving || creatingTask || importingTemplates}
-                title="创建任务"
-                aria-label="创建任务"
+                title={t("创建任务")}
+                aria-label={t("创建任务")}
                 aria-expanded={taskCreatorOpen}
               >
                 {taskCreatorOpen ? <X size={15} /> : <Plus size={15} />}
@@ -350,8 +352,8 @@ export function AnnotationPanel({
                 type="button"
                 onClick={() => void importTemplates()}
                 disabled={busy || saving || creatingTask || importingTemplates}
-                title="导入任务模板配置"
-                aria-label="导入模板配置"
+                title={t("导入任务模板配置")}
+                aria-label={t("导入模板配置")}
               >
                 <FileUp size={15} />
               </button>
@@ -360,19 +362,19 @@ export function AnnotationPanel({
                 type="button"
                 onClick={() => void deleteTask()}
                 disabled={busy || saving || creatingTask || importingTemplates || !taskId || taskId === "close_oven"}
-                title="删除当前自定义任务"
-                aria-label="删除当前自定义任务"
+                title={t("删除当前自定义任务")}
+                aria-label={t("删除当前自定义任务")}
               >
                 <Trash2 size={15} />
               </button>
             </div>
           </div>
           <label>
-            <span><Tag size={14} />轨迹编码</span>
-            <input type="text" value={trajectoryCode} placeholder="保存时自动分配" readOnly aria-label="轨迹编码" />
+            <span><Tag size={14} />{t("轨迹编码")}</span>
+            <input type="text" value={trajectoryCode} placeholder={t("保存时自动分配")} readOnly aria-label={t("轨迹编码")} />
           </label>
           <label className={`annotation-description${customDescriptionOpen ? " custom" : ""}`}>
-            <span>任务描述</span>
+            <span>{t("任务描述")}</span>
             <select
               value={customDescriptionOpen ? CUSTOM_DESCRIPTION_VALUE : description}
               onChange={(event) => {
@@ -386,12 +388,12 @@ export function AnnotationPanel({
                 onActivity("description_changed", taskId, trajectoryCode);
               }}
               disabled={!activeTask || saving || creatingTask || importingTemplates}
-              aria-label="任务描述"
+              aria-label={t("任务描述")}
             >
               {descriptionOptions.map((option) => (
-                <option value={option} key={option}>{option}</option>
+                <option value={option} key={option}>{tr(option)}</option>
               ))}
-              <option value={CUSTOM_DESCRIPTION_VALUE}>自定义描述</option>
+              <option value={CUSTOM_DESCRIPTION_VALUE}>{t("自定义描述")}</option>
             </select>
             {customDescriptionOpen ? (
               <input
@@ -410,7 +412,7 @@ export function AnnotationPanel({
                     event.currentTarget.blur();
                   }
                 }}
-                placeholder="输入自定义任务描述"
+                placeholder={t("输入自定义任务描述")}
                 maxLength={500}
                 disabled={saving || creatingTask || importingTemplates}
                 autoFocus
@@ -423,7 +425,7 @@ export function AnnotationPanel({
       {taskCreatorOpen ? (
         <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void createTask(); }}>
           <label>
-            <span>新任务名称</span>
+            <span>{t("新任务名称")}</span>
             <input
               type="text"
               value={newTaskLabel}
@@ -435,12 +437,12 @@ export function AnnotationPanel({
           </label>
           <button className="button button-primary" type="submit" disabled={busy || creatingTask || !newTaskLabel.trim()}>
             <Plus size={15} />
-            {creatingTask ? "创建中" : "创建任务"}
+            {creatingTask ? t("创建中") : t("创建任务")}
           </button>
         </form>
       ) : null}
       {!offlineMode && annotation && currentUser && annotation.processedBy.username !== currentUser.username ? (
-        <p className="annotation-processor-notice">保存后处理人将更新为 {currentUser.displayName}</p>
+        <p className="annotation-processor-notice">{t("保存后处理人将更新为") + " "}{currentUser.displayName}</p>
       ) : null}
     </section>
   );

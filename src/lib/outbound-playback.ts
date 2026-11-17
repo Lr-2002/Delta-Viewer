@@ -12,6 +12,8 @@ export class OutboundPlayback {
   private intent = false;
   private held = false;
   private starting = false;
+  private priming = false;
+  private primingUntil = 0;
   private generation = 0;
   private speed = 1;
   private masterId: number | null = null;
@@ -32,11 +34,14 @@ export class OutboundPlayback {
       const waiting = () => {
         if (this.intent && !player.ended) this.hold();
       };
+      const canplay = () => this.tick();
       const ended = () => { if (this.intent) this.pause(); };
       player.addEventListener("waiting", waiting);
+      player.addEventListener("canplay", canplay);
       player.addEventListener("ended", ended);
       this.listeners.set(id, () => {
         player.removeEventListener("waiting", waiting);
+        player.removeEventListener("canplay", canplay);
         player.removeEventListener("ended", ended);
         player.pause();
       });
@@ -58,16 +63,19 @@ export class OutboundPlayback {
   }
 
   private hold() {
-    if (!this.held) {
-      this.held = true;
-      for (const player of this.players.values()) player.pause();
-    }
+    this.held = true;
+    // Keep the starved decoder trying to play. Pausing it at HAVE_CURRENT_DATA
+    // can leave WebView2 waiting for canplay even after network bytes arrive.
+    // Healthy peers wait here; canplay resumes them without a polling delay.
+    for (const player of this.players.values())
+      if (player.readyState >= 3) player.pause();
     this.publish();
   }
 
   play() {
     if (!this.players.size) return;
     this.intent = true;
+    this.prime();
     this.generation++;
     const master = this.master()!;
     // A user start/seek may align once. Continuous playback never seeks peers.
@@ -82,6 +90,7 @@ export class OutboundPlayback {
   pause() {
     this.intent = false;
     this.held = false;
+    this.priming = false;
     this.generation++;
     for (const player of this.players.values()) {
       player.pause();
@@ -98,6 +107,7 @@ export class OutboundPlayback {
         player.currentTime = Math.max(0, Math.min(time, Number.isFinite(player.duration) ? player.duration : time));
     }
     this.held = this.intent;
+    if (this.intent) this.prime();
     this.publish();
   }
 
@@ -109,14 +119,33 @@ export class OutboundPlayback {
 
   refresh() { this.publish(); }
 
+  private prime() {
+    this.priming = true;
+    this.primingUntil = performance.now() + 2000;
+  }
+
+  private hasStartupBuffer(player: HTMLVideoElement) {
+    const needed = Math.min(1.25 * this.speed, Math.max(0, player.duration - player.currentTime - .04));
+    for (let i = 0; i < player.buffered.length; i++) {
+      if (player.buffered.start(i) <= player.currentTime + .02
+        && player.buffered.end(i) - player.currentTime >= needed) return true;
+    }
+    return false;
+  }
+
   private tick() {
     const master = this.master();
     if (this.intent && master) {
       if (master.ended) { this.pause(); return; }
       if (this.held) {
-        if (!this.starting && [...this.players.values()].every(v => v.readyState >= 3 && !v.seeking)) {
+        // A decoded first frame may represent only .25 seconds of high-rate
+        // video. Reserve a small lead once at start/seek, capped at two seconds;
+        // ongoing recovery keeps the hungry decoder running as before.
+        if (!this.starting && [...this.players.values()].every(v => v.readyState >= 3 && !v.seeking
+          && (!this.priming || performance.now() >= this.primingUntil || this.hasStartupBuffer(v)))) {
           const generation = this.generation;
           this.held = false;
+          this.priming = false;
           this.starting = true;
           void Promise.all([...this.players.values()].map(player => player.play())).catch(error => {
             // Our pause/seek can abort an in-flight play promise.

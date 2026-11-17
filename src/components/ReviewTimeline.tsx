@@ -1,3 +1,4 @@
+import { t, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import type { ReviewSegment } from "../types";
 import { adjustReviewBoundary } from "../lib/machine-annotation";
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export function ReviewTimeline({ frame, frameCount, start, end, editable, segments, selected, onSeek, onBoundary, previewBoundary, onChoose, onBoundaryFocus }: Props) {
+  useLanguage();
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef<"startFrame" | "endFrame" | null>(null);
   const origin = useRef({ x: 0, moved: false });
@@ -54,18 +56,18 @@ export function ReviewTimeline({ frame, frameCount, start, end, editable, segmen
   const shownStart = activePreview?.startFrame ?? start;
   const shownEnd = activePreview?.endFrame ?? end;
   return <div className="review-timeline">
-    <div className="review-track" ref={track} aria-label="动作分段条">
+    <div className="review-track" ref={track} aria-label={t("动作分段条")}>
       {shown.filter(segment => !segment.deleted).map((segment, index) => <button type="button" className="review-span" key={segment.sourceIndex} data-source-index={segment.sourceIndex}
-        title={`${segment.description || "暂无中文描述"} [${segment.startFrame}, ${segment.endFrame + 1})`}
-        aria-label={`选择机标片段 ${index + 1}`} aria-pressed={segment.sourceIndex === selected}
+        title={t("{0} [{1}, {2})", [segment.description || t("暂无中文描述"), segment.startFrame, segment.endFrame + 1])}
+        aria-label={t("选择机标片段 {0}", [index + 1])} aria-pressed={segment.sourceIndex === selected}
         onClick={() => onChoose(segment.sourceIndex)} style={{ left: `${segment.startFrame / frameCount * 100}%`, width: `${(segment.endFrame + 1 - segment.startFrame) / frameCount * 100}%`, background: segmentColor(segment.sourceIndex) }} />)}
-      <input type="range" className={`review-playhead-input${selectedControl === "playhead" ? " selected-control" : ""}`} min={0} max={frameCount - 1} value={frame} step={1} aria-label="校对播放帧" onFocus={() => selectControl("playhead")} onPointerDown={() => selectControl("playhead")} onChange={(event) => onSeek(event.currentTarget.valueAsNumber)} />
+      <input type="range" className={`review-playhead-input${selectedControl === "playhead" ? " selected-control" : ""}`} min={0} max={frameCount - 1} value={frame} step={1} aria-label={t("校对播放帧")} onFocus={() => selectControl("playhead")} onPointerDown={() => selectControl("playhead")} onChange={(event) => onSeek(event.currentTarget.valueAsNumber)} />
       <i className="review-playhead" style={{ left: `${frame / frameCount * 100}%` }} />
       {(["startFrame", "endFrame"] as const).map((kind) => {
         const isStart = kind === "startFrame";
         const value = isStart ? shownStart : shownEnd + 1;
         return <button key={kind} type="button" role="slider" className={`review-edge ${isStart ? "start" : "end"}${selectedControl === kind ? " selected-control" : ""}`}
-          disabled={!editable} aria-label={isStart ? "微调起始帧" : "微调结束帧"} title={!editable ? "当前片段只读，请先处理上方提示" : isStart ? "拖动起始帧" : "拖动结束帧"}
+          disabled={!editable} aria-label={isStart ? t("微调起始帧") : t("微调结束帧")} title={!editable ? t("当前片段只读，请先处理上方提示") : isStart ? t("拖动起始帧") : t("拖动结束帧")}
           aria-valuemin={isStart ? 0 : start + 1} aria-valuemax={isStart ? end : frameCount} aria-valuenow={value}
           style={{ left: `${value / frameCount * 100}%` }}
           onFocus={() => selectControl(kind)} onClick={() => selectControl(kind)}
@@ -86,8 +88,8 @@ export function ReviewTimeline({ frame, frameCount, start, end, editable, segmen
       })}
     </div>
     <div className="review-frame-fields">
-      <label>起始帧<input aria-label="复核起始帧" type="number" min={0} max={shownEnd} value={shownStart} disabled={!editable} onChange={(event) => onBoundary("startFrame", event.currentTarget.valueAsNumber)} /></label>
-      <label>结束帧（不含）<input aria-label="复核结束帧" type="number" min={shownStart + 1} max={frameCount} value={shownEnd + 1} disabled={!editable} onChange={(event) => onBoundary("endFrame", event.currentTarget.valueAsNumber - 1)} /></label>
+      <label>{t("起始帧")}<input aria-label={t("复核起始帧")} type="number" min={0} max={shownEnd} value={shownStart} disabled={!editable} onChange={(event) => onBoundary("startFrame", event.currentTarget.valueAsNumber)} /></label>
+      <label>{t("结束帧（不含）")}<input aria-label={t("复核结束帧")} type="number" min={shownStart + 1} max={frameCount} value={shownEnd + 1} disabled={!editable} onChange={(event) => onBoundary("endFrame", event.currentTarget.valueAsNumber - 1)} /></label>
     </div>
   </div>;
 }

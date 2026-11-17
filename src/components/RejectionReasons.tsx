@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { GripVertical, Plus } from "lucide-react";
 import { REJECTION_REASONS, normalizeCustomReasons, normalizeReasonOrder, reorderReason, customReasonError, rejectionReasonValue } from "../lib/rejection-reasons";
@@ -7,6 +8,7 @@ import "./rejection-reasons.css";
 export function RejectionReasons({ username, value, onChange, disabled }: {
   username: string; value: string; onChange: (reason: string) => void; disabled: boolean;
 }) {
+  useLanguage();
   const legacyKey = `delta-viewer.rejection-order.v1:${encodeURIComponent(username)}`;
   const storageKey = `delta-viewer.rejection-options.v2:${encodeURIComponent(username)}`;
   function readOptions() {
@@ -63,27 +65,27 @@ export function RejectionReasons({ username, value, onChange, disabled }: {
   }
   return <>
     <div className="rejection-sort-tools">
-      <span>{sorting ? "拖动标签调整顺序；其他原因固定右下角" : "可将常用原因排在前面"}</span>
-      <button type="button" className="button button-secondary" disabled={disabled} onClick={() => { setAdding(!adding); setError(""); }}><Plus size={14} aria-hidden="true" />添加常用原因</button>
-      <button type="button" className="button button-secondary" disabled={disabled} onClick={() => { setSorting(!sorting); dragged.current = null; setTarget(null); }}>{sorting ? "完成排序" : "调整顺序"}</button>
-      {sorting && <button type="button" className="button button-secondary" disabled={disabled} onClick={() => save(normalizeReasonOrder(null, custom))}>恢复默认</button>}
+      <span>{sorting ? t("拖动标签调整顺序；其他原因固定右下角") : t("可将常用原因排在前面")}</span>
+      <button type="button" className="button button-secondary" disabled={disabled} onClick={() => { setAdding(!adding); setError(""); }}><Plus size={14} aria-hidden="true" />{t("添加常用原因")}</button>
+      <button type="button" className="button button-secondary" disabled={disabled} onClick={() => { setSorting(!sorting); dragged.current = null; setTarget(null); }}>{sorting ? t("完成排序") : t("调整顺序")}</button>
+      {sorting && <button type="button" className="button button-secondary" disabled={disabled} onClick={() => save(normalizeReasonOrder(null, custom))}>{t("恢复默认")}</button>}
     </div>
     {adding && <div className="rejection-custom-editor">
-      <label>常用原因名称<input autoFocus aria-label="常用原因名称" value={draft} maxLength={80} disabled={disabled} placeholder="例如：视频不同步" onChange={event => { setDraft(event.target.value); setError(""); }} onKeyDown={event => {
+      <label>{t("常用原因名称")}<input autoFocus aria-label={t("常用原因名称")} value={draft} maxLength={80} disabled={disabled} placeholder={t("例如：视频不同步")} onChange={event => { setDraft(event.target.value); setError(""); }} onKeyDown={event => {
         if (event.nativeEvent.isComposing) return;
         if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); addReason(); }
         if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setAdding(false); setError(""); }
       }} /></label>
-      <p className="rejection-custom-hint">最多 40 字，可添加 20 个。仅保存在当前账号的本机，单条与批量共用。</p>
-      <div className="rejection-custom-actions"><button type="button" className="button button-primary" disabled={disabled || !draft.trim()} onClick={addReason}>保存常用原因</button><button type="button" className="button button-secondary" disabled={disabled} onClick={() => { setAdding(false); setError(""); }}>取消添加</button></div>
+      <p className="rejection-custom-hint">{t("最多 40 字，可添加 20 个。仅保存在当前账号的本机，单条与批量共用。")}</p>
+      <div className="rejection-custom-actions"><button type="button" className="button button-primary" disabled={disabled || !draft.trim()} onClick={addReason}>{t("保存常用原因")}</button><button type="button" className="button button-secondary" disabled={disabled} onClick={() => { setAdding(false); setError(""); }}>{t("取消添加")}</button></div>
     </div>}
-    {sorting && custom.length > 0 && <ul className="rejection-custom-list" aria-label="管理自定义原因">{custom.map(reason => <li key={reason}><span>{reason}</span><button type="button" className="button button-secondary" disabled={disabled} aria-label={`移除常用原因 ${reason}`} onClick={() => removeReason(reason)}>移除</button></li>)}</ul>}
-    {error && <p role="alert">{error}</p>}
-    <div className="rejection-options" role="group" aria-label="原因选项">
+    {sorting && custom.length > 0 && <ul className="rejection-custom-list" aria-label={t("管理自定义原因")}>{custom.map(reason => <li key={reason}><span>{custom.includes(reason) ? reason : t(reason)}</span><button type="button" className="button button-secondary" disabled={disabled} aria-label={t("移除常用原因 {0}", [reason])} onClick={() => removeReason(reason)}>{t("移除")}</button></li>)}</ul>}
+    {tr(error && <p role="alert">{tr(error)}</p>)}
+    <div className="rejection-options" role="group" aria-label={t("原因选项")}>
       {order.map((reason, index) => <button key={reason} autoFocus={index === 0} type="button"
         className={`button button-secondary${reason === "其他原因" ? " rejection-other" : ""}${target === reason ? " rejection-drop-target" : ""}`}
         aria-pressed={value === rejectionReasonValue(reason, custom)} disabled={disabled} draggable={sorting && reason !== "其他原因" && !disabled}
-        title={sorting && reason !== "其他原因" ? "拖动排序，也可使用 Alt + 方向键移动" : undefined}
+        title={sorting && reason !== "其他原因" ? t("拖动排序，也可使用 Alt + 方向键移动") : undefined}
         onDragStart={event => { if (!sorting || disabled || reason === "其他原因") { event.preventDefault(); return; } dragged.current = reason; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", reason); }}
         onDragOver={event => { if (sorting && !disabled && dragged.current && reason !== "其他原因") { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setTarget(reason); } }}
         onDrop={event => { event.preventDefault(); if (sorting && !disabled && dragged.current) save(reorderReason(order, dragged.current, reason, custom)); dragged.current = null; setTarget(null); }}
@@ -96,7 +98,7 @@ export function RejectionReasons({ username, value, onChange, disabled }: {
           if (next) save(reorderReason(order, reason, next, custom));
         }}
         onClick={() => { if (!sorting && !dragged.current) onChange(rejectionReasonValue(reason, custom)); }}>
-        {sorting && reason !== "其他原因" && <GripVertical size={14} aria-hidden="true" />}{reason}
+        {sorting && reason !== "其他原因" && <GripVertical size={14} aria-hidden="true" />}{custom.includes(reason) ? reason : t(reason)}
       </button>)}
     </div>
   </>;

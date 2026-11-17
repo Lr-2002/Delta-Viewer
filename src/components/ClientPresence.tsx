@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { APP_VERSION, pollClientVersions } from "../lib/backend";
@@ -12,6 +13,7 @@ function installationId() {
 export function ClientPresence({ owner, poll = pollClientVersions }: {
   owner: string; poll?: (id: string, ack: string[]) => Promise<ClientPoll>;
 }) {
+  useLanguage();
   const [reminder,setReminder]=useState<UpdateReminder|null>(null);
   const [id]=useState(installationId);
   const [ack]=useState(()=>{
@@ -47,9 +49,9 @@ export function ClientPresence({ owner, poll = pollClientVersions }: {
     try {localStorage.setItem(`delta.reminder-acks:${owner}`,JSON.stringify([...ack]));} catch { /* Memory acknowledgement remains. */ }
     setReminder(null);
   }
-  return reminder?createPortal(<UpdateToast key={reminder.id} autoDismiss={false} className="admin-update-reminder" ariaLabel="管理员更新提醒"
-    title="管理员提醒您更新 Delta Viewer"
-    message={`@${reminder.sender} 请您检查最新版本。当前审核内容保留，您可以在合适的时间更新。`}
-    primaryLabel="查看更新" secondaryLabel="稍后处理"
+  return reminder?createPortal(<UpdateToast key={reminder.id} autoDismiss={false} className="admin-update-reminder" ariaLabel={t("管理员更新提醒")}
+    title={t("管理员提醒您更新 Delta Viewer")}
+    message={t("@{0} 请您检查最新版本。当前审核内容保留，您可以在合适的时间更新。", [tr(reminder.sender)])}
+    primaryLabel={t("查看更新")} secondaryLabel={t("稍后处理")}
     onPrimary={()=>window.dispatchEvent(new Event("delta-open-update-panel"))} onDismiss={dismiss}/>,document.body):null;
 }

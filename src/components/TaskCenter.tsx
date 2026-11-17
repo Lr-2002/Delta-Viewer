@@ -1,3 +1,4 @@
+import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, UserMinus, ListFilter, X } from "lucide-react";
 import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex, refreshTaskIndex } from "../lib/backend";
@@ -25,6 +26,7 @@ interface Props {
 }
 
 export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, onClose, cloudCurrentUser, onOpenCloudReview, onOpenOutboundReview, initialView="local", workspaceBusy, beginCloudOperation }: Props) {
+  useLanguage();
   const [root, setRoot] = useState(sourceRoot ?? "");
   const [catalog, setCatalog] = useState<TaskCatalog | null>(null);
   const [claims, setClaims] = useState<Record<string, BatchClaim>>({});
@@ -376,59 +378,57 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
           {open && !node.session ? <FolderOpen size={17} /> : <Folder size={17} />}
           <span>{isRoot ? root : node.name}{isBatch && !isRoot && <small className="task-node-path">{node.relativePath}</small>}</span>
         </button>
-        {node.session ? <span className={`task-qc task-qc-${node.status}`} title={node.error}>{node.status === "approved" ? "已审核 · 通过" : node.status === "rejected" ? "已审核 · 不通过" : node.status === "error" ? "QC 异常" : "未审核"}</span>
-          : <>{isBatch && <span className="task-owner">领取人：{claim ? `${claim.displayName} (@${claim.username})` : claimsReady ? "暂无" : "--"}</span>}
-            <span className={`task-progress${percent === 100 ? " complete" : ""}`} title={node.error || `已审核 ${node.reviewed}/${node.total}；通过 ${node.approved}；不通过 ${node.rejected}；异常 ${node.errors}`}>
-              <b>{percent === null ? "--" : `${percent}%`}</b><small>{node.scanning ? loading ? "统计中" : "未完成" : `${node.reviewed}/${node.total}`}{node.errors ? ` · ${node.errors} 异常` : ""}</small>
+        {node.session ? <span className={`task-qc task-qc-${node.status}`} title={tr(node.error)}>{node.status === "approved" ? t("已审核 · 通过") : node.status === "rejected" ? t("已审核 · 不通过") : node.status === "error" ? t("QC 异常") : t("未审核")}</span> : <>{isBatch && <span className="task-owner">{t("领取人：")}{claim ? t("{0} (@{1})", [claim.displayName, claim.username]) : claimsReady ? t("暂无") : "--"}</span>}
+            <span className={`task-progress${percent === 100 ? " complete" : ""}`} title={tr(node.error) || t("已审核 {0}/{1}；通过 {2}；不通过 {3}；异常 {4}", [node.reviewed, node.total, node.approved, node.rejected, node.errors])}>
+              <b>{percent === null ? "--" : t("{0}%", [percent])}</b><small>{node.scanning ? loading ? t("统计中") : t("未完成") : t("{0}/{1}", [node.reviewed, node.total])}{node.errors ? t(" · {0} 异常", [node.errors]) : ""}</small>
             </span></>}
         {isBatch && <div className="task-claim-actions">
           {!node.session && percent !== 100 && <button type="button" className="button button-secondary task-pending-filter" aria-pressed={filteringThisBatch} disabled={Boolean(pending)} onClick={() => void togglePendingOnly(node)}>
-            <ListFilter size={14} />{filteringThisBatch ? "显示全部" : "仅未审核"}
+            <ListFilter size={14} />{filteringThisBatch ? t("显示全部") : t("仅未审核")}
           </button>}
-          {claim && (admin || claim.username === currentUser.username) && <button type="button" className="button button-secondary" title="释放批次" disabled={Boolean(pending) || !claimsReady} onClick={() => void changeClaim("release", node)}><UserMinus size={14} />释放</button>}
-          {admin ? claim ? <button type="button" className="button button-secondary" disabled={Boolean(pending) || !claimsReady} onClick={() => { setTransferKey(node.batchKey); setTransferUser(""); }}>转交</button> : <span>未领取</span>
-            : <button type="button" className="button button-secondary" disabled={Boolean(claim && claim.username !== currentUser.username) || Boolean(pending) || Boolean(error) || !claimsReady || !onOpen || !node.total || node.incomplete || node.scanning} onClick={() => claim?.username === currentUser.username ? void openNode(node) : void changeClaim("claim", node)}>
-              {claim?.username === currentUser.username ? <FolderOpen size={14} /> : claim ? <Check size={14} /> : <UserCheck size={14} />}{pending === node.batchKey ? opening ? "正在加载" : "提交中" : claim?.username === currentUser.username ? "进入审核" : claim ? "已被领取" : "领取"}
+          {claim && (admin || claim.username === currentUser.username) && <button type="button" className="button button-secondary" title={t("释放批次")} disabled={Boolean(pending) || !claimsReady} onClick={() => void changeClaim("release", node)}><UserMinus size={14} />{t("释放")}</button>}
+          {admin ? claim ? <button type="button" className="button button-secondary" disabled={Boolean(pending) || !claimsReady} onClick={() => { setTransferKey(node.batchKey); setTransferUser(""); }}>{t("转交")}</button> : <span>{t("未领取")}</span> : <button type="button" className="button button-secondary" disabled={Boolean(claim && claim.username !== currentUser.username) || Boolean(pending) || Boolean(error) || !claimsReady || !onOpen || !node.total || node.incomplete || node.scanning} onClick={() => claim?.username === currentUser.username ? void openNode(node) : void changeClaim("claim", node)}>
+              {claim?.username === currentUser.username ? <FolderOpen size={14} /> : claim ? <Check size={14} /> : <UserCheck size={14} />}{pending === node.batchKey ? opening ? t("正在加载") : t("提交中") : claim?.username === currentUser.username ? t("进入审核") : claim ? t("已被领取") : t("领取")}
             </button>}
         </div>}
       </div>
       {transferKey === node.batchKey && isBatch && <form className="task-transfer" onSubmit={(event) => { event.preventDefault(); void changeClaim("transfer", node); }}>
-        <label>审核账号<input value={transferUser} onChange={(event) => setTransferUser(event.target.value)} autoFocus /></label>
-        <button type="submit" className="button button-primary" disabled={!transferUser.trim() || Boolean(pending)}>确认转交</button>
-        <button type="button" className="button" onClick={() => setTransferKey("")}>取消</button>
+        <label>{t("审核账号")}<input value={transferUser} onChange={(event) => setTransferUser(event.target.value)} autoFocus /></label>
+        <button type="submit" className="button button-primary" disabled={!transferUser.trim() || Boolean(pending)}>{t("确认转交")}</button>
+        <button type="button" className="button" onClick={() => setTransferKey("")}>{t("取消")}</button>
       </form>}
       {open && !node.session && children.map((child) => row(filteringThisBatch ? { ...child, name: child.relativePath.slice(node.relativePath.length + 1) } : child, depth + 1))}
-      {open && filteringThisBatch && (filterLoading ? <p className="task-empty" role="status">正在查询未审核数据…</p> : pendingResults.error ? <p className="task-center-error" role="alert">{pendingResults.error}</p> : <p className="task-empty" role="status">{children.length ? `未审核 ${children.length} 条` : "当前批次没有未审核数据"}</p>)}
-      {open && loadingNodes.has(node.relativePath) && <p className="task-empty">正在读取目录明细…</p>}
-      {isRoot && open && !children.length && node.children.length > 0 && <p className="task-empty">{filters.owner.trim() && !claimsReady ? "正在读取领取状态，请稍候…" : "没有符合查询条件的批次，请调整条件或清空查询。"}</p>}
+      {open && filteringThisBatch && (filterLoading ? <p className="task-empty" role="status">{t("正在查询未审核数据…")}</p> : pendingResults.error ? <p className="task-center-error" role="alert">{tr(pendingResults.error)}</p> : <p className="task-empty" role="status">{children.length ? t("未审核 {0} 条", [children.length]) : t("当前批次没有未审核数据")}</p>)}
+      {open && loadingNodes.has(node.relativePath) && <p className="task-empty">{t("正在读取目录明细…")}</p>}
+      {isRoot && open && !children.length && node.children.length > 0 && <p className="task-empty">{filters.owner.trim() && !claimsReady ? t("正在读取领取状态，请稍候…") : t("没有符合查询条件的批次，请调整条件或清空查询。")}</p>}
     </div>;
   }
-  return <section ref={panelRef} className={`task-center${taskView !== "local" ? " task-center-cloud" : ""}`} role={onClose ? "dialog" : undefined} aria-modal={onClose ? true : undefined} aria-label="任务中心" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !pending) onClose?.(); }}>
-    <header><h2>任务中心</h2><div>{taskView === "local" && <>{admin && <button className="button button-secondary" disabled={requesting || server?.running} onClick={() => void rebuild()}><Database size={16} />立即统计</button>}<button type="button" className="button button-secondary task-refresh-button" aria-label="刷新任务进度" title="刷新服务器统计及领取状态；展开或本人领取的批次会在服务器重新核对 QC，不扫描媒体" disabled={!root || loading || manualRefreshing || Boolean(pending)} onClick={() => void refreshProgress()}><RefreshCw size={17} className={loading || manualRefreshing ? "spin" : ""} /><span>{loading || manualRefreshing ? "刷新中" : "刷新进度"}</span></button></>}{onClose && <button className="icon-button" aria-label="关闭任务中心" title="关闭任务中心" onClick={onClose}><X size={18} /></button>}</div></header>
-    <div className="task-center-tabs" role="group" aria-label="任务来源"><button type="button" className="button button-secondary" aria-pressed={taskView === "local"} onClick={() => setTaskView("local")}>本地任务</button><button type="button" className="button button-secondary" aria-pressed={cloudOpen} onClick={() => setTaskView("cloud")}>云端 QC</button><button type="button" className="button button-secondary" aria-pressed={taskView === "outbound"} onClick={() => setTaskView("outbound")}>外发审核</button></div>
+  return <section ref={panelRef} className={`task-center${taskView !== "local" ? " task-center-cloud" : ""}`} role={onClose ? "dialog" : undefined} aria-modal={onClose ? true : undefined} aria-label={t("任务中心")} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !pending) onClose?.(); }}>
+    <header><h2>{t("任务中心")}</h2><div>{taskView === "local" && <>{admin && <button className="button button-secondary" disabled={requesting || server?.running} onClick={() => void rebuild()}><Database size={16} />{t("立即统计")}</button>}<button type="button" className="button button-secondary task-refresh-button" aria-label={t("刷新任务进度")} title={t("刷新服务器统计及领取状态；展开或本人领取的批次会在服务器重新核对 QC，不扫描媒体")} disabled={!root || loading || manualRefreshing || Boolean(pending)} onClick={() => void refreshProgress()}><RefreshCw size={17} className={loading || manualRefreshing ? "spin" : ""} /><span>{loading || manualRefreshing ? t("刷新中") : t("刷新进度")}</span></button></>}{onClose && <button className="icon-button" aria-label={t("关闭任务中心")} title={t("关闭任务中心")} onClick={onClose}><X size={18} /></button>}</div></header>
+    <div className="task-center-tabs" role="group" aria-label={t("任务来源")}><button type="button" className="button button-secondary" aria-pressed={taskView === "local"} onClick={() => setTaskView("local")}>{t("本地任务")}</button><button type="button" className="button button-secondary" aria-pressed={cloudOpen} onClick={() => setTaskView("cloud")}>{t("云端 QC")}</button><button type="button" className="button button-secondary" aria-pressed={taskView === "outbound"} onClick={() => setTaskView("outbound")}>{t("外发审核")}</button></div>
     {cloudOpen ? <CloudQcTasks workspaceBusy={workspaceBusy} beginOperation={beginCloudOperation} currentUser={cloudCurrentUser ?? currentUser} onOpen={onOpenCloudReview ?? (onOpen ? root => onOpen(root) : undefined)} /> : taskView === "outbound" ? <OutboundReviewTasks workspaceBusy={workspaceBusy} currentUser={cloudCurrentUser ?? currentUser} onOpenReview={onOpenOutboundReview} /> : <>
-    <div className="task-root-setting"><span title={root}>默认根目录：{root || "未找到已挂载的数据目录"}</span><button type="button" className="button button-secondary" disabled={Boolean(pending)} onClick={() => void chooseRoot()}><FolderOpen size={16} />更改目录</button></div>
-    {(error || refreshError || claimError || claimActionError || openError) && <p role="alert" className="task-center-error">{error || refreshError || claimError || claimActionError || openError}</p>}
+    <div className="task-root-setting"><span title={root}>{t("默认根目录：")}{root || t("未找到已挂载的数据目录")}</span><button type="button" className="button button-secondary" disabled={Boolean(pending)} onClick={() => void chooseRoot()}><FolderOpen size={16} />{t("更改目录")}</button></div>
+    {tr((error || refreshError || claimError || claimActionError || openError) && <p role="alert" className="task-center-error">{tr(error) || tr(refreshError) || tr(claimError) || tr(claimActionError) || tr(openError)}</p>)}
     <div className="task-scan-status" role="status">
-      <span>服务器最近统计完成：{server?.completedAtMs ? new Date(server.completedAtMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "尚无完整统计"}（北京时间）</span>
-      <span>每日 23:00 自动统计</span>
-      {server?.updatedAtMs && server.updatedAtMs !== server.completedAtMs ? <span>进度更新：{new Date(server.updatedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</span> : null}
-      {checkedAtMs > 0 && <span>最近读取：{new Date(checkedAtMs).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（北京时间）</span>}
-      {server && Date.now() - server.heartbeatAtMs > 90000 ? <span className="task-center-error">服务器状态未更新（共享缓存或服务无响应），显示上次结果</span> : server?.running ? <span>服务器完整校准中 · 已统计 {server.sessions} 条 · {server.liveQcDuringScan ? "审核进度独立更新" : "显示上次结果"}</span> : null}
-      {server?.error && <span role="alert" className="task-center-error">{server.error}；保留上次成功结果</span>}
-      {requestNotice && <span>{requestNotice}</span>}
-      {refreshNotice && <span className="task-refresh-notice">{refreshNotice}</span>}
-      {refreshNotice && !manualRefreshing && <span>展开批次后刷新可重新核对该批次 QC；完整目录校准仍由服务器后台执行。</span>}
+      <span>{t("服务器最近统计完成：")}{server?.completedAtMs ? tr(new Date(server.completedAtMs).toLocaleString(localeTag(), { timeZone: "Asia/Shanghai", hour12: false })) : t("尚无完整统计")}{t("（北京时间）")}</span>
+      <span>{t("每日 23:00 自动统计")}</span>
+      {server?.updatedAtMs && server.updatedAtMs !== server.completedAtMs ? <span>{t("进度更新：")}{tr(new Date(server.updatedAtMs).toLocaleTimeString(localeTag(), { timeZone: "Asia/Shanghai", hour12: false }))}</span> : null}
+      {checkedAtMs > 0 && <span>{t("最近读取：")}{tr(new Date(checkedAtMs).toLocaleTimeString(localeTag(), { timeZone: "Asia/Shanghai", hour12: false }))}{t("（北京时间）")}</span>}
+      {server && Date.now() - server.heartbeatAtMs > 90000 ? <span className="task-center-error">{t("服务器状态未更新（共享缓存或服务无响应），显示上次结果")}</span> : server?.running ? <span>{t("服务器完整校准中 · 已统计") + " "}{server.sessions}{" " + t("条 ·") + " "}{server.liveQcDuringScan ? t("审核进度独立更新") : t("显示上次结果")}</span> : null}
+      {tr(server?.error && <span role="alert" className="task-center-error">{tr(server.error)}{t("；保留上次成功结果")}</span>)}
+      {tr(requestNotice && <span>{tr(requestNotice)}</span>)}
+      {tr(refreshNotice && <span className="task-refresh-notice">{tr(refreshNotice)}</span>)}
+      {tr(refreshNotice && !manualRefreshing && <span>{t("展开批次后刷新可重新核对该批次 QC；完整目录校准仍由服务器后台执行。")}</span>)}
     </div>
-    <form className="task-filters" aria-label="查询批次" onSubmit={(event) => event.preventDefault()}>
-      <label>领取人<input type="search" placeholder="姓名 / 账号 / 未领取" value={filters.owner} onChange={(event) => setFilters((previous) => ({ ...previous, owner: event.target.value }))} /></label>
-      <label>批次名称<input type="search" placeholder="输入名称关键词" value={filters.name} onChange={(event) => setFilters((previous) => ({ ...previous, name: event.target.value }))} /></label>
-      <label className="task-date-filter">采集日期起<input type="date" value={filters.dateFrom} max={filters.dateTo || undefined} onChange={(event) => setFilters((previous) => ({ ...previous, dateFrom: event.target.value }))} /></label>
-      <label className="task-date-filter">采集日期止<input type="date" value={filters.dateTo} min={filters.dateFrom || undefined} onChange={(event) => setFilters((previous) => ({ ...previous, dateTo: event.target.value }))} /></label>
-      <button type="button" className="button button-secondary" disabled={!Object.values(filters).some(Boolean)} onClick={() => setFilters(emptyTaskFilters())}>清空查询</button>
-      <span className="task-filter-summary" role="status">{filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo ? "起始日期不能晚于结束日期。" : catalog ? `显示 ${taskBatches(catalog.tree).filter((node) => matchesTaskBatch(node, claims[node.batchKey], filters)).length} / ${taskBatches(catalog.tree).length} 个批次` : "等待读取批次"} · 日期按批次文件夹名称；组合条件即时生效{filters.owner.trim() && !claimsReady ? "；领取状态尚未读取成功，查询结果待确认" : ""}</span>
+    <form className="task-filters" aria-label={t("查询批次")} onSubmit={(event) => event.preventDefault()}>
+      <label>{t("领取人")}<input type="search" placeholder={t("姓名 / 账号 / 未领取")} value={filters.owner} onChange={(event) => setFilters((previous) => ({ ...previous, owner: event.target.value }))} /></label>
+      <label>{t("批次名称")}<input type="search" placeholder={t("输入名称关键词")} value={filters.name} onChange={(event) => setFilters((previous) => ({ ...previous, name: event.target.value }))} /></label>
+      <label className="task-date-filter">{t("采集日期起")}<input type="date" value={filters.dateFrom} max={filters.dateTo || undefined} onChange={(event) => setFilters((previous) => ({ ...previous, dateFrom: event.target.value }))} /></label>
+      <label className="task-date-filter">{t("采集日期止")}<input type="date" value={filters.dateTo} min={filters.dateFrom || undefined} onChange={(event) => setFilters((previous) => ({ ...previous, dateTo: event.target.value }))} /></label>
+      <button type="button" className="button button-secondary" disabled={!Object.values(filters).some(Boolean)} onClick={() => setFilters(emptyTaskFilters())}>{t("清空查询")}</button>
+      <span className="task-filter-summary" role="status">{filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo ? t("起始日期不能晚于结束日期。") : catalog ? t("显示 {0} / {1} 个批次", [taskBatches(catalog.tree).filter((node) => matchesTaskBatch(node, claims[node.batchKey], filters)).length, taskBatches(catalog.tree).length]) : t("等待读取批次")}{" " + t("· 日期按批次文件夹名称；组合条件即时生效")}{filters.owner.trim() && !claimsReady ? t("；领取状态尚未读取成功，查询结果待确认") : ""}</span>
     </form>
-    <div className="task-tree" aria-busy={loading}>{catalog ? row(catalog.tree, 0) : <p className="task-empty">{loading ? "正在读取服务器统计…" : error ? "统计读取失败" : "等待服务器首次统计完成"}</p>}</div>
+    <div className="task-tree" aria-busy={loading}>{catalog ? tr(row(catalog.tree, 0)) : <p className="task-empty">{loading ? t("正在读取服务器统计…") : error ? t("统计读取失败") : t("等待服务器首次统计完成")}</p>}</div>
     </>}
   </section>;
 }

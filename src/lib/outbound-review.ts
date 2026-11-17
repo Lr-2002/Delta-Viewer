@@ -74,7 +74,10 @@ export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" 
 export async function fetchOutboundVideo(batch: OutboundBatch, recording: OutboundRecording, segment: number) {
   const result = await outboundCall<{ url: string }>({ action: "video-url", datasetId: batch.id, recordingId: recording.id, segment });
   const url = new URL(result.url);
-  if (url.protocol !== "https:" || !/^\/api\/platform\/manager-outbound\/media\/[a-f0-9]{64}$/.test(url.pathname))
+  const native = url.protocol === "http:" && url.hostname === "127.0.0.1" && Boolean(url.port)
+    && /^\/outbound-media\/[a-f0-9]{64}$/.test(url.pathname);
+  const remote = url.protocol === "https:" && /^\/api\/platform\/manager-outbound\/media\/[a-f0-9]{64}$/.test(url.pathname);
+  if ((!native && !remote) || url.username || url.password || url.search || url.hash)
     throw new Error("OUTBOUND_VIDEO_URL_INVALID");
   return url.toString();
 }

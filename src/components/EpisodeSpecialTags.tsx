@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, Pencil, Plus, Save, Tag, X } from "lucide-react";
@@ -13,6 +14,7 @@ export function EpisodeSpecialTags({ username, tags, streams, disabled, onChange
   onChange: (tags: SpecialTag[]) => void;
   embedded?: boolean;
 }) {
+  useLanguage();
   const [open, setOpen] = useState(false);
   const [cameras, setCameras] = useState<string[]>([""]);
   const [description, setDescription] = useState("");
@@ -100,41 +102,41 @@ export function EpisodeSpecialTags({ username, tags, streams, disabled, onChange
     onChange([...remaining.slice(0, insertion), ...additions, ...remaining.slice(insertion)]);
     reset();
   };
-  const content = <section className="episode-special-tags" aria-label="数据特殊标签">
+  const content = <section className="episode-special-tags" aria-label={t("数据特殊标签")}>
     <header>
-      <div><Tag size={15} /><strong>特殊标签</strong><span>整条数据 · 可记录相机异常</span></div>
-      <button type="button" className="special-tag-add" disabled={disabled || tags.length >= 20} onClick={() => { reset(); setOpen(true); }}><Plus size={14} />添加标签</button>
+      <div><Tag size={15} /><strong>{t("特殊标签")}</strong><span>{t("整条数据 · 可记录相机异常")}</span></div>
+      <button type="button" className="special-tag-add" disabled={disabled || tags.length >= 20} onClick={() => { reset(); setOpen(true); }}><Plus size={14} />{t("添加标签")}</button>
     </header>
-    {common.length > 0 && <div className="special-tag-library" role="group" aria-label="常用特殊标签">
-      <div className="special-tag-library-heading"><span>常用标签</span><button type="button" disabled={disabled} onClick={() => setManaging(value => !value)}>{managing ? "完成管理" : "管理"}</button></div>
+    {common.length > 0 && <div className="special-tag-library" role="group" aria-label={t("常用特殊标签")}>
+      <div className="special-tag-library-heading"><span>{t("常用标签")}</span><button type="button" disabled={disabled} onClick={() => setManaging(value => !value)}>{managing ? t("完成管理") : t("管理")}</button></div>
       <div className="special-tag-library-options">{common.map(text => <span key={text}>
         <button type="button" disabled={disabled} aria-pressed={open && description === text} onClick={() => { if (!open) reset(); setDescription(text); setOpen(true); setError(""); setNotice(""); }}>{text}</button>
-        {managing && <button type="button" disabled={disabled} aria-label={`移除常用标签 ${text}`} title="移除常用项，不影响已有数据标签" onClick={() => updateLibrary(current => current.filter(value => value !== text))}><X size={13} /></button>}
+        {managing && <button type="button" disabled={disabled} aria-label={t("移除常用标签 {0}", [text])} title={t("移除常用项，不影响已有数据标签")} onClick={() => updateLibrary(current => current.filter(value => value !== text))}><X size={13} /></button>}
       </span>)}</div>
     </div>}
-    {libraryError && <p className="special-tag-library-error" role="alert">{libraryError}</p>}
-    {notice && <p className="special-tag-hint" role="status">{notice}</p>}
-    {tags.length > 0 && <ul aria-label="已添加的特殊标签">{groups.map((tag, index) => <li key={index}>
-      <span className="special-tag-camera">{tag.cameras.map(camera => camera ? names.get(camera) ?? camera : "整条数据").join("、")}</span><span className="special-tag-text">{tag.description}</span>
-      <button type="button" disabled={disabled} title="修改标签" aria-label={`修改特殊标签 ${index + 1}`} onClick={() => { setCameras([...tag.cameras]); setDescription(tag.description); setEditing(tag.indices); setError(""); setOpen(true); }}><Pencil size={13} /></button>
-      <button type="button" disabled={disabled} title="删除标签" aria-label={`删除特殊标签 ${index + 1}`} onClick={() => { onChange(tags.filter((_, i) => !tag.indices.includes(i))); reset(); }}><X size={14} /></button>
+    {tr(libraryError && <p className="special-tag-library-error" role="alert">{tr(libraryError)}</p>)}
+    {tr(notice && <p className="special-tag-hint" role="status">{tr(notice)}</p>)}
+    {tags.length > 0 && <ul aria-label={t("已添加的特殊标签")}>{groups.map((tag, index) => <li key={index}>
+      <span className="special-tag-camera">{tr(tag.cameras.map(camera => camera ? names.get(camera) ?? camera : "整条数据").join("、"))}</span><span className="special-tag-text">{tag.description}</span>
+      <button type="button" disabled={disabled} title={t("修改标签")} aria-label={t("修改特殊标签 {0}", [index + 1])} onClick={() => { setCameras([...tag.cameras]); setDescription(tag.description); setEditing(tag.indices); setError(""); setOpen(true); }}><Pencil size={13} /></button>
+      <button type="button" disabled={disabled} title={t("删除标签")} aria-label={t("删除特殊标签 {0}", [index + 1])} onClick={() => { onChange(tags.filter((_, i) => !tag.indices.includes(i))); reset(); }}><X size={14} /></button>
     </li>)}</ul>}
-    {open && <div className="special-tag-form" role="group" aria-label="填写特殊标签">
-      <fieldset className="special-tag-cameras" disabled={disabled} aria-label="特殊标签相机">
-        <legend>对应相机 <span>可多选</span></legend>
+    {open && <div className="special-tag-form" role="group" aria-label={t("填写特殊标签")}>
+      <fieldset className="special-tag-cameras" disabled={disabled} aria-label={t("特殊标签相机")}>
+        <legend>{t("对应相机") + " "}<span>{t("可多选")}</span></legend>
         <div>{[["", "整条数据"], ...cameraOptions].map(([name, label]) =>
           <label key={name} className={cameras.includes(name) ? "is-selected" : ""}>
-            <input type="checkbox" value={name} checked={cameras.includes(name)} onChange={() => toggleCamera(name)} />{label}
+            <input type="checkbox" value={name} checked={cameras.includes(name)} onChange={() => toggleCamera(name)} />{tr(label)}
           </label>
         )}</div>
       </fieldset>
-      <label className="special-tag-description"><span>异常说明</span><input autoFocus aria-label="特殊标签说明" disabled={disabled} value={description} maxLength={400} placeholder="例如：画面左侧有两根设备线入镜" onChange={event => setDescription(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } if (event.key === "Escape") { event.stopPropagation(); reset(); } }} /></label>
-      <button type="button" className="button button-secondary" disabled={disabled || !description.trim()} onClick={remember}><Save size={14} />存为常用</button>
-      <button type="button" className="button button-primary" disabled={disabled} onClick={save}><Check size={14} />{editing === null ? "添加" : "保存"}</button>
-      <button type="button" className="button button-secondary" onClick={reset}>取消</button>
-      {error && <p role="alert">{error}</p>}
+      <label className="special-tag-description"><span>{t("异常说明")}</span><input autoFocus aria-label={t("特殊标签说明")} disabled={disabled} value={description} maxLength={400} placeholder={t("例如：画面左侧有两根设备线入镜")} onChange={event => setDescription(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } if (event.key === "Escape") { event.stopPropagation(); reset(); } }} /></label>
+      <button type="button" className="button button-secondary" disabled={disabled || !description.trim()} onClick={remember}><Save size={14} />{t("存为常用")}</button>
+      <button type="button" className="button button-primary" disabled={disabled} onClick={save}><Check size={14} />{editing === null ? t("添加") : t("保存")}</button>
+      <button type="button" className="button button-secondary" onClick={reset}>{t("取消")}</button>
+      {tr(error && <p role="alert">{tr(error)}</p>)}
     </div>}
-    {open && <p className="special-tag-hint">加入后随人工结果保存；常用标签仅保存在当前账号的本机，可跨数据沿用。</p>}
+    {open && <p className="special-tag-hint">{t("加入后随人工结果保存；常用标签仅保存在当前账号的本机，可跨数据沿用。")}</p>}
   </section>;
   const target = embedded ? document.getElementById("episode-special-tags") : null;
   return target ? createPortal(content, target) : content;

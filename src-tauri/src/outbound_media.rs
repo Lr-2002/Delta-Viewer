@@ -1,0 +1,744 @@
+//! Read-only transport for the fixed, authenticated outbound video origin.
+use crate::{
+    error::{AppError, AppResult},
+    identity::AuthState,
+    model::UserIdentity,
+};
+use futures_util::{stream, StreamExt};
+use reqwest::{Client, Response, Url};
+use std::{
+    collections::HashMap,
+    net::{Ipv4Addr, SocketAddr},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{tcp::OwnedWriteHalf, TcpListener, TcpStream},
+    sync::Semaphore,
+};
+const PREFIX: &str = "/outbound-media/";
+const PART: u64 = 1024 * 1024;
+const WINDOW: u64 = 4 * PART;
+const LIFETIME: Duration = Duration::from_secs(3600);
+type Session = (UserIdentity, String);
+#[derive(Clone)]
+pub struct OutboundMediaServer {
+    address: SocketAddr,
+    routes: Arc<Mutex<HashMap<String, Arc<Route>>>>,
+    client: Client,
+}
+struct Route {
+    url: Url,
+    auth: AuthState,
+    session: Session,
+    created: Instant,
+    // Verified object metadata only; every block still rechecks live authority.
+    verified: Mutex<Option<(u64, Option<String>)>>,
+}
+impl Route {
+    fn valid(&self) -> bool {
+        self.created.elapsed() < LIFETIME
+            && self.auth.managed_session().is_ok_and(|s| s == self.session)
+    }
+}
+fn invalid() -> AppError {
+    AppError::Message("OUTBOUND_VIDEO_URL_INVALID".into())
+}
+fn allowed_url(value: &str) -> AppResult<Url> {
+    let url = Url::parse(value).map_err(|_| invalid())?;
+    let token = url
+        .path()
+        .strip_prefix("/api/platform/manager-outbound/media/")
+        .ok_or_else(invalid)?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("114.111.19.219")
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || token.len() != 64
+        || !token
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(invalid());
+    }
+    Ok(url)
+}
+impl OutboundMediaServer {
+    pub fn start() -> AppResult<Self> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        // Normal public certificate and IP verification; no redirects/proxies.
+        let client = Client::builder()
+            .https_only(true)
+            .no_proxy()
+            .http1_only()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
+            .read_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(25))
+            .pool_max_idle_per_host(32)
+            .build()
+            .map_err(|_| AppError::Message("OUTBOUND_MEDIA_TRANSPORT_UNAVAILABLE".into()))?;
+        Self::with_client(client)
+    }
+    fn with_client(client: Client) -> AppResult<Self> {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        listener.set_nonblocking(true)?;
+        let server = Self {
+            address: listener.local_addr()?,
+            routes: Arc::default(),
+            client,
+        };
+        let state = server.clone();
+        tauri::async_runtime::spawn(async move {
+            let Ok(listener) = TcpListener::from_std(listener) else {
+                return;
+            };
+            let slots = Arc::new(Semaphore::new(16));
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let state = state.clone();
+                let permit = slots.clone().try_acquire_owned();
+                tauri::async_runtime::spawn(async move {
+                    let Ok(_permit) = permit else {
+                        let _ = socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").await;
+                        return;
+                    };
+                    let _ = state.serve(socket).await;
+                });
+            }
+        });
+        Ok(server)
+    }
+    pub fn register(&self, auth: &AuthState, session: Session, url: &str) -> AppResult<String> {
+        let url = allowed_url(url)?;
+        if auth.managed_session()? != session {
+            return Err(AppError::Message("OUTBOUND_ACCOUNT_CHANGED".into()));
+        }
+        let mut random = [0_u8; 32];
+        getrandom::fill(&mut random).map_err(|_| invalid())?;
+        let token = blake3::hash(&random).to_hex().to_string();
+        let mut routes = self.routes.lock().map_err(|_| invalid())?;
+        routes.retain(|_, route| route.valid());
+        if routes.len() >= 512 {
+            if let Some(oldest) = routes
+                .iter()
+                .min_by_key(|(_, r)| r.created)
+                .map(|(k, _)| k.clone())
+            {
+                routes.remove(&oldest);
+            }
+        }
+        routes.insert(
+            token.clone(),
+            Arc::new(Route {
+                url,
+                auth: auth.clone(),
+                session,
+                created: Instant::now(),
+                verified: Mutex::new(None),
+            }),
+        );
+        Ok(format!("http://{}{PREFIX}{token}", self.address))
+    }
+    async fn serve(&self, mut socket: TcpStream) -> std::io::Result<()> {
+        socket.set_nodelay(true)?;
+        let Ok(Ok(request)) =
+            tokio::time::timeout(Duration::from_secs(5), read_request(&mut socket)).await
+        else {
+            return Ok(());
+        };
+        let (mut reader, mut writer) = socket.into_split();
+        let token = request
+            .path
+            .strip_prefix(PREFIX)
+            .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()));
+        let route = token.and_then(|token| self.routes.lock().ok()?.get(token).cloned());
+        let Some(route) = route else {
+            return empty(&mut writer, "404 Not Found").await;
+        };
+        if !route.valid() {
+            return empty(&mut writer, "403 Forbidden").await;
+        }
+        if request.method == "OPTIONS" {
+            return empty(&mut writer, "204 No Content").await;
+        }
+        if !matches!(request.method.as_str(), "GET" | "HEAD") {
+            return empty(&mut writer, "405 Method Not Allowed").await;
+        }
+        if request.range.as_deref().is_some_and(|r| !valid_range(r)) {
+            return empty(&mut writer, "416 Range Not Satisfiable").await;
+        }
+        let work = async {
+            if self.proxy(&route, &request, &mut writer).await.is_err() {
+                // Never turn a truncated declared body into a successful MP4.
+                let _ = writer.shutdown().await;
+            }
+        };
+        let mut unexpected = [0_u8; 1];
+        tokio::select! {
+            _ = work => {},
+            _ = reader.read(&mut unexpected) => {},
+            _ = tokio::time::sleep(Duration::from_secs(30)) => {},
+            _ = async { loop { tokio::time::sleep(Duration::from_millis(100)).await; if !route.valid() { break } } } => {},
+        }
+        Ok(())
+    }
+    async fn proxy(
+        &self,
+        route: &Route,
+        request: &Request,
+        writer: &mut OwnedWriteHalf,
+    ) -> Result<(), ()> {
+        let open = request
+            .range
+            .as_deref()
+            .and_then(|r| r.strip_prefix("bytes="))
+            .and_then(|r| r.strip_suffix('-'))
+            .and_then(|r| r.parse::<u64>().ok());
+        if request.method == "GET" {
+            if let Some(start) = open {
+                let verified = route.verified.lock().map_err(|_| ())?.clone();
+                if let Some((total, etag)) = verified {
+                    if start >= total {
+                        return empty(writer, "416 Range Not Satisfiable")
+                            .await
+                            .map_err(|_| ());
+                    }
+                    let end = start.saturating_add(WINDOW - 1).min(total - 1);
+                    // Poll all four blocks together, including the first. A
+                    // first-block barrier halves throughput on high-rate cam0.
+                    let chunks = (start..=end).step_by(PART as usize).map(|offset| {
+                        let etag = etag.as_deref();
+                        async move {
+                            self.part(
+                                route,
+                                offset,
+                                offset.saturating_add(PART - 1).min(end),
+                                Some((total, etag)),
+                            )
+                            .await
+                        }
+                    });
+                    let mut chunks = stream::iter(chunks).buffered(4);
+                    let first = chunks.next().await.ok_or(())??;
+                    headers(writer, 206, end - start + 1, Some((start, end, total))).await?;
+                    writer.write_all(&first.body).await.map_err(|_| ())?;
+                    while let Some(chunk) = chunks.next().await {
+                        let chunk = chunk?;
+                        if !route.valid() {
+                            return Err(());
+                        }
+                        writer.write_all(&chunk.body).await.map_err(|_| ())?;
+                    }
+                    return writer.shutdown().await.map_err(|_| ());
+                }
+                let first = self
+                    .part(route, start, start.saturating_add(PART - 1), None)
+                    .await?;
+                let total = first.total;
+                let end = start.saturating_add(WINDOW - 1).min(total - 1);
+                let etag = first.etag.clone();
+                {
+                    let mut verified = route.verified.lock().map_err(|_| ())?;
+                    let actual = (total, etag.clone());
+                    if verified.as_ref().is_some_and(|prior| prior != &actual) {
+                        return Err(());
+                    }
+                    *verified = Some(actual);
+                }
+                headers(writer, 206, end - start + 1, Some((start, end, total))).await?;
+                writer.write_all(&first.body).await.map_err(|_| ())?;
+                let rest = (first.end + 1..=end).step_by(PART as usize).map(|offset| {
+                    let etag = etag.as_deref();
+                    async move {
+                        self.part(
+                            route,
+                            offset,
+                            offset.saturating_add(PART - 1).min(end),
+                            Some((total, etag)),
+                        )
+                        .await
+                    }
+                });
+                let mut parts = stream::iter(rest).buffered(3);
+                while let Some(part) = parts.next().await {
+                    let part = part?;
+                    if !route.valid() {
+                        return Err(());
+                    }
+                    writer.write_all(&part.body).await.map_err(|_| ())?;
+                }
+                writer.shutdown().await.map_err(|_| ())?;
+                return Ok(());
+            }
+        }
+        let mut outgoing = self.client.request(
+            if request.method == "HEAD" {
+                reqwest::Method::HEAD
+            } else {
+                reqwest::Method::GET
+            },
+            route.url.clone(),
+        );
+        if let Some(range) = &request.range {
+            outgoing = outgoing.header("Range", range);
+        }
+        let response = outgoing.send().await.map_err(|_| ())?;
+        if !route.valid() {
+            return Err(());
+        }
+        if !response.status().is_success() {
+            return empty(
+                writer,
+                if response.status().as_u16() == 416 {
+                    "416 Range Not Satisfiable"
+                } else {
+                    "502 Bad Gateway"
+                },
+            )
+            .await
+            .map_err(|_| ());
+        }
+        let length = response
+            .headers()
+            .get("content-length")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|h| h.parse::<u64>().ok())
+            .ok_or(())?;
+        let status = response.status().as_u16();
+        let range = content_range(&response);
+        if status == 206 && range.is_none() || status != 200 && status != 206 {
+            return Err(());
+        }
+        if request.range.is_some() != (status == 206) {
+            return Err(());
+        }
+        if let Some((start, end, total)) = range {
+            if end - start + 1 != length
+                || requested_range(request.range.as_deref().ok_or(())?, total) != Some((start, end))
+            {
+                return Err(());
+            }
+        }
+        headers(writer, status, length, range).await?;
+        if request.method == "HEAD" {
+            return Ok(());
+        }
+        let mut stream = response.bytes_stream();
+        let mut count = 0_u64;
+        while let Some(bytes) = stream.next().await {
+            let bytes = bytes.map_err(|_| ())?;
+            count = count.checked_add(bytes.len() as u64).ok_or(())?;
+            if count > length || !route.valid() {
+                return Err(());
+            }
+            writer.write_all(&bytes).await.map_err(|_| ())?;
+        }
+        if count != length {
+            return Err(());
+        }
+        Ok(())
+    }
+    async fn part(
+        &self,
+        route: &Route,
+        start: u64,
+        end: u64,
+        expected: Option<(u64, Option<&str>)>,
+    ) -> Result<Part, ()> {
+        if !route.valid() {
+            return Err(());
+        }
+        let mut request = self
+            .client
+            .get(route.url.clone())
+            .header("Range", format!("bytes={start}-{end}"));
+        if let Some((_, Some(etag))) = expected {
+            request = request.header("If-Match", etag);
+        }
+        let response = request.send().await.map_err(|_| ())?;
+        if response.status().as_u16() != 206 || !route.valid() {
+            return Err(());
+        }
+        let (actual_start, actual_end, total) = content_range(&response).ok_or(())?;
+        let etag = response
+            .headers()
+            .get("etag")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_owned);
+        let length = actual_end - actual_start + 1;
+        if actual_start != start
+            || actual_end != end.min(total - 1)
+            || length > PART
+            || response.content_length() != Some(length)
+            || expected.is_some_and(|(size, tag)| size != total || tag != etag.as_deref())
+        {
+            return Err(());
+        }
+        let mut body = Vec::with_capacity(length as usize);
+        let mut stream = response.bytes_stream();
+        while let Some(bytes) = stream.next().await {
+            let bytes = bytes.map_err(|_| ())?;
+            if body.len() + bytes.len() > length as usize || !route.valid() {
+                return Err(());
+            }
+            body.extend_from_slice(&bytes);
+        }
+        if body.len() as u64 != length {
+            return Err(());
+        }
+        Ok(Part {
+            total,
+            end: actual_end,
+            etag,
+            body,
+        })
+    }
+}
+struct Part {
+    total: u64,
+    end: u64,
+    etag: Option<String>,
+    body: Vec<u8>,
+}
+fn content_range(response: &Response) -> Option<(u64, u64, u64)> {
+    parse_content_range(response.headers().get("content-range")?.to_str().ok()?)
+}
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let (range, total) = value.strip_prefix("bytes ")?.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    let (start, end, total) = (start.parse().ok()?, end.parse().ok()?, total.parse().ok()?);
+    (start <= end && end < total).then_some((start, end, total))
+}
+fn valid_range(value: &str) -> bool {
+    let Some((start, end)) = value.strip_prefix("bytes=").and_then(|v| v.split_once('-')) else {
+        return false;
+    };
+    (!start.is_empty() || !end.is_empty())
+        && [start, end]
+            .iter()
+            .all(|v| v.bytes().all(|b| b.is_ascii_digit()))
+        && [start, end]
+            .iter()
+            .all(|v| v.is_empty() || v.parse::<u64>().is_ok())
+        && (start.is_empty()
+            || end.is_empty()
+            || start.parse::<u64>().ok() <= end.parse::<u64>().ok())
+}
+fn requested_range(value: &str, total: u64) -> Option<(u64, u64)> {
+    let (start, end) = value.strip_prefix("bytes=")?.split_once('-')?;
+    if total == 0 {
+        return None;
+    }
+    if start.is_empty() {
+        let n = end.parse::<u64>().ok()?.min(total);
+        return (n > 0).then_some((total - n, total - 1));
+    }
+    let start = start.parse::<u64>().ok()?;
+    let end = if end.is_empty() {
+        total - 1
+    } else {
+        end.parse::<u64>().ok()?.min(total - 1)
+    };
+    (start <= end && start < total).then_some((start, end))
+}
+struct Request {
+    method: String,
+    path: String,
+    range: Option<String>,
+}
+async fn read_request(stream: &mut TcpStream) -> std::io::Result<Request> {
+    let mut bytes = Vec::new();
+    let mut b = [0_u8; 1];
+    while bytes.len() < 8192 {
+        if stream.read(&mut b).await? != 1 {
+            break;
+        }
+        bytes.push(b[0]);
+        if bytes.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| std::io::ErrorKind::InvalidData)?;
+    if !text.ends_with("\r\n\r\n") {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    let mut lines = text.split("\r\n");
+    let mut first = lines.next().unwrap_or_default().split_whitespace();
+    let method = first.next().unwrap_or_default().to_owned();
+    let path = first.next().unwrap_or_default().to_owned();
+    let mut range = None;
+    for line in lines.filter(|l| !l.is_empty()) {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or(std::io::ErrorKind::InvalidData)?;
+        if name.eq_ignore_ascii_case("range") {
+            if range.is_some() {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+            range = Some(value.trim().to_owned());
+        }
+    }
+    Ok(Request {
+        method,
+        path,
+        range,
+    })
+}
+async fn empty(writer: &mut OwnedWriteHalf, status: &str) -> std::io::Result<()> {
+    writer.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nAccess-Control-Allow-Headers: Range\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").as_bytes()).await
+}
+async fn headers(
+    writer: &mut OwnedWriteHalf,
+    status: u16,
+    length: u64,
+    range: Option<(u64, u64, u64)>,
+) -> Result<(), ()> {
+    let range = range
+        .map(|(a, b, total)| format!("Content-Range: bytes {a}-{b}/{total}\r\n"))
+        .unwrap_or_default();
+    writer.write_all(format!("HTTP/1.1 {status} {}\r\nContent-Type: video/mp4\r\nContent-Length: {length}\r\n{range}Accept-Ranges: bytes\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nCross-Origin-Resource-Policy: cross-origin\r\nConnection: close\r\n\r\n", if status==206 {"Partial Content"} else {"OK"}).as_bytes()).await.map_err(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::WorkspaceMode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn auth() -> AuthState {
+        let auth = AuthState::default();
+        auth.set_workspace_mode(Some(WorkspaceMode::Managed))
+            .unwrap();
+        let user = serde_json::from_str(
+            r#"{"username":"test-reviewer","displayName":"Fixture","role":"operator"}"#,
+        )
+        .unwrap();
+        auth.set_managed_session(user, "fixture-token".into())
+            .unwrap();
+        auth
+    }
+    fn fixture_route(server: &OutboundMediaServer, auth: &AuthState, origin: SocketAddr) -> String {
+        let token = "a".repeat(64);
+        server.routes.lock().unwrap().insert(
+            token.clone(),
+            Arc::new(Route {
+                url: Url::parse(&format!("http://{origin}/video")).unwrap(),
+                auth: auth.clone(),
+                session: auth.managed_session().unwrap(),
+                created: Instant::now(),
+                verified: Mutex::new(None),
+            }),
+        );
+        format!("http://{}{PREFIX}{token}", server.address)
+    }
+    #[test]
+    fn only_fixed_private_video_tickets_can_be_registered() {
+        let good = format!(
+            "https://114.111.19.219/api/platform/manager-outbound/media/{}",
+            "a".repeat(64)
+        );
+        assert!(allowed_url(&good).is_ok());
+        for bad in [
+            good.replace("https:", "http:"),
+            good.replace("114.111.19.219", "127.0.0.1"),
+            good.replace("114.111.19.219", "114.111.19.219:8443"),
+            good.replace("https://", "https://u:p@"),
+            format!("{good}?url=x"),
+            format!("{good}#x"),
+            good.replace("/media/", "/other/"),
+        ] {
+            assert!(allowed_url(&bad).is_err());
+        }
+    }
+    #[test]
+    fn seven_cameras_ranges_integrity_logout_and_disconnect() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        tauri::async_runtime::block_on(async {
+            let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let origin = fixture.local_addr().unwrap();
+            let mode = Arc::new(AtomicUsize::new(0));
+            let active = Arc::new(AtomicUsize::new(0));
+            let starts = Arc::new(AtomicUsize::new(0));
+            let m = mode.clone();
+            let a = active.clone();
+            let started = starts.clone();
+            let upstream = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = fixture.accept().await {
+                    let m = m.clone();
+                    let a = a.clone();
+                    let started = started.clone();
+                    tokio::spawn(async move {
+                        let request = read_request(&mut socket).await.unwrap();
+                        let mode = m.load(Ordering::SeqCst);
+                        if mode == 6 {
+                            started.fetch_add(1, Ordering::SeqCst);
+                            while started.load(Ordering::SeqCst) < 4 {
+                                tokio::time::sleep(Duration::from_millis(2)).await;
+                            }
+                        }
+                        if mode == 4 {
+                            a.fetch_add(1, Ordering::SeqCst);
+                            let mut b = [0; 1];
+                            let _ = socket.read(&mut b).await;
+                            a.fetch_sub(1, Ordering::SeqCst);
+                            return;
+                        }
+                        let total = 5 * PART + 17;
+                        let (start, end) = request
+                            .range
+                            .as_deref()
+                            .and_then(|v| requested_range(v, total))
+                            .unwrap_or((0, total - 1));
+                        let status = if request.range.is_some() { 206 } else { 200 };
+                        let bad = mode == 1;
+                        let changed = mode == 3 && start >= PART;
+                        let header=format!("HTTP/1.1 {status} OK\r\nContent-Length: {}\r\n{}ETag: \"{}\"\r\nConnection: close\r\n\r\n",end-start+1,
+                            if status==206{format!("Content-Range: bytes {}-{end}/{total}\r\n",if bad {start+1}else{start})}else{String::new()},if changed{"changed"}else{"fixture"});
+                        if socket.write_all(header.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        if request.method == "HEAD" {
+                            return;
+                        }
+                        let bytes = (start..=end)
+                            .take(if mode == 2 { 11 } else { usize::MAX })
+                            .map(|i| (i % 251) as u8)
+                            .collect::<Vec<_>>();
+                        let _ = socket.write_all(&bytes).await;
+                    });
+                }
+            });
+            let client = Client::builder()
+                .http1_only()
+                .no_proxy()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap();
+            let server = OutboundMediaServer::with_client(client.clone()).unwrap();
+            let auth = auth();
+            let url = fixture_route(&server, &auth, origin);
+            let responses = futures_util::future::join_all(
+                (0..7).map(|_| client.get(&url).header("Range", "bytes=0-").send()),
+            )
+            .await;
+            for response in responses {
+                let response = response.unwrap();
+                assert_eq!(response.status(), 206);
+                assert_eq!(
+                    response.headers()["content-range"],
+                    format!("bytes 0-{}/{}", WINDOW - 1, 5 * PART + 17)
+                );
+                let bytes = response.bytes().await.unwrap();
+                assert_eq!(bytes.len(), WINDOW as usize);
+                assert!(
+                    bytes
+                        .iter()
+                        .enumerate()
+                        .all(|(i, b)| *b == (i as u64 % 251) as u8),
+                    "parallel chunks remain ordered and exact"
+                );
+            }
+            let head = client.head(&url).send().await.unwrap();
+            assert_eq!(head.status(), 200);
+            assert_eq!(
+                head.headers()["content-length"],
+                (5 * PART + 17).to_string()
+            );
+            assert_eq!(head.bytes().await.unwrap().len(), 0);
+            for range in ["bytes=7-81", "bytes=-57", "bytes=5242880-"] {
+                let response = client
+                    .get(&url)
+                    .header("Range", range)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), 206);
+                let (start, end) = requested_range(range, 5 * PART + 17).unwrap();
+                assert_eq!(
+                    response.bytes().await.unwrap().as_ref(),
+                    (start..=end).map(|i| (i % 251) as u8).collect::<Vec<_>>()
+                );
+            }
+            assert_eq!(
+                client
+                    .get(&url)
+                    .header("Range", "bytes=0-1,7-9")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                416
+            );
+            assert_eq!(client.post(&url).send().await.unwrap().status(), 405);
+            mode.store(6, Ordering::SeqCst);
+            let parallel = client
+                .get(&url)
+                .header("Range", "bytes=0-")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(parallel.bytes().await.unwrap().len(), WINDOW as usize);
+            assert_eq!(
+                starts.load(Ordering::SeqCst),
+                4,
+                "all four verified block requests dispatch before any body is available"
+            );
+            for bad in [1, 2, 3] {
+                mode.store(bad, Ordering::SeqCst);
+                match client.get(&url).header("Range", "bytes=0-").send().await {
+                    Err(_) => {}
+                    Ok(response) => assert!(
+                        response.bytes().await.is_err(),
+                        "bad ranges/short bodies/source changes never become valid MP4s"
+                    ),
+                }
+            }
+            mode.store(4, Ordering::SeqCst);
+            let mut raw = TcpStream::connect(server.address).await.unwrap();
+            let path = Url::parse(&url).unwrap().path().to_owned();
+            raw.write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nRange: bytes=0-\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while active.load(Ordering::SeqCst) == 0 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            drop(raw);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while active.load(Ordering::SeqCst) > 0 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let request = client.get(&url).header("Range", "bytes=0-").send();
+            tokio::pin!(request);
+            tokio::select! {r=&mut request=>panic!("unexpected {r:?}"),_ = tokio::time::sleep(Duration::from_millis(100))=>{}}
+            auth.set_user(None).unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), request)
+                    .await
+                    .unwrap()
+                    .is_err(),
+                "logout cancels an in-flight private read"
+            );
+            assert_eq!(
+                client.get(&url).send().await.unwrap().status(),
+                403,
+                "old route cannot be reused after logout"
+            );
+            mode.store(0, Ordering::SeqCst);
+            upstream.abort();
+        });
+    }
+}

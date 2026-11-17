@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { RotateCcw, Save, Scissors, Trash2 } from "lucide-react";
@@ -44,6 +45,7 @@ export function SegmentAnnotationEditor({
   onCompleted,
   onActivity,
 }: Props) {
+  useLanguage();
   const [segments, setSegments] = useState<Segment[]>(() => [createSegment(minFrame, maxFrame, 0)]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -213,24 +215,24 @@ export function SegmentAnnotationEditor({
     <section className="segment-editor-view segment-editor-embedded" aria-labelledby="segment-editor-title">
       <header className="section-heading segment-page-heading">
         <div>
-          <span className="section-kicker">SEGMENT ANNOTATION</span>
-          <h2 id="segment-editor-title">创建片段</h2>
+          <span className="section-kicker">{t("片段标注")}</span>
+          <h2 id="segment-editor-title">{t("创建片段")}</h2>
         </div>
         <div className="segment-range-status">
-          <span className="segment-draft-badge">保留范围 · 帧 {clipStartFrame}–{clipEndFrame} · {visibleSegments.length} 个片段</span>
-          <span className={`segment-save-badge${!annotation || dirty ? " dirty" : ""}`}>{saveStatus}</span>
-          <button className="button button-primary segment-save-action" type="button" disabled={busy || saving || !hasMatchingAnnotation} onClick={() => void saveSegments()} title={!hasMatchingAnnotation ? "请先保存上方的数据标注" : "保存片段到本机标注"}>
-            <Save size={14} />{saving ? "保存中…" : dirty ? "保存片段" : "重新保存片段"}
+          <span className="segment-draft-badge">{t("保留范围 · 帧") + " "}{clipStartFrame}–{clipEndFrame} · {visibleSegments.length}{" " + t("个片段")}</span>
+          <span className={`segment-save-badge${!annotation || dirty ? " dirty" : ""}`}>{tr(saveStatus)}</span>
+          <button className="button button-primary segment-save-action" type="button" disabled={busy || saving || !hasMatchingAnnotation} onClick={() => void saveSegments()} title={!hasMatchingAnnotation ? t("请先保存上方的数据标注") : t("保存片段到本机标注")}>
+            <Save size={14} />{saving ? t("保存中…") : dirty ? t("保存片段") : t("重新保存片段")}
           </button>
-          <button className="icon-button" type="button" onClick={onClipReset} disabled={busy || (clipStartFrame === minFrame && clipEndFrame === maxFrame)} title="恢复完整轨迹" aria-label="恢复完整轨迹"><RotateCcw size={15} /></button>
+          <button className="icon-button" type="button" onClick={onClipReset} disabled={busy || (clipStartFrame === minFrame && clipEndFrame === maxFrame)} title={t("恢复完整轨迹")} aria-label={t("恢复完整轨迹")}><RotateCcw size={15} /></button>
         </div>
       </header>
 
-      <section className="segment-timeline segment-timeline-embedded" aria-label="片段时间线">
+      <section className="segment-timeline segment-timeline-embedded" aria-label={t("片段时间线")}>
           <header>
-            <div className="segment-playback-controls">{playbackControls}</div>
-            <button className="button button-primary segment-create-action" type="button" disabled={busy || !canSplit} onClick={splitSegment} title={!canSplit ? "请将播放头放在片段结束帧之前" : undefined}>
-              <Scissors size={14} />{canSplit ? "在当前帧分割" : "片段结束处不可分割"}
+            <div className="segment-playback-controls">{tr(playbackControls)}</div>
+            <button className="button button-primary segment-create-action" type="button" disabled={busy || !canSplit} onClick={splitSegment} title={!canSplit ? t("请将播放头放在片段结束帧之前") : undefined}>
+              <Scissors size={14} />{canSplit ? t("在当前帧分割") : t("片段结束处不可分割")}
             </button>
           </header>
           <div className="segment-ruler"><span>{minFrame}</span><span>{Math.round((minFrame + maxFrame) / 2)}</span><span>{maxFrame}</span></div>
@@ -246,8 +248,8 @@ export function SegmentAnnotationEditor({
               const joinsPrevious = index > 0 && visibleSegments[index - 1].endFrame + 1 === segment.startFrame;
               const joinsNext = index < visibleSegments.length - 1 && segment.endFrame + 1 === visibleSegments[index + 1].startFrame;
               return (
-                <button key={segment.id} type="button" className={`segment-block${segment.id === selectedId ? " selected" : ""}`} style={{ left: `${((visualStartFrame - minFrame) / span) * 100}%`, width: `${Math.max(1.5, ((segment.endFrame - visualStartFrame) / span) * 100)}%`, borderRadius: `${joinsPrevious ? 0 : 3}px ${joinsNext ? 0 : 3}px ${joinsNext ? 0 : 3}px ${joinsPrevious ? 0 : 3}px`, boxShadow: joinsPrevious ? "inset 1px 0 rgba(255, 255, 255, .8)" : undefined }} onClick={(event) => { event.stopPropagation(); selectSegmentAtPointer(segment, event.clientX, event.currentTarget.parentElement as HTMLElement); }} title={`${segment.title} · 帧 ${segment.startFrame}–${segment.endFrame}`}>
-                  <b>{String(index + 1).padStart(2, "0")}</b><span>{segment.title}</span>
+                <button key={segment.id} type="button" className={`segment-block${segment.id === selectedId ? " selected" : ""}`} style={{ left: `${((visualStartFrame - minFrame) / span) * 100}%`, width: `${Math.max(1.5, ((segment.endFrame - visualStartFrame) / span) * 100)}%`, borderRadius: `${joinsPrevious ? 0 : 3}px ${joinsNext ? 0 : 3}px ${joinsNext ? 0 : 3}px ${joinsPrevious ? 0 : 3}px`, boxShadow: joinsPrevious ? "inset 1px 0 rgba(255, 255, 255, .8)" : undefined }} onClick={(event) => { event.stopPropagation(); selectSegmentAtPointer(segment, event.clientX, event.currentTarget.parentElement as HTMLElement); }} title={t("{0} · 帧 {1}–{2}", [tr(segment.title), segment.startFrame, segment.endFrame])}>
+                  <b>{tr(String(index + 1).padStart(2, "0"))}</b><span>{tr(segment.title)}</span>
                 </button>
               );
             })}
@@ -259,7 +261,7 @@ export function SegmentAnnotationEditor({
               max={maxFrame}
               value={clipStartFrame}
               disabled={busy}
-              aria-label="裁剪起始帧"
+              aria-label={t("裁剪起始帧")}
               onChange={(event) => onClipStartChange(event.currentTarget.valueAsNumber)}
             />
             <input
@@ -270,24 +272,23 @@ export function SegmentAnnotationEditor({
               max={maxFrame}
               value={clipEndFrame}
               disabled={busy}
-              aria-label="裁剪结束帧"
+              aria-label={t("裁剪结束帧")}
               onChange={(event) => onClipEndChange(event.currentTarget.valueAsNumber)}
             />
             <i className="segment-playhead" style={{ left: `${((currentFrame - minFrame) / span) * 100}%` }} />
           </div>
           {visibleSegments.length ? (
             <div className="segment-list">
-              {visibleSegments.map((segment, index) => <button type="button" key={segment.id} className={segment.id === selectedId ? "selected" : ""} onClick={() => selectSegment(segment)}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{segment.title || "未命名片段"}</strong><small>帧 {segment.startFrame}–{segment.endFrame} · {segment.note || "尚未添加注解"}</small></span></button>)}
+              {visibleSegments.map((segment, index) => <button type="button" key={segment.id} className={segment.id === selectedId ? "selected" : ""} onClick={() => selectSegment(segment)}><b>{tr(String(index + 1).padStart(2, "0"))}</b><span><strong>{tr(segment.title) || t("未命名片段")}</strong><small>{t("帧") + " "}{segment.startFrame}–{segment.endFrame} · {tr(segment.note) || t("尚未添加注解")}</small></span></button>)}
             </div>
           ) : null}
       </section>
 
       {selected && <div className="segment-workbench">
         <aside className="segment-inspector">
-          <header><Scissors size={16} /><strong>注解</strong></header>
-          <label className="segment-template">片段模板
-            <select
-              aria-label="片段模板"
+          <header><Scissors size={16} /><strong>{t("注解")}</strong></header>
+          <label className="segment-template">{t("片段模板")}<select
+              aria-label={t("片段模板")}
               value={templateSegments.includes(selected.title) ? selected.title : ""}
               disabled={!templateSegments.length}
               onChange={(event) => {
@@ -297,13 +298,13 @@ export function SegmentAnnotationEditor({
                 }
               }}
             >
-              <option value="">{templateSegments.length ? "选择片段模板" : "当前任务未配置片段模板"}</option>
-              {templateSegments.map((title, index) => <option value={title} key={`${title}-${index}`}>{title}</option>)}
+              <option value="">{templateSegments.length ? t("选择片段模板") : t("当前任务未配置片段模板")}</option>
+              {templateSegments.map((title, index) => <option value={title} key={`${title}-${index}`}>{tr(title)}</option>)}
             </select>
           </label>
-          <label className="segment-note"><textarea aria-label="片段注解" rows={2} maxLength={500} value={selected.note} placeholder="描述这个片段中的动作、事件或质量问题……" onChange={(event) => updateSelected({ note: event.target.value })} onBlur={() => onActivity("segment_note_changed", annotation?.taskId ?? "", annotation?.trajectoryCode ?? "")} /><small>{selected.note.length}/500</small></label>
+          <label className="segment-note"><textarea aria-label={t("片段注解")} rows={2} maxLength={500} value={selected.note} placeholder={t("描述这个片段中的动作、事件或质量问题……")} onChange={(event) => updateSelected({ note: event.target.value })} onBlur={() => onActivity("segment_note_changed", annotation?.taskId ?? "", annotation?.trajectoryCode ?? "")} /><small>{selected.note.length}/500</small></label>
           <div className="segment-edit-actions">
-            <button className="button button-secondary segment-delete" type="button" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={15} />合并删除片段</button>
+            <button className="button button-secondary segment-delete" type="button" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={15} />{t("合并删除片段")}</button>
           </div>
         </aside>
       </div>}

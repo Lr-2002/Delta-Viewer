@@ -1,3 +1,4 @@
+import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import {useEffect,useRef,useState} from "react";
 import {AlertCircle,CheckCircle2,Info,LoaderCircle,RefreshCw,ShieldCheck,UploadCloud} from "lucide-react";
 import {getOtaServiceStatus,previewOtaRelease,submitOtaToDevice,readDeviceOtaStatus,checkDeviceOtaRelease,readOtaHistory,confirmDeviceOtaUpgrade} from "../lib/backend";
@@ -13,9 +14,10 @@ interface Props {
   onError:(message:string)=>void;
 }
 const bytes=(value:number)=>value>=1024*1024?`${(value/1024/1024).toFixed(1)} MiB`:`${Math.max(1,Math.round(value/1024))} KiB`;
-const time=(value:string|null)=>value?new Date(value).toLocaleString("zh-CN",{hour12:false}):"未提供";
+const time=(value:string|null)=>value?new Date(value).toLocaleString(localeTag(),{hour12:false}):"未提供";
 
 export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:Props){
+  useLanguage();
   const [service,setService]=useState<OtaServiceStatus|null>(null);
   const [serviceError,setServiceError]=useState("");
   const [preview,setPreview]=useState<OtaPreview|null>(null);
@@ -105,63 +107,61 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
   const failed=!awaitingOperation&&device?.finalState&&(device.state==="FAILED"||device.state==="ROLLBACK_FAILED");
   const submissionFinished=!!notice?.operationId&&device?.operationId===notice.operationId&&device.finalState;
 
-  return <section className="manager-ota" aria-label="DOHC 应用升级">
+  return <section className="manager-ota" aria-label={t("DOHC 应用升级")}>
     <header className="manager-ota-heading">
       <ShieldCheck size={20}/>
-      <div><h2>DOHC 应用升级</h2><p>{serviceError||(service?enabled?"连接设备后检查最新版本。":"升级服务暂不可用。":"正在读取升级服务…")}</p></div>
-      <span className={`manager-chip${canUpgrade?" is-ready":""}`}>{working==="preview"?"正在检查":upToDate?"已是最新":device?.active||awaitingOperation?"升级中":canUpgrade?preview?"可升级":"已连接":"暂不可升级"}</span>
+      <div><h2>{t("DOHC 应用升级")}</h2><p>{tr(serviceError) || tr((service?enabled?"连接设备后检查最新版本。":"升级服务暂不可用。":"正在读取升级服务…"))}</p></div>
+      <span className={`manager-chip${canUpgrade?" is-ready":""}`}>{working==="preview" ? t("正在检查") : upToDate ? t("已是最新") : device?.active||awaitingOperation ? t("升级中") : canUpgrade ? preview ? t("可升级") : t("已连接") : t("暂不可升级")}</span>
     </header>
-    <aside className="manager-ota-caution" aria-label="升级注意事项"><AlertCircle size={18}/><div><strong>升级前请确认</strong><ul><li>停止录制、自检和压力测试，保持设备连接。</li><li>保持稳定供电，升级过程中请勿关机或断电。</li><li>设备默认要求电压 ≥ 7.3V、温度低于 75℃；实际要求以设备提示为准。</li></ul></div></aside>
-    {!connected&&<p className="manager-ota-note">请先连接设备，再检查最新版本。</p>}
-    {connected&&!request&&<p className="manager-ota-note">尚未取得设备网络地址，请回到首页重新连接。</p>}
+    <aside className="manager-ota-caution" aria-label={t("升级注意事项")}><AlertCircle size={18}/><div><strong>{t("升级前请确认")}</strong><ul><li>{t("停止录制、自检和压力测试，保持设备连接。")}</li><li>{t("保持稳定供电，升级过程中请勿关机或断电。")}</li><li>{t("设备默认要求电压 ≥ 7.3V、温度低于 75℃；实际要求以设备提示为准。")}</li></ul></div></aside>
+    {!connected&&<p className="manager-ota-note">{t("请先连接设备，再检查最新版本。")}</p>}
+    {connected&&!request&&<p className="manager-ota-note">{t("尚未取得设备网络地址，请回到首页重新连接。")}</p>}
     {connected&&request&&<div className="manager-ota-status" role="status">
-      <div><span>设备状态</span><strong>{stateLabel??(deviceError?"读取失败":"读取中…")}</strong></div>
-      <div><span>当前版本</span><strong>{currentVersion??"未提供"}</strong></div>
-      <div><span>升级操作</span><strong>{(notice?.operationId??device?.operationId)?.slice(0,12)||"无"}</strong></div>
+      <div><span>{t("设备状态")}</span><strong>{tr(stateLabel) ?? tr((deviceError?"读取失败":"读取中…"))}</strong></div>
+      <div><span>{t("当前版本")}</span><strong>{tr(currentVersion) ?? t("未提供")}</strong></div>
+      <div><span>{t("升级操作")}</span><strong>{tr((notice?.operationId??device?.operationId)?.slice(0,12)) || t("无")}</strong></div>
     </div>}
-    {deviceError&&connected&&<p className="manager-ota-error" role="alert"><AlertCircle size={15}/>{deviceError}</p>}
-    {checkError&&<div className="manager-ota-failure" role="alert"><p className="manager-ota-error"><AlertCircle size={17}/><strong>未能完成版本检查</strong></p><p>{checkError.startsWith("OTA_DOWNLOAD_TIMEOUT:")?"OTA 源站连接或响应超时。请稍后重试；若持续出现，请联系管理员检查升级服务。":checkError.replace(/^[A-Z][A-Z0-9_]+:\s*/,"")}</p><details><summary>技术详情</summary><p>{checkError}</p></details></div>}
-    {working==="preview"&&<p className="manager-ota-note" role="status">{checkStage==="source"?"正在读取最新版本…":"正在核对设备版本…"}</p>}
-    {device?.logError&&<p className="manager-ota-error" role="alert">{device.logError}</p>}
-    {device?.guidance&&!failed&&!awaitingOperation&&device.state!=="UP_TO_DATE"&&<p className="manager-ota-note">{device.guidance}</p>}
+    {tr(deviceError&&connected&&<p className="manager-ota-error" role="alert"><AlertCircle size={15}/>{tr(deviceError)}</p>)}
+    {tr(checkError&&<div className="manager-ota-failure" role="alert"><p className="manager-ota-error"><AlertCircle size={17}/><strong>{t("未能完成版本检查")}</strong></p><p>{checkError.startsWith("OTA_DOWNLOAD_TIMEOUT:") ? t("OTA 源站连接或响应超时。请稍后重试；若持续出现，请联系管理员检查升级服务。") : tr(checkError.replace(/^[A-Z][A-Z0-9_]+:\s*/,""))}</p><details><summary>{t("技术详情")}</summary><p>{tr(checkError)}</p></details></div>)}
+    {working==="preview"&&<p className="manager-ota-note" role="status">{checkStage==="source" ? t("正在读取最新版本…") : t("正在核对设备版本…")}</p>}
+    {tr(device?.logError&&<p className="manager-ota-error" role="alert">{tr(device.logError)}</p>)}
+    {tr(device?.guidance&&!failed&&!awaitingOperation&&device.state!=="UP_TO_DATE"&&<p className="manager-ota-note">{tr(device.guidance)}</p>)}
     {enabled&&<>
       <div className="manager-actions">
         <button className="button button-secondary" disabled={busy||working!==null||!canUpgrade} onClick={()=>void checkRelease()}>
-          {working==="preview"?<LoaderCircle size={17} className="spin"/>:<RefreshCw size={17}/>}检查最新版本
-        </button>
+          {working==="preview" ? <LoaderCircle size={17} className="spin"/> : <RefreshCw size={17}/>}{t("检查最新版本")}</button>
         {preview&&!upToDate&&<button className="button button-primary" disabled={busy||working!==null||!canUpgrade} onClick={()=>void submit()}>
-          {working==="submit"?<LoaderCircle size={17} className="spin"/>:<UploadCloud size={17}/>}开始升级
-        </button>}
+          {working==="submit" ? <LoaderCircle size={17} className="spin"/> : <UploadCloud size={17}/>}{t("开始升级")}</button>}
       </div>
-      {preview&&<div className="manager-ota-release" aria-label="升级包内容">
-        <header><strong>最新版本 {preview.version}</strong><span>安装包 {bytes(preview.artifactBytes)}</span></header>
+      {preview&&<div className="manager-ota-release" aria-label={t("升级包内容")}>
+        <header><strong>{t("最新版本") + " "}{preview.version}</strong><span>{t("安装包") + " "}{tr(bytes(preview.artifactBytes))}</span></header>
       </div>}
     </>}
-    {!enabled&&!serviceError&&<p className="manager-ota-note">升级服务暂不可用，请稍后重试。</p>}
-    {upToDate&&<p className="manager-ota-success" role="status"><CheckCircle2 size={17}/>当前已是最新版本 {preview.version}，无需升级。</p>}
-    {upToDate&&device?.guidance?.includes("语音提示未播放")&&<p className="manager-ota-note">设备语音提示未播放，请以页面状态为准。</p>}
-    {notice&&!submissionFinished&&!upToDate&&<p className="manager-ota-note" role="status"><Info size={17}/>{notice.message}</p>}
-    {!awaitingOperation&&device?.finalState&&device.state==="SUCCESS"&&device.result==="PASS"&&<p className="manager-ota-success" role="status"><CheckCircle2 size={17}/>设备报告升级成功。{device.releaseTarget?`目标版本 ${device.targetVersion??device.releaseTarget}。`:""}</p>}
+    {!enabled&&!serviceError&&<p className="manager-ota-note">{t("升级服务暂不可用，请稍后重试。")}</p>}
+    {upToDate&&<p className="manager-ota-success" role="status"><CheckCircle2 size={17}/>{t("当前已是最新版本") + " "}{preview.version}{t("，无需升级。")}</p>}
+    {upToDate&&device?.guidance?.includes("语音提示未播放")&&<p className="manager-ota-note">{t("设备语音提示未播放，请以页面状态为准。")}</p>}
+    {notice&&!submissionFinished&&!upToDate&&<p className="manager-ota-note" role="status"><Info size={17}/>{tr(notice.message)}</p>}
+    {!awaitingOperation&&device?.finalState&&device.state==="SUCCESS"&&device.result==="PASS"&&<p className="manager-ota-success" role="status"><CheckCircle2 size={17}/>{t("设备报告升级成功。")}{device.releaseTarget ? t("目标版本 {0}。", [tr(device.targetVersion) ?? tr(device.releaseTarget)]) : ""}</p>}
     {failed&&<div className="manager-ota-failure" role="alert">
-      <p className="manager-ota-error"><AlertCircle size={17}/><strong>{device.previousResult?"上次升级失败":"升级失败"}</strong></p>
-      <p>{device.guidance||device.detail}</p>
-      {(device.failureCodes?.length>0||device.reason)&&<details><summary>技术详情</summary>
-        {device.failureCodes?.length>0&&<p>{device.failureCodes.join("、")}</p>}
-        {device.reason&&<p>{device.reason}</p>}
-      </details>}
+      <p className="manager-ota-error"><AlertCircle size={17}/><strong>{device.previousResult ? t("上次升级失败") : t("升级失败")}</strong></p>
+      <p>{tr(device.guidance) || tr(device.detail)}</p>
+      {tr((device.failureCodes?.length>0||device.reason)&&<details><summary>{t("技术详情")}</summary>
+        {device.failureCodes?.length>0&&<p>{tr(device.failureCodes.join("、"))}</p>}
+        {tr(device.reason&&<p>{tr(device.reason)}</p>)}
+      </details>)}
     </div>}
-    {device&&<p className="manager-observed">状态更新于 {time(observedAt)}</p>}
-    <details className="manager-ota-history"><summary>升级日志与售后上传（{history.length}）</summary>
-      {historyError&&<p className="manager-ota-error" role="alert">{historyError}</p>}
-      {!history.length&&!historyError&&<p>尚无升级记录。设备返回的每次升级状态会保存在本机，安装后的完整日志保留在设备。</p>}
+    {device&&<p className="manager-observed">{t("状态更新于") + " "}{tr(time(observedAt))}</p>}
+    <details className="manager-ota-history"><summary>{t("升级日志与售后上传（")}{history.length}）</summary>
+      {tr(historyError&&<p className="manager-ota-error" role="alert">{tr(historyError)}</p>)}
+      {!history.length&&!historyError&&<p>{t("尚无升级记录。设备返回的每次升级状态会保存在本机，安装后的完整日志保留在设备。")}</p>}
       {history.map(record=><article className="manager-ota-release" key={record.id}>
-        <header><strong>{record.targetVersion??record.releaseTarget??"升级记录"} · {otaStateLabels[record.state]??record.state}</strong><span>{new Date(record.updatedAtMs).toLocaleString("zh-CN")}</span></header>
-        <p>设备 {record.deviceId??"未取得身份"} · {record.events.length} 条日志{record.truncated?"（保留最后 200 条）":""}</p>
-        <details><summary>查看本次日志</summary>{record.events.map((entry,index)=><p key={index}>{new Date(entry.atMs).toLocaleTimeString("zh-CN")} · {entry.message}</p>)}</details>
-        <button className="button button-secondary" disabled={busy||working!==null} onClick={()=>setSelectedLog(record.id)}>上传本次升级日志到售后</button>
-        {record.receipt&&<p className="manager-ota-success">售后已接收：{record.receipt.reportId}</p>}
+        <header><strong>{tr(record.targetVersion) ?? tr(record.releaseTarget) ?? t("升级记录")} · {tr(otaStateLabels[record.state]) ?? tr(record.state)}</strong><span>{tr(new Date(record.updatedAtMs).toLocaleString(localeTag()))}</span></header>
+        <p>{t("设备") + " "}{tr(record.deviceId) ?? t("未取得身份")} · {record.events.length}{" " + t("条日志")}{record.truncated ? t("（保留最后 200 条）") : ""}</p>
+        <details><summary>{t("查看本次日志")}</summary>{record.events.map((entry,index)=><p key={index}>{tr(new Date(entry.atMs).toLocaleTimeString(localeTag()))} · {tr(entry.message)}</p>)}</details>
+        <button className="button button-secondary" disabled={busy||working!==null} onClick={()=>setSelectedLog(record.id)}>{t("上传本次升级日志到售后")}</button>
+        {record.receipt&&<p className="manager-ota-success">{t("售后已接收：")}{tr(record.receipt.reportId)}</p>}
       </article>)}
-      {selectedLog&&<DiagnosticLogPanel key={selectedLog} otaRecordId={selectedLog} busy={busy||working!==null} beginOperation={beginOperation} onError={onError}/>}
+      {tr(selectedLog&&<DiagnosticLogPanel key={selectedLog} otaRecordId={selectedLog} busy={busy||working!==null} beginOperation={beginOperation} onError={onError}/>)}
     </details>
   </section>;
 }

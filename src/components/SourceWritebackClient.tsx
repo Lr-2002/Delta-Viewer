@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from 'react';
 import { APP_VERSION } from '../lib/backend';
 import { AlertTriangle, CheckCircle2, LoaderCircle, X } from 'lucide-react';
@@ -10,6 +11,7 @@ export function SourceWritebackClient({owner,disabled,onBusy,onWritten,call=writ
   owner:WritebackOwner;disabled:boolean;onBusy:(value:boolean)=>void;onWritten:()=>void;
   call?:typeof writebackCall;
 }) {
+  useLanguage();
   const [clientId]=useState(()=>{try{return clientInstallationId(localStorage,APP_VERSION);}catch{return crypto.randomUUID();}});
   const [message,setMessage]=useState('');
   const [failure,setFailure]=useState(false);
@@ -107,9 +109,9 @@ export function SourceWritebackClient({owner,disabled,onBusy,onWritten,call=writ
   const title=failure?'NAS 写回异常':waiting?'等待安全时机':complete?'NAS 写回完成':'正在写回 NAS';
   const Icon=failure?AlertTriangle:complete?CheckCircle2:LoaderCircle;
   return message?<aside className={`update-notice writeback-toast ${failure?'writeback-toast-error':''}`} role={failure?'alert':'status'} aria-live={failure?'assertive':'polite'} aria-atomic="true">
-    <header><span className="update-notice-icon writeback-toast-icon" aria-hidden="true"><Icon size={17} className={complete||failure?'':'writeback-toast-spinning'}/></span><strong>{title}</strong>
-      <button type="button" className="icon-button" aria-label="收起写回通知" title="收起写回通知" onClick={()=>dismissNotice.current()}><X size={16}/></button>
+    <header><span className="update-notice-icon writeback-toast-icon" aria-hidden="true"><Icon size={17} className={complete||failure?'':'writeback-toast-spinning'}/></span><strong>{tr(title)}</strong>
+      <button type="button" className="icon-button" aria-label={t("收起写回通知")} title={t("收起写回通知")} onClick={()=>dismissNotice.current()}><X size={16}/></button>
     </header>
-    <p>{message}</p>
+    <p>{tr(message)}</p>
   </aside>:null;
 }

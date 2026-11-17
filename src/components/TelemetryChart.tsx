@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useMemo, useRef } from "react";
 import type { MetricKey, StateRecord } from "../types";
 
@@ -23,6 +24,7 @@ const METRIC_LABELS: Record<MetricKey, string> = {
 };
 
 export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps) {
+  useLanguage();
   const plotCanvasRef = useRef<HTMLCanvasElement>(null);
   const markerCanvasRef = useRef<HTMLCanvasElement>(null);
   const frameIdRef = useRef(frameId);
@@ -158,16 +160,16 @@ export function TelemetryChart({ states, metric, frameId }: TelemetryChartProps)
 
   const selected = stateByFrame.get(frameId)?.[metric] ?? null;
   return (
-    <section className="telemetry-chart" aria-label={`${METRIC_LABELS[metric]}曲线`}>
+    <section className="telemetry-chart" aria-label={t("{0}曲线", [tr(METRIC_LABELS[metric])])}>
       <canvas ref={plotCanvasRef} className="telemetry-plot" />
       <canvas ref={markerCanvasRef} className="telemetry-marker" />
       <div className="chart-legend">
         {selected ? selected.map((value, index) => (
             <span key={index} data-series-color={COLORS[index]}>
               <i style={{ backgroundColor: COLORS[index] }} />
-              {index < 3 ? ["X", "Y", "Z"][index] : "W"} {value.toFixed(4)}
+              {index < 3 ? tr(["X", "Y", "Z"][index]) : "W"} {tr(value.toFixed(4))}
             </span>
-          )) : <span className="telemetry-unavailable">当前帧无状态数据</span>}
+          )) : <span className="telemetry-unavailable">{t("当前帧无状态数据")}</span>}
       </div>
     </section>
   );

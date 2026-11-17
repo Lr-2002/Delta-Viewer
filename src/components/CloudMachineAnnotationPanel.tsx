@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import "./cloud-qc.css";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
@@ -53,6 +54,7 @@ function labelLibraryKey(username: string) {
 }
 
 export function CloudMachineAnnotationPanel(props: Props) {
+  useLanguage();
   const [sourceName, setSourceName] = useState("");
   const [channel, setChannel] = useState<"action" | "skeleton">("action");
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
@@ -66,16 +68,17 @@ export function CloudMachineAnnotationPanel(props: Props) {
   }, [props.data.summary.root]);
   const label = (name: string) => /(^|\/)(description|desorption)\.json$/.test(name) ? `人工结果（${name}）` : name;
   return <div className={`quality-workspace${props.playback ? " quality-embedded" : ""}`}>
-    {channel === "action" && <label className="machine-source-picker">机标来源<select aria-label="机标来源" value={sourceName} disabled={props.busy || sourceBusy}
+    {channel === "action" && <label className="machine-source-picker">{t("机标来源")}<select aria-label={t("机标来源")} value={sourceName} disabled={props.busy || sourceBusy}
       onChange={(event) => { props.playback?.onPause(); setSourceName(event.currentTarget.value); recordReviewInteraction("source", { sourceName: event.currentTarget.value || "auto" }); }}>
-      <option value="">自动（优先 Flash）</option>{sourceOptions.map((name) => <option key={name} value={name}>{label(name)}</option>)}
+      <option value="">{t("自动（优先 Flash）")}</option>{sourceOptions.map((name) => <option key={name} value={name}>{tr(label(name))}</option>)}
     </select></label>}
-    {channel === "action" && sourceError && <p role="alert">{sourceError}</p>}
+    {tr(channel === "action" && sourceError && <p role="alert">{tr(sourceError)}</p>)}
     <MachineAnnotationEditor {...props} key={`${props.username}:${props.data.summary.root}:${channel}:${sourceName}`} sourceName={channel === "skeleton" ? SKELETON_SOURCE : sourceName || undefined} onSourceBusy={setSourceBusy} channel={channel} onChannelChange={setChannel} />
   </div>;
 }
 
 function MachineAnnotationEditor({ data, username, busy, suspended = false, sourceName, onSourceBusy, onComplete, onReviewSaved, onUnsavedChange, playback, channel, onChannelChange }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void; channel: "action" | "skeleton"; onChannelChange: (channel: "action" | "skeleton") => void }) {
+  useLanguage();
   const root = data.summary.root;
   const skeletonMode = channel === "skeleton";
   const [result, setResult] = useState<MachineAnnotation | null>(null);
@@ -668,151 +671,150 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
         recordReviewInteraction("control", { value: "修改数据特殊标签" }, root);
         void persist({ specialTags: next, segments: editsRef.current, status: "pending" });
       }} /> }
-    {playback ? <section className="quality-timeline" aria-label="校对时间轴">
-      <div className="proofreading-transport">{playback.controls}<button className="icon-button" type="button" aria-label="剪切片段" aria-keyshortcuts="X" title="剪切片段：在当前帧分割 (X)" disabled={!canEdit || !active || active.endFrame <= active.startFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
+    {playback ? <section className="quality-timeline" aria-label={t("校对时间轴")}>
+      <div className="proofreading-transport">{tr(playback.controls)}<button className="icon-button" type="button" aria-label={t("剪切片段")} aria-keyshortcuts="X" title={t("剪切片段：在当前帧分割 (X)")} disabled={!canEdit || !active || active.endFrame <= active.startFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
       {valid && <ReviewTimeline frame={visibleFrame} frameCount={editFrameCount} start={active?.startFrame ?? 0}
         end={active?.endFrame ?? editFrameCount - 1} editable={canEdit && Boolean(active)} segments={rows}
         selected={active?.sourceIndex} onSeek={seek} onBoundary={boundary} previewBoundary={previewBoundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }} />}
       {!valid && primary?.firstFrame !== null && primary?.lastFrame !== null && primary && <input
-        className="machine-boundary-slider" type="range" aria-label="校对播放帧" min={primary.firstFrame} max={primary.lastFrame}
+        className="machine-boundary-slider" type="range" aria-label={t("校对播放帧")} min={primary.firstFrame} max={primary.lastFrame}
         value={playback.frame} onChange={(event) => playback.onSeek(event.currentTarget.valueAsNumber)} />}
-    </section> : <section className="quality-media" aria-label="视频与骨架">
-      <header className="quality-heading"><h2>机标校对</h2><span className="frame-counter">帧 {frame} / {result ? editFrameCount - 1 : "--"}</span></header>
+    </section> : <section className="quality-media" aria-label={t("视频与骨架")}>
+      <header className="quality-heading"><h2>{t("机标校对")}</h2><span className="frame-counter">{t("帧") + " "}{frame} / {result ? editFrameCount - 1 : "--"}</span></header>
       {valid && <ProofreadPlayer root={root} stream={primary} offset={mapping.offset} step={mapping.step} frameCount={editFrameCount}
         skeleton={data.skeleton} skeletonError={data.skeletonError} segments={rows} selected={active?.sourceIndex}
         editable={canEdit && Boolean(active)} onBoundary={boundary} previewBoundary={previewBoundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }}
         frame={frame} start={active?.startFrame ?? 0} end={active?.endFrame ?? editFrameCount - 1} playing={playing} onFrame={setFrame} onPlaying={setPlaying} />}
     </section>}
-    <section className="quality-inspector" aria-label="机标结果">
-      <header className="machine-heading"><div className="segment-channel-tabs" role="tablist" aria-label="片段类型">
-        {(["action", "skeleton"] as const).map(value => <button type="button" role="tab" key={value} aria-selected={channel === value} className={channel === value ? "active" : ""} disabled={loading || blocksNavigation || Boolean(saveError) || busy} onClick={() => { playback?.onPause(); onChannelChange(value); }}>{value === "action" ? "动作片段" : "骨架片段"}</button>)}
-      </div><span className="machine-status">{rows.length} 段</span>
-        <button className="icon-button" title="新增片段" aria-label="新增片段" disabled={!canEdit} onClick={addSegment}><Plus size={15} /></button>
-        <button className="icon-button" title="查看原始 JSON" aria-label="查看 JSON" disabled={!result} onClick={() => setShowJson(true)}><Code size={15} /></button>
-        <button className="icon-button" title={skeletonMode ? "重新读取骨架描述" : "重新读取机标"} aria-label={skeletonMode ? "重新读取骨架描述" : "重新读取机标"} disabled={loading || blocksNavigation || busy} onClick={() => setReload(reload + 1)}><RefreshCw size={15} /></button>
+    <section className="quality-inspector" aria-label={t("机标结果")}>
+      <header className="machine-heading"><div className="segment-channel-tabs" role="tablist" aria-label={t("片段类型")}>
+        {(["action", "skeleton"] as const).map(value => <button type="button" role="tab" key={value} aria-selected={channel === value} className={channel === value ? "active" : ""} disabled={loading || blocksNavigation || Boolean(saveError) || busy} onClick={() => { playback?.onPause(); onChannelChange(value); }}>{value === "action" ? t("动作片段") : t("骨架片段")}</button>)}
+      </div><span className="machine-status">{rows.length}{" " + t("段")}</span>
+        <button className="icon-button" title={t("新增片段")} aria-label={t("新增片段")} disabled={!canEdit} onClick={addSegment}><Plus size={15} /></button>
+        <button className="icon-button" title={t("查看原始 JSON")} aria-label={t("查看 JSON")} disabled={!result} onClick={() => setShowJson(true)}><Code size={15} /></button>
+        <button className="icon-button" title={skeletonMode ? t("重新读取骨架描述") : t("重新读取机标")} aria-label={skeletonMode ? t("重新读取骨架描述") : t("重新读取机标")} disabled={loading || blocksNavigation || busy} onClick={() => setReload(reload + 1)}><RefreshCw size={15} /></button>
       </header>
-      {cloudWorkspace && !cloudEditable && <div className="cloud-preview-notice" role="status"><span>{cloudAccessError || cloudAccess?.reason || "正在核对云端领取状态，当前仅可预览。"}</span>{cloudAccess?.claimable && <button type="button" className="button button-primary" disabled={busy || claimingCloud || saving || finishing} onClick={() => void claimCloud()}>{claimingCloud ? "正在领取…" : "领取后审核"}</button>}</div>}
-      {loading && <p role="status" className="machine-message"><LoaderCircle size={15} />{skeletonMode ? "正在读取骨架描述" : "正在读取机标"}</p>}
-      {error && <p role="alert" className="machine-message">{error}</p>}
-      {mapping?.error && <div role="alert" className="machine-message"><p>{mapping.error}</p>
-        {rangeRepair && <><p>机标范围与当前视频不一致，原因尚未确定。可核对后处理越界范围，或从“机标来源”选择其他文件。</p><button type="button" className="button button-secondary" disabled={busy || loading || saving || !review || Boolean(error)} onClick={() => { playback?.onPause(); setRangeRepairConfirmed(false); setRangeRepairOpen(true); }}>查看越界片段并处理</button></>}
-        {result?.videoFrameCount && primary && result.videoFrameCount !== primary.frameCount ? <p>载入后视频清单发生变化，请重新加载当前数据后再处理，避免使用过期帧数。</p> : null}
+      {cloudWorkspace && !cloudEditable && <div className="cloud-preview-notice" role="status"><span>{tr(cloudAccessError) || tr(cloudAccess?.reason) || t("正在核对云端领取状态，当前仅可预览。")}</span>{cloudAccess?.claimable && <button type="button" className="button button-primary" disabled={busy || claimingCloud || saving || finishing} onClick={() => void claimCloud()}>{claimingCloud ? t("正在领取…") : t("领取后审核")}</button>}</div>}
+      {loading && <p role="status" className="machine-message"><LoaderCircle size={15} />{skeletonMode ? t("正在读取骨架描述") : t("正在读取机标")}</p>}
+      {tr(error && <p role="alert" className="machine-message">{tr(error)}</p>)}
+      {tr(mapping?.error && <div role="alert" className="machine-message"><p>{tr(mapping.error)}</p>
+        {rangeRepair && <><p>{t("机标范围与当前视频不一致，原因尚未确定。可核对后处理越界范围，或从“机标来源”选择其他文件。")}</p><button type="button" className="button button-secondary" disabled={busy || loading || saving || !review || Boolean(error)} onClick={() => { playback?.onPause(); setRangeRepairConfirmed(false); setRangeRepairOpen(true); }}>{t("查看越界片段并处理")}</button></>}
+        {result?.videoFrameCount && primary && result.videoFrameCount !== primary.frameCount ? <p>{t("载入后视频清单发生变化，请重新加载当前数据后再处理，避免使用过期帧数。")}</p> : null}
+      </div>)}
+      {timelineAdapted && sourceOverflow && <div className="machine-boundary-warning" role="region" aria-label={t("越界片段待核对")}>
+        <strong>{t("已按人工确认保留当前视频范围，尚未证明整段时间对齐")}</strong>
+        <p>{t("机标声明") + " "}{result?.frameCount}{" " + t("帧，当前视频") + " "}{primary?.frameCount}{" " + t("帧。仅保留范围交集，未按比例缩放；完全越界片段已排除，原机标及本机恢复记录保留原文字和边界。请回放核对全部片段，必要时调整或判为不通过。")}</p>
+        <label><input type="checkbox" checked={boundariesConfirmed} disabled={!canEdit || saving} onChange={event => setBoundariesConfirmed(event.currentTarget.checked)} />{t("我已回放核对保留片段的动作与边界")}</label>
       </div>}
-      {timelineAdapted && sourceOverflow && <div className="machine-boundary-warning" role="region" aria-label="越界片段待核对">
-        <strong>已按人工确认保留当前视频范围，尚未证明整段时间对齐</strong>
-        <p>机标声明 {result?.frameCount} 帧，当前视频 {primary?.frameCount} 帧。仅保留范围交集，未按比例缩放；完全越界片段已排除，原机标及本机恢复记录保留原文字和边界。请回放核对全部片段，必要时调整或判为不通过。</p>
-        <label><input type="checkbox" checked={boundariesConfirmed} disabled={!canEdit || saving} onChange={event => setBoundariesConfirmed(event.currentTarget.checked)} />我已回放核对保留片段的动作与边界</label>
+      {!loading && !error && !result && <p className="machine-message">{t("未发现") + " "}{sourceName ?? t("机标 JSON")}</p>}
+      {!skeletonMode && !loading && !error && result && review && !rows.length && <div className="machine-empty-state" role="status" aria-label={t("动作片段为空")}>
+        <strong>{result.sourceName === "manual" ? t("当前没有机标动作") : !result.segments.length ? t("机标已读取，但文件中没有动作片段") : t("当前人工记录没有保留的动作片段")}</strong>
+        <p>{result.sourceName === "manual" ? t("可点击加号新增片段，手动填写动作描述。") : !result.segments.length ? t("请核对上方实际来源，可切换机标来源，或点击加号人工新增。空文件不会自动生成动作。") : t("原机标仍保留，可核对来源或使用恢复删除功能。")}</p>
       </div>}
-      {!loading && !error && !result && <p className="machine-message">未发现 {sourceName ?? "机标 JSON"}</p>}
-      {!skeletonMode && !loading && !error && result && review && !rows.length && <div className="machine-empty-state" role="status" aria-label="动作片段为空">
-        <strong>{result.sourceName === "manual" ? "当前没有机标动作" : !result.segments.length ? "机标已读取，但文件中没有动作片段" : "当前人工记录没有保留的动作片段"}</strong>
-        <p>{result.sourceName === "manual" ? "可点击加号新增片段，手动填写动作描述。" : !result.segments.length ? "请核对上方实际来源，可切换机标来源，或点击加号人工新增。空文件不会自动生成动作。" : "原机标仍保留，可核对来源或使用恢复删除功能。"}</p>
-      </div>}
-      {result?.identityWarning && <MachineIdentityNotice key={JSON.stringify([username, root, result.sourceName, result.sourceHash, result.identityWarning, result.identityVerified])} username={username} root={root} result={result} />}
-      {result?.timelineWarning && <div className="machine-boundary-warning" role="region" aria-label="机标帧数适配提示"><strong>已按当前视频帧数适配</strong><p>{result.timelineWarning}</p></div>}
-      {!!result?.attributeWarnings?.length && <details className="machine-boundary-warning" aria-label="机标属性兼容提示">
-        <summary>部分机标属性格式异常，已兼容加载，请核对动作描述</summary>
-        {result.attributeWarnings.map((message, index) => <p key={index}>{message}</p>)}
+      {tr(result?.identityWarning && <MachineIdentityNotice key={JSON.stringify([username, root, result.sourceName, result.sourceHash, result.identityWarning, result.identityVerified])} username={username} root={root} result={result} />)}
+      {tr(result?.timelineWarning && <div className="machine-boundary-warning" role="region" aria-label={t("机标帧数适配提示")}><strong>{t("已按当前视频帧数适配")}</strong><p>{tr(result.timelineWarning)}</p></div>)}
+      {!!result?.attributeWarnings?.length && <details className="machine-boundary-warning" aria-label={t("机标属性兼容提示")}>
+        <summary>{t("部分机标属性格式异常，已兼容加载，请核对动作描述")}</summary>
+        {result.attributeWarnings.map((message, index) => <p key={index}>{tr(message)}</p>)}
       </details>}
-      {Boolean(review?.recoveryWarnings?.length || recoveryMessages.length) && <div className="machine-boundary-warning" role="region" aria-label="人工记录兼容恢复提示">
-        <strong>原人工记录已保留，请核对恢复内容</strong>
-        {[...(review?.recoveryWarnings ?? []), ...recoveryMessages].map((message, index) => <p key={index}>{message}</p>)}
+      {Boolean(review?.recoveryWarnings?.length || recoveryMessages.length) && <div className="machine-boundary-warning" role="region" aria-label={t("人工记录兼容恢复提示")}>
+        <strong>{t("原人工记录已保留，请核对恢复内容")}</strong>
+        {[...(review?.recoveryWarnings ?? []), ...recoveryMessages].map((message, index) => <p key={index}>{tr(message)}</p>)}
       </div>}
-      {!!result?.inferredEndFrames?.length && <div className="machine-boundary-warning" role="region" aria-label="机标边界待核对">
-        <strong>机标缺少结束帧，以下边界为临时推定</strong>
+      {!!result?.inferredEndFrames?.length && <div className="machine-boundary-warning" role="region" aria-label={t("机标边界待核对")}>
+        <strong>{t("机标缺少结束帧，以下边界为临时推定")}</strong>
         {result.inferredEndFrames.map(index => { const row = rows.find(item => item.sourceIndex === index); const original = result.segments.find(item => item.sourceIndex === index); return <p key={index}>
-          <button type="button" className="review-user-link" disabled={!row || !canEdit} onClick={() => { if (row) choose(row.sourceIndex); }}>定位原片段 {index + 1}</button>
-          {original && `：暂按 [${original.startFrame}, ${original.endFrame + 1}) 展示。`}
+          <button type="button" className="review-user-link" disabled={!row || !canEdit} onClick={() => { if (row) choose(row.sourceIndex); }}>{t("定位原片段") + " "}{index + 1}</button>
+          {tr(original && `：暂按 [${original.startFrame}, ${original.endFrame + 1}) 展示。`)}
         </p>; })}
-        <p>请回放核对并按需调整。原机标保持不变，保存时将当前边界写入人工结果。</p>
-        <label><input type="checkbox" checked={boundariesConfirmed} disabled={!canEdit} onChange={event => setBoundariesConfirmed(event.currentTarget.checked)} />我已人工核对上述片段边界</label>
+        <p>{t("请回放核对并按需调整。原机标保持不变，保存时将当前边界写入人工结果。")}</p>
+        <label><input type="checkbox" checked={boundariesConfirmed} disabled={!canEdit} onChange={event => setBoundariesConfirmed(event.currentTarget.checked)} />{t("我已人工核对上述片段边界")}</label>
       </div>}
-      {skeletonMode && !loading && !error && !rows.length && <p className="machine-message">暂无骨架片段，点击加号新增，使用标签库或输入自定义描述。</p>}
+      {skeletonMode && !loading && !error && !rows.length && <p className="machine-message">{t("暂无骨架片段，点击加号新增，使用标签库或输入自定义描述。")}</p>}
       <ReviewRangeNotice segments={edits} onChoose={choose} skeletonMode={skeletonMode} />
       <SegmentList rows={rows} selected={active?.sourceIndex} disabled={!canEdit} selectionDisabled={busy || loading || finishing} onChoose={choose}
         onDelete={deleteSegment} />
-      <div className="quality-editor" aria-label="人工复核">
-        <header className="machine-heading"><strong>{active ? `片段 ${rows.indexOf(active) + 1}` : "动作描述"}</strong>
-          <button className="icon-button" title="恢复视频范围内删除的片段" aria-label="恢复删除的片段" disabled={!canEdit || !edits.some((item) => item.deleted && item.endFrame < editFrameCount)} onClick={() => restoreSegments()}><Undo2 size={15} /></button>
+      <div className="quality-editor" aria-label={t("人工复核")}>
+        <header className="machine-heading"><strong>{active ? t("片段 {0}", [rows.indexOf(active) + 1]) : t("动作描述")}</strong>
+          <button className="icon-button" title={t("恢复视频范围内删除的片段")} aria-label={t("恢复删除的片段")} disabled={!canEdit || !edits.some((item) => item.deleted && item.endFrame < editFrameCount)} onClick={() => restoreSegments()}><Undo2 size={15} /></button>
         </header>
         <div className="quality-description-shell">
-          <textarea ref={descriptionInput} aria-label="复核动作描述" placeholder="中文动作描述" value={active?.description ?? ""} disabled={!canEdit || !active}
+          <textarea ref={descriptionInput} aria-label={t("复核动作描述")} placeholder={t("中文动作描述")} value={active?.description ?? ""} disabled={!canEdit || !active}
             onChange={(event) => change(editsRef.current.map((item) => item.sourceIndex === active?.sourceIndex ? { ...item, description: event.currentTarget.value, decision: "pending" } : item))} />
-          {descriptionIssues.length > 0 && <div className="description-issues" role="status"><strong>疑似文字问题</strong>{descriptionIssues.map((issue) => <span key={`${issue.original}:${issue.suggestion}`}><button disabled={!canEdit} title={`${issue.reason}：替换为 ${issue.suggestion}`} type="button" onClick={() => { if (!active) return; const next = active.description.replaceAll(issue.original, issue.suggestion); setTextUndo({index:active.sourceIndex,before:active.description,after:next}); change(editsRef.current.map((item) => item.sourceIndex === active.sourceIndex ? { ...item, description: next, decision: "pending" } : item)); }}><Check size={13}/><mark>{issue.original}</mark> → {issue.suggestion}</button><button type="button" title="忽略本次提示" aria-label={`忽略 ${issue.original}`} disabled={!canEdit} onClick={()=>{if(active){setIgnoredText(current=>new Set([...current,issueKey(active.sourceIndex,active.description,issue.original)]));recordReviewInteraction("control",{value:`忽略文字提示：${issue.original}`,segmentIndex:active.sourceIndex},root);}}}><X size={13}/></button></span>)}</div>}
-          {textUndo && <button type="button" className="icon-button" title="撤销文字修正" aria-label="撤销文字修正" disabled={!canEdit || edits.find(row=>row.sourceIndex===textUndo.index)?.description!==textUndo.after} onClick={()=>{change(editsRef.current.map(row=>row.sourceIndex===textUndo.index?{...row,description:textUndo.before,decision:"pending"}:row));setTextUndo(null);}}><Undo2 size={15}/></button>}
+          {descriptionIssues.length > 0 && <div className="description-issues" role="status"><strong>{t("疑似文字问题")}</strong>{descriptionIssues.map((issue) => <span key={`${issue.original}:${issue.suggestion}`}><button disabled={!canEdit} title={t("{0}：替换为 {1}", [tr(issue.reason), issue.suggestion])} type="button" onClick={() => { if (!active) return; const next = active.description.replaceAll(issue.original, issue.suggestion); setTextUndo({index:active.sourceIndex,before:active.description,after:next}); change(editsRef.current.map((item) => item.sourceIndex === active.sourceIndex ? { ...item, description: next, decision: "pending" } : item)); }}><Check size={13}/><mark>{issue.original}</mark> → {issue.suggestion}</button><button type="button" title={t("忽略本次提示")} aria-label={t("忽略 {0}", [issue.original])} disabled={!canEdit} onClick={()=>{if(active){setIgnoredText(current=>new Set([...current,issueKey(active.sourceIndex,active.description,issue.original)]));recordReviewInteraction("control",{value:`忽略文字提示：${issue.original}`,segmentIndex:active.sourceIndex},root);}}}><X size={13}/></button></span>)}</div>}
+          {textUndo && <button type="button" className="icon-button" title={t("撤销文字修正")} aria-label={t("撤销文字修正")} disabled={!canEdit || edits.find(row=>row.sourceIndex===textUndo.index)?.description!==textUndo.after} onClick={()=>{change(editsRef.current.map(row=>row.sourceIndex===textUndo.index?{...row,description:textUndo.before,decision:"pending"}:row));setTextUndo(null);}}><Undo2 size={15}/></button>}
           <div className="quality-description-tools">
-            <button type="button" className="label-library-trigger" aria-label="标签库" aria-expanded={labelLibraryOpen} aria-haspopup="dialog"
+            <button type="button" className="label-library-trigger" aria-label={t("标签库")} aria-expanded={labelLibraryOpen} aria-haspopup="dialog"
               disabled={!canEdit || !active} onClick={() => setLabelLibraryOpen((open) => !open)}>
-              <Tag size={14} />标签库{labelLibrary.length > 0 && <span>{labelLibrary.length}</span>}
+              <Tag size={14} />{t("标签库")}{labelLibrary.length > 0 && <span>{labelLibrary.length}</span>}
             </button>
           </div>
-          {labelLibraryOpen && <div className="label-library" role="dialog" aria-label="标签库">
+          {labelLibraryOpen && <div className="label-library" role="dialog" aria-label={t("标签库")}>
             <header>
-              <strong>标签库</strong>
-              <button type="button" className="icon-button" aria-label="关闭标签库" title="关闭" onClick={() => setLabelLibraryOpen(false)}><X size={15} /></button>
+              <strong>{t("标签库")}</strong>
+              <button type="button" className="icon-button" aria-label={t("关闭标签库")} title={t("关闭")} onClick={() => setLabelLibraryOpen(false)}><X size={15} /></button>
             </header>
             <button type="button" className="label-library-save" disabled={!canEdit || !(active?.description ?? "").trim()} onClick={addCurrentDescriptionToLibrary}>
-              <Plus size={14} />保存当前描述
-            </button>
-            {labelLibraryError && <p className="label-library-error" role="alert">{labelLibraryError}</p>}
-            {labelLibrary.length ? <div className="label-library-list" role="list" aria-label="标签库条目">
+              <Plus size={14} />{t("保存当前描述")}</button>
+            {tr(labelLibraryError && <p className="label-library-error" role="alert">{tr(labelLibraryError)}</p>)}
+            {labelLibrary.length ? <div className="label-library-list" role="list" aria-label={t("标签库条目")}>
               {labelLibrary.map((item, index) => <div className={`label-library-item${labelDropTarget === index ? " label-library-drop" : ""}`} role="listitem" key={index}
                 onDragOver={(event) => { if (canEdit && draggedLabelId) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setLabelDropTarget(index); } }}
                 onDrop={(event) => { event.preventDefault(); reorderLibraryLabel(item.id); setDraggedLabelId(null); setLabelDropTarget(null); }}>
-                <button type="button" className="label-library-index" disabled={!canEdit} title={`使用第 ${index + 1} 个标签（数字 ${index + 1}）`} aria-label={`使用第 ${index + 1} 个标签`} onClick={() => applyLibraryLabel(item.text)}>{index + 1}</button>
-                <button type="button" className="label-library-use" disabled={!canEdit} draggable={canEdit} title={`拖动排序或使用：${item.text}`} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setDraggedLabelId(item.id); }} onDragEnd={() => { setDraggedLabelId(null); setLabelDropTarget(null); }} onClick={() => { if (!draggedLabelId) applyLibraryLabel(item.text); }}>{item.text}</button>
-                <button type="button" className="icon-button label-library-delete" disabled={!canEdit} aria-label={`删除标签：${item.text}`} title="删除" onClick={() => deleteLibraryLabel(item.id)}><Trash2 size={14} /></button>
+                <button type="button" className="label-library-index" disabled={!canEdit} title={t("使用第 {0} 个标签（数字 {1}）", [index + 1, index + 1])} aria-label={t("使用第 {0} 个标签", [index + 1])} onClick={() => applyLibraryLabel(item.text)}>{index + 1}</button>
+                <button type="button" className="label-library-use" disabled={!canEdit} draggable={canEdit} title={t("拖动排序或使用：{0}", [tr(item.text)])} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setDraggedLabelId(item.id); }} onDragEnd={() => { setDraggedLabelId(null); setLabelDropTarget(null); }} onClick={() => { if (!draggedLabelId) applyLibraryLabel(item.text); }}>{tr(item.text)}</button>
+                <button type="button" className="icon-button label-library-delete" disabled={!canEdit} aria-label={t("删除标签：{0}", [tr(item.text)])} title={t("删除")} onClick={() => deleteLibraryLabel(item.id)}><Trash2 size={14} /></button>
               </div>)}
-            </div> : <p className="label-library-empty">暂无常用描述</p>}
+            </div> : <p className="label-library-empty">{t("暂无常用描述")}</p>}
           </div>}
         </div>
       </div>
       <footer className="quality-footer">
         <div className="quality-save-state" role="status">
-          {result && <details className="machine-source-context" aria-label="当前加载来源"><summary>{saving ? (skeletonMode ? "正在保存骨架描述…" : "正在保存本机草稿或审核结论…") : saveError ? "保存失败" : review?.localDraft ? "本机草稿已保存 · 审核通过后写入 JSON" : review?.pendingSourceWrite ? "结果已保存本机 · 待写回数据目录" : review?.published ? "人工结果已保存" : review?.revision ? "仅有本机历史草稿" : "尚无人工修改"}<span className="machine-origin-label">{!skeletonMode && (cloudNumber ? `云端 #${cloudNumber}` : "来源")}</span></summary>
-          <dl><dt>加载目录</dt><dd>{root}</dd><dt>实际来源</dt><dd>{result.sourceName ?? sourceName ?? "未提供"}</dd><dt>原文件片段</dt><dd>{result.segments.length} 段</dd><dt>当前片段</dt><dd>{rows.length} 段 · {review?.localDraft ? "本机未发布草稿" : review?.pendingSourceWrite ? "本机待写回结果" : review?.published ? `已存人工结果 ${outputName}` : "原始机标"}</dd>{result.sourceHash && <><dt>{["manual", SKELETON_SOURCE].includes(result.sourceName ?? "") ? "来源指纹" : "文件 BLAKE3"}</dt><dd>{result.sourceHash}</dd></>}{result.model && <><dt>模型</dt><dd>{result.model}</dd></>}</dl>
-          <p>文件机标使用 BLAKE3 识别内容；下载完整性另用 SHA-256 校验，两者不是同一数值。</p>
-          {cloudNumber && <p>此处读取该云端批次的独立下载副本，不会自动替换为 NAS 上的同名数据。</p>}
+          {result && <details className="machine-source-context" aria-label={t("当前加载来源")}><summary>{saving ? tr((skeletonMode ? "正在保存骨架描述…" : "正在保存本机草稿或审核结论…")) : saveError ? t("保存失败") : review?.localDraft ? t("本机草稿已保存 · 审核通过后写入 JSON") : review?.pendingSourceWrite ? t("结果已保存本机 · 待写回数据目录") : review?.published ? t("人工结果已保存") : review?.revision ? t("仅有本机历史草稿") : t("尚无人工修改")}<span className="machine-origin-label">{tr(!skeletonMode && (cloudNumber ? `云端 #${cloudNumber}` : "来源"))}</span></summary>
+          <dl><dt>{t("加载目录")}</dt><dd>{root}</dd><dt>{t("实际来源")}</dt><dd>{result.sourceName ?? sourceName ?? t("未提供")}</dd><dt>{t("原文件片段")}</dt><dd>{result.segments.length}{" " + t("段")}</dd><dt>{t("当前片段")}</dt><dd>{rows.length}{" " + t("段 ·") + " "}{review?.localDraft ? t("本机未发布草稿") : review?.pendingSourceWrite ? t("本机待写回结果") : review?.published ? t("已存人工结果 {0}", [tr(outputName)]) : t("原始机标")}</dd>{tr(result.sourceHash && <><dt>{["manual", SKELETON_SOURCE].includes(result.sourceName ?? "") ? t("来源指纹") : t("文件 BLAKE3")}</dt><dd>{tr(result.sourceHash)}</dd></>)}{tr(result.model && <><dt>{t("模型")}</dt><dd>{tr(result.model)}</dd></>)}</dl>
+          <p>{t("文件机标使用 BLAKE3 识别内容；下载完整性另用 SHA-256 校验，两者不是同一数值。")}</p>
+          {tr(cloudNumber && <p>{t("此处读取该云端批次的独立下载副本，不会自动替换为 NAS 上的同名数据。")}</p>)}
           </details>}
-          {review?.versionId && <span className="review-revision" title={review.revisionLabel ?? review.versionId}>{`${review.versionId} · 历史修订（非当前结论）`}</span>}
+          {tr(review?.versionId && <span className="review-revision" title={tr(review.revisionLabel) ?? tr(review.versionId)}>{t("{0} · 历史修订（非当前结论）", [tr(review.versionId)])}</span>)}
         </div>
-        {recoveryError && <p role="alert" className="machine-message">{recoveryError}</p>}
-        {auditPreparationError && <p role="alert" className="machine-message">{auditPreparationError}</p>}
-        {auditCompletionError && <div role="alert" className="machine-message audit-completion-error"><span>{auditCompletionError}</span><button type="button" className="button button-secondary" disabled={finishing} onClick={() => void finishAuditCompletion()}>重试保存操作记录</button></div>}
-        {saveSlow && saving && <div role="status" className="machine-message">保存耗时较长，正在等待本机保存或审核结论写入确认，尚未确认提交成功。{!recoveryError && "本机应急草稿已保留。"}请保持应用打开，等待结果后再重试；用户中心的操作记录上传独立进行。</div>}
-        {saveError && <div role="alert" className="machine-message review-save-error"><span>{saveError}{!recoveryError && " 本机应急草稿已保留，恢复后请重试保存。"}</span><button type="button" className="button button-secondary" aria-label="重试保存复核" onClick={() => void persist(pending.current ?? { segments: editsRef.current, status: "pending" })}><RefreshCw size={15} />重试保存</button></div>}
-        <div className="quality-output" title={`${root}/${outputName}`}>{outputName}{!skeletonMode && <span>{review?.qcStatus === "approved" ? "已通过" : review?.qcStatus === "rejected" ? "未通过" : review?.qcStatus === "pending" ? "待审核" : "审核状态未知"}</span>}</div>
-        {!skeletonMode && review?.qcStatusError && <p role="alert" className="machine-message">当前目录审核状态读取失败，请重新读取：{review.qcStatusError}</p>}
-        {!skeletonMode && review?.qcStatus === "rejected" && review.qcRejectionReason && <p className="review-rejection-reason" title={review.qcRejectionReason}>不通过：{review.qcRejectionReason}</p>}
+        {tr(recoveryError && <p role="alert" className="machine-message">{tr(recoveryError)}</p>)}
+        {tr(auditPreparationError && <p role="alert" className="machine-message">{tr(auditPreparationError)}</p>)}
+        {tr(auditCompletionError && <div role="alert" className="machine-message audit-completion-error"><span>{tr(auditCompletionError)}</span><button type="button" className="button button-secondary" disabled={finishing} onClick={() => void finishAuditCompletion()}>{t("重试保存操作记录")}</button></div>)}
+        {saveSlow && saving && <div role="status" className="machine-message">{t("保存耗时较长，正在等待本机保存或审核结论写入确认，尚未确认提交成功。")}{tr(!recoveryError && "本机应急草稿已保留。")}{t("请保持应用打开，等待结果后再重试；用户中心的操作记录上传独立进行。")}</div>}
+        {tr(saveError && <div role="alert" className="machine-message review-save-error"><span>{tr(saveError)}{tr(!recoveryError && " 本机应急草稿已保留，恢复后请重试保存。")}</span><button type="button" className="button button-secondary" aria-label={t("重试保存复核")} onClick={() => void persist(pending.current ?? { segments: editsRef.current, status: "pending" })}><RefreshCw size={15} />{t("重试保存")}</button></div>)}
+        <div className="quality-output" title={t("{0}/{1}", [root, tr(outputName)])}>{tr(outputName)}{!skeletonMode && <span>{review?.qcStatus === "approved" ? t("已通过") : review?.qcStatus === "rejected" ? t("未通过") : review?.qcStatus === "pending" ? t("待审核") : t("审核状态未知")}</span>}</div>
+        {tr(!skeletonMode && review?.qcStatusError && <p role="alert" className="machine-message">{t("当前目录审核状态读取失败，请重新读取：")}{tr(review.qcStatusError)}</p>)}
+        {tr(!skeletonMode && review?.qcStatus === "rejected" && review.qcRejectionReason && <p className="review-rejection-reason" title={review.qcRejectionReason}>{t("不通过：")}{review.qcRejectionReason}</p>)}
         {!skeletonMode && <div className="quality-decisions">
-          <button ref={rejectButton} className="button button-secondary" disabled={!canEdit || saving} onClick={openRejection}><X size={16} />不通过</button>
-          <button className="button button-primary" disabled={!canEdit || saving || !rows.length || Boolean(rangeOverlap) || (requiresBoundaryCheck && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />通过</button>
+          <button ref={rejectButton} className="button button-secondary" disabled={!canEdit || saving} onClick={openRejection}><X size={16} />{t("不通过")}</button>
+          <button className="button button-primary" disabled={!canEdit || saving || !rows.length || Boolean(rangeOverlap) || (requiresBoundaryCheck && !boundariesConfirmed)} onClick={() => void finish("approved")}><Check size={16} />{t("通过")}</button>
         </div>}
       </footer>
     </section>
     {restoreConfirm && <RestoreReviewDialog skeletonMode={skeletonMode} disabled={!canEdit || saving} onCancel={()=>setRestoreConfirm(false)} onConfirm={()=>restoreSegments(true)} />}
-    {textCheckOpen && <dialog className="text-quality-dialog" aria-label="通过前文字检查" ref={node=>{if(node&&!node.open)node.showModal();}} onCancel={()=>setTextCheckOpen(false)}><h2>通过前文字检查</h2><p>{allTextIssues.length} 个疑似问题</p><ul className="text-check-summary">{allTextIssues.map((issue,i)=><li key={i}><button className="review-user-link" onClick={()=>{setTextCheckOpen(false);setSelected(issue.row.sourceIndex);seek(issue.row.startFrame);}}>片段 {rows.indexOf(issue.row)+1}：{issue.row.description}</button><p>{issue.original} → {issue.suggestion}（{issue.reason}）</p></li>)}</ul><footer><button className="button button-secondary" autoFocus onClick={()=>setTextCheckOpen(false)}>返回检查</button><button className="button button-primary" disabled={finishing} onClick={()=>{recordReviewInteraction("control",{value:`已核对 ${allTextIssues.length} 项文字提示并继续通过`},root);setTextCheckOpen(false);void finish("approved",undefined,true);}}><Check size={16}/>已核对，继续通过</button></footer></dialog>}
-    {rangeRepairOpen && rangeRepair && <dialog className="rejection-dialog video-range-dialog" aria-label="处理机标越界范围" ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setRangeRepairOpen(false)}>
-      <header><h2>处理机标越界范围</h2></header>
-      <p>机标 {result?.frameCount} 帧，当前 Camera 0 {primary?.frameCount} 帧。帧数不同不能确定视频是否相同，请先核对内容。</p>
-      <p>将截去 {rangeRepair.trimmed} 个片段的越界尾部，排除 {rangeRepair.excluded} 个完全越界片段。有效范围的帧号和描述保持原样，不按比例缩放。</p>
-      <div className="video-range-affected" role="list" aria-label="受影响的机标片段">{rangeRepair.affected.map(item => <p role="listitem" key={item.sourceIndex}>片段 {item.sourceIndex + 1} · 原范围 [{item.startFrame}, {item.endFrame + 1}) · {item.description || "暂无中文描述"}</p>)}</div>
-      <p>确认后保存为待审核草稿，已有通过／不通过会变为待审核。原机标保持不变，原人工结果和机标另存本机恢复备份；之后仍需逐段回放核对才能通过。若视频不对应，请取消并选择正确来源。</p>
-      <label><input type="checkbox" checked={rangeRepairConfirmed} onChange={event => setRangeRepairConfirmed(event.currentTarget.checked)} />我已核对视频内容，确认按上述方式处理</label>
-      <footer><button className="button button-secondary" autoFocus onClick={() => setRangeRepairOpen(false)}>取消</button><button className="button button-primary" disabled={!rangeRepairConfirmed || saving || busy} onClick={confirmVideoRange}>应用处理并保存待审核草稿</button></footer>
+    {textCheckOpen && <dialog className="text-quality-dialog" aria-label={t("通过前文字检查")} ref={node=>{if(node&&!node.open)node.showModal();}} onCancel={()=>setTextCheckOpen(false)}><h2>{t("通过前文字检查")}</h2><p>{allTextIssues.length}{" " + t("个疑似问题")}</p><ul className="text-check-summary">{allTextIssues.map((issue,i)=><li key={i}><button className="review-user-link" onClick={()=>{setTextCheckOpen(false);setSelected(issue.row.sourceIndex);seek(issue.row.startFrame);}}>{t("片段") + " "}{rows.indexOf(issue.row)+1}：{issue.row.description}</button><p>{issue.original} → {issue.suggestion}（{tr(issue.reason)}）</p></li>)}</ul><footer><button className="button button-secondary" autoFocus onClick={()=>setTextCheckOpen(false)}>{t("返回检查")}</button><button className="button button-primary" disabled={finishing} onClick={()=>{recordReviewInteraction("control",{value:`已核对 ${allTextIssues.length} 项文字提示并继续通过`},root);setTextCheckOpen(false);void finish("approved",undefined,true);}}><Check size={16}/>{t("已核对，继续通过")}</button></footer></dialog>}
+    {rangeRepairOpen && rangeRepair && <dialog className="rejection-dialog video-range-dialog" aria-label={t("处理机标越界范围")} ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setRangeRepairOpen(false)}>
+      <header><h2>{t("处理机标越界范围")}</h2></header>
+      <p>{t("机标") + " "}{result?.frameCount}{" " + t("帧，当前 Camera 0") + " "}{primary?.frameCount}{" " + t("帧。帧数不同不能确定视频是否相同，请先核对内容。")}</p>
+      <p>{t("将截去") + " "}{rangeRepair.trimmed}{" " + t("个片段的越界尾部，排除") + " "}{rangeRepair.excluded}{" " + t("个完全越界片段。有效范围的帧号和描述保持原样，不按比例缩放。")}</p>
+      <div className="video-range-affected" role="list" aria-label={t("受影响的机标片段")}>{rangeRepair.affected.map(item => <p role="listitem" key={item.sourceIndex}>{t("片段") + " "}{item.sourceIndex + 1}{" " + t("· 原范围 [")}{item.startFrame}, {item.endFrame + 1}) · {item.description || t("暂无中文描述")}</p>)}</div>
+      <p>{t("确认后保存为待审核草稿，已有通过／不通过会变为待审核。原机标保持不变，原人工结果和机标另存本机恢复备份；之后仍需逐段回放核对才能通过。若视频不对应，请取消并选择正确来源。")}</p>
+      <label><input type="checkbox" checked={rangeRepairConfirmed} onChange={event => setRangeRepairConfirmed(event.currentTarget.checked)} />{t("我已核对视频内容，确认按上述方式处理")}</label>
+      <footer><button className="button button-secondary" autoFocus onClick={() => setRangeRepairOpen(false)}>{t("取消")}</button><button className="button button-primary" disabled={!rangeRepairConfirmed || saving || busy} onClick={confirmVideoRange}>{t("应用处理并保存待审核草稿")}</button></footer>
     </dialog>}
     {rejectOpen && <dialog className="rejection-dialog" aria-labelledby="rejection-title" ref={(node) => { if (node && !node.open) node.showModal(); }}
       onCancel={(event) => { event.preventDefault(); closeRejection(); }}>
       <form onSubmit={(event) => { event.preventDefault(); if (reasonChoice && (reasonChoice !== "其他原因" || otherReason.trim())) void finish("rejected", reasonChoice === "其他原因" ? `其他原因：${otherReason.trim()}` : reasonChoice); }}>
-        <header><h2 id="rejection-title">不通过原因</h2><button type="button" className="icon-button" aria-label="关闭不通过原因" title="关闭" disabled={finishing} onClick={closeRejection}><X size={18} /></button></header>
+        <header><h2 id="rejection-title">{t("不通过原因")}</h2><button type="button" className="icon-button" aria-label={t("关闭不通过原因")} title={t("关闭")} disabled={finishing} onClick={closeRejection}><X size={18} /></button></header>
         <RejectionReasons key={username} username={username} value={reasonChoice} onChange={setReasonChoice} disabled={finishing} />
-        {reasonChoice === "其他原因" && <label className="rejection-detail">其他原因<textarea autoFocus aria-label="其他原因内容" required maxLength={1000} value={otherReason} disabled={finishing} onChange={(event) => setOtherReason(event.currentTarget.value)} /></label>}
-        {saveError && <p role="alert" className="machine-message">{saveError}</p>}
-        <footer><button type="button" className="button button-secondary" disabled={finishing} onClick={closeRejection}>取消</button>
-          <button type="submit" className="button button-primary" disabled={!canEdit || saving || !reasonChoice || (reasonChoice === "其他原因" && !otherReason.trim())}>{finishing ? <LoaderCircle size={16} className="spin" /> : <X size={16} />}确认不通过</button></footer>
+        {reasonChoice === "其他原因" && <label className="rejection-detail">{t("其他原因")}<textarea autoFocus aria-label={t("其他原因内容")} required maxLength={1000} value={otherReason} disabled={finishing} onChange={(event) => setOtherReason(event.currentTarget.value)} /></label>}
+        {tr(saveError && <p role="alert" className="machine-message">{tr(saveError)}</p>)}
+        <footer><button type="button" className="button button-secondary" disabled={finishing} onClick={closeRejection}>{t("取消")}</button>
+          <button type="submit" className="button button-primary" disabled={!canEdit || saving || !reasonChoice || (reasonChoice === "其他原因" && !otherReason.trim())}>{finishing ? <LoaderCircle size={16} className="spin" /> : <X size={16} />}{t("确认不通过")}</button></footer>
       </form>
     </dialog>}
-    {showJson && result && <dialog className="machine-json" aria-label="机标 JSON" ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={() => setShowJson(false)}><header className="machine-heading"><strong>{result.sourceName ?? "bailian_annotation.json"}</strong><button autoFocus className="icon-button" aria-label="关闭 JSON" title="关闭 JSON" onClick={() => setShowJson(false)}><X size={16} /></button></header><pre>{skeletonMode ? JSON.stringify({ schema_version: 4, annotation_source: "skeleton-human", episode_results: [{ episode_id: result.episodeId, media: { frame_count: result.frameCount, frame_index_base: 0, interval_convention: "[start,end)" }, annotations: rows.map(row => ({ start_frame: row.startFrame, end_frame: row.endFrame + 1, attributes_zh: { "动作描述": row.description } })) }] }, null, 2) : result.sourceJson ?? JSON.stringify(result, null, 2)}</pre></dialog>}
+    {showJson && result && <dialog className="machine-json" aria-label={t("机标 JSON")} ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={() => setShowJson(false)}><header className="machine-heading"><strong>{result.sourceName ?? "bailian_annotation.json"}</strong><button autoFocus className="icon-button" aria-label={t("关闭 JSON")} title={t("关闭 JSON")} onClick={() => setShowJson(false)}><X size={16} /></button></header><pre>{skeletonMode ? tr(JSON.stringify({ schema_version: 4, annotation_source: "skeleton-human", episode_results: [{ episode_id: result.episodeId, media: { frame_count: result.frameCount, frame_index_base: 0, interval_convention: "[start,end)" }, annotations: rows.map(row => ({ start_frame: row.startFrame, end_frame: row.endFrame + 1, attributes_zh: { "动作描述": row.description } })) }] }, null, 2)) : tr(result.sourceJson) ?? tr(JSON.stringify(result, null, 2))}</pre></dialog>}
   </div>;
 }
 
@@ -820,6 +822,7 @@ const SegmentList = memo(function SegmentList({ rows, selected, disabled, select
   rows: ReviewSegment[]; selected: number | undefined; disabled: boolean; selectionDisabled?: boolean;
   onChoose: (sourceIndex: number) => void; onDelete: (sourceIndex: number) => void;
 }) {
+  useLanguage();
   const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const list = listRef.current;
@@ -833,10 +836,10 @@ const SegmentList = memo(function SegmentList({ rows, selected, disabled, select
   }, [selected, rows]);
   return <div ref={listRef} className="machine-segment-list" role="list">
     {rows.map((segment, index) => <div role="listitem" data-source-index={segment.sourceIndex} className={`machine-segment${segment.sourceIndex === selected ? " active" : ""}`} key={segment.sourceIndex}>
-      <button className="machine-segment-description" aria-label={`定位机标片段 ${index + 1}`} disabled={selectionDisabled ?? disabled} onClick={() => onChoose(segment.sourceIndex)}>
-        <strong>{index + 1}. {segment.description || "暂无中文描述"}</strong><small>帧 [{segment.startFrame}, {segment.endFrame + 1})</small>
+      <button className="machine-segment-description" aria-label={t("定位机标片段 {0}", [index + 1])} disabled={selectionDisabled ?? disabled} onClick={() => onChoose(segment.sourceIndex)}>
+        <strong>{index + 1}. {segment.description || t("暂无中文描述")}</strong><small>{t("帧 [")}{segment.startFrame}, {segment.endFrame + 1})</small>
       </button>
-      <button className="icon-button segment-delete" title="删除片段" aria-label={`删除机标片段 ${index + 1}`} disabled={disabled} onClick={() => onDelete(segment.sourceIndex)}><Trash2 size={15} /></button>
+      <button className="icon-button segment-delete" title={t("删除片段")} aria-label={t("删除机标片段 {0}", [index + 1])} disabled={disabled} onClick={() => onDelete(segment.sourceIndex)}><Trash2 size={15} /></button>
     </div>)}
   </div>;
 });

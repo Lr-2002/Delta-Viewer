@@ -735,6 +735,8 @@ async function main() {
       cargoCheckEnvironment,
     );
 
+    await runCommand(report, "interface language state regression", commands.pnpm, pnpmArguments(["test:i18n"]));
+
     // The remote worker runs only on Debian D1; these fixtures mock every install.
     if (process.platform === "linux") {
       await runCommand(report, "isolated D1 SSH installer regression", "python3", [

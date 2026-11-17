@@ -145,6 +145,11 @@
 .outbound-expand:disabled { opacity: .35; cursor: default; }
 .outbound-video-stage { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .is-workspace .outbound-video-item video { display: block; width: 100%; height: 100%; min-height: 0; max-height: none; border-radius: 0; background: #16171a; object-fit: contain; }
+.is-workspace .outbound-video-item.is-primary.is-filled video { object-fit: cover; }
+.outbound-fit { flex: 0 0 auto; padding: 3px 5px; border: 1px solid #dcdce1; border-radius: 4px; background: #fff; color: #52525b; font-size: 10px; line-height: 1.4; cursor: pointer; white-space: nowrap; }
+.outbound-video-item:fullscreen { width: 100vw; height: 100dvh; display: flex; flex-direction: column; border: 0; border-radius: 0; background: #16171a; }
+.outbound-video-item:fullscreen > header { flex: 0 0 34px; background: #fff; }
+.outbound-video-item:fullscreen .outbound-video-stage { flex: 1; min-height: 0; }
 .outbound-video-loading { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; gap: 8px; color: #c0c1c8; background: #16171a; font-size: 11px; }
 .is-workspace .outbound-transport { flex-shrink: 0; gap: 12px; min-height: 58px; padding: 10px 0; border-bottom: 1px solid #e2e2e7; }
 .outbound-transport .outbound-play-button { display: grid; place-items: center; width: 34px; height: 34px; min-width: 34px; padding: 0; color: #fff; background: #303238; border: 1px solid #303238; border-radius: 6px; }

@@ -1,3 +1,4 @@
+import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ChevronDown, CircleAlert, LogIn, RefreshCw } from "lucide-react";
 import { flushPendingAnnotationAudits, loginLocalAccount } from "../lib/backend";
@@ -18,6 +19,7 @@ interface AuditSyncNoticeProps {
 }
 
 export function AuditSyncNotice({ username, error, onError, onPendingChange, flush = flushPendingAnnotationAudits, message, autoRetry = true, status, additionalError = "", additionalPending = false }: AuditSyncNoticeProps) {
+  useLanguage();
   const [expanded, setExpanded] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [password, setPassword] = useState("");
@@ -41,7 +43,7 @@ export function AuditSyncNotice({ username, error, onError, onPendingChange, flu
     || (status.pending && (age >= 30000 || (backlogSince.current !== null && now - backlogSince.current >= 30000)))));
   const severity = atRisk ? "danger" : warning ? "warning" : "normal";
   const time = (value: number | null) => value && Number.isFinite(value)
-    ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "未知";
+    ? new Date(value).toLocaleString(localeTag(), { hour12: false }) : "未知";
 
   const retryInputs = useRef({ flush, status, onError, onPendingChange });
   retryInputs.current = { flush, status, onError, onPendingChange };
@@ -111,49 +113,45 @@ export function AuditSyncNotice({ username, error, onError, onPendingChange, flu
     : "操作记录已保存到本机，但尚未全部上传用户中心";
   return (
     <section data-audit-severity={status && severity !== "normal" ? severity : "warning"} className={`audit-sync-notice audit-sync-${status && severity !== "normal" ? severity : "warning"}`}
-      role={atRisk ? "alert" : "status"} aria-label="操作记录同步状态">
+      role={atRisk ? "alert" : "status"} aria-label={t("操作记录同步状态")}>
       <div className="audit-sync-heading">
         <CircleAlert size={18} aria-hidden="true" />
         <div className="audit-sync-summary">
-          <strong>{status ? title : needsLogin ? "登录已失效，记录等待补传" : message ?? "操作记录等待补传"}</strong>
-          <p>{atRisk ? "请保持应用打开并重试，保存恢复前请勿关闭、更新或退出。"
-            : status?.pending === null ? "尚未确认本机队列状态，请保持应用打开并重试。"
-            : status?.volatile ? "请保持应用打开，正在等待本机保存完成。"
-            : "当前审核内容保留；工作台统计可能不完整，恢复连接及登录后自动补传。"}</p>
+          <strong>{status ? tr(title) : needsLogin ? t("登录已失效，记录等待补传") : tr(message) ?? t("操作记录等待补传")}</strong>
+          <p>{atRisk ? t("请保持应用打开并重试，保存恢复前请勿关闭、更新或退出。") : status?.pending === null ? t("尚未确认本机队列状态，请保持应用打开并重试。") : status?.volatile ? t("请保持应用打开，正在等待本机保存完成。") : t("当前审核内容保留；工作台统计可能不完整，恢复连接及登录后自动补传。")}</p>
         </div>
         <div className="audit-sync-actions">
-          {status && <span className="audit-sync-count">待传 <b>{status.pending ?? "未知"}</b> 条操作事件</span>}
+          {status && <span className="audit-sync-count">{t("待传") + " "}<b>{status.pending ?? t("未知")}</b>{" " + t("条操作事件")}</span>}
           <button type="button" className="text-button audit-sync-toggle" aria-expanded={expanded}
-            onClick={() => setExpanded(value => !value)}>{expanded ? "收起详情" : "同步详情"}<ChevronDown size={14} /></button>
+            onClick={() => setExpanded(value => !value)}>{expanded ? t("收起详情") : t("同步详情")}<ChevronDown size={14} /></button>
           {!loginOpen && <button type="button" className="button button-secondary" disabled={busy}
             onClick={() => needsLogin ? setLoginOpen(true) : void retry()}>
             {needsLogin ? <LogIn size={14} /> : <RefreshCw size={14} className={busy ? "spin" : undefined} />}
-            {busy ? "正在重试…" : needsLogin ? (status ? "重新登录并补传" : "重新登录") : "重试上传"}
+            {busy ? t("正在重试…") : needsLogin ? tr((status ? "重新登录并补传" : "重新登录")) : t("重试上传")}
           </button>}
         </div>
       </div>
       {(status?.blocked || status?.legacyInvalid) ? <p className="audit-sync-blocked">
-        异常操作事件：服务端拒绝 {status.blocked} 条；旧缓存无法解析 {status.legacyInvalid} 条。已单独保留，不计为上传成功。
-      </p> : null}
-      {issue && <p className="audit-sync-reason" hidden={!expanded && !actionError}>失败原因：{auditFailureReason(actionError || status?.localError || status?.uploadError || status?.blockedError || additionalError || error)}</p>}
+        {t("异常操作事件：服务端拒绝") + " "}{status.blocked}{" " + t("条；旧缓存无法解析") + " "}{status.legacyInvalid}{" " + t("条。已单独保留，不计为上传成功。")}</p> : null}
+      {tr(issue && <p className="audit-sync-reason" hidden={!expanded && !actionError}>{t("失败原因：")}{tr(auditFailureReason(actionError || status?.localError || status?.uploadError || status?.blockedError || additionalError || error))}</p>)}
       <div className="audit-sync-detail" hidden={!expanded}>
         {status && <div className="audit-sync-facts">
-          <span>待传操作事件：{status.pending ?? "未知"} 条（含未落盘及异常）</span>
-          <span>未落盘：{status.volatile} 条</span>
-          <span>最早待传时间：{status.pending === 0 ? "无" : time(status.oldestPendingAtMs)}</span>
-          <span>最近成功同步（收到用户中心确认）：{time(status.lastSuccessAtMs)}</span>
+          <span>{t("待传操作事件：")}{status.pending ?? t("未知")}{" " + t("条（含未落盘及异常）")}</span>
+          <span>{t("未落盘：")}{status.volatile}{" " + t("条")}</span>
+          <span>{t("最早待传时间：")}{status.pending === 0 ? t("无") : tr(time(status.oldestPendingAtMs))}</span>
+          <span>{t("最近成功同步（收到用户中心确认）：")}{tr(time(status.lastSuccessAtMs))}</span>
         </div>}
-        {additionalPending && <p>另有标注操作记录等待用户中心确认，未计入上方操作事件数量。</p>}
-        <p>用户中心接收确认不代表工作台已完成统计。</p>
-        {issue && <details><summary>查看错误详情</summary><div>{issue}</div></details>}
+        {additionalPending && <p>{t("另有标注操作记录等待用户中心确认，未计入上方操作事件数量。")}</p>}
+        <p>{t("用户中心接收确认不代表工作台已完成统计。")}</p>
+        {tr(issue && <details><summary>{t("查看错误详情")}</summary><div>{tr(issue)}</div></details>)}
       </div>
       {loginOpen ? (
         <form onSubmit={(event) => void renewSession(event)} className="audit-sync-login">
           <span>@{username}</span>
-          <input aria-label="当前账号密码" type="password" autoComplete="current-password"
+          <input aria-label={t("当前账号密码")} type="password" autoComplete="current-password"
             required value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy} autoFocus />
-          <button type="submit" className="button button-secondary" disabled={busy}><LogIn size={14} />登录并补传</button>
-          <button type="button" className="text-button" disabled={busy} onClick={() => { setPassword(""); setLoginOpen(false); }}>取消</button>
+          <button type="submit" className="button button-secondary" disabled={busy}><LogIn size={14} />{t("登录并补传")}</button>
+          <button type="button" className="text-button" disabled={busy} onClick={() => { setPassword(""); setLoginOpen(false); }}>{t("取消")}</button>
         </form>
       ) : null}
     </section>

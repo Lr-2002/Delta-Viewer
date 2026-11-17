@@ -338,7 +338,9 @@ pub async fn read(request: DeviceRequest, cancelled: &AtomicBool) -> Result<Devi
     }
     let mut status = None;
     let mut status_error = None;
-    if html.contains("id=\"cameraRows\"") && html.contains("DOHC 设备状态") {
+    // AP firmware may serve provisioning at / while exposing runtime status at
+    // /status. Capability follows the report schema, never the root page markup.
+    {
         match get(&client, address, "/status", cancelled)
             .await
             .and_then(|bytes| {
@@ -348,7 +350,10 @@ pub async fn read(request: DeviceRequest, cancelled: &AtomicBool) -> Result<Devi
             Ok(value) if value["schema"] == "dohc.device.status-summary.v2" => {
                 status = Some(status_fields(&value))
             }
-            _ => status_error = Some("设备状态暂不可用，请刷新页面。".into()),
+            _ if html.contains("id=\"cameraRows\"") => {
+                status_error = Some("设备状态暂不可用，请刷新页面。".into())
+            }
+            _ => {}
         }
     }
     verify_ap_target(&request, mode, local, address).await?;

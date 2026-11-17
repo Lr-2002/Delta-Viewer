@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ImageOff } from "lucide-react";
 import type Hls from "hls.js";
@@ -95,6 +96,7 @@ export const FramePanel = memo(function FramePanel({
   onFramePresented,
   onBufferingChange,
 }: FramePanelProps) {
+  useLanguage();
   const streamKey = frameStreamKey(root, stream.name);
   const [frames, setFrames] = useState<FrameSlots>([null, null]);
   const [visibleSlot, setVisibleSlot] = useState<FrameSlotIndex>(0);
@@ -719,7 +721,7 @@ export const FramePanel = memo(function FramePanel({
             ref={(image) => { imageRefs.current[slotIndex] = image; }}
             className="frame-image"
             src={frame.source}
-            alt={`${stream.label} frame ${frame.frameId}`}
+            alt={t("{0} frame {1}", [tr(stream.label), frame.frameId])}
             aria-hidden={!isVisible}
             onLoad={(event) => {
               if (frame.streamKey === streamKey && requestedKeyRef.current === frame.key) {
@@ -732,27 +734,27 @@ export const FramePanel = memo(function FramePanel({
         );
       }) : null}
       <figcaption>
-        <span className="frame-camera-name" title={stream.label}>{stream.label}</span>
+        <span className="frame-camera-name" title={tr(stream.label)}>{tr(stream.label)}</span>
         <span className="frame-resolution">
-          {useAdaptive && displayedHeight ? `${displayedHeight}p` : dimensions.width && dimensions.height ? `${dimensions.width}×${dimensions.height}` : "—"}
+          {useAdaptive && displayedHeight ? t("{0}p", [displayedHeight]) : dimensions.width && dimensions.height ? t("{0}×{1}", [dimensions.width, dimensions.height]) : "—"}
         </span>
-        {adaptiveUrl && <select className="preview-quality" aria-label={`${stream.label}清晰度`} title="播放清晰度" value={quality} onChange={(event) => { setAdaptiveFailed(false); setQuality(event.target.value); }}>
-          <option value="auto">自动</option>{[...new Set(levels)].sort((a, b) => b - a).map((height) => <option key={height} value={height}>{height}p</option>)}<option value="original">原片</option>
-        </select>}
-        {nativeVideo?.timingError && <span className="preview-warning" title={nativeVideo.timingError}>时间轴回退</span>}
-        {(nativeVideo?.previewError || adaptiveFailed) && <span className="preview-warning" title={nativeVideo?.previewError ?? "预览播放失败，已回退原片"}>{nativeVideo?.previewError ? "预览校验失败" : "预览回退原片"}</span>}
+        {tr(adaptiveUrl && <select className="preview-quality" aria-label={t("{0}清晰度", [tr(stream.label)])} title={t("播放清晰度")} value={quality} onChange={(event) => { setAdaptiveFailed(false); setQuality(event.target.value); }}>
+          <option value="auto">{t("自动")}</option>{[...new Set(levels)].sort((a, b) => b - a).map((height) => <option key={height} value={height}>{height}p</option>)}<option value="original">{t("原片")}</option>
+        </select>)}
+        {tr(nativeVideo?.timingError && <span className="preview-warning" title={tr(nativeVideo.timingError)}>{t("时间轴回退")}</span>)}
+        {tr((nativeVideo?.previewError || adaptiveFailed) && <span className="preview-warning" title={tr(nativeVideo?.previewError) ?? t("预览播放失败，已回退原片")}>{nativeVideo?.previewError ? t("预览校验失败") : t("预览回退原片")}</span>)}
         {nativeVideo ? (
           <span className="video-playback-status">
-            {nativeVideoFailed || videoStatus === "fallback" ? "逐帧回退" : playbackHeld && nativePlaybackEnabled && videoStatus !== "buffering" ? "等待其他相机" : videoStatus === "buffering" ? "缓冲中" : nativeVideo.localPlayback ? (videoStatus === "playing" ? "本地播放" : "本地就绪") : videoStatus === "playing" ? "原生播放" : "原生就绪"}
+            {nativeVideoFailed || videoStatus === "fallback" ? t("逐帧回退") : playbackHeld && nativePlaybackEnabled && videoStatus !== "buffering" ? t("等待其他相机") : videoStatus === "buffering" ? t("缓冲中") : nativeVideo.localPlayback ? tr((videoStatus === "playing" ? "本地播放" : "本地就绪")) : videoStatus === "playing" ? t("原生播放") : t("原生就绪")}
           </span>
         ) : null}
       </figcaption>
-      {!nativeVideoActive && status === "loading" && !playing ? <span className="frame-loading">解码中</span> : null}
+      {!nativeVideoActive && status === "loading" && !playing ? <span className="frame-loading">{t("解码中")}</span> : null}
       {!nativeVideoActive && status === "failed" ? (
-        <span className="frame-error" title={failure.detail} role="status" style={{ display: "flex", flexDirection: "column", justifyContent: "center", padding: "8px 8px 28px", overflow: "hidden" }}>
+        <span className="frame-error" title={tr(failure.detail)} role="status" style={{ display: "flex", flexDirection: "column", justifyContent: "center", padding: "8px 8px 28px", overflow: "hidden" }}>
           <ImageOff size={18} aria-hidden="true" />
-          {failure.label}
-          <small style={{ minHeight: 0, maxHeight: "55%", maxWidth: "100%", overflowY: "auto", overflowWrap: "anywhere", textAlign: "center" }}>{failure.detail.replace(/^[A-Z_]+:\s*/, "").split(" 原始读取错误：")[0]}</small>
+          {tr(failure.label)}
+          <small style={{ minHeight: 0, maxHeight: "55%", maxWidth: "100%", overflowY: "auto", overflowWrap: "anywhere", textAlign: "center" }}>{tr(failure.detail.replace(/^[A-Z_]+:\s*/, "").split(" 原始读取错误：")[0])}</small>
         </span>
       ) : null}
     </figure>

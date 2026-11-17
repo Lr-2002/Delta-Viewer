@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useState } from "react";
 import { AlertTriangle, X } from "lucide-react";
 import { formatBytes, formatRate, shortPath } from "../lib/format";
@@ -8,6 +9,7 @@ interface ProgressStripProps {
   onCancel: () => void;
 }
 export function ProgressStrip({ progress, onCancel }: ProgressStripProps) {
+  useLanguage();
   const [waitingSeconds, setWaitingSeconds] = useState(0);
   useEffect(() => {
     setWaitingSeconds(0);
@@ -25,27 +27,27 @@ export function ProgressStrip({ progress, onCancel }: ProgressStripProps) {
   return (
     <div className="progress-strip" role="status" aria-live="polite">
       <div className="progress-copy">
-        <strong>{progress.phase}</strong>
-        <span title={progress.currentPath}>{shortPath(progress.currentPath)}</span>
+        <strong>{tr(progress.phase)}</strong>
+        <span title={tr(progress.currentPath)}>{shortPath(progress.currentPath)}</span>
       </div>
-      <div className="progress-track" aria-label={`${progress.phase} ${percent}%`}>
+      <div className="progress-track" aria-label={t("{0} {1}%", [tr(progress.phase), percent])}>
         <span style={{ width: `${percent}%` }} />
       </div>
       <div className="progress-stats">
         <span>{percent}%</span>
         {progress.totalBytes ? (
           <span>
-            {formatBytes(progress.bytesDone)} / {formatBytes(progress.totalBytes)}
+            {tr(formatBytes(progress.bytesDone))} / {tr(formatBytes(progress.totalBytes))}
           </span>
         ) : null}
-        <span>{formatRate(progress.bytesDone, progress.elapsedMs)}</span>
+        <span>{tr(formatRate(progress.bytesDone, progress.elapsedMs))}</span>
       </div>
-      <button className="icon-button" type="button" onClick={onCancel} title="取消任务" aria-label="取消任务">
+      <button className="icon-button" type="button" onClick={onCancel} title={t("取消任务")} aria-label={t("取消任务")}>
         <X size={17} />
       </button>
       {waitingSeconds >= 8 && <div className="progress-read-wait" role="alert">
         <AlertTriangle size={15} />
-        <span>当前读取阶段已等待 {waitingSeconds} 秒。数据目录可能响应缓慢；若为共享目录，请检查 NAS 磁盘负载、剩余空间及共享连接。可取消后重试。</span>
+        <span>{t("当前读取阶段已等待") + " "}{waitingSeconds}{" " + t("秒。数据目录可能响应缓慢；若为共享目录，请检查 NAS 磁盘负载、剩余空间及共享连接。可取消后重试。")}</span>
       </div>}
     </div>
   );

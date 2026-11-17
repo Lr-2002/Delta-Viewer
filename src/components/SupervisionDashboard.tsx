@@ -1,3 +1,4 @@
+import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
@@ -56,7 +57,7 @@ const tabs: [View, string][] = [
   ["tasks", "任务中心"],
 ];
 const time = (value: number | null) =>
-  value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "--";
+  value ? new Date(value).toLocaleString(localeTag(), { hour12: false }) : "--";
 const duration = (value: number | null) =>
   value === null
     ? "--"
@@ -110,6 +111,7 @@ export function SupervisionDashboard({
   onOpenOutboundReview?: (batch: import("../lib/outbound-review").OutboundBatch) => Promise<void>;
   beginCloudOperation?: () => CloudOperationHandle | null;
 }) {
+  useLanguage();
   const [view, setView] = useState<View>(currentUser.canManage ? "accounts" : "overview");
   const [refreshId, setRefreshId] = useState(0);
   const [versionsLoading, setVersionsLoading] = useState(false);
@@ -455,19 +457,19 @@ export function SupervisionDashboard({
       <header className="review-supervision-header">
         <div>
           <ShieldCheck size={25} />
-          <h1>审核监管</h1>
+          <h1>{t("审核监管")}</h1>
         </div>
         <div>
           <span>
             {currentUser.displayName} · @{currentUser.username}
           </span>
-          {onManagerHome && <button className="button button-secondary" type="button" disabled={Boolean(busy) || Boolean(catalogOperation.current) || updateBusy} onClick={onManagerHome}>D1 Manager 首页</button>}
-          {onTestMode && <button className="button button-secondary" type="button" disabled={Boolean(busy) || Boolean(catalogOperation.current)} onClick={onTestMode}>测试模式</button>}
-          {updateControls?.(Boolean(busy))}
+          {onManagerHome && <button className="button button-secondary" type="button" disabled={Boolean(busy) || Boolean(catalogOperation.current) || updateBusy} onClick={onManagerHome}>{t("D1 Manager 首页")}</button>}
+          {onTestMode && <button className="button button-secondary" type="button" disabled={Boolean(busy) || Boolean(catalogOperation.current)} onClick={onTestMode}>{t("测试模式")}</button>}
+          {tr(updateControls?.(Boolean(busy)))}
           <button
             className="icon-button"
-            title="退出登录"
-            aria-label="退出登录"
+            title={t("退出登录")}
+            aria-label={t("退出登录")}
             onClick={() => void onLogout()}
           >
             <LogOut size={18} />
@@ -475,40 +477,38 @@ export function SupervisionDashboard({
           <button
             className="button button-secondary"
             type="button"
-            title="打开审核总览"
+            title={t("打开审核总览")}
             onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`审核总览打开失败：${String(reason)}`))}
           >
-            审核总览
-          </button>
+            {t("审核总览")}</button>
         </div>
       </header>
       <div id="app-update-notices" />
-      {syncNotice}
-      <nav aria-label="审核监管视图">
+      {tr(syncNotice)}
+      <nav aria-label={t("审核监管视图")}>
         {tabs.map(([id, label]) => (
           <button
             key={id}
             className={view === id ? "active" : ""}
             disabled={correctionsBusy || Boolean(actionBusy)} onClick={() => setView(id)}
           >
-            {label}
+            {tr(label)}
           </button>
         ))}
       </nav>
       {view === "tasks" && <TaskCenter workspaceBusy={updateBusy} beginCloudOperation={beginCloudOperation} currentUser={{...currentUser, role:"admin"}} cloudCurrentUser={currentUser} onOpenCloudReview={onOpenCloudReview} onOpenOutboundReview={onOpenOutboundReview} />}
       <div className="review-supervision-filters" hidden={view === "tasks" || view === "corrections" || view === "accounts"}>
         <label>
-          审核账号
-          <select
-            aria-label="审核账号筛选"
+          {t("审核账号")}<select
+            aria-label={t("审核账号筛选")}
             value={username}
             onChange={(event) => setUsername(event.target.value)}
           >
-            <option value="">全部账号</option>
+            <option value="">{t("全部账号")}</option>
             {data?.users.filter((user) => user.accountStatus !== "deleted" || (view === "sessions" && includeDeleted)).map((user) => (
               <option key={user.username} value={user.username}>
                 {user.displayName} (@{user.username})
-                {user.accountStatus === "deleted" ? "（已删除）" : ""}
+                {user.accountStatus === "deleted" ? t("（已删除）") : ""}
               </option>
             ))}
           </select>
@@ -517,58 +517,50 @@ export function SupervisionDashboard({
           <label className="review-deleted-toggle">
             <input
               type="checkbox"
-              aria-label="包含已删除账号"
+              aria-label={t("包含已删除账号")}
               checked={includeDeleted}
               onChange={(event) => setIncludeDeleted(event.target.checked)}
             />
-            包含已删除账号
-          </label>
+            {t("包含已删除账号")}</label>
         )}
         <label>
-          日期
-          <input
-            aria-label="审核日期"
+          {t("日期")}<input
+            aria-label={t("审核日期")}
             type="date"
             value={date}
             onChange={(event) => setDate(event.target.value)}
           />
         </label>
         <label>
-          操作
-          <select
-            aria-label="操作筛选"
+          {t("操作")}<select
+            aria-label={t("操作筛选")}
             value={action}
             onChange={(event) => setAction(event.target.value)}
           >
-            <option value="">全部操作</option>
+            <option value="">{t("全部操作")}</option>
             {Object.entries(reviewActionLabels).map(([id, label]) => (
               <option key={id} value={id}>
-                {label}
+                {tr(label)}
               </option>
             ))}
           </select>
         </label>
-        {sessionId && (
+        {tr(sessionId && (
           <button
             className="button button-secondary"
             onClick={() => setSessionId("")}
           >
             <XCircle size={15} />
-            清除条目筛选
-          </button>
-        )}
+            {t("清除条目筛选")}</button>
+        ))}
         <div className="review-supervision-sync">
           <span className={error ? "sync-error" : ""}>
-            {error
-              ? "同步失败"
-              : loading
-                ? "同步中"
-                : `更新于 ${time(data?.generatedAtMs ?? null)}`}
+            {error ? t("同步失败") : loading ? t("同步中") : t("更新于 {0}", [tr(time(data?.generatedAtMs ?? null))])}
           </span>
           <button
             className="icon-button"
-            aria-label={live ? "暂停实时刷新" : "恢复实时刷新"}
-            title={live ? "暂停实时刷新" : "恢复实时刷新"}
+            aria-label={live ? t("暂停实时刷新") : t("恢复实时刷新")}
+            title={live ? t("暂停实时刷新") : t("恢复实时刷新")}
             onClick={() => {
               setLive(!live);
               setBefore("");
@@ -579,8 +571,8 @@ export function SupervisionDashboard({
           </button>
           <button
             className="icon-button"
-            title="刷新"
-            aria-label="刷新"
+            title={t("刷新")}
+            aria-label={t("刷新")}
             onClick={() => setRefreshId((id) => id + 1)}
             disabled={loading}
           >
@@ -590,8 +582,8 @@ export function SupervisionDashboard({
         <button
           className="button button-secondary"
           disabled={Boolean(busy)}
-          aria-label="导出审核事件"
-          title="导出审核事件"
+          aria-label={t("导出审核事件")}
+          title={t("导出审核事件")}
           onClick={() => void exportEvents()}
         >
           {busy === "export" ? (
@@ -599,15 +591,14 @@ export function SupervisionDashboard({
           ) : (
             <Download size={16} />
           )}
-          导出审核事件
-        </button>
+          {t("导出审核事件")}</button>
       </div>
-      {view !== "accounts" && error && (
+      {tr(view !== "accounts" && error && (
         <p role="alert" className="review-audit-error">
-          {data?"统计刷新失败，下面保留上次结果；":"统计尚未获取，数字暂不显示；"}{error}
+          {data ? t("统计刷新失败，下面保留上次结果；") : t("统计尚未获取，数字暂不显示；")}{tr(error)}
         </p>
-      )}
-      {notice && <p role="status">{notice}</p>}
+      ))}
+      {tr(notice && <p role="status">{tr(notice)}</p>)}
       {view === "corrections" && <TextCorrectionsPanel onBusyChange={setCorrectionsBusy} />}
       {view === "overview" && (
         <>
@@ -615,61 +606,61 @@ export function SupervisionDashboard({
             <div>
               <Activity />
               <span>
-                在线审核员<strong>{data?totals.online:"—"}</strong>
+                {t("在线审核员")}<strong>{data ? totals.online : "—"}</strong>
               </span>
             </div>
             <div>
               <CheckCircle2 />
               <span>
-                通过操作<strong>{data?totals.approved:"—"}</strong>
+                {t("通过操作")}<strong>{data ? totals.approved : "—"}</strong>
               </span>
             </div>
             <div>
               <XCircle />
               <span>
-                不通过操作<strong>{data?totals.rejected:"—"}</strong>
+                {t("不通过操作")}<strong>{data ? totals.rejected : "—"}</strong>
               </span>
             </div>
             <div>
               <Activity />
               <span>
-                交互操作<strong>{data?totals.operations:"—"}</strong>
+                {t("交互操作")}<strong>{data ? totals.operations : "—"}</strong>
               </span>
             </div>
           </section>
           <section className="review-decision-overview">
-            <h2>已通过 / 不通过总览</h2>
-            <p>选择数据根目录并扫描，以各条数据的 QC 和已保存人工裁剪结果为准。每条数据只计一次。</p>
+            <h2>{t("已通过 / 不通过总览")}</h2>
+            <p>{t("选择数据根目录并扫描，以各条数据的 QC 和已保存人工裁剪结果为准。每条数据只计一次。")}</p>
             <div className="review-export-controls">
-              <label className="review-source-path">数据根目录<input aria-label="数据根目录" placeholder="选择或输入本机 / 已挂载共享目录" value={sourcePath} disabled={Boolean(busy)} onChange={(event) => { setSourcePath(event.target.value); setCatalog(null); setNotice(""); }} /></label>
-              <button className="button button-secondary" disabled={Boolean(busy)} onClick={() => void chooseReviewSource()}>选择路径</button>
-              <button className="button button-primary" disabled={Boolean(busy) || !sourcePath.trim()} onClick={() => void scanReviewed()}>{busy === "reviewed-scan" ? "正在扫描…" : "扫描总览"}</button>
-              <button className="button button-secondary" disabled={Boolean(busy) || !catalog?.approved || Boolean(catalog.rows.some((row) => row.status === "approved" && row.error))} onClick={() => void exportReviewed()}><Download size={16} />导出通过数据</button>
-              {(busy === "reviewed-scan" || busy === "reviewed-export") && <button className="button button-secondary" onClick={() => { if (catalogOperation.current) void cancelTask(catalogOperation.current); }}>取消操作</button>}
+              <label className="review-source-path">{t("数据根目录")}<input aria-label={t("数据根目录")} placeholder={t("选择或输入本机 / 已挂载共享目录")} value={sourcePath} disabled={Boolean(busy)} onChange={(event) => { setSourcePath(event.target.value); setCatalog(null); setNotice(""); }} /></label>
+              <button className="button button-secondary" disabled={Boolean(busy)} onClick={() => void chooseReviewSource()}>{t("选择路径")}</button>
+              <button className="button button-primary" disabled={Boolean(busy) || !sourcePath.trim()} onClick={() => void scanReviewed()}>{busy === "reviewed-scan" ? t("正在扫描…") : t("扫描总览")}</button>
+              <button className="button button-secondary" disabled={Boolean(busy) || !catalog?.approved || Boolean(catalog.rows.some((row) => row.status === "approved" && row.error))} onClick={() => void exportReviewed()}><Download size={16} />{t("导出通过数据")}</button>
+              {(busy === "reviewed-scan" || busy === "reviewed-export") && <button className="button button-secondary" onClick={() => { if (catalogOperation.current) void cancelTask(catalogOperation.current); }}>{t("取消操作")}</button>}
             </div>
-            {catalogProgress && <p role="status" className="review-scan-progress">{catalogProgress}</p>}
+            {tr(catalogProgress && <p role="status" className="review-scan-progress">{tr(catalogProgress)}</p>)}
             {catalog && <>
-              <p>扫描目录：{catalog.sourceRoot} · 扫描时间：{time(catalog.scannedAtMs)}</p>
-              <div className="review-catalog-counts"><span>全部 {catalog.rows.length} 条</span><span>通过 {catalog.approved} 条</span><span>不通过 {catalog.rejected} 条</span><span>待审核 {catalog.pending} 条</span><span>存在异常 {catalog.errors} 条</span></div>
-              <dl className="review-duration-totals"><div><dt>原始数据总时长</dt><dd>{seconds(catalog.originalSeconds)}</dd><small>{catalog.unknownOriginal} 条时长未知，未计入</small></div><div><dt>通过数据原始时长</dt><dd>{seconds(catalog.approvedOriginalSeconds)}</dd><small>{catalog.rows.filter((row) => row.status === "approved" && row.originalSeconds === null).length} 条时长未知，未计入</small></div><div><dt>通过数据有效总时长</dt><dd>{seconds(catalog.effectiveSeconds)}</dd><small>{catalog.unknownEffective} 条无法核验，未计入</small></div></dl>
-              <p>有效时长按人工保留片段合并重叠后计算；导出保留完整源数据和人工裁剪记录。通过数据存在异常时，请处理后重新扫描。</p>
-              <label>数据状态<select aria-label="数据状态筛选" value={catalogFilter} onChange={(event) => { setCatalogFilter(event.target.value); setCatalogPage(0); }}><option value="all">全部数据</option><option value="approved">通过</option><option value="rejected">不通过</option><option value="pending">待审核</option><option value="error">存在异常</option></select></label>
-              <div className="review-table-wrap"><table aria-label="数据扫描明细"><thead><tr><th>相对路径</th><th>QC 结论</th><th>审核人</th><th>原始时长</th><th>有效时长</th><th>时长依据 / 异常</th></tr></thead><tbody>{catalogRows.slice(catalogPage * 50, catalogPage * 50 + 50).map((row) => <tr key={row.path}><td>{row.path}</td><td>{row.qc || "待审核"}</td><td>{row.reviewer || "--"}</td><td>{seconds(row.originalSeconds)}</td><td>{row.status === "approved" ? seconds(row.effectiveSeconds) : "--"}</td><td>{row.error || row.timingSource}</td></tr>)}</tbody></table></div>
-              <div className="review-pagination"><button disabled={!catalogPage} onClick={() => setCatalogPage(catalogPage - 1)}>上一页数据</button><span>{catalogRows.length} 条 · 第 {catalogPage + 1} 页</span><button disabled={(catalogPage + 1) * 50 >= catalogRows.length} onClick={() => setCatalogPage(catalogPage + 1)}>下一页数据</button></div>
+              <p>{t("扫描目录：")}{tr(catalog.sourceRoot)}{" " + t("· 扫描时间：")}{tr(time(catalog.scannedAtMs))}</p>
+              <div className="review-catalog-counts"><span>{t("全部") + " "}{catalog.rows.length}{" " + t("条")}</span><span>{t("通过") + " "}{catalog.approved}{" " + t("条")}</span><span>{t("不通过") + " "}{catalog.rejected}{" " + t("条")}</span><span>{t("待审核") + " "}{catalog.pending}{" " + t("条")}</span><span>{t("存在异常") + " "}{catalog.errors}{" " + t("条")}</span></div>
+              <dl className="review-duration-totals"><div><dt>{t("原始数据总时长")}</dt><dd>{tr(seconds(catalog.originalSeconds))}</dd><small>{catalog.unknownOriginal}{" " + t("条时长未知，未计入")}</small></div><div><dt>{t("通过数据原始时长")}</dt><dd>{tr(seconds(catalog.approvedOriginalSeconds))}</dd><small>{catalog.rows.filter((row) => row.status === "approved" && row.originalSeconds === null).length}{" " + t("条时长未知，未计入")}</small></div><div><dt>{t("通过数据有效总时长")}</dt><dd>{tr(seconds(catalog.effectiveSeconds))}</dd><small>{catalog.unknownEffective}{" " + t("条无法核验，未计入")}</small></div></dl>
+              <p>{t("有效时长按人工保留片段合并重叠后计算；导出保留完整源数据和人工裁剪记录。通过数据存在异常时，请处理后重新扫描。")}</p>
+              <label>{t("数据状态")}<select aria-label={t("数据状态筛选")} value={catalogFilter} onChange={(event) => { setCatalogFilter(event.target.value); setCatalogPage(0); }}><option value="all">{t("全部数据")}</option><option value="approved">{t("通过")}</option><option value="rejected">{t("不通过")}</option><option value="pending">{t("待审核")}</option><option value="error">{t("存在异常")}</option></select></label>
+              <div className="review-table-wrap"><table aria-label={t("数据扫描明细")}><thead><tr><th>{t("相对路径")}</th><th>{t("QC 结论")}</th><th>{t("审核人")}</th><th>{t("原始时长")}</th><th>{t("有效时长")}</th><th>{t("时长依据 / 异常")}</th></tr></thead><tbody>{catalogRows.slice(catalogPage * 50, catalogPage * 50 + 50).map((row) => <tr key={row.path}><td>{row.path}</td><td>{tr(row.qc) || t("待审核")}</td><td>{row.reviewer || "--"}</td><td>{tr(seconds(row.originalSeconds))}</td><td>{row.status === "approved" ? tr(seconds(row.effectiveSeconds)) : "--"}</td><td>{tr(row.error) || tr(row.timingSource)}</td></tr>)}</tbody></table></div>
+              <div className="review-pagination"><button disabled={!catalogPage} onClick={() => setCatalogPage(catalogPage - 1)}>{t("上一页数据")}</button><span>{catalogRows.length}{" " + t("条 · 第") + " "}{catalogPage + 1}{" " + t("页")}</span><button disabled={(catalogPage + 1) * 50 >= catalogRows.length} onClick={() => setCatalogPage(catalogPage + 1)}>{t("下一页数据")}</button></div>
             </>}
           </section>
-          <h2>账号审核进度</h2>
+          <h2>{t("账号审核进度")}</h2>
           <div className="review-table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>审核账号</th>
-                  <th>状态</th>
-                  <th>通过 / 不通过</th>
-                  <th>平均加载至提交</th>
-                  <th>视频定位</th>
-                  <th>标签新增 / 删除</th>
-                  <th>最近操作</th>
+                  <th>{t("审核账号")}</th>
+                  <th>{t("状态")}</th>
+                  <th>{t("通过 / 不通过")}</th>
+                  <th>{t("平均加载至提交")}</th>
+                  <th>{t("视频定位")}</th>
+                  <th>{t("标签新增 / 删除")}</th>
+                  <th>{t("最近操作")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -689,19 +680,19 @@ export function SupervisionDashboard({
                     </td>
                     <td>
                       <span className={user.online ? "review-online" : ""}>
-                        {user.accountStatus === "deleted" ? "已删除" : user.online ? "在线" : "离线"}
+                        {user.accountStatus === "deleted" ? t("已删除") : user.online ? t("在线") : t("离线")}
                       </span>
                     </td>
                     <td>
                       {user.approved} / {user.rejected}
-                      {user.completed !== undefined && <small>当前完成 {user.completed} · 待写 NAS {user.pendingNas ?? 0}</small>}
+                      {user.completed !== undefined && <small>{t("当前完成") + " "}{user.completed}{" " + t("· 待写 NAS") + " "}{user.pendingNas ?? 0}</small>}
                     </td>
-                    <td>{duration(user.averageMs)}</td>
+                    <td>{tr(duration(user.averageMs))}</td>
                     <td>{user.seeks}</td>
                     <td>
                       {user.labelsAdded} / {user.labelsDeleted}
                     </td>
-                    <td>{time(user.lastActivityAtMs)}</td>
+                    <td>{tr(time(user.lastActivityAtMs))}</td>
                   </tr>
                 ))}
               </tbody>
@@ -712,24 +703,24 @@ export function SupervisionDashboard({
       {view === "events" && (
         <>
           <h2>
-            交互时间线 <small>{data?.total ?? 0} 条</small>
+            {t("交互时间线") + " "}<small>{data?.total ?? 0}{" " + t("条")}</small>
           </h2>
           <div className="review-table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>发生时间</th>
-                  <th>审核账号</th>
-                  <th>数据条目</th>
-                  <th>操作</th>
-                  <th>距加载</th>
-                  <th>操作明细</th>
+                  <th>{t("发生时间")}</th>
+                  <th>{t("审核账号")}</th>
+                  <th>{t("数据条目")}</th>
+                  <th>{t("操作")}</th>
+                  <th>{t("距加载")}</th>
+                  <th>{t("操作明细")}</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleEvents?.map((event) => (
                   <tr key={event.id}>
-                    <td>{time(event.occurredAtMs)}</td>
+                    <td>{tr(time(event.occurredAtMs))}</td>
                     <td>
                       {event.displayName}
                       <small>@{event.username}</small>
@@ -739,17 +730,17 @@ export function SupervisionDashboard({
                         className="review-user-link"
                         onClick={() => setSessionId(event.sessionId)}
                       >
-                        {event.episodeName}
+                        {tr(event.episodeName)}
                       </button>
                     </td>
-                    <td>{reviewActionLabels[event.action]}</td>
-                    <td>{duration(event.elapsedMs)}</td>
+                    <td>{tr(reviewActionLabels[event.action])}</td>
+                    <td>{tr(duration(event.elapsedMs))}</td>
                     <td>
                       <button
                         className="review-event-detail"
                         onClick={() => setSelected(event)}
                       >
-                        {eventDetails(event) || "查看记录"}
+                        {tr(eventDetails(event)) || t("查看记录")}
                       </button>
                     </td>
                   </tr>
@@ -760,8 +751,8 @@ export function SupervisionDashboard({
           <footer className="review-pagination">
             <button
               className="icon-button"
-              title="上一页"
-              aria-label="上一页"
+              title={t("上一页")}
+              aria-label={t("上一页")}
               disabled={!previous.length}
               onClick={() => {
                 setBefore(previous.at(-1)!);
@@ -773,8 +764,8 @@ export function SupervisionDashboard({
             <span>{previous.length + 1}</span>
             <button
               className="icon-button"
-              title="更早记录"
-              aria-label="更早记录"
+              title={t("更早记录")}
+              aria-label={t("更早记录")}
               disabled={!data?.nextBefore}
               onClick={() => {
                 setPrevious([...previous, before]);
@@ -788,18 +779,18 @@ export function SupervisionDashboard({
       )}
       {view === "sessions" && (
         <>
-          <h2>逐条审核记录</h2>
+          <h2>{t("逐条审核记录")}</h2>
           <div className="review-table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>数据条目</th>
-                  <th>账号</th>
-                  <th>载入时间</th>
-                  <th>最近操作</th>
-                  <th>结论</th>
-                  <th>加载至提交</th>
-                  <th>交互次数</th>
+                  <th>{t("数据条目")}</th>
+                  <th>{t("账号")}</th>
+                  <th>{t("载入时间")}</th>
+                  <th>{t("最近操作")}</th>
+                  <th>{t("结论")}</th>
+                  <th>{t("加载至提交")}</th>
+                  <th>{t("交互次数")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -813,20 +804,16 @@ export function SupervisionDashboard({
                           setView("events");
                         }}
                       >
-                        {row.episodeName}
+                        {tr(row.episodeName)}
                       </button>
                     </td>
                     <td>@{row.username}</td>
-                    <td>{time(row.loadedAtMs)}</td>
-                    <td>{time(row.lastActivityAtMs)}</td>
+                    <td>{tr(time(row.loadedAtMs))}</td>
+                    <td>{tr(time(row.lastActivityAtMs))}</td>
                     <td>
-                      {row.status === "approved"
-                        ? "通过"
-                        : row.status === "rejected"
-                          ? "不通过"
-                          : "待审核"}
+                      {row.status === "approved" ? t("通过") : row.status === "rejected" ? t("不通过") : t("待审核")}
                     </td>
-                    <td>{duration(row.durationMs)}</td>
+                    <td>{tr(duration(row.durationMs))}</td>
                     <td>{row.operations}</td>
                   </tr>
                 ))}
@@ -839,8 +826,8 @@ export function SupervisionDashboard({
         <footer className="review-pagination">
           <button
             className="icon-button"
-            aria-label="上一页审核记录"
-            title="上一页审核记录"
+            aria-label={t("上一页审核记录")}
+            title={t("上一页审核记录")}
             disabled={!previous.length}
             onClick={() => {
               setBefore(previous.at(-1)!);
@@ -852,8 +839,8 @@ export function SupervisionDashboard({
           <span>{previous.length + 1}</span>
           <button
             className="icon-button"
-            aria-label="更早审核记录"
-            title="更早审核记录"
+            aria-label={t("更早审核记录")}
+            title={t("更早审核记录")}
             disabled={!data?.nextSessionBefore}
             onClick={() => {
               setPrevious([...previous, before]);
@@ -866,31 +853,31 @@ export function SupervisionDashboard({
       )}
       {view === "accounts" && (
         <>
-          <h2>审核账号</h2>
+          <h2>{t("审核账号")}</h2>
           {writebackOwner && <SourceWritebackAdmin owner={writebackOwner} accounts={versions?.users ?? []} disabled={Boolean(busy)}/>}
           <div className="version-push-toolbar">
-            <label>账号筛选<select aria-label="账号筛选" value={username} onChange={event=>setUsername(event.target.value)}><option value="">全部账号</option>{versions?.users.map(user=><option key={user.username} value={user.username}>{user.displayName} (@{user.username})</option>)}</select></label>
-            <button className="button button-secondary" disabled={versionsLoading} onClick={()=>setRefreshId(value=>value+1)}>{versionsLoading?"刷新中…":"刷新账号与版本"}</button>
-            <span>{versions ? `版本信息更新于 ${time(versions.generatedAtMs)}` : versionsLoading ? "正在读取账号与版本…" : "账号与版本尚未读取"}</span>
+            <label>{t("账号筛选")}<select aria-label={t("账号筛选")} value={username} onChange={event=>setUsername(event.target.value)}><option value="">{t("全部账号")}</option>{versions?.users.map(user=><option key={user.username} value={user.username}>{user.displayName} (@{user.username})</option>)}</select></label>
+            <button className="button button-secondary" disabled={versionsLoading} onClick={()=>setRefreshId(value=>value+1)}>{versionsLoading ? t("刷新中…") : t("刷新账号与版本")}</button>
+            <span>{versions ? t("版本信息更新于 {0}", [tr(time(versions.generatedAtMs))]) : versionsLoading ? t("正在读取账号与版本…") : t("账号与版本尚未读取")}</span>
           </div>
           <div className="version-push-toolbar">
-            <button className="button button-secondary" disabled={Boolean(busy) || !(versions?.users ?? []).some(user=>user.accountStatus==="active" && user.username!==currentUser.username)} onClick={()=>void remind([],true)}>一键推送更新提醒</button>
-            <button className="button button-secondary" disabled={Boolean(busy) || !checkedEligible.length} onClick={()=>void remind(checkedEligible)}>推送选中（{checkedEligible.length}）</button>
-            <span>每 15 秒刷新 · 超过 90 秒未上报显示离线 · 提醒保留 7 天</span>
+            <button className="button button-secondary" disabled={Boolean(busy) || !(versions?.users ?? []).some(user=>user.accountStatus==="active" && user.username!==currentUser.username)} onClick={()=>void remind([],true)}>{t("一键推送更新提醒")}</button>
+            <button className="button button-secondary" disabled={Boolean(busy) || !checkedEligible.length} onClick={()=>void remind(checkedEligible)}>{t("推送选中（")}{checkedEligible.length}）</button>
+            <span>{t("每 15 秒刷新 · 超过 90 秒未上报显示离线 · 提醒保留 7 天")}</span>
           </div>
-          <p className="version-help">每人显示一个已确认在线的版本，多设备及上报时间见“版本日志”。版本未确认不代表未工作：审核记录与版本上报独立；1.3.3 之前的客户端需先手动更新。</p>
-          {versionError && <p role="alert" className="version-error">版本状态暂不可刷新，下面保留最近记录，当前在线状态未知：{versionError}</p>}
+          <p className="version-help">{t("每人显示一个已确认在线的版本，多设备及上报时间见“版本日志”。版本未确认不代表未工作：审核记录与版本上报独立；1.3.3 之前的客户端需先手动更新。")}</p>
+          {tr(versionError && <p role="alert" className="version-error">{t("版本状态暂不可刷新，下面保留最近记录，当前在线状态未知：")}{tr(versionError)}</p>)}
           <div className="review-table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th><input type="checkbox" aria-label="全选当前账号" checked={eligibleAccounts.length>0 && checkedEligible.length===eligibleAccounts.length} onChange={event=>setCheckedAccounts(event.target.checked?eligibleAccounts.map(user=>user.username):[])} /></th>
-                  <th>账号</th>
-                  <th>姓名</th>
-                  <th>状态</th>
-                  <th>当前软件版本</th>
-                  <th>更新提醒</th>
-                  <th>账号管理</th>
+                  <th><input type="checkbox" aria-label={t("全选当前账号")} checked={eligibleAccounts.length>0 && checkedEligible.length===eligibleAccounts.length} onChange={event=>setCheckedAccounts(event.target.checked?eligibleAccounts.map(user=>user.username):[])} /></th>
+                  <th>{t("账号")}</th>
+                  <th>{t("姓名")}</th>
+                  <th>{t("状态")}</th>
+                  <th>{t("当前软件版本")}</th>
+                  <th>{t("更新提醒")}</th>
+                  <th>{t("账号管理")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -898,17 +885,17 @@ export function SupervisionDashboard({
                   const clientState = currentClientVersion(user.clients, versions?.generatedAtMs ?? 0,versionNow);
                   return (
                   <tr key={user.username}>
-                    <td><input type="checkbox" aria-label={`选择账号 @${user.username}`} disabled={!eligibleAccounts.some(item=>item.username===user.username)} checked={checkedEligible.includes(user.username)} onChange={event=>setCheckedAccounts(previous=>event.target.checked?[...new Set([...previous,user.username])]:previous.filter(name=>name!==user.username))} /></td>
+                    <td><input type="checkbox" aria-label={t("选择账号 @{0}", [user.username])} disabled={!eligibleAccounts.some(item=>item.username===user.username)} checked={checkedEligible.includes(user.username)} onChange={event=>setCheckedAccounts(previous=>event.target.checked?[...new Set([...previous,user.username])]:previous.filter(name=>name!==user.username))} /></td>
                     <td>@{user.username}</td>
                     <td>{user.displayName}</td>
-                    <td>{user.accountStatus === "active" ? "启用" : "暂停"}</td>
+                    <td>{user.accountStatus === "active" ? t("启用") : t("暂停")}</td>
                     <td className="account-version-cell">
-                      <div>{!versionError && clientState.current ? <><strong>v{clientState.current.version}</strong><span className="account-platform">{clientState.current.platform}</span></> : <span>当前版本未确认 · {versionError?'连接异常':user.clients.length?'设备未在线':'尚未收到上报'}</span>}</div>
-                      {!versionError && clientState.otherVersions > 0 && <small>另有 {clientState.otherVersions} 个在线版本</small>}
-                      <button className="text-button account-version-log" onClick={() => setVersionLogAccount(user.username)} aria-label={`版本日志 @${user.username}`}>版本日志</button>
+                      <div>{!versionError && clientState.current ? <><strong>v{clientState.current.version}</strong><span className="account-platform">{tr(clientState.current.platform)}</span></> : <span>{t("当前版本未确认 ·") + " "}{versionError ? t("连接异常") : user.clients.length ? t("设备未在线") : t("尚未收到上报")}</span>}</div>
+                      {!versionError && clientState.otherVersions > 0 && <small>{t("另有") + " "}{clientState.otherVersions}{" " + t("个在线版本")}</small>}
+                      <button className="text-button account-version-log" onClick={() => setVersionLogAccount(user.username)} aria-label={t("版本日志 @{0}", [user.username])}>{t("版本日志")}</button>
                     </td>
-                    <td><button className="button button-secondary" disabled={Boolean(busy) || user.accountStatus!=="active" || user.username===currentUser.username} onClick={()=>void remind([user.username])}>推送更新提醒</button>
-                      {versions?.users.find(item=>item.username===user.username)?.pendingReminder && <small>提醒待处理 / 等待客户端确认</small>}</td>
+                    <td><button className="button button-secondary" disabled={Boolean(busy) || user.accountStatus!=="active" || user.username===currentUser.username} onClick={()=>void remind([user.username])}>{t("推送更新提醒")}</button>
+                      {versions?.users.find(item=>item.username===user.username)?.pendingReminder && <small>{t("提醒待处理 / 等待客户端确认")}</small>}</td>
                     <td><div className="review-account-actions">
                       <button
                         className="button button-secondary"
@@ -927,12 +914,10 @@ export function SupervisionDashboard({
                         ) : (
                           <Play size={14} />
                         )}
-                        {user.accountStatus === "active"
-                          ? "暂停账号"
-                          : "启用账号"}
+                        {user.accountStatus === "active" ? t("暂停账号") : t("启用账号")}
                       </button>
-                      <button className="icon-button review-delete-account" title="删除账号"
-                        aria-label={`删除账号 @${user.username}`} disabled={Boolean(busy) || user.canManage}
+                      <button className="icon-button review-delete-account" title={t("删除账号")}
+                        aria-label={t("删除账号 @{0}", [user.username])} disabled={Boolean(busy) || user.canManage}
                         onClick={() => { setDeleteError(""); setDeleteTarget(user); }}>
                         <Trash2 size={17} />
                       </button>
@@ -947,10 +932,9 @@ export function SupervisionDashboard({
             className="review-account-form"
             onSubmit={(event) => void createAccount(event)}
           >
-            <h2>新建审核账号</h2>
+            <h2>{t("新建审核账号")}</h2>
             <label>
-              账号
-              <input
+              {t("账号")}<input
                 required
                 minLength={3}
                 maxLength={32}
@@ -962,8 +946,7 @@ export function SupervisionDashboard({
               />
             </label>
             <label>
-              姓名
-              <input
+              {t("姓名")}<input
                 required
                 maxLength={40}
                 value={account.displayName}
@@ -973,8 +956,7 @@ export function SupervisionDashboard({
               />
             </label>
             <label>
-              初始密码
-              <input
+              {t("初始密码")}<input
                 required
                 type="password"
                 minLength={8}
@@ -988,43 +970,40 @@ export function SupervisionDashboard({
             </label>
             <button className="button button-primary" disabled={Boolean(busy)}>
               <UserPlus size={16} />
-              创建账号
-            </button>
+              {t("创建账号")}</button>
           </form>
         </>
       )}
       {!loading && !visibleEvents?.length && ["overview", "events", "sessions"].includes(view) && (
-        <p className="review-empty">暂无符合条件的审核操作</p>
+        <p className="review-empty">{t("暂无符合条件的审核操作")}</p>
       )}
-      {versionLogAccount && <dialog ref={versionLogDialog} className="account-version-dialog" aria-labelledby="account-version-log-title"
+      {tr(versionLogAccount && <dialog ref={versionLogDialog} className="account-version-dialog" aria-labelledby="account-version-log-title"
         onCancel={() => setVersionLogAccount(null)} onClick={event => {
           if (event.target !== event.currentTarget) return;
           const box = event.currentTarget.getBoundingClientRect();
           if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) setVersionLogAccount(null);
         }}>
-        <header><div><h2 id="account-version-log-title">版本日志</h2><p>@{versionLogAccount} · 设备最近上报记录</p></div>
-          <button autoFocus className="icon-button" aria-label="关闭版本日志" onClick={() => setVersionLogAccount(null)}><X size={18} /></button></header>
+        <header><div><h2 id="account-version-log-title">{t("版本日志")}</h2><p>@{tr(versionLogAccount)}{" " + t("· 设备最近上报记录")}</p></div>
+          <button autoFocus className="icon-button" aria-label={t("关闭版本日志")} onClick={() => setVersionLogAccount(null)}><X size={18} /></button></header>
         <div className="account-version-log-body">
-          <p>仅展示服务端保留的设备上报，不是完整升级历史。审核活动不包含软件版本，不能用审核统计推测版本或将未上报判为未工作。</p>
-          {versionError && <p role="alert">查询失败，以下为缓存记录，在线状态未知：{versionError}</p>}
-          {(versions?.users.find(user => user.username === versionLogAccount)?.clients ?? []).length ?
-            [...versions!.users.find(user => user.username === versionLogAccount)!.clients].sort((a,b) => b.lastSeenAtMs-a.lastSeenAtMs).map(client => <article key={client.clientId}>
-              <strong>v{client.version}</strong><span>{client.platform} · {versionError ? "状态未知" : currentClientVersion([client], versions!.generatedAtMs,versionNow).current ? "在线" : "离线 / 历史上报"}</span>
-              <time>{time(client.lastSeenAtMs)}</time>
-            </article>) : <p>暂无版本上报。可能使用早于 1.3.3 的客户端，或版本上报连接尚未成功；具体原因需核对该电脑。旧客户端需先手动安装新版，之后才能接收推送。</p>}
+          <p>{t("仅展示服务端保留的设备上报，不是完整升级历史。审核活动不包含软件版本，不能用审核统计推测版本或将未上报判为未工作。")}</p>
+          {tr(versionError && <p role="alert">{t("查询失败，以下为缓存记录，在线状态未知：")}{tr(versionError)}</p>)}
+          {(versions?.users.find(user => user.username === versionLogAccount)?.clients ?? []).length ? [...versions!.users.find(user => user.username === versionLogAccount)!.clients].sort((a,b) => b.lastSeenAtMs-a.lastSeenAtMs).map(client => <article key={client.clientId}>
+              <strong>v{client.version}</strong><span>{tr(client.platform)} · {versionError ? t("状态未知") : currentClientVersion([client], versions!.generatedAtMs,versionNow).current ? t("在线") : t("离线 / 历史上报")}</span>
+              <time>{tr(time(client.lastSeenAtMs))}</time>
+            </article>) : <p>{t("暂无版本上报。可能使用早于 1.3.3 的客户端，或版本上报连接尚未成功；具体原因需核对该电脑。旧客户端需先手动安装新版，之后才能接收推送。")}</p>}
         </div>
-      </dialog>}
+      </dialog>)}
       {deleteTarget && <dialog ref={deleteDialog} className="review-delete-dialog" aria-labelledby="delete-account-title"
         onCancel={(event) => { event.preventDefault(); if (!busy) setDeleteTarget(null); }}>
-        <h2 id="delete-account-title">删除审核账号</h2>
+        <h2 id="delete-account-title">{t("删除审核账号")}</h2>
         <p>{deleteTarget.displayName} (@{deleteTarget.username})</p>
-        <p>账号将无法登录，当前会话立即注销。历史审核记录保留，账号名不可再次注册。删除后不可恢复。</p>
-        {deleteError && <p role="alert" className="review-audit-error">{deleteError}</p>}
+        <p>{t("账号将无法登录，当前会话立即注销。历史审核记录保留，账号名不可再次注册。删除后不可恢复。")}</p>
+        {tr(deleteError && <p role="alert" className="review-audit-error">{tr(deleteError)}</p>)}
         <footer>
-          <button autoFocus className="button button-secondary" disabled={Boolean(busy)} onClick={() => setDeleteTarget(null)}>取消</button>
+          <button autoFocus className="button button-secondary" disabled={Boolean(busy)} onClick={() => setDeleteTarget(null)}>{t("取消")}</button>
           <button className="button review-delete-confirm" disabled={Boolean(busy)} onClick={() => void deleteAccount()}>
-            {busy ? <LoaderCircle size={16} className="spin" /> : <Trash2 size={16} />}确认删除
-          </button>
+            {busy ? <LoaderCircle size={16} className="spin" /> : <Trash2 size={16} />}{t("确认删除")}</button>
         </footer>
       </dialog>}
       {selected && (
@@ -1035,16 +1014,16 @@ export function SupervisionDashboard({
           <section
             role="dialog"
             aria-modal="true"
-            aria-label="审核操作明细"
+            aria-label={t("审核操作明细")}
             className="review-detail-dialog"
             onClick={(event) => event.stopPropagation()}
           >
             <header>
-              <h2>{reviewActionLabels[selected.action]}</h2>
+              <h2>{tr(reviewActionLabels[selected.action])}</h2>
               <button
                 className="icon-button"
-                title="关闭明细"
-                aria-label="关闭明细"
+                title={t("关闭明细")}
+                aria-label={t("关闭明细")}
                 onClick={() => setSelected(null)}
               >
                 <XCircle size={18} />
@@ -1052,18 +1031,18 @@ export function SupervisionDashboard({
             </header>
             <p>
               {selected.displayName} (@{selected.username}) ·{" "}
-              {selected.episodeName}
+              {tr(selected.episodeName)}
             </p>
             <dl>
-              <dt>发生时间</dt>
-              <dd>{time(selected.occurredAtMs)}</dd>
-              <dt>接收时间</dt>
-              <dd>{time(selected.receivedAtMs)}</dd>
-              <dt>事件 ID</dt>
-              <dd>{selected.eventId}</dd>
+              <dt>{t("发生时间")}</dt>
+              <dd>{tr(time(selected.occurredAtMs))}</dd>
+              <dt>{t("接收时间")}</dt>
+              <dd>{tr(time(selected.receivedAtMs))}</dd>
+              <dt>{t("事件 ID")}</dt>
+              <dd>{tr(selected.eventId)}</dd>
               {Object.entries(selected.details).map(([key, value]) => (
                 <div key={key}>
-                  <dt>{detailNames[key] ?? key}</dt>
+                  <dt>{tr(detailNames[key]) ?? tr(key)}</dt>
                   <dd>{value}</dd>
                 </div>
               ))}

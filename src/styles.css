@@ -1682,7 +1682,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .app-update-entry { width: auto; padding: 0 10px; white-space: nowrap; flex-shrink: 0; }
 .app-update-dialog .button-secondary { width: auto; padding: 0 12px; font-size: 13.44px; }
 .update-notice .text-button { margin-left: 0; font-size: 14.56px; }
-.writeback-toast { top: 16px; right: 16px; bottom: auto; z-index: 85; width: min(420px, calc(100vw - 32px)); animation: writeback-toast-in 180ms ease-out both; }
+.writeback-toast { top: 72px; right: 16px; bottom: auto; z-index: 85; width: min(420px, calc(100vw - 32px)); pointer-events: none; animation: writeback-toast-in 180ms ease-out both; }
+.writeback-toast button, .writeback-toast p { pointer-events: auto; }
 .writeback-toast p { display: block; max-height: min(42dvh, 320px); overflow-y: auto; margin-bottom: 2px; }
 .writeback-toast-icon { background: #277a64; }
 .writeback-toast-error .writeback-toast-icon { background: #a43c32; }
@@ -1691,7 +1692,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 @keyframes writeback-toast-spin { to { transform: rotate(360deg); } }
 @keyframes writeback-toast-in { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .writeback-toast-spinning { animation: none; } }
-@media (max-width: 600px) { .writeback-toast { top: 10px; right: 10px; left: 10px; width: auto; } }
+@media (max-width: 600px) { .writeback-toast { right: 10px; left: 10px; width: auto; } }
 
 #app-update-notices { flex-shrink: 0; }
 .machine-identity-ignore.text-button, .machine-identity-restore.text-button { margin: 0; min-height: 30px; padding: 2px 0; font-size: 13.44px; white-space: normal; text-align: left; }
@@ -1806,3 +1807,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .topbar .version-history-trigger { min-height:32px; width:32px; height:32px; margin:0; padding:0; border:0; border-radius:8px; background:transparent; color:#73737b; }
 .topbar .version-history-trigger:hover { color:#1d1d1f; background:#f2f2f5; }
+.language-toggle { position: fixed; top: 14px; right: 14px; z-index: 1500; display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 4px 7px; border: 1px solid #d9d9df; border-radius: 5px; background: #fff; color: #45454f; font: 11px/1.4 system-ui,sans-serif; cursor: pointer; }
+@media (max-width: 720px) { .language-toggle { top: 8px; right: 8px; min-height: 27px; } }
+.language-modal-switch { display:flex; justify-content:flex-end; padding:8px 14px; border-top:1px solid var(--line); }
+.language-modal-switch .language-toggle { position:static; }
+
+.language-toolbar-switch { display:inline-flex; flex:0 0 auto; }
+.language-toolbar-switch .language-toggle { position:static; }

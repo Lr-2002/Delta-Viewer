@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { FramePanel } from "./FramePanel";
@@ -29,6 +30,7 @@ interface Props {
 }
 
 export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame, start, end, playing, onFrame, onPlaying, skeleton, skeletonError, segments, selected, editable, onBoundary, previewBoundary, onChoose, onBoundaryFocus }: Props) {
+  useLanguage();
   const [fps, setFps] = useState(30);
   const nativeClock = useRef(false);
   const skeletonPresenter = useRef<((frame: number) => void) | null>(null);
@@ -89,21 +91,20 @@ export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame,
         onFrameSettled={frameSettled} onFramePresented={framePresented} />
     </div>
     <div className="proofreading-transport">
-      <button className="icon-button" title="上一帧" aria-label="上一帧" onClick={() => seek(frame - 1)}><SkipBack size={17} /></button>
-      <button className="play-button" title={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"} onClick={() => { if (!playing && (frame < start || frame >= end)) onFrame(start); onPlaying(!playing); }}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
-      <button className="icon-button" title="下一帧" aria-label="下一帧" onClick={() => seek(frame + 1)}><SkipForward size={17} /></button>
+      <button className="icon-button" title={t("上一帧")} aria-label={t("上一帧")} onClick={() => seek(frame - 1)}><SkipBack size={17} /></button>
+      <button className="play-button" title={playing ? t("暂停") : t("播放")} aria-label={playing ? t("暂停") : t("播放")} onClick={() => { if (!playing && (frame < start || frame >= end)) onFrame(start); onPlaying(!playing); }}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
+      <button className="icon-button" title={t("下一帧")} aria-label={t("下一帧")} onClick={() => seek(frame + 1)}><SkipForward size={17} /></button>
       <span className="quality-transport-spacer" />
-      <input className="proofread-frame-input" aria-label="当前视频帧" type="number" min={0} max={frameCount - 1} value={frame} onChange={(event) => { if (Number.isInteger(event.currentTarget.valueAsNumber)) seek(event.currentTarget.valueAsNumber); }} />
+      <input className="proofread-frame-input" aria-label={t("当前视频帧")} type="number" min={0} max={frameCount - 1} value={frame} onChange={(event) => { if (Number.isInteger(event.currentTarget.valueAsNumber)) seek(event.currentTarget.valueAsNumber); }} />
       <span>/ {frameCount - 1}</span>
     </div>
     <ReviewTimeline frame={frame} frameCount={frameCount} start={start} end={end} editable={editable}
       segments={segments} selected={selected} onSeek={seek} onBoundary={onBoundary} previewBoundary={previewBoundary} onChoose={onChoose} onBoundaryFocus={onBoundaryFocus} />
-    {(skeleton || skeletonError) && <div className="skeleton-side-panel">
+    {tr((skeleton || skeletonError) && <div className="skeleton-side-panel">
       {skeleton ? <SkeletonViewer skeleton={skeleton} frameId={offset + frame * step}
         playbackStartFrame={offset + start * step} playbackEndFrame={offset + end * step} timelineFps={fps * step}
         timelineStartFrame={offset} timelineEndFrame={offset + (frameCount - 1) * step} playing={playing}
-        nativePlayback={nativeClock.current} onFramePresenterChange={presenterChanged} />
-        : <section className="skeleton-load-error" aria-label="骨架数据"><strong>骨架数据不可用</strong><span>{skeletonError}</span></section>}
-    </div>}
+        nativePlayback={nativeClock.current} onFramePresenterChange={presenterChanged} /> : <section className="skeleton-load-error" aria-label={t("骨架数据")}><strong>{t("骨架数据不可用")}</strong><span>{tr(skeletonError)}</span></section>}
+    </div>)}
   </div>;
 }

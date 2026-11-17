@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import {
   CircleCheck,
   CircleX,
@@ -32,6 +33,7 @@ export function ChecksPanel({
   onExportReport,
   onLocateIssue,
 }: ChecksPanelProps) {
+  useLanguage();
   const sampledImages = report?.imageValidationMode === "sampled";
   const sampleTitle = sampledImages
     ? `固定位置：${report.imageSamplePercentages.map((value) => `${value}%`).join(" / ")}`
@@ -89,13 +91,13 @@ export function ChecksPanel({
     <div className="checks-view">
       <header className="section-heading">
         <div>
-          <span className="section-kicker">DATA HEALTH</span>
-          <h2>数据检查</h2>
+          <span className="section-kicker">{t("数据健康")}</span>
+          <h2>{t("数据检查")}</h2>
         </div>
         <div className="check-heading-actions">
           <button className="button button-primary" type="button" disabled={busy} onClick={onCheck}>
             {busy ? <LoaderCircle className="spin" size={16}/> : <FileCheck2 size={16}/>}
-            {report ? "重新检查" : "运行数据检查"}
+            {report ? t("重新检查") : t("运行数据检查")}
           </button>
           <button
             className="button button-secondary"
@@ -104,8 +106,7 @@ export function ChecksPanel({
             disabled={!report || busy}
           >
             <FileDown size={16} />
-            导出报告
-          </button>
+            {t("导出报告")}</button>
           {report ? <StatusMark status={report.status} /> : null}
         </div>
       </header>
@@ -113,69 +114,69 @@ export function ChecksPanel({
       <section className="check-summary-band">
         <div>
           <FileCheck2 size={18} />
-          <span>已检查文件</span>
+          <span>{t("已检查文件")}</span>
           <strong>{report?.checkedFiles ?? 0}</strong>
         </div>
         <div>
           <Clock3 size={18} />
-          <span>检查耗时</span>
-          <strong>{report ? formatDuration(report.elapsedMs) : "—"}</strong>
+          <span>{t("检查耗时")}</span>
+          <strong>{report ? tr(formatDuration(report.elapsedMs)) : "—"}</strong>
         </div>
         <div>
           <ScrollText size={18} />
-          <span>本地后台报告</span>
-          <strong title={report?.autoReportPath ?? undefined}>{backgroundReportStatus}</strong>
+          <span>{t("本地后台报告")}</span>
+          <strong title={tr(report?.autoReportPath) ?? undefined}>{tr(backgroundReportStatus)}</strong>
         </div>
       </section>
 
-      <section className="stream-checks" aria-label="数据流检查结果">
+      <section className="stream-checks" aria-label={t("数据流检查结果")}>
         <div className="check-table-head">
-          <span>数据流</span>
-          <span>总帧</span>
-          <span title={sampleTitle}>{sampledImages ? "抽检帧" : "已检帧"}</span>
-          <span>解码失败</span>
-          <span>结果</span>
+          <span>{t("数据流")}</span>
+          <span>{t("总帧")}</span>
+          <span title={tr(sampleTitle)}>{sampledImages ? t("抽检帧") : t("已检帧")}</span>
+          <span>{t("解码失败")}</span>
+          <span>{t("结果")}</span>
         </div>
         {checkRows.map((row) => (
           <div className="check-table-row" key={row.key}>
             <span>
-              <strong>{row.label}</strong>
-              <small>{row.detail}</small>
+              <strong>{tr(row.label)}</strong>
+              <small>{tr(row.detail)}</small>
             </span>
             <span>{row.totalFrames}</span>
-            <span>{row.checkedFrames}</span>
-            <span>{row.decodeFailures}</span>
+            <span>{tr(row.checkedFrames)}</span>
+            <span>{tr(row.decodeFailures)}</span>
             <span>
-              {report ? <StatusMark status={row.status} compact /> : <span className="status-mark">未检查</span>}
+              {report ? <StatusMark status={row.status} compact /> : <span className="status-mark">{t("未检查")}</span>}
             </span>
           </div>
         ))}
       </section>
 
-      <section className="issue-list" aria-label="检查问题">
-        <h3>错误与警告</h3>
+      <section className="issue-list" aria-label={t("检查问题")}>
+        <h3>{t("错误与警告")}</h3>
         {!report ? (
           <div className="issue-empty">
             <LoaderCircle className={busy ? "spin" : undefined} size={18} />
-            {busy ? "正在检查" : "尚未检查，点击“运行数据检查”查看完整结果。"}
+            {busy ? t("正在检查") : t("尚未检查，点击“运行数据检查”查看完整结果。")}
           </div>
         ) : orderedIssues.length ? (
           orderedIssues.map((issue, index) => (
             <div className={`issue-row issue-${issue.severity}`} key={`${issue.code}-${index}`}>
               <span className="issue-severity">
                 {issue.severity === "error" ? <CircleX size={16} /> : <TriangleAlert size={16} />}
-                {issue.severity === "error" ? "错误" : "警告"}
+                {issue.severity === "error" ? t("错误") : t("警告")}
               </span>
-              <span className="issue-scope">{issue.scope}</span>
-              <span>{issue.message}</span>
-              <code>{issue.code}</code>
+              <span className="issue-scope">{tr(issue.scope)}</span>
+              <span>{tr(issue.message)}</span>
+              <code>{tr(issue.code)}</code>
               {issue.frameId !== null ? (
                 <button
                   className="icon-button issue-locate"
                   type="button"
                   onClick={() => onLocateIssue(issue)}
-                  title={`定位到帧 ${issue.frameId}`}
-                  aria-label={`定位到帧 ${issue.frameId}`}
+                  title={t("定位到帧 {0}", [issue.frameId])}
+                  aria-label={t("定位到帧 {0}", [issue.frameId])}
                 >
                   <LocateFixed size={15} />
                 </button>
@@ -185,8 +186,7 @@ export function ChecksPanel({
         ) : (
           <div className="issue-empty">
             <CircleCheck size={18} />
-            未发现问题
-          </div>
+            {t("未发现问题")}</div>
         )}
       </section>
     </div>
@@ -200,12 +200,13 @@ function StatusMark({
   status: "ok" | "warning" | "error";
   compact?: boolean;
 }) {
+  useLanguage();
   const labels = { ok: "通过", warning: "警告", error: "错误" };
   const Icon = status === "ok" ? CircleCheck : status === "warning" ? TriangleAlert : CircleX;
   return (
     <span className={`status-mark status-${status}${compact ? " status-compact" : ""}`}>
       <Icon size={compact ? 15 : 17} />
-      {labels[status]}
+      {tr(labels[status])}
     </span>
   );
 }

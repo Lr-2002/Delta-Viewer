@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { RotateCcw, Scissors, SkipBack, SkipForward } from "lucide-react";
 import type { ExportRange } from "../types";
 
@@ -30,32 +31,32 @@ export function TrimControls({
   onMarkEnd,
   onReset,
 }: TrimControlsProps) {
+  useLanguage();
   const span = Math.max(1, maxFrame - minFrame);
   const startPercent = ((range.startFrame - minFrame) / span) * 100;
   const endPercent = ((range.endFrame - minFrame) / span) * 100;
   const playheadPercent = ((currentFrame - minFrame) / span) * 100;
 
   return (
-    <section className="trim-editor" aria-label="轨迹时间裁剪">
+    <section className="trim-editor" aria-label={t("轨迹时间裁剪")}>
       <div className="trim-heading">
         <span className="trim-title">
           <Scissors size={16} />
-          <strong>时间裁剪</strong>
+          <strong>{t("时间裁剪")}</strong>
         </span>
         <span className="trim-summary">
-          帧 {range.startFrame}–{range.endFrame}
+          {t("帧") + " "}{range.startFrame}–{range.endFrame}
           <i />
-          {stateCount} 条状态
-          <i />
-          {formatDuration(durationMs)}
+          {stateCount}{" " + t("条状态")}<i />
+          {tr(formatDuration(durationMs))}
         </span>
         <button
           className="icon-button trim-reset"
           type="button"
           onClick={onReset}
           disabled={disabled || (range.startFrame === minFrame && range.endFrame === maxFrame)}
-          title="重置为完整轨迹"
-          aria-label="重置为完整轨迹"
+          title={t("重置为完整轨迹")}
+          aria-label={t("重置为完整轨迹")}
         >
           <RotateCcw size={15} />
         </button>
@@ -72,7 +73,7 @@ export function TrimControls({
       </div>
 
       <div className="trim-range-row">
-        <label htmlFor="trim-start-range">起点</label>
+        <label htmlFor="trim-start-range">{t("起点")}</label>
         <input
           id="trim-start-range"
           type="range"
@@ -94,16 +95,16 @@ export function TrimControls({
             }
           }}
           disabled={disabled}
-          aria-label="裁剪起始帧"
+          aria-label={t("裁剪起始帧")}
         />
-        <button className="button button-secondary trim-mark" type="button" onClick={onMarkStart} disabled={disabled} title="将起点设为当前帧">
+        <button className="button button-secondary trim-mark" type="button" onClick={onMarkStart} disabled={disabled} title={t("将起点设为当前帧")}>
           <SkipBack size={14} />
-          <span>当前帧</span>
+          <span>{t("当前帧")}</span>
         </button>
       </div>
 
       <div className="trim-range-row">
-        <label htmlFor="trim-end-range">终点</label>
+        <label htmlFor="trim-end-range">{t("终点")}</label>
         <input
           id="trim-end-range"
           type="range"
@@ -125,11 +126,11 @@ export function TrimControls({
             }
           }}
           disabled={disabled}
-          aria-label="裁剪结束帧"
+          aria-label={t("裁剪结束帧")}
         />
-        <button className="button button-secondary trim-mark" type="button" onClick={onMarkEnd} disabled={disabled} title="将终点设为当前帧">
+        <button className="button button-secondary trim-mark" type="button" onClick={onMarkEnd} disabled={disabled} title={t("将终点设为当前帧")}>
           <SkipForward size={14} />
-          <span>当前帧</span>
+          <span>{t("当前帧")}</span>
         </button>
       </div>
     </section>

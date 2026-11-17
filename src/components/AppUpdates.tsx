@@ -1,3 +1,4 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CircleAlert, Download, LoaderCircle, RefreshCw, X } from "lucide-react";
@@ -20,6 +21,7 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
   onDownload: () => Promise<void>; onInstall: () => Promise<void>; onViewHistory: () => void;
   check?: (source?: AppUpdateSource) => Promise<AppUpdateInfo>;
 }) {
+  useLanguage();
   const [downloadSource, setDownloadSource] = useState<AppUpdateSource>(() => {
     const value = read(sourceKey); return value === "lan" || value === "github" ? value : "auto";
   });
@@ -98,42 +100,39 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
   const label = ready ? "更新已准备好" : available ? `新版本 v${info?.latestVersion} 可用` : "版本与更新";
 
   return <>
-    <button type="button" className={`button button-secondary app-update-entry${available ? " has-update" : ""}`} onClick={() => setPanel(true)} aria-label="版本与更新" title={label}>
+    <button type="button" className={`button button-secondary app-update-entry${available ? " has-update" : ""}`} onClick={() => setPanel(true)} aria-label={t("版本与更新")} title={tr(label)}>
       {working ? <LoaderCircle size={15} className="spin" /> : error ? <CircleAlert size={15} /> : available ? <Download size={15} /> : <RefreshCw size={15} />}
-      <span>版本与更新</span>{available && <span className="update-dot" aria-label={ready ? "更新已准备好" : "有新版本"} />}
+      <span>{t("版本与更新")}</span>{available && <span className="update-dot" aria-label={ready ? t("更新已准备好") : t("有新版本")} />}
     </button>
     {notice && createPortal(<UpdateToast key={`${notice}:${notice === "installed" ? version : info?.latestVersion}`}
-      title={notice === "installed" ? `已更新至 v${version}` : notice === "ready" ? "更新已准备好" : `新版本 v${info?.latestVersion} 可用`}
-      message={notice === "installed" ? currentSummary : notice === "ready" ? `v${info?.latestVersion} 已下载并验证，您可以选择合适的时间安装。` : summary(info?.notes ?? null)}
-      primaryLabel={notice === "installed" ? "查看完整更新记录" : notice === "ready" ? "查看并安装" : "查看更新"}
-      secondaryLabel={notice === "installed" ? "知道了" : notice === "ready" ? "稍后" : "稍后提醒"}
+      title={notice === "installed" ? t("已更新至 v{0}", [tr(version)]) : notice === "ready" ? t("更新已准备好") : t("新版本 v{0} 可用", [tr(info?.latestVersion)])}
+      message={notice === "installed" ? tr(currentSummary) : notice === "ready" ? t("v{0} 已下载并验证，您可以选择合适的时间安装。", [tr(info?.latestVersion)]) : tr(summary(info?.notes ?? null))}
+      primaryLabel={notice === "installed" ? t("查看完整更新记录") : notice === "ready" ? t("查看并安装") : t("查看更新")}
+      secondaryLabel={notice === "installed" ? t("知道了") : notice === "ready" ? t("稍后") : t("稍后提醒")}
       onPrimary={notice === "installed" ? onViewHistory : () => { setNotice(null); setPanel(true); }} onDismiss={dismissNotice}
     />, document.getElementById("app-update-notices") ?? document.body)}
-    {panel && <dialog className="app-update-dialog" aria-label="版本与更新详情" ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setPanel(false)}>
-      <header><div><h2>{label}</h2><p>当前版本 v{version}</p></div><button className="icon-button" type="button" aria-label="关闭版本与更新" onClick={() => setPanel(false)}><X size={18} /></button></header>
-      <label className="update-source-choice">下载线路
-        <select aria-label="更新下载线路" value={downloadSource} disabled={working || ready} onChange={event => {
+    {panel && <dialog className="app-update-dialog" aria-label={t("版本与更新详情")} ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setPanel(false)}>
+      <header><div><h2>{tr(label)}</h2><p>{t("当前版本 v")}{tr(version)}</p></div><button className="icon-button" type="button" aria-label={t("关闭版本与更新")} onClick={() => setPanel(false)}><X size={18} /></button></header>
+      <label className="update-source-choice">{t("下载线路")}<select aria-label={t("更新下载线路")} value={downloadSource} disabled={working || ready} onChange={event => {
           const source = event.target.value as AppUpdateSource;
           write(sourceKey, source); setDownloadSource(source); setInfo(null); void inspect(source);
         }}>
-          <option value="auto">自动（优先公司内网）</option>
-          <option value="lan">公司内网（无需代理）</option>
-          <option value="github">GitHub（外网备用）</option>
+          <option value="auto">{t("自动（优先公司内网）")}</option>
+          <option value="lan">{t("公司内网（无需代理）")}</option>
+          <option value="github">{t("GitHub（外网备用）")}</option>
         </select>
       </label>
-      {phase === "checking" && <p role="status">正在检查所选线路的正式版本，数据载入可继续进行。</p>}
-      {phase === "current" && <p role="status">{info?.downloadSource === "lan" ? `公司内网已同步至 v${info.latestVersion}，当前无需更新。` : "已是最新正式版本。"}</p>}
-      <div className="app-update-notes">{available ? <><h3>本次更新内容</h3><pre>{info?.notes || "此版本未提供更新说明。"}</pre></> : <><h3>当前版本更新摘要</h3><p>{currentSummary}</p><ul>{currentNotes.map((note, i) => <li key={i}>{note}</li>)}</ul></>}</div>
-      <p className="muted">发布来源：github.com/Lr-2002/Delta-Viewer · 正式 Release<br />下载线路：{info?.downloadSource === "lan" ? "公司内网 · 无需访问 GitHub" : info?.downloadSource === "github" ? "GitHub" : "等待检查"}</p>
-      {info?.sourceNote && <p className="muted update-source-note">{info.sourceNote}</p>}
-      {busy && <p role="status">正在处理数据或导出，请等待完成后再下载或安装更新。</p>}
-      {error && <p className="update-error" role="alert">{error}。当前版本可继续使用。</p>}
+      {phase === "checking" && <p role="status">{t("正在检查所选线路的正式版本，数据载入可继续进行。")}</p>}
+      {phase === "current" && <p role="status">{info?.downloadSource === "lan" ? t("公司内网已同步至 v{0}，当前无需更新。", [tr(info.latestVersion)]) : t("已是最新正式版本。")}</p>}
+      <div className="app-update-notes">{available ? <><h3>{t("本次更新内容")}</h3><pre>{info?.notes || t("此版本未提供更新说明。")}</pre></> : <><h3>{t("当前版本更新摘要")}</h3><p>{tr(currentSummary)}</p><ul>{currentNotes.map((note, i) => <li key={i}>{tr(note)}</li>)}</ul></>}</div>
+      <p className="muted">{t("发布来源：github.com/Lr-2002/Delta-Viewer · 正式 Release")}<br />{t("下载线路：")}{info?.downloadSource === "lan" ? t("公司内网 · 无需访问 GitHub") : info?.downloadSource === "github" ? "GitHub" : t("等待检查")}</p>
+      {tr(info?.sourceNote && <p className="muted update-source-note">{tr(info.sourceNote)}</p>)}
+      {busy && <p role="status">{t("正在处理数据或导出，请等待完成后再下载或安装更新。")}</p>}
+      {tr(error && <p className="update-error" role="alert">{tr(error)}{t("。当前版本可继续使用。")}</p>)}
       <footer className="update-actions">
-        {ready && error && <button type="button" className="button button-secondary" disabled={busy || working} onClick={() => void download()}>重新下载</button>}
-        <button type="button" className="button button-secondary" onClick={() => { setPanel(false); if (!installedAcknowledged.current) { write(seenKey, version); installedAcknowledged.current = true; } setNotice(null); }}>稍后</button>
-        {ready ? <button className="button button-primary" type="button" disabled={busy || working} onClick={() => void install()}>{phase === "installing" ? "正在保存并安装…" : "保存并重启更新"}</button>
-          : available ? <button type="button" className="button button-primary" disabled={busy || working} onClick={() => void download()}>{phase === "downloading" ? "正在下载…" : "下载更新"}</button>
-            : <button type="button" className="button button-primary" disabled={working} onClick={() => void inspect()}>检查更新</button>}
+        {tr(ready && error && <button type="button" className="button button-secondary" disabled={busy || working} onClick={() => void download()}>{t("重新下载")}</button>)}
+        <button type="button" className="button button-secondary" onClick={() => { setPanel(false); if (!installedAcknowledged.current) { write(seenKey, version); installedAcknowledged.current = true; } setNotice(null); }}>{t("稍后")}</button>
+        {ready ? <button className="button button-primary" type="button" disabled={busy || working} onClick={() => void install()}>{phase === "installing" ? t("正在保存并安装…") : t("保存并重启更新")}</button> : available ? <button type="button" className="button button-primary" disabled={busy || working} onClick={() => void download()}>{phase === "downloading" ? t("正在下载…") : t("下载更新")}</button> : <button type="button" className="button button-primary" disabled={working} onClick={() => void inspect()}>{t("检查更新")}</button>}
       </footer>
     </dialog>}
   </>;

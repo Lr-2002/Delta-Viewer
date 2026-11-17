@@ -1,8 +1,10 @@
+import { t, tr, useLanguage } from "../lib/i18n";
 import {useState} from "react";
 import {Download,LoaderCircle,RotateCcw} from "lucide-react";
 import {listHistoricalInstallers,revealOutput,type HistoricalInstaller} from "../lib/backend";
 
 export function ReleaseDownload({version,current,busy,onDownload}:{version:string;current:boolean;busy:boolean;onDownload:(version:string,platform:string)=>Promise<string|null>}) {
+  useLanguage();
   const [open,setOpen]=useState(false),[loading,setLoading]=useState(false);
   const [entries,setEntries]=useState<HistoricalInstaller[]>([]),[error,setError]=useState("");
   const [downloading,setDownloading]=useState(false),[output,setOutput]=useState("");
@@ -18,16 +20,16 @@ export function ReleaseDownload({version,current,busy,onDownload}:{version:strin
   }
   return <div className="release-download">
     <button className="button button-secondary" type="button" disabled={busy||loading} onClick={()=>open?setOpen(false):void inspect()} aria-expanded={open}>
-      {loading?<LoaderCircle size={14} className="spin"/>:current?<Download size={14}/>:<RotateCcw size={14}/>}{current?"下载安装包":"下载 / 回退"}
+      {loading ? <LoaderCircle size={14} className="spin"/> : current ? <Download size={14}/> : <RotateCcw size={14}/>}{current ? t("下载安装包") : t("下载 / 回退")}
     </button>
     {open&&<div className="release-download-panel">
-      <p>公司内网下载 · 无需访问 GitHub</p>
-      {loading?<p role="status">正在查找 v{version} 安装包…</p>:entries.map(entry=><button key={entry.key} className="button button-secondary" type="button" disabled={busy||downloading} onClick={()=>void download(entry)}><Download size={14}/>{entry.label}<small>{Math.ceil(entry.size/1024/1024)} MB</small></button>)}
-      {!current&&<p>回退方式：保存当前工作并退出软件，再运行旧版安装包。旧版可能不支持新功能或新格式；回退不会转换已有数据。</p>}
-      <p className="muted">安装包没有可信发布者签名（UNSIGNED），下载后核对大小与 SHA-256；不会自动安装。</p>
-      {error&&<p role="alert">{error}<button className="button button-secondary" type="button" disabled={busy||downloading} onClick={()=>void inspect()}>重试</button></p>}
-      {downloading&&<p role="status"><LoaderCircle size={14} className="spin"/>正在下载并校验…</p>}
-      {output&&<div role="status"><p>已保存并校验：{output}</p><button className="button button-secondary" onClick={()=>void revealOutput(output).catch(cause=>setError(String(cause)))}>打开所在位置</button></div>}
+      <p>{t("公司内网下载 · 无需访问 GitHub")}</p>
+      {loading ? <p role="status">{t("正在查找 v")}{tr(version)}{" " + t("安装包…")}</p> : entries.map(entry=><button key={entry.key} className="button button-secondary" type="button" disabled={busy||downloading} onClick={()=>void download(entry)}><Download size={14}/>{tr(entry.label)}<small>{Math.ceil(entry.size/1024/1024)} MB</small></button>)}
+      {!current&&<p>{t("回退方式：保存当前工作并退出软件，再运行旧版安装包。旧版可能不支持新功能或新格式；回退不会转换已有数据。")}</p>}
+      <p className="muted">{t("安装包没有可信发布者签名（UNSIGNED），下载后核对大小与 SHA-256；不会自动安装。")}</p>
+      {tr(error&&<p role="alert">{tr(error)}<button className="button button-secondary" type="button" disabled={busy||downloading} onClick={()=>void inspect()}>{t("重试")}</button></p>)}
+      {downloading&&<p role="status"><LoaderCircle size={14} className="spin"/>{t("正在下载并校验…")}</p>}
+      {tr(output&&<div role="status"><p>{t("已保存并校验：")}{tr(output)}</p><button className="button button-secondary" onClick={()=>void revealOutput(output).catch(cause=>setError(String(cause)))}>{t("打开所在位置")}</button></div>)}
     </div>}
   </div>;
 }
