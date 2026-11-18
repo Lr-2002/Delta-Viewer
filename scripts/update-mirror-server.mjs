@@ -714,9 +714,30 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function renderIndex(current, baseUrl) {
+async function candidateDownloads(configuration, baseUrl) {
+  try {
+    const marker = path.join(configuration.cacheRoot, "candidate-downloads.json");
+    const markerInfo = await lstat(marker);
+    if (!markerInfo.isFile() || markerInfo.isSymbolicLink() || markerInfo.size > 16384) return "";
+    const entry = JSON.parse(await readFile(marker, "utf8"));
+    const version = requireSemver(entry.version);
+    if (entry.schemaVersion !== 1 || entry.channel !== "candidate" || !/^[a-f0-9]{40}$/.test(entry.commit)) return "";
+    const name = `Delta-Viewer_${version}_UNSIGNED_windows-x64-setup.exe`;
+    if (entry.fileName !== name) return "";
+    requireBoundedSize(entry.size, MAX_INSTALLER_BYTES, "candidate installer");
+    requireSha256(entry.sha256, "candidate installer hash");
+    const info = await lstat(path.join(configuration.cacheRoot, "versions", `v${version}`, name));
+    if (!info.isFile() || info.isSymbolicLink() || info.size !== entry.size) return "";
+    return `<section aria-label="候选更新"><h1>候选更新 v${escapeHtml(version)}</h1><p>尚未发布为 GitHub 正式版，供提前安装验证。请先保存审核工作并正常退出待更新的软件，再安装。</p><p><a href="${escapeHtml(localAssetUrl(baseUrl, version, name))}">下载 Windows 10/11 x64 候选安装包</a><br><code>${escapeHtml(name)}</code><br><small>SHA-256: <code>${escapeHtml(entry.sha256)}</code></small></p><p>1.11.4 及更早版本首次需手动安装一次，之后可在软件内接收候选更新。安装包不具备可信发布者身份。</p></section><hr>`;
+  } catch {
+    // Optional publication metadata cannot hide the last verified stable release.
+    return "";
+  }
+}
+
+function renderIndex(current, baseUrl, candidate = "") {
   if (!current) {
-    return "<!doctype html><meta charset=\"utf-8\"><title>Delta Viewer 更新服务</title><h1>更新尚未就绪</h1><p>服务正在同步已签名版本，请稍后刷新。</p>";
+    return `<!doctype html><meta charset="utf-8"><title>Delta Viewer 更新服务</title>${candidate}<h1>正式更新尚未就绪</h1><p>服务正在同步已签名正式版本，请稍后刷新。</p>`;
   }
   const links = current.release.installers.map((installer) => (
     `<li><a href="${escapeHtml(localAssetUrl(baseUrl, current.version, installer.fileName))}">${escapeHtml(installer.label)}</a>`
@@ -727,6 +748,7 @@ function renderIndex(current, baseUrl) {
 <html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Delta Viewer v${escapeHtml(current.version)}</title>
 <style>body{max-width:900px;margin:40px auto;padding:0 20px;font:15px/1.55 system-ui;color:#171717}li{margin:18px 0}code{overflow-wrap:anywhere}a{color:#111;font-weight:650}</style>
+${candidate}
 <h1>Delta Viewer v${escapeHtml(current.version)}</h1>
 <p>请选择对应平台安装包。当前安装包没有可信发布者身份，安装前请核对下列 SHA-256。</p>
 <ul>${links}</ul>
@@ -1027,8 +1049,10 @@ export function createUpdateMirror(inputConfiguration, dependencies = {}) {
         return;
       }
       if (url.pathname === "/") {
-        const body = Buffer.from(renderIndex(state.current, requestBaseUrl(configuration, request)));
-        response.writeHead(state.current ? 200 : 503, {
+        const baseUrl = requestBaseUrl(configuration, request);
+        const candidate = await candidateDownloads(configuration, baseUrl);
+        const body = Buffer.from(renderIndex(state.current, baseUrl, candidate));
+        response.writeHead(state.current || candidate ? 200 : 503, {
           "cache-control": "no-cache",
           "content-length": body.length,
           "content-type": "text/html; charset=utf-8",

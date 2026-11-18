@@ -5,7 +5,7 @@ import {
   randomBytes,
   sign as signEd25519,
 } from "node:crypto";
-import { readFile, rm, mkdtemp, writeFile } from "node:fs/promises";
+import { readFile, rm, mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { createServer, request as requestHttp } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -47,6 +47,29 @@ test("historical installers stream through LAN without changing the current rele
     assert.equal((await fetch(`${publicBaseUrl}/releases/v1.8.9/release.json`)).status,404,"missing public manifests still fail closed");
     assert.equal(mirror.state.current.version,"1.9.4");
     assert.equal(await readFile(path.join(cacheRoot,"versions","v1.9.1","release.json")).catch(()=>null),null,"old installer downloads do not fill the rolling cache");
+    const stable = await fetch(`${publicBaseUrl}/client/latest.json`).then(r=>r.text());
+    const pointer = await readFile(path.join(cacheRoot,"current.json"),"utf8");
+    const candidateVersion="1.9.5",fileName=`Delta-Viewer_${candidateVersion}_UNSIGNED_windows-x64-setup.exe`;
+    const candidate=Buffer.alloc(1024*1024,73),candidateDir=path.join(cacheRoot,"versions",`v${candidateVersion}`);
+    await mkdir(candidateDir);
+    await writeFile(path.join(candidateDir,fileName),candidate);
+    const candidateMetadata={schemaVersion:1,channel:"candidate",version:candidateVersion,commit:"a".repeat(40),fileName,size:candidate.length,sha256:sha256(candidate)};
+    const marker=path.join(cacheRoot,"candidate-downloads.json");
+    await writeFile(marker,JSON.stringify(candidateMetadata));
+    const index=await fetch(publicBaseUrl).then(r=>r.text());
+    assert.ok(index.includes('候选更新 v1.9.5')&&index.includes('Delta Viewer v1.9.4'),'candidate and stable are individually named');
+    assert.ok(index.includes('尚未发布为 GitHub 正式版')&&index.includes(sha256(candidate)));
+    const download=await fetch(`${publicBaseUrl}/releases/v${candidateVersion}/${fileName}`,{headers:{range:'bytes=8-31'}});
+    assert.equal(download.status,206);assert.deepEqual(Buffer.from(await download.arrayBuffer()),candidate.subarray(8,32));
+    await mirror.sync();
+    assert.equal(await readFile(path.join(candidateDir,fileName)).then(sha256),sha256(candidate),'stable cache cleanup keeps separately published candidate');
+    assert.equal(await fetch(`${publicBaseUrl}/client/latest.json`).then(r=>r.text()),stable,'candidate does not impersonate a stable app update');
+    assert.equal(JSON.parse(await readFile(path.join(cacheRoot,"current.json"),"utf8")).version,JSON.parse(pointer).version);
+    for(const bad of [{...candidateMetadata,fileName:'../../secrets'},{...candidateMetadata,version:'../1.9.5'},{...candidateMetadata,size:candidate.length+1},{...candidateMetadata,sha256:'<script>alert(1)</script>'}]){
+      await writeFile(marker,JSON.stringify(bad));
+      const html=await fetch(publicBaseUrl).then(r=>r.text());
+      assert.ok(!html.includes('aria-label="候选更新"')&&html.includes('Delta Viewer v1.9.4'),'invalid optional candidate never hides stable downloads');
+    }
   }finally{await mirror?.stop();await close(upstream);await rm(cacheRoot,{recursive:true,force:true});}
 });
 

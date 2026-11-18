@@ -11,3 +11,9 @@
 `.github/workflows/candidate.yml` 先运行与 CI 一致的完整检查，再绑定 exact commit，默认只构建 Windows。手动触发可选 macOS、Ubuntu 或 all；各平台复用既有资源、原生构建、安装／启动／卸载和 unsigned 校验。工作流只上传签名候选 artifact，不发布 GitHub Release。`scripts/candidate-updates.mjs` 准备、核验清单与包，签名仅在 GitHub Secret 对应步骤可见，再生成外层清单。发布者从成功 workflow 下载该 artifact，先 verify，再 publish 至专属只读 HTTPS 目录；发布不依赖或修改用户中心、审核或设备服务。原子更新最新指针，拒绝旧构建降版本，同版本仅允许完全相同字节的重试。实际公网启用及当前候选身份另按部署回执核实。
 
 后续每轮顺序：更新版本和中文摘要 → 完整检查 → 所需平台候选构建和签名 → 验证 artifact 并投放软件内候选 → Windows／用户验证 → 确认验收源码 → 三平台正式 GitHub Release。首次引导安装另向用户明确说明；不能为了测试安装而关闭其保留的旧窗口。
+
+## 内网首次安装入口
+
+内网旧服务只同步 GitHub 正式 Release，因此新候选没有自动出现在内网页面。分发维护补充独立候选安装入口：发布者先核对成功候选工作流、源码 commit、包的大小／哈希／签名及 Windows 安装／启动／卸载报告，再原子放入内网版本目录，最后写 `candidate-downloads.json`。页面将候选版本、尚未正式发布、Windows 下载与 SHA-256 单独列出；旧正式下载及 `/client/latest.json` 身份不变，不伪造旧版能够自动接收候选。
+
+此修改仅用于内网更新服务，不改 Manager 编译产物。可在独立分发分支维护，候选二进制仍绑定其原始构建 commit。无候选文件、元数据异常或包大小不符时，页面继续提供已验证正式版本。当前已备妥源码和回归，是否实际上架以安装包发布及 HTTP 下载验证回执为准。
