@@ -201,6 +201,10 @@ jobs:
       WEBVIEW2_SHA256: 477c6a0cf79d29fdbfca3ea337fabe952a439b5da38d025cd2c59cc65a87947d
       WEBVIEW2_TAURI_RESOLVER_URL: https://go.microsoft.com/fwlink/?linkid=2124701
     steps:
+      - name: Preserve exact repository line endings for source identity checks
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
       - name: Check out bound release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
