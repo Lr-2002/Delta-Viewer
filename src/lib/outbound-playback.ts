@@ -14,12 +14,13 @@ export class OutboundPlayback {
   private starting: number | null = null;
   private priming = false;
   private primingUntil = 0;
+  private recoveryUntil = 0;
   private generation = 0;
   private speed = 1;
   private masterId: number | null = null;
   private timer: ReturnType<typeof setInterval>;
 
-  constructor(private report: (state: OutboundPlaybackState) => void, private failed: () => void) {
+  constructor(private report: (state: OutboundPlaybackState) => void, private failed: () => void, private finished: () => void = () => {}) {
     this.timer = setInterval(() => this.tick(), 160);
   }
 
@@ -30,12 +31,13 @@ export class OutboundPlayback {
     this.players.delete(id);
     if (player) {
       this.players.set(id, player);
+      player.defaultPlaybackRate = this.speed;
       player.playbackRate = this.speed;
       const waiting = () => {
         if (this.intent && !player.ended) this.hold();
       };
       const canplay = () => this.tick();
-      const ended = () => { if (this.intent) this.pause(); };
+      const ended = () => this.tick();
       player.addEventListener("waiting", waiting);
       player.addEventListener("canplay", canplay);
       player.addEventListener("ended", ended);
@@ -50,7 +52,12 @@ export class OutboundPlayback {
   }
 
   private master() {
-    return this.masterId === null ? this.players.get(Math.min(...this.players.keys())) : this.players.get(this.masterId);
+    const preferred = this.masterId === null ? this.players.get(Math.min(...this.players.keys())) : this.players.get(this.masterId);
+    // A shorter camera freezes its last frame; it must not truncate another
+    // camera's tail or advance the whole recording prematurely.
+    const longest = [...this.players.values()].filter(p=>Number.isFinite(p.duration)&&p.duration>0)
+      .sort((a,b)=>b.duration-a.duration)[0];
+    return longest && (!preferred || longest.duration > preferred.duration+.05) ? longest : preferred;
   }
 
   setMaster(id: number | null) { this.masterId = id; this.publish(); }
@@ -59,16 +66,22 @@ export class OutboundPlayback {
     const master = this.master();
     const durations = [...this.players.values()].map(v => v.duration).filter(v => Number.isFinite(v) && v > 0);
     this.report({ playing: this.intent, buffering: this.intent && this.held,
-      position: master?.currentTime ?? 0, duration: durations.length ? Math.min(...durations) : 0 });
+      position: master?.currentTime ?? 0, duration: durations.length ? Math.max(...durations) : 0 });
   }
 
   private hold() {
+    if (!this.held) this.recoveryUntil = performance.now() + (this.speed > 3 ? 2500 : 0);
     this.held = true;
     // Keep the starved decoder trying to play. Pausing it at HAVE_CURRENT_DATA
     // can leave WebView2 waiting for canplay even after network bytes arrive.
     // Healthy peers wait here; canplay resumes them without a polling delay.
-    for (const player of this.players.values())
+    for (const player of this.players.values()) {
       if (player.readyState >= 3) player.pause();
+      // A decoder with data can recover at a modest rate while its peers wait.
+      // The requested rate is restored before the group resumes; this is not
+      // a hidden change to the user's playback speed or source quality.
+      else if (this.speed > 3) player.playbackRate = Math.min(this.speed, 2);
+    }
     this.publish();
   }
 
@@ -112,8 +125,14 @@ export class OutboundPlayback {
   }
 
   setSpeed(speed: number) {
+    const increased = speed > this.speed;
     this.speed = speed;
-    for (const player of this.players.values()) player.playbackRate = speed;
+    if (speed <= 3) this.recoveryUntil = 0;
+    for (const player of this.players.values()) {
+      player.defaultPlaybackRate = speed;
+      player.playbackRate = speed;
+    }
+    if (this.intent && increased && speed > 3) { this.prime(); this.hold(); this.tick(); }
     this.publish();
   }
 
@@ -121,11 +140,11 @@ export class OutboundPlayback {
 
   private prime() {
     this.priming = true;
-    this.primingUntil = performance.now() + 2000;
+    this.primingUntil = performance.now() + (this.speed > 3 ? 4000 : 2000);
   }
 
-  private hasStartupBuffer(player: HTMLVideoElement) {
-    const needed = Math.min(1.25 * this.speed, Math.max(0, player.duration - player.currentTime - .04));
+  private hasStartupBuffer(player: HTMLVideoElement, recovery = false) {
+    const needed = Math.min((this.speed > 3 ? recovery ? 1.5 : 3 : 1.25) * this.speed, Math.max(0, player.duration - player.currentTime - .04));
     for (let i = 0; i < player.buffered.length; i++) {
       if (player.buffered.start(i) <= player.currentTime + .02
         && player.buffered.end(i) - player.currentTime >= needed) return true;
@@ -136,18 +155,20 @@ export class OutboundPlayback {
   private tick() {
     const master = this.master();
     if (this.intent && master) {
-      if (master.ended) { this.pause(); return; }
+      if (master.ended) { this.pause(); this.finished(); return; }
       if (this.held) {
         // A decoded first frame may represent only .25 seconds of high-rate
-        // video. Reserve a small lead once at start/seek, capped at two seconds;
-        // ongoing recovery keeps the hungry decoder running as before.
-        if (this.starting !== this.generation && [...this.players.values()].every(v => v.readyState >= 3 && !v.seeking
-          && (!this.priming || performance.now() >= this.primingUntil || this.hasStartupBuffer(v)))) {
+        // video. Reserve a rate-scaled lead at start/seek/rate increase.
+        // Recovery has a separate bounded wait and keeps hungry decoders active.
+        if (this.starting !== this.generation && [...this.players.values()].every(v => v.ended || v.readyState >= 3 && !v.seeking
+          && (!this.priming || performance.now() >= this.primingUntil || this.hasStartupBuffer(v))
+          && (this.priming || performance.now() >= this.recoveryUntil || this.hasStartupBuffer(v, true)))) {
           const generation = this.generation;
           this.held = false;
           this.priming = false;
+          for (const player of this.players.values()) player.playbackRate = this.speed;
           this.starting = generation;
-          void Promise.all([...this.players.values()].map(player => player.play())).catch(error => {
+          void Promise.all([...this.players.values()].filter(player=>!player.ended).map(player => player.play())).catch(error => {
             // Our pause/seek can abort an in-flight play promise.
             if (generation === this.generation && this.intent && !this.held && error?.name !== "AbortError") {
               this.pause(); this.failed();
@@ -156,7 +177,7 @@ export class OutboundPlayback {
         }
       } else {
         for (const player of this.players.values()) {
-          if (player === master || player.seeking || player.readyState < 3) continue;
+          if (player === master || player.ended || player.seeking || player.readyState < 3) continue;
           // Small clock drift is corrected without discarding decoded frames.
           const drift = player.currentTime - master.currentTime;
           const rate = this.speed * (Math.abs(drift) < .08 ? 1 : Math.max(.92, Math.min(1.08, 1 - drift * .2)));
