@@ -113,3 +113,23 @@ export async function releaseOutboundVideos(urls:string[]) {
   if(!urls.length)return;
   try {await outboundCall({action:"release-media",urls});} catch { /* Session change already invalidates its routes. */ }
 }
+
+export async function outboundMediaFailure(url:string):Promise<string|null> {
+  try {
+    const {code}=await outboundCall<{code:string|null}>({action:"media-status",url});
+    const messages:Record<string,string>={
+      OUTBOUND_MEDIA_INDEX_MISSING:"源视频缺少播放索引，文件未完整封装；重试无法修复，请联系数据提供方检查原录制。",
+      OUTBOUND_MEDIA_CONTAINER_INVALID:"源视频容器结构不完整，请联系数据提供方检查原录制。",
+      OUTBOUND_MEDIA_EXPIRED:"视频访问凭证已失效，请重试失败视频；若仍失败，请刷新批次核对领取状态。",
+      OUTBOUND_MEDIA_TIMEOUT:"视频读取超时，请检查网络后重试失败视频。",
+      OUTBOUND_MEDIA_NETWORK:"视频传输中断，请检查网络后重试失败视频。",
+      OUTBOUND_MEDIA_BUSY:"视频读取服务繁忙，请稍后重试失败视频。",
+      OUTBOUND_MEDIA_UPSTREAM:"视频源站暂时不可用，请稍后重试失败视频。",
+      OUTBOUND_SOURCE_CHANGED:"原始视频来源发生变化，未用于审核。",
+      OUTBOUND_VIDEO_NOT_FOUND:"源视频文件不可用，请联系管理员核对来源。",
+      OUTBOUND_MEDIA_INTEGRITY:"视频响应与源文件信息不一致，已停止读取，请联系管理员检查。",
+      OUTBOUND_MEDIA_RESPONSE_INVALID:"视频读取服务返回异常，请稍后重试失败视频。",
+    };
+    return code?messages[code]??null:null;
+  } catch { return null; }
+}

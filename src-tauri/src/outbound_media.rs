@@ -39,8 +39,15 @@ struct Route {
     released: AtomicBool,
     // Verified object metadata only; every block still rechecks live authority.
     verified: Mutex<Option<(u64, Option<String>)>>,
+    inspected: tokio::sync::Mutex<Option<bool>>,
+    failure: Mutex<Option<&'static str>>,
 }
 impl Route {
+    fn fail(&self, code: &'static str) {
+        if let Ok(mut failure) = self.failure.lock() {
+            *failure = Some(code);
+        }
+    }
     fn valid(&self) -> bool {
         !self.released.load(Ordering::Relaxed)
             && self.created.elapsed() < LIFETIME
@@ -145,9 +152,43 @@ impl OutboundMediaServer {
                 created: Instant::now(),
                 released: AtomicBool::new(false),
                 verified: Mutex::new(None),
+                inspected: tokio::sync::Mutex::new(None),
+                failure: Mutex::new(None),
             }),
         );
         Ok(format!("http://{}{PREFIX}{token}", self.address))
+    }
+    fn local_token(&self, value: &str) -> AppResult<String> {
+        let url = Url::parse(value).map_err(|_| invalid())?;
+        let token = url.path().strip_prefix(PREFIX).ok_or_else(invalid)?;
+        if url.scheme() != "http"
+            || url.host_str() != Some("127.0.0.1")
+            || url.port() != Some(self.address.port())
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || token.len() != 64
+            || !token.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(invalid());
+        }
+        Ok(token.to_owned())
+    }
+    // Read only, bounded codes; no network, ticket, object path or credentials.
+    pub fn status(&self, auth: &AuthState, url: &str) -> AppResult<Option<&'static str>> {
+        let session = auth.managed_session()?;
+        let token = self.local_token(url)?;
+        let routes = self.routes.lock().map_err(|_| invalid())?;
+        let route = routes
+            .get(&token)
+            .filter(|route| route.session == session)
+            .ok_or_else(invalid)?;
+        if !route.valid() {
+            return Ok(Some("OUTBOUND_MEDIA_EXPIRED"));
+        }
+        let code = *route.failure.lock().map_err(|_| invalid())?;
+        Ok(code)
     }
     pub fn release(&self, auth: &AuthState, urls: &[String]) -> AppResult<()> {
         let session = auth.managed_session()?;
@@ -219,7 +260,7 @@ impl OutboundMediaServer {
         tokio::select! {
             _ = work => {},
             _ = reader.read(&mut unexpected) => {},
-            _ = tokio::time::sleep(Duration::from_secs(30)) => {},
+            _ = tokio::time::sleep(Duration::from_secs(30)) => { route.fail("OUTBOUND_MEDIA_TIMEOUT"); },
             _ = async { loop { tokio::time::sleep(Duration::from_millis(100)).await; if !route.valid() { break } } } => {},
         }
         Ok(())
@@ -230,6 +271,9 @@ impl OutboundMediaServer {
         request: &Request,
         writer: &mut OwnedWriteHalf,
     ) -> Result<(), ()> {
+        if request.method == "GET" {
+            self.inspect_mp4(route).await?;
+        }
         let open = request
             .range
             .as_deref()
@@ -397,11 +441,26 @@ impl OutboundMediaServer {
         if let Some((_, Some(etag))) = expected {
             request = request.header("If-Match", etag);
         }
-        let response = request.send().await.map_err(|_| ())?;
+        let response = request.send().await.map_err(|error| {
+            route.fail(if error.is_timeout() {
+                "OUTBOUND_MEDIA_TIMEOUT"
+            } else {
+                "OUTBOUND_MEDIA_NETWORK"
+            });
+        })?;
         if response.status().as_u16() != 206 || !route.valid() {
+            route.fail(match response.status().as_u16() {
+                401 | 403 => "OUTBOUND_MEDIA_EXPIRED",
+                409 | 412 => "OUTBOUND_SOURCE_CHANGED",
+                429 | 503 => "OUTBOUND_MEDIA_BUSY",
+                502 | 504 => "OUTBOUND_MEDIA_UPSTREAM",
+                404 => "OUTBOUND_VIDEO_NOT_FOUND",
+                _ => "OUTBOUND_MEDIA_RESPONSE_INVALID",
+            });
             return Err(());
         }
-        let (actual_start, actual_end, total) = content_range(&response).ok_or(())?;
+        let (actual_start, actual_end, total) = content_range(&response)
+            .ok_or_else(|| route.fail("OUTBOUND_MEDIA_RESPONSE_INVALID"))?;
         let etag = response
             .headers()
             .get("etag")
@@ -414,18 +473,21 @@ impl OutboundMediaServer {
             || response.content_length() != Some(length)
             || expected.is_some_and(|(size, tag)| size != total || tag != etag.as_deref())
         {
+            route.fail("OUTBOUND_MEDIA_INTEGRITY");
             return Err(());
         }
         let mut body = Vec::with_capacity(length as usize);
         let mut stream = response.bytes_stream();
         while let Some(bytes) = stream.next().await {
-            let bytes = bytes.map_err(|_| ())?;
+            let bytes = bytes.map_err(|_| route.fail("OUTBOUND_MEDIA_NETWORK"))?;
             if body.len() + bytes.len() > length as usize || !route.valid() {
+                route.fail("OUTBOUND_MEDIA_INTEGRITY");
                 return Err(());
             }
             body.extend_from_slice(&bytes);
         }
         if body.len() as u64 != length {
+            route.fail("OUTBOUND_MEDIA_INTEGRITY");
             return Err(());
         }
         Ok(Part {
@@ -435,6 +497,69 @@ impl OutboundMediaServer {
             body,
         })
     }
+    async fn inspect_mp4(&self, route: &Route) -> Result<(), ()> {
+        let mut inspected = route.inspected.lock().await;
+        if let Some(valid) = *inspected {
+            return if valid { Ok(()) } else { Err(()) };
+        }
+        // Skip media payload by declared box lengths. A missing end index must
+        // never cause WebView2 to download hundreds of MiB looking for it.
+        let first = self.part(route, 0, 65535, None).await?;
+        let total = first.total;
+        let etag = first.etag.as_deref();
+        let mut offset = 0_u64;
+        for _ in 0..64 {
+            if offset == total {
+                route.fail("OUTBOUND_MEDIA_INDEX_MISSING");
+                *inspected = Some(false);
+                return Err(());
+            }
+            let extra;
+            let bytes = if offset.saturating_add(16) <= first.body.len() as u64 {
+                &first.body[offset as usize..offset as usize + 16]
+            } else {
+                extra = self
+                    .part(
+                        route,
+                        offset,
+                        offset.saturating_add(15).min(total - 1),
+                        Some((total, etag)),
+                    )
+                    .await?;
+                &extra.body[..]
+            };
+            let header = mp4_box(bytes, offset, total);
+            let Some((size, kind)) = header else {
+                route.fail("OUTBOUND_MEDIA_CONTAINER_INVALID");
+                *inspected = Some(false);
+                return Err(());
+            };
+            if &kind == b"moov" {
+                *route.verified.lock().map_err(|_| ())? = Some((total, first.etag.clone()));
+                *inspected = Some(true);
+                return Ok(());
+            }
+            offset += size;
+        }
+        // Unusual containers beyond the inspection budget remain decoder-owned.
+        *inspected = Some(true);
+        Ok(())
+    }
+}
+fn mp4_box(bytes: &[u8], offset: u64, total: u64) -> Option<(u64, [u8; 4])> {
+    let kind = bytes.get(4..8)?.try_into().ok()?;
+    let size = u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?);
+    let size = match size {
+        0 => total.checked_sub(offset)?,
+        1 => u64::from_be_bytes(bytes.get(8..16)?.try_into().ok()?),
+        value => u64::from(value),
+    };
+    let minimum = if bytes.get(..4)? == [0, 0, 0, 1] {
+        16
+    } else {
+        8
+    };
+    (size >= minimum && offset.checked_add(size)? <= total).then_some((size, kind))
 }
 struct Part {
     total: u64,
@@ -570,6 +695,8 @@ mod tests {
                 created: Instant::now(),
                 released: AtomicBool::new(false),
                 verified: Mutex::new(None),
+                inspected: tokio::sync::Mutex::new(None),
+                failure: Mutex::new(None),
             }),
         );
         format!("http://{}{PREFIX}{token}", server.address)
@@ -644,6 +771,122 @@ mod tests {
                 .unwrap();
         });
     }
+    fn fixture_byte(i: u64) -> u8 {
+        b"\0\0\0\x08ftyp\0\0\0\x08moov"
+            .get(i as usize)
+            .copied()
+            .unwrap_or((i % 251) as u8)
+    }
+    #[test]
+    fn missing_mp4_index_is_detected_without_downloading_the_video() {
+        tauri::async_runtime::block_on(async {
+            let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let origin = fixture.local_addr().unwrap();
+            let mode = Arc::new(AtomicUsize::new(0));
+            let read_bytes = Arc::new(AtomicUsize::new(0));
+            let m = mode.clone();
+            let count = read_bytes.clone();
+            let upstream = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = fixture.accept().await {
+                    let request = read_request(&mut socket).await.unwrap();
+                    let mode = m.load(Ordering::SeqCst);
+                    if mode >= 3 {
+                        let status = if mode == 3 {
+                            "503 Unavailable"
+                        } else {
+                            "403 Forbidden"
+                        };
+                        socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                        continue;
+                    }
+                    let total = 512 * 1024 * 1024_u64;
+                    let (start, end) =
+                        requested_range(request.range.as_deref().unwrap(), total).unwrap();
+                    let mut body = vec![0_u8; (end - start + 1) as usize];
+                    let mdat_size = match mode {
+                        0 => total - 16,
+                        1 => total - 8,
+                        _ => total,
+                    };
+                    let prefix = [
+                        8_u32.to_be_bytes().as_slice(),
+                        b"ftyp",
+                        (mdat_size as u32).to_be_bytes().as_slice(),
+                        b"mdat",
+                    ]
+                    .concat();
+                    let tail = [8_u32.to_be_bytes().as_slice(), b"moov"].concat();
+                    for (i, byte) in body.iter_mut().enumerate() {
+                        let offset = start + i as u64;
+                        if offset < prefix.len() as u64 {
+                            *byte = prefix[offset as usize];
+                        }
+                        if mode == 0 && offset >= total - 8 {
+                            *byte = tail[(offset - (total - 8)) as usize];
+                        }
+                    }
+                    count.fetch_add(body.len(), Ordering::SeqCst);
+                    let header = format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nETag: \"fixture\"\r\nConnection: close\r\n\r\n",body.len());
+                    socket.write_all(header.as_bytes()).await.unwrap();
+                    let _ = socket.write_all(&body).await;
+                }
+            });
+            let client = Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap();
+            let server = OutboundMediaServer::with_client(client.clone()).unwrap();
+            let auth = auth();
+            let url = fixture_route(&server, &auth, origin);
+            let route = server
+                .routes
+                .lock()
+                .unwrap()
+                .get(&"a".repeat(64))
+                .unwrap()
+                .clone();
+            server.inspect_mp4(&route).await.unwrap();
+            assert!(
+                read_bytes.load(Ordering::SeqCst) <= 65552,
+                "tail index is found by skipping 512 MiB of payload"
+            );
+            let before = read_bytes.load(Ordering::SeqCst);
+            server.inspect_mp4(&route).await.unwrap();
+            assert_eq!(read_bytes.load(Ordering::SeqCst), before);
+            assert_eq!(server.status(&auth, &url).unwrap(), None);
+            for (value, code) in [
+                (1, "OUTBOUND_MEDIA_INDEX_MISSING"),
+                (2, "OUTBOUND_MEDIA_CONTAINER_INVALID"),
+                (3, "OUTBOUND_MEDIA_BUSY"),
+                (4, "OUTBOUND_MEDIA_EXPIRED"),
+            ] {
+                mode.store(value, Ordering::SeqCst);
+                read_bytes.store(0, Ordering::SeqCst);
+                let url = fixture_route(&server, &auth, origin);
+                assert!(client
+                    .get(&url)
+                    .header("Range", "bytes=0-")
+                    .send()
+                    .await
+                    .is_err());
+                assert_eq!(server.status(&auth, &url).unwrap(), Some(code));
+                assert!(read_bytes.load(Ordering::SeqCst) <= 65536);
+            }
+            let other = self::auth();
+            let (user, _) = other.managed_session().unwrap();
+            other
+                .set_managed_session(user, "another-session".into())
+                .unwrap();
+            assert!(server.status(&other, &url).is_err());
+            assert!(server
+                .status(&auth, &url.replace("127.0.0.1", "example.com"))
+                .is_err());
+            assert!(mp4_box(&[0, 0, 0, 4], 0, 4).is_none());
+            assert!(mp4_box(b"\0\0\0\x01mdat\0\0\0\0\0\0\0\x10", 0, 16).is_some());
+            upstream.abort();
+        });
+    }
     #[test]
     fn seven_cameras_ranges_integrity_logout_and_disconnect() {
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -696,7 +939,7 @@ mod tests {
                         }
                         let bytes = (start..=end)
                             .take(if mode == 2 { 11 } else { usize::MAX })
-                            .map(|i| (i % 251) as u8)
+                            .map(fixture_byte)
                             .collect::<Vec<_>>();
                         let _ = socket.write_all(&bytes).await;
                     });
@@ -728,7 +971,7 @@ mod tests {
                     bytes
                         .iter()
                         .enumerate()
-                        .all(|(i, b)| *b == (i as u64 % 251) as u8),
+                        .all(|(i, b)| *b == fixture_byte(i as u64)),
                     "parallel chunks remain ordered and exact"
                 );
             }
@@ -750,7 +993,7 @@ mod tests {
                 let (start, end) = requested_range(range, 5 * PART + 17).unwrap();
                 assert_eq!(
                     response.bytes().await.unwrap().as_ref(),
-                    (start..=end).map(|i| (i % 251) as u8).collect::<Vec<_>>()
+                    (start..=end).map(fixture_byte).collect::<Vec<_>>()
                 );
             }
             assert_eq!(

@@ -4152,5 +4152,20 @@
   "发布通道：公开候选更新 · 尚未发布 GitHub 正式版": "Channel: public candidate · Not yet a stable GitHub release",
   "候选更新服务 · HTTPS": "Candidate update service · HTTPS",
   "公开候选更新，尚未发布为 GitHub 正式版。安装由您确认；保留工作后再重启。": "Public candidate, not yet a stable GitHub release. Choose when to install and save your work before restarting.",
-  "当前没有可安装的更新。": "No installable updates are currently available."
+  "当前没有可安装的更新。": "No installable updates are currently available.",
+  "源视频缺少播放索引，文件未完整封装；重试无法修复，请联系数据提供方检查原录制。": "The source video has no playback index and was not finalized. Retrying cannot repair it; ask the data provider to check the original recording.",
+  "源视频容器结构不完整，请联系数据提供方检查原录制。": "The source video container is incomplete. Ask the data provider to check the original recording.",
+  "视频访问凭证已失效，请重试失败视频；若仍失败，请刷新批次核对领取状态。": "Video access has expired. Retry failed videos; if this persists, refresh the batch to check its assignment.",
+  "视频读取超时，请检查网络后重试失败视频。": "Video reading timed out. Check your network and retry failed videos.",
+  "视频传输中断，请检查网络后重试失败视频。": "Video transfer was interrupted. Check your network and retry failed videos.",
+  "视频读取服务繁忙，请稍后重试失败视频。": "The video service is busy. Retry failed videos shortly.",
+  "视频源站暂时不可用，请稍后重试失败视频。": "The video source is temporarily unavailable. Retry failed videos shortly.",
+  "源视频文件不可用，请联系管理员核对来源。": "The source video is unavailable. Ask an administrator to check its source.",
+  "视频响应与源文件信息不一致，已停止读取，请联系管理员检查。": "The video response does not match the source metadata. Reading stopped; ask an administrator to investigate.",
+  "视频读取服务返回异常，请稍后重试失败视频。": "The video service returned an invalid response. Retry failed videos shortly.",
+  "{0}：{1}": "{0}: {1}",
+  "网络读取中断，可重试失败视频。": "Network reading was interrupted. Retry failed videos.",
+  "视频解码失败，可重试失败视频。": "Video decoding failed. Retry failed videos.",
+  "视频格式不受支持或服务响应异常，可重试失败视频。": "The video format is unsupported or the service response is invalid. Retry failed videos.",
+  "视频资源加载失败，可重试失败视频。": "Video loading failed. Retry failed videos."
 }

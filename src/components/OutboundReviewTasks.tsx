@@ -2,7 +2,7 @@ import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import {memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState,type CSSProperties,type VideoHTMLAttributes} from "react";
 import {ArrowLeft,AlertTriangle,Check,CheckCircle2,ChevronRight,Expand,Film,LoaderCircle,Minimize,Pause,Play,RefreshCw,Save,Video,Volume2,VolumeX,X,XCircle} from "lucide-react";
 import type {UserIdentity} from "../types";
-import {changeOutboundBatch,fetchOutboundVideo,releaseOutboundVideos,listOutboundBatches,OUTBOUND_INVALID_REASONS,outboundError,outboundResultUncertain,outboundVideoParts,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording,type OutboundProtocol,type OutboundDecisionValue} from "../lib/outbound-review";
+import {changeOutboundBatch,fetchOutboundVideo,releaseOutboundVideos,outboundMediaFailure,listOutboundBatches,OUTBOUND_INVALID_REASONS,outboundError,outboundResultUncertain,outboundVideoParts,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording,type OutboundProtocol,type OutboundDecisionValue} from "../lib/outbound-review";
 import {OutboundVideoLoader} from "../lib/outbound-video-loader";
 import {OutboundPlayback} from "../lib/outbound-playback";
 import "./outbound-review.css";
@@ -218,6 +218,11 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
     const reason=player.error?.code===2?"网络读取中断":player.error?.code===3?"视频解码失败":player.error?.code===4?"视频格式不受支持或服务响应异常":"视频资源加载失败";
     playback.current?.pause();
     setVideoState(previous=>previous?{...previous,ready:previous.ready.filter(id=>id!==segment),failed:{...previous.failed,[segment]:`${label}：${reason}，可重试失败视频。`}}:previous);
+    const generation=requestGeneration.current,source=player.getAttribute("src");
+    if(source)void outboundMediaFailure(source).then(message=>{
+      if(!message||generation!==requestGeneration.current||players.current.get(segment)!==player||player.getAttribute("src")!==source||!player.error)return;
+      setVideoState(previous=>previous&&previous.failed[segment]?{...previous,failed:{...previous.failed,[segment]:`${label}：${message}`}}:previous);
+    });
   }
   async function retryFailedVideos(){
     if(!batch||!recording||!videoState||opening||!isOwner)return;
@@ -320,7 +325,7 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
   </section>;
   return <section className="outbound-review is-workspace" aria-label={t("外发审核工作区")}>
     <div className="outbound-toolbar"><strong><Film size={17}/>{t("外发审核")}</strong><div className="outbound-progress"><span>{t("已审") + " "}<b>{batch?.reviewed ?? 0}</b> / {batch?.total ?? 0}</span><progress aria-label={t("批次审核进度")} max={batch?.total||1} value={batch?.reviewed??0}/><span>{t("有效") + " "}{batch?.valid ?? 0}{" " + t("· 无效") + " "}{batch?.invalid ?? 0}{" · " + t("异常") + " "}{batch?.anomalous??0}</span></div><button className="button button-secondary" type="button" aria-label={t("刷新外发批次")} title={t("刷新外发批次")} disabled={loading||busy||workspaceBusy} onClick={()=>void load()}>{loading ? <LoaderCircle size={16} className="spin"/> : <RefreshCw size={16}/>}</button></div>
-    {tr(error&&<div className="outbound-error" role="alert">{tr(error)}</div>)}{videoState&&Object.keys(videoState.failed).length>0&&<div className="outbound-error" role="alert">{tr([...new Set(Object.values(videoState.failed))].join("；"))}</div>}{tr(notice&&<div className="outbound-notice" role="status">{tr(notice)}</div>)}
+    {tr(error&&<div className="outbound-error" role="alert">{tr(error)}</div>)}{videoState&&Object.keys(videoState.failed).length>0&&<div className="outbound-error" role="alert">{[...new Set(Object.values(videoState.failed))].map(localizedVideoFailure).join("；")}</div>}{tr(notice&&<div className="outbound-notice" role="status">{tr(notice)}</div>)}
     {loading&&!batches.length ? <div className="outbound-empty"><LoaderCircle size={18} className="spin"/>{t("正在读取交付批次…")}</div> : !batches.length ? <div className="outbound-empty">{t("暂无可审核的星炬批次")}</div> : <div className="outbound-layout">
       <aside className="outbound-recording-sidebar"><header><strong>{t("录制列表")}</strong><span>{batch?.total ?? 0}{" " + t("条")}</span></header>{recordingList}<button className="button button-secondary" disabled={busy||workspaceBusy} onClick={onReturnToTasks}><ArrowLeft size={15}/>{t("返回任务中心")}</button></aside>
       {batch&&<div className="outbound-detail">
@@ -367,3 +372,8 @@ function cameraName(camera:string){
 }
 
 function reasonLabel(reason:string) { return (OUTBOUND_INVALID_REASONS as readonly string[]).includes(reason) ? t(reason) : reason; }
+
+function localizedVideoFailure(message:string){
+  const colon=message.indexOf("：");
+  return colon<0?tr(message):t("{0}：{1}",[message.slice(0,colon),tr(message.slice(colon+1))]);
+}

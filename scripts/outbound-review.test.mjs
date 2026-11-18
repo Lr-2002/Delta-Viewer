@@ -66,6 +66,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
         if (command !== 'outbound_review_call') throw Error('Unexpected command ' + command);
         const input = args.input; window.fixtureCalls.push(input);
         if(input.action==='release-media')return {released:true};
+        if(input.action==='media-status')return {code:window.fixtureMediaCode??null};
         if (input.action === 'list') {
           window.fixtureListActive=(window.fixtureListActive||0)+1;
           window.fixtureListPeak=Math.max(window.fixtureListPeak||0,window.fixtureListActive);
@@ -220,8 +221,14 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.waitForFunction(()=>{const videos=[...document.querySelectorAll('video')];return videos.every(v=>!v.paused&&!v.seeking&&v.currentTime>4)&&Math.max(...videos.map(v=>v.currentTime))-Math.min(...videos.map(v=>v.currentTime))<.15;});
     await page.getByRole('button',{name:'暂停',exact:true}).click();
     const healthyBefore=await page.locator('video').evaluateAll(videos=>videos.map(v=>({src:v.currentSrc,time:v.currentTime})));
-    await page.evaluate(()=>{const v=document.querySelectorAll('video')[4];Object.defineProperty(v,'error',{configurable:true,value:{code:2}});v.dispatchEvent(new Event('error'));});
+    await page.evaluate(()=>{window.fixtureMediaCode='OUTBOUND_MEDIA_INDEX_MISSING';const v=document.querySelectorAll('video')[4];Object.defineProperty(v,'error',{configurable:true,value:{code:2}});v.dispatchEvent(new Event('error'));});
     await page.getByText('读取失败',{exact:true}).waitFor();
+    await page.getByRole('alert').filter({hasText:'源视频缺少播放索引'}).waitFor();
+    await page.getByRole('button',{name:'Switch to English',exact:true}).click();
+    await page.getByRole('alert').filter({hasText:'The source video has no playback index'}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'Valid data',exact:true}).isDisabled(),true,'source failure cannot be treated as a reviewable video');
+    await page.getByRole('button',{name:'切换为中文',exact:true}).click();
+    await page.evaluate(()=>{window.fixtureMediaCode=null;});
     assert.equal(await page.locator('.outbound-video-item').nth(4).locator('.outbound-video-loading .spin').count(),0,'failed cameras stop showing buffering');
     assert.equal(await page.getByRole('button',{name:'有效数据'}).isDisabled(),true);
     assert.equal(await page.locator('.outbound-video-item').nth(4).getByText('已就绪',{exact:true}).count(),0,'failed camera cannot remain ready');
