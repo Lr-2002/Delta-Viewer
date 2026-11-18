@@ -1828,7 +1828,7 @@
   "开始帧": "Start Frame",
   "开始采集": "Start collecting",
   "开通外发审核生产链路：现有登录可读取交付平台星炬批次，领取后按真实相机和分段查看原始视频，提交有效/无效及长期常用原因；结论进入派生 `description.json`，平台数据中心展示审核进度和全部完成后的最终有效率。": "Opening of the external audit production chain: existing login to read delivery platform torch batches, retrieve original video by real camera and segment, submit valid/failable and long-term common cause; concluding entry into derivative `description.json ' , platform data centre displays review progress and ultimate efficiency after full completion.",
-  "异常": "Unusual",
+  "异常": "Anomalous",
   "异常操作事件：服务端拒绝": "Anomalous Operation Event: Service Refusal",
   "异常标记": "Anomalous Tag",
   "异常说明": "Issue description",
@@ -4139,5 +4139,12 @@
   "新增全局中英切换按钮，即时切换并记住语言偏好；保留登录、输入、视频和审核草稿，内置原因的提交值不变。": "Added instant Chinese/English switching with a saved preference. Login, inputs, videos and review drafts are preserved; built-in reason payloads are unchanged.",
   "当前用户名字：{0}": "Current user name: {0}",
   "当前任务：{0}": "Current task: {0}",
-  "新增服务中断恢复、七路连续切换、中英切换状态保持的回归覆盖；真实生产审核结论仍由用户判断。": "Added regressions for service recovery, continuous seven-camera switching and state preservation across language changes. Production review decisions remain the user’s responsibility."
+  "新增服务中断恢复、七路连续切换、中英切换状态保持的回归覆盖；真实生产审核结论仍由用户判断。": "Added regressions for service recovery, continuous seven-camera switching and state preservation across language changes. Production review decisions remain the user’s responsibility.",
+  "异常数据": "Anomalous data",
+  "本条录制同时包含有效与无效内容": "This recording contains both valid and invalid content",
+  "交付服务尚不支持异常结论，请联系管理员更新服务": "The delivery service does not support anomalous decisions yet. Ask an administrator to update it.",
+  "选择异常原因": "Select a reason for anomalous data",
+  "关闭异常原因": "Close anomalous data reasons",
+  "确认异常": "Confirm anomalous data",
+  "已保存为常用审核原因。": "Saved as a common review reason."
 }

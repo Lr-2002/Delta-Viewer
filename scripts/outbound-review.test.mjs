@@ -54,7 +54,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
       window.fixtureMediaAllowed = location.pathname!=="/__outbound";
       window.fixtureReasonOptions = [];
       window.fixtureBatch = { id: 'star-batch', name: '星炬 11.8 幼儿园', version: 0, claim: null, total: 2,
-        reviewed: 0, valid: 0, invalid: 0, rate: null, recordings: [5, 7].map((cameraCount, index) => ({
+        reviewed: 0, valid: 0, invalid: 0, anomalous:0, decisionValues:['valid','invalid','anomalous'], rate: null, recordings: [5, 7].map((cameraCount, index) => ({
           id: `upload_fixture_00${index + 1}`, name: `录制 00${index + 1}`, decision: null,
           videos: Array.from({ length: cameraCount }, (_, segment) => ({ segment, label: `cam${segment}/video.mp4`, size: 1024, sha256: null })),
         })) };
@@ -65,6 +65,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
       window.fixtureInvoke = async (command, args) => {
         if (command !== 'outbound_review_call') throw Error('Unexpected command ' + command);
         const input = args.input; window.fixtureCalls.push(input);
+        if(input.action==='release-media')return {released:true};
         if (input.action === 'list') {
           window.fixtureListActive=(window.fixtureListActive||0)+1;
           window.fixtureListPeak=Math.max(window.fixtureListPeak||0,window.fixtureListActive);
@@ -99,6 +100,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
           window.fixtureBatch.reviewed = reviewed.length;
           window.fixtureBatch.valid = reviewed.filter(row => row.decision.value === 'valid').length;
           window.fixtureBatch.invalid = reviewed.filter(row => row.decision.value === 'invalid').length;
+          window.fixtureBatch.anomalous = reviewed.filter(row => row.decision.value === 'anomalous').length;
           window.fixtureBatch.rate = reviewed.length === window.fixtureBatch.total ? window.fixtureBatch.valid / window.fixtureBatch.total : null;
         }
         if(window.fixtureUncertainAction===input.action){window.fixtureUncertainAction=null;throw Error('OUTBOUND_USER_CENTER_TIMEOUT');}
@@ -235,10 +237,12 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     const afterRetry=await page.locator('video').evaluateAll(videos=>videos.map(v=>({src:v.currentSrc,time:v.currentTime})));
     assert.deepEqual(afterRetry.slice(0,4),healthyBefore.slice(0,4),'healthy camera sources and positions survive recovery');
     assert.ok(Math.abs(afterRetry[4].time-healthyBefore[0].time)<.2,'retried camera resumes at the master position');
+    await page.evaluate(()=>{window.retiredReviewPlayers=[...document.querySelectorAll('video')];});
     await page.evaluate(() => { window.fixtureMediaAllowed = false; window.fixtureUncertainAction='decide'; });
     await page.getByRole('button', { name: '有效数据' }).click();
     await page.waitForFunction(() => document.querySelectorAll('video').length === 7);
     assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='decide').length),1,'confirmed lost receipt advances without replaying the conclusion');
+    assert.equal(await page.evaluate(()=>window.retiredReviewPlayers.every(v=>!v.isConnected&&!v.hasAttribute('src')&&v.networkState===HTMLMediaElement.NETWORK_EMPTY)),true,'switching recordings releases retired media sources, downloads and decoders immediately');
     assert.equal(await page.getByRole('button', { name: '无效数据' }).isDisabled(), true, 'invalid decisions wait for every camera');
     await page.evaluate(() => { window.fixtureMediaAllowed = true; });
     await page.waitForFunction(() => [...document.querySelectorAll('video')].length === 7
@@ -403,7 +407,43 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await workspace.locator('video').evaluateAll(videos=>videos.every(video=>video.paused)),true);
     await tasks.getByRole('button',{name:'打开审核',exact:true}).click();await workspace.waitFor();
     assert.equal(await tasks.count(),0);
-    console.log('PASS outbound reviewer claim, five/seven camera playback, valid/invalid decisions, persistent custom reason, desktop/mobile width');
+    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__outbound`);
+    await page.evaluate(()=>{window.fixtureExtraBatches=false;window.fixtureHoldClaim=false;window.fixtureSlowSegment=null;window.fixtureMediaAllowed=true;});
+    await page.getByRole('button',{name:'领取并打开',exact:true}).first().click();
+    await page.waitForFunction(()=>!document.querySelector('.outbound-anomalous-button')?.disabled);
+    await page.getByRole('button',{name:'异常数据',exact:true}).click();
+    await page.getByRole('dialog',{name:'选择异常原因',exact:true}).waitFor();
+    await page.getByLabel('新增常用原因',{exact:true}).fill('部分片段无实际动作');
+    await page.getByRole('button',{name:'保存常用项',exact:true}).click();
+    await page.getByRole('button',{name:'部分片段无实际动作',exact:true}).waitFor();
+    await page.getByRole('button',{name:'Switch to English',exact:true}).click();
+    await page.getByRole('button',{name:'Confirm anomalous data',exact:true}).waitFor();
+    await page.getByRole('button',{name:'切换为中文',exact:true}).click();
+    await page.evaluate(()=>window.fixtureUncertainAction='decide');
+    await page.getByRole('button',{name:'确认异常',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.outbound-player-heading strong')?.textContent==='录制 002');
+    assert.deepEqual(await page.evaluate(()=>({value:window.fixtureBatch.recordings[0].decision.value,reason:window.fixtureBatch.recordings[0].decision.reason,count:window.fixtureBatch.anomalous,valid:window.fixtureBatch.valid,invalid:window.fixtureBatch.invalid,submits:window.fixtureCalls.filter(x=>x.action==='decide').length})),{value:'anomalous',reason:'部分片段无实际动作',count:1,valid:0,invalid:0,submits:1});
+    await page.waitForFunction(()=>!document.querySelector('.outbound-invalid-button')?.disabled);
+    await page.getByRole('button',{name:'无效数据',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'部分片段无实际动作',exact:true}).count(),1,'anomalous and invalid share persisted common reasons');
+    await page.getByRole('button',{name:'取消',exact:true}).click();
+    const session=await page.context().newCDPSession(page);
+    await session.send('Emulation.setCPUThrottlingRate',{rate:6});
+    await page.evaluate(()=>{window.switchHeartbeat=[];let last=performance.now();window.switchTimer=setInterval(()=>{const now=performance.now();window.switchHeartbeat.push(now-last);last=now;},50);window.retiredSwitchPlayers=[];});
+    const switchLatencies=[];
+    for(let index=0;index<24;index++){
+      await page.evaluate(()=>window.retiredSwitchPlayers.push(...document.querySelectorAll('video')));
+      const start=Date.now();await page.locator('.outbound-recordings button').nth(index%2).click();
+      await page.waitForFunction(expected=>document.querySelector('.outbound-player-heading strong')?.textContent===expected,`录制 00${index%2+1}`);
+      switchLatencies.push(Date.now()-start);
+    }
+    await page.waitForFunction(()=>!document.querySelector('.outbound-valid-button')?.disabled);
+    const stress=await page.evaluate(()=>{clearInterval(window.switchTimer);return {maxHeartbeatMs:Math.max(...window.switchHeartbeat),retired:window.retiredSwitchPlayers.filter(v=>!v.isConnected).map(v=>({hasSource:v.hasAttribute('src'),network:v.networkState})),live:document.querySelectorAll('video').length};});
+    assert.ok(stress.retired.length>=100);assert.ok(stress.retired.every(v=>!v.hasSource&&v.network===0),'retired players hold no media resources');
+    assert.ok(stress.maxHeartbeatMs<5000,'navigation must keep yielding under 6x CPU throttling');
+    await session.send('Emulation.setCPUThrottlingRate',{rate:1});
+    console.log(JSON.stringify({cpuThrottle:6,switches:24,maxSwitchMs:Math.max(...switchLatencies),maxHeartbeatMs:stress.maxHeartbeatMs,retiredPlayers:stress.retired.length,livePlayers:stress.live}));
+    console.log('PASS valid/invalid/anomalous independent counts, shared custom reasons, lost receipt and auto next');
   } finally {
     await page?.unrouteAll({behavior:'ignoreErrors'});
     await browser?.close(); await server.close(); rmSync(scratch, { recursive: true, force: true });

@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export interface OutboundVideo { segment: number; label: string; size: number; sha256: string | null }
-export interface OutboundDecision { value: "valid" | "invalid"; reason?: string; actor: string; at: string }
+export type OutboundDecisionValue = "valid" | "invalid" | "anomalous";
+export interface OutboundDecision { value: OutboundDecisionValue; reason?: string; actor: string; at: string }
 export interface OutboundRecording { id: string; name: string; videos: OutboundVideo[]; decision: OutboundDecision | null }
 export interface OutboundBatch {
   reasonOptions?: string[];
   id: string; name: string; version: number; claim: string | null; total: number; reviewed: number;
-  valid: number; invalid: number; rate: number | null; recordings: OutboundRecording[];
+  valid: number; invalid: number; anomalous?: number; decisionValues?: OutboundDecisionValue[]; rate: number | null; recordings: OutboundRecording[];
 }
 export const OUTBOUND_INVALID_REASONS = ["无实际意义动作", "测试数据", "设备没有正确佩戴"] as const;
 
@@ -55,7 +56,7 @@ export async function listOutboundBatches(datasetId?: string, protocol?:Outbound
 }
 export const saveOutboundReasonOption = (reason: string) =>
   outboundCall<{ reasonOptions: string[] }>({ action: "save-reason-option", reason });
-export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: "valid" | "invalid", reason?: string, protocol?:OutboundProtocol) {
+export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: OutboundDecisionValue, reason?: string, protocol?:OutboundProtocol) {
   const input={action,datasetId:batch.id,version:batch.version,
     ...(recordingId?{recordingId,value,...(reason?{reason}:{})}:{})};
   // Keep a full claim response so entering the workspace needs no second read.
@@ -105,4 +106,10 @@ export function outboundError(reason: unknown) {
 
 export function outboundResultUncertain(reason: unknown) {
   return /OUTBOUND_(?:USER_CENTER_(?:TIMEOUT|UNAVAILABLE)|RESPONSE_(?:INTERRUPTED|INVALID|TOO_LARGE)|NETWORK_UNAVAILABLE|HTTP_50[0234]|REQUEST_FAILED(?::\s*OUTBOUND_HTTP_50[0234])?$)/.test(String(reason));
+}
+
+// Local resource cleanup only. The native side never forwards this action.
+export async function releaseOutboundVideos(urls:string[]) {
+  if(!urls.length)return;
+  try {await outboundCall({action:"release-media",urls});} catch { /* Session change already invalidates its routes. */ }
 }

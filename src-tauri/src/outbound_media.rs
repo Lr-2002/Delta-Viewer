@@ -9,7 +9,10 @@ use reqwest::{Client, Response, Url};
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 use tokio::{
@@ -33,12 +36,14 @@ struct Route {
     auth: AuthState,
     session: Session,
     created: Instant,
+    released: AtomicBool,
     // Verified object metadata only; every block still rechecks live authority.
     verified: Mutex<Option<(u64, Option<String>)>>,
 }
 impl Route {
     fn valid(&self) -> bool {
-        self.created.elapsed() < LIFETIME
+        !self.released.load(Ordering::Relaxed)
+            && self.created.elapsed() < LIFETIME
             && self.auth.managed_session().is_ok_and(|s| s == self.session)
     }
 }
@@ -138,10 +143,43 @@ impl OutboundMediaServer {
                 auth: auth.clone(),
                 session,
                 created: Instant::now(),
+                released: AtomicBool::new(false),
                 verified: Mutex::new(None),
             }),
         );
         Ok(format!("http://{}{PREFIX}{token}", self.address))
+    }
+    pub fn release(&self, auth: &AuthState, urls: &[String]) -> AppResult<()> {
+        let session = auth.managed_session()?;
+        if urls.len() > 32 {
+            return Err(invalid());
+        }
+        let mut routes = self.routes.lock().map_err(|_| invalid())?;
+        for value in urls {
+            let url = Url::parse(value).map_err(|_| invalid())?;
+            let token = url.path().strip_prefix(PREFIX).ok_or_else(invalid)?;
+            if url.scheme() != "http"
+                || url.host_str() != Some("127.0.0.1")
+                || url.port() != Some(self.address.port())
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || token.len() != 64
+                || !token.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(invalid());
+            }
+            if routes
+                .get(token)
+                .is_some_and(|route| route.session == session)
+            {
+                if let Some(route) = routes.remove(token) {
+                    route.released.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        Ok(())
     }
     async fn serve(&self, mut socket: TcpStream) -> std::io::Result<()> {
         socket.set_nodelay(true)?;
@@ -530,6 +568,7 @@ mod tests {
                 auth: auth.clone(),
                 session: auth.managed_session().unwrap(),
                 created: Instant::now(),
+                released: AtomicBool::new(false),
                 verified: Mutex::new(None),
             }),
         );
@@ -553,6 +592,57 @@ mod tests {
         ] {
             assert!(allowed_url(&bad).is_err());
         }
+    }
+    #[test]
+    fn retiring_tickets_revokes_live_routes_without_touching_other_sessions() {
+        tauri::async_runtime::block_on(async {
+            let server = OutboundMediaServer::with_client(Client::new()).unwrap();
+            let auth = auth();
+            let ticket = server
+                .register(
+                    &auth,
+                    auth.managed_session().unwrap(),
+                    &format!(
+                        "https://114.111.19.219/api/platform/manager-outbound/media/{}",
+                        "a".repeat(64)
+                    ),
+                )
+                .unwrap();
+            let token = Url::parse(&ticket)
+                .unwrap()
+                .path()
+                .strip_prefix(PREFIX)
+                .unwrap()
+                .to_owned();
+            let route = server.routes.lock().unwrap().get(&token).unwrap().clone();
+            let other = AuthState::default();
+            other
+                .set_workspace_mode(Some(WorkspaceMode::Managed))
+                .unwrap();
+            let (user, _) = auth.managed_session().unwrap();
+            other
+                .set_managed_session(user, "different-session".into())
+                .unwrap();
+            server
+                .release(&other, std::slice::from_ref(&ticket))
+                .unwrap();
+            assert!(route.valid());
+            assert!(server
+                .release(&auth, &[ticket.replace("127.0.0.1", "example.com")])
+                .is_err());
+            assert!(route.valid());
+            server
+                .release(&auth, std::slice::from_ref(&ticket))
+                .unwrap();
+            assert!(
+                !route.valid(),
+                "an active request holding the route is cancelled too"
+            );
+            assert!(server.routes.lock().unwrap().get(&token).is_none());
+            server
+                .release(&auth, std::slice::from_ref(&ticket))
+                .unwrap();
+        });
     }
     #[test]
     fn seven_cameras_ranges_integrity_logout_and_disconnect() {
