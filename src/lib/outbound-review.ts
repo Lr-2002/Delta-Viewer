@@ -11,33 +11,51 @@ export interface OutboundBatch {
 }
 export const OUTBOUND_INVALID_REASONS = ["无实际意义动作", "测试数据", "设备没有正确佩戴"] as const;
 
+export const OUTBOUND_CAMERAS = ["cam0", "cam1", "cam2", "t265_left", "t265_right", "extension_left", "extension_right"] as const;
+
 export function outboundVideoParts(videos: OutboundVideo[]) {
   const cameras = new Map<string, OutboundVideo[]>();
   for (const video of videos) {
     const path = video.label.replaceAll("\\", "/");
     const parent = path.lastIndexOf("/");
-    const camera = parent > 0 ? path.slice(0, parent) : path.replace(/-\d+\.mp4$/i, "").replace(/\.mp4$/i, "");
+    const name = parent > 0 ? path.slice(0, parent).split("/").at(-1)! : path.replace(/-\d+\.mp4$/i, "").replace(/\.mp4$/i, "");
+    const aliases: Record<string,string> = {stereo_left:"extension_left",stereo_right:"extension_right"};
+    const camera = aliases[name] ?? name;
     const files = cameras.get(camera) ?? [];
     files.push(video);
     cameras.set(camera, files);
   }
   for (const files of cameras.values()) files.sort((a, b) => a.label.localeCompare(b.label, "en", { numeric: true }));
-  const order = ["cam0", "cam1", "cam2", "t265_left", "t265_right", "extension_left", "extension_right"];
-  const cameraNames = [...cameras.keys()].sort((a, b) => {
+  const order: readonly string[] = OUTBOUND_CAMERAS;
+  const cameraNames = [...new Set([...order,...cameras.keys()])].sort((a, b) => {
     const rank = (name: string) => { const i = order.indexOf(name.split("/").at(-1) ?? name); return i < 0 ? order.length : i; };
     return rank(a) - rank(b) || a.localeCompare(b, "en", { numeric: true });
   });
   // A missing file must leave a hole in its real part, not shift the next
   // camera segment into the wrong time interval.
   const partOf = (file: OutboundVideo, index: number) => Number(/-(\d+)\.mp4$/i.exec(file.label)?.[1] ?? index);
-  const keyed = new Map(cameraNames.map(camera => [camera, new Map(cameras.get(camera)!.map((file, index) => [partOf(file, index), file]))]));
+  const keyed = new Map(cameraNames.map(camera => [camera, new Map((cameras.get(camera)??[]).map((file, index) => [partOf(file, index), file]))]));
   const partNumbers = [...new Set([...keyed.values()].flatMap(files => [...files.keys()]))].sort((a, b) => a - b);
-  return { cameraCount: cameras.size, cameras: cameraNames, primaryCamera: cameraNames[0], partNumbers,
+  return { cameraCount: cameraNames.length, sourceCameraCount: cameras.size, cameras: cameraNames, primaryCamera: "cam0", partNumbers,
     parts: partNumbers.map(part => cameraNames.flatMap(camera => {
       const file = keyed.get(camera)!.get(part);
       return file ? [{ ...file, camera }] : [];
     })) };
 }
+
+/** Only measured MP4 durations define the continuous timeline. Never assume a
+ * five-minute segment or silently shift a missing camera file into its place. */
+export function outboundTimeline(parts: ReturnType<typeof outboundVideoParts>["parts"], durations: Record<number,number>) {
+  let offset=0,complete=true;
+  const spans=parts.map(files=>{
+    const known=files.length>0&&files.every(file=>Number.isFinite(durations[file.segment])&&durations[file.segment]>0);
+    const duration=known?Math.max(...files.map(file=>durations[file.segment])):0;
+    const span={offset,duration,known};offset+=duration;complete&&=known;return span;
+  });
+  return {spans,duration:offset,complete:complete&&parts.length>0};
+}
+
+export const fetchOutboundMetadata = (url:string) => outboundCall<{duration:number}>({action:"media-metadata",url});
 
 const outboundCall = <T,>(input: Record<string, unknown>) => invoke<T>("outbound_review_call", { input });
 type BatchList = { batches: OutboundBatch[]; reasonOptions: string[] };
@@ -85,6 +103,11 @@ export async function fetchOutboundVideo(batch: OutboundBatch, recording: Outbou
 
 export function outboundError(reason: unknown) {
   const raw = String(reason);
+  if(raw.includes("OUTBOUND_MEDIA_DURATION_INVALID"))return "源视频时长信息无效，不能建立连续时间轴，请联系管理员核对源文件。";
+  if(raw.includes("OUTBOUND_MEDIA_INDEX_MISSING"))return "源视频缺少播放索引，可能未完成封装，请联系管理员核对源文件。";
+  if(raw.includes("OUTBOUND_MEDIA_CONTAINER_INVALID"))return "源视频容器结构异常，请联系管理员核对源文件。";
+  if(raw.includes("OUTBOUND_MEDIA_TIMEOUT"))return "读取视频超时，请稍后重试失败视频。";
+  if(raw.includes("OUTBOUND_MEDIA_NETWORK"))return "视频网络读取中断，请稍后重试失败视频。";
   if (raw.includes("OUTBOUND_USER_CENTER_TIMEOUT")) return "等待外发审核服务响应超时。请稍后重试；若持续出现，请联系管理员检查用户中心和交付服务。";
   if (raw.includes("OUTBOUND_USER_CENTER_TLS")) return "用户中心安全连接校验失败，请联系管理员核对连接配置和证书。";
   if (raw.includes("OUTBOUND_USER_CENTER_UNREACHABLE")) return "无法连接用户中心。请检查公司网络；若网络正常，请联系管理员检查用户中心服务。";

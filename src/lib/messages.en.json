@@ -4167,5 +4167,22 @@
   "网络读取中断，可重试失败视频。": "Network reading was interrupted. Retry failed videos.",
   "视频解码失败，可重试失败视频。": "Video decoding failed. Retry failed videos.",
   "视频格式不受支持或服务响应异常，可重试失败视频。": "The video format is unsupported or the service response is invalid. Retry failed videos.",
-  "视频资源加载失败，可重试失败视频。": "Video loading failed. Retry failed videos."
+  "视频资源加载失败，可重试失败视频。": "Video loading failed. Retry failed videos.",
+  "以下视频读取失败，请重试或查看对应位置：": "These videos failed to load. Retry or open the affected position:",
+  "其他分段缺失或读取失败": "Other segments are missing or failed to load",
+  "分段序号不连续，缺失区间的时长未知。": "Segment numbers have gaps; the duration of the missing interval is unknown.",
+  "可重新选择结论或修改原因，保存后更新统计。": "You can change the conclusion or reason. Saving updates the statistics.",
+  "外发录制所有分段连续回放，统一时间轴跨段拖动；固定七路播放器显示缺失和损坏，新增更多倍速；已审结论和原因可修改并更新统计。": "Play all recording segments on one continuous timeline, with seven fixed camera players, explicit missing or damaged video states, more speeds, and editable saved conclusions and reasons.",
+  "审核结论修改已保存。": "Review changes saved.",
+  "将当前结论修改为有效": "Change the current conclusion to valid",
+  "录制存在缺失相机或分段，不能提交审核。仍可查看已有视频。": "This recording has missing cameras or segments. You can play the available videos, but review submission is blocked.",
+  "时长待确认": "Duration pending",
+  "查看第 {0} 段": "View segment {0}",
+  "正在读取总时长": "Reading total duration",
+  "源文件缺失": "Source file missing",
+  "源视频容器结构异常，请联系管理员核对源文件。": "The source video container is invalid. Ask an administrator to check the source.",
+  "源视频时长信息无效，不能建立连续时间轴，请联系管理员核对源文件。": "The source video has invalid duration metadata. A continuous timeline cannot be created; ask an administrator to check the source.",
+  "源视频缺少播放索引，可能未完成封装，请联系管理员核对源文件。": "The source video has no playback index and may not have been finalized. Ask an administrator to check the source.",
+  "视频网络读取中断，请稍后重试失败视频。": "The video network read was interrupted. Retry the failed video.",
+  "读取视频超时，请稍后重试失败视频。": "The video read timed out. Retry the failed video."
 }

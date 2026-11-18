@@ -19,7 +19,7 @@ export class OutboundPlayback {
   private masterId: number | null = null;
   private timer: ReturnType<typeof setInterval>;
 
-  constructor(private report: (state: OutboundPlaybackState) => void, private failed: () => void) {
+  constructor(private report: (state: OutboundPlaybackState) => void, private failed: () => void, private finished: () => void = () => {}) {
     this.timer = setInterval(() => this.tick(), 160);
   }
 
@@ -30,12 +30,13 @@ export class OutboundPlayback {
     this.players.delete(id);
     if (player) {
       this.players.set(id, player);
+      player.defaultPlaybackRate = this.speed;
       player.playbackRate = this.speed;
       const waiting = () => {
         if (this.intent && !player.ended) this.hold();
       };
       const canplay = () => this.tick();
-      const ended = () => { if (this.intent) this.pause(); };
+      const ended = () => this.tick();
       player.addEventListener("waiting", waiting);
       player.addEventListener("canplay", canplay);
       player.addEventListener("ended", ended);
@@ -50,7 +51,12 @@ export class OutboundPlayback {
   }
 
   private master() {
-    return this.masterId === null ? this.players.get(Math.min(...this.players.keys())) : this.players.get(this.masterId);
+    const preferred = this.masterId === null ? this.players.get(Math.min(...this.players.keys())) : this.players.get(this.masterId);
+    // A shorter camera freezes its last frame; it must not truncate another
+    // camera's tail or advance the whole recording prematurely.
+    const longest = [...this.players.values()].filter(p=>Number.isFinite(p.duration)&&p.duration>0)
+      .sort((a,b)=>b.duration-a.duration)[0];
+    return longest && (!preferred || longest.duration > preferred.duration+.05) ? longest : preferred;
   }
 
   setMaster(id: number | null) { this.masterId = id; this.publish(); }
@@ -59,7 +65,7 @@ export class OutboundPlayback {
     const master = this.master();
     const durations = [...this.players.values()].map(v => v.duration).filter(v => Number.isFinite(v) && v > 0);
     this.report({ playing: this.intent, buffering: this.intent && this.held,
-      position: master?.currentTime ?? 0, duration: durations.length ? Math.min(...durations) : 0 });
+      position: master?.currentTime ?? 0, duration: durations.length ? Math.max(...durations) : 0 });
   }
 
   private hold() {
@@ -113,7 +119,10 @@ export class OutboundPlayback {
 
   setSpeed(speed: number) {
     this.speed = speed;
-    for (const player of this.players.values()) player.playbackRate = speed;
+    for (const player of this.players.values()) {
+      player.defaultPlaybackRate = speed;
+      player.playbackRate = speed;
+    }
     this.publish();
   }
 
@@ -136,18 +145,18 @@ export class OutboundPlayback {
   private tick() {
     const master = this.master();
     if (this.intent && master) {
-      if (master.ended) { this.pause(); return; }
+      if (master.ended) { this.pause(); this.finished(); return; }
       if (this.held) {
         // A decoded first frame may represent only .25 seconds of high-rate
         // video. Reserve a small lead once at start/seek, capped at two seconds;
         // ongoing recovery keeps the hungry decoder running as before.
-        if (this.starting !== this.generation && [...this.players.values()].every(v => v.readyState >= 3 && !v.seeking
+        if (this.starting !== this.generation && [...this.players.values()].every(v => v.ended || v.readyState >= 3 && !v.seeking
           && (!this.priming || performance.now() >= this.primingUntil || this.hasStartupBuffer(v)))) {
           const generation = this.generation;
           this.held = false;
           this.priming = false;
           this.starting = generation;
-          void Promise.all([...this.players.values()].map(player => player.play())).catch(error => {
+          void Promise.all([...this.players.values()].filter(player=>!player.ended).map(player => player.play())).catch(error => {
             // Our pause/seek can abort an in-flight play promise.
             if (generation === this.generation && this.intent && !this.held && error?.name !== "AbortError") {
               this.pause(); this.failed();
@@ -156,7 +165,7 @@ export class OutboundPlayback {
         }
       } else {
         for (const player of this.players.values()) {
-          if (player === master || player.seeking || player.readyState < 3) continue;
+          if (player === master || player.ended || player.seeking || player.readyState < 3) continue;
           // Small clock drift is corrected without discarding decoded frames.
           const drift = player.currentTime - master.currentTime;
           const rate = this.speed * (Math.abs(drift) < .08 ? 1 : Math.max(.92, Math.min(1.08, 1 - drift * .2)));

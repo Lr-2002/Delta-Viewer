@@ -190,6 +190,114 @@ impl OutboundMediaServer {
         let code = *route.failure.lock().map_err(|_| invalid())?;
         Ok(code)
     }
+    /// Read the movie clock through the same authorized, conditional ranges as
+    /// playback. No decoder or media-body download is needed for other parts.
+    pub async fn metadata(&self, auth: &AuthState, url: &str) -> AppResult<f64> {
+        let session = auth.managed_session()?;
+        let token = self.local_token(url)?;
+        let route = self
+            .routes
+            .lock()
+            .map_err(|_| invalid())?
+            .get(&token)
+            .filter(|route| route.session == session && route.valid())
+            .cloned()
+            .ok_or_else(invalid)?;
+        let result =
+            tokio::time::timeout(Duration::from_secs(25), self.movie_duration(&route)).await;
+        if !route.valid() || auth.managed_session()? != session {
+            return Err(AppError::Message("OUTBOUND_ACCOUNT_CHANGED".into()));
+        }
+        match result {
+            Ok(Ok(duration)) => Ok(duration),
+            other => {
+                if other.is_err() {
+                    route.fail("OUTBOUND_MEDIA_TIMEOUT");
+                }
+                let code = route
+                    .failure
+                    .lock()
+                    .map_err(|_| invalid())?
+                    .unwrap_or("OUTBOUND_MEDIA_DURATION_INVALID");
+                Err(AppError::Message(code.into()))
+            }
+        }
+    }
+
+    async fn movie_duration(&self, route: &Route) -> Result<f64, ()> {
+        let verified = route.verified.lock().map_err(|_| ())?.clone();
+        let first = self
+            .part(
+                route,
+                0,
+                65535,
+                verified.as_ref().map(|(n, e)| (*n, e.as_deref())),
+            )
+            .await?;
+        let total = first.total;
+        let expected = Some((total, first.etag.as_deref()));
+        let mut offset = 0;
+        for _ in 0..64 {
+            if offset >= total {
+                route.fail("OUTBOUND_MEDIA_INDEX_MISSING");
+                return Err(());
+            }
+            let block;
+            let bytes = if offset.saturating_add(64) <= first.body.len() as u64 {
+                &first.body[offset as usize..]
+            } else {
+                block = self
+                    .part(route, offset, (offset + 63).min(total - 1), expected)
+                    .await?;
+                &block.body
+            };
+            let (size, kind) = mp4_box(bytes, offset, total)
+                .ok_or_else(|| route.fail("OUTBOUND_MEDIA_CONTAINER_INVALID"))?;
+            if &kind == b"moov" {
+                let end = offset + size;
+                offset += if bytes.get(..4) == Some(&[0, 0, 0, 1]) {
+                    16
+                } else {
+                    8
+                };
+                for _ in 0..128 {
+                    if offset >= end {
+                        break;
+                    }
+                    let child;
+                    let bytes = if offset.saturating_add(64) <= first.body.len() as u64 {
+                        &first.body[offset as usize..(end.min(first.body.len() as u64)) as usize]
+                    } else {
+                        child = self
+                            .part(route, offset, (offset + 63).min(end - 1), expected)
+                            .await?;
+                        &child.body
+                    };
+                    let (size, kind) = mp4_box(bytes, offset, end)
+                        .ok_or_else(|| route.fail("OUTBOUND_MEDIA_CONTAINER_INVALID"))?;
+                    if &kind == b"mvhd" {
+                        let header = if bytes.get(..4) == Some(&[0, 0, 0, 1]) {
+                            16
+                        } else {
+                            8
+                        };
+                        return movie_clock(
+                            bytes
+                                .get(header..size.min(bytes.len() as u64) as usize)
+                                .ok_or(())?,
+                        )
+                        .ok_or_else(|| route.fail("OUTBOUND_MEDIA_DURATION_INVALID"));
+                    }
+                    offset += size;
+                }
+                route.fail("OUTBOUND_MEDIA_DURATION_INVALID");
+                return Err(());
+            }
+            offset += size;
+        }
+        route.fail("OUTBOUND_MEDIA_CONTAINER_INVALID");
+        Err(())
+    }
     pub fn release(&self, auth: &AuthState, urls: &[String]) -> AppResult<()> {
         let session = auth.managed_session()?;
         if urls.len() > 32 {
@@ -546,6 +654,26 @@ impl OutboundMediaServer {
         Ok(())
     }
 }
+fn movie_clock(payload: &[u8]) -> Option<f64> {
+    let (scale_at, duration_at, wide) = match payload.first()? {
+        0 => (12, 16, false),
+        1 => (20, 24, true),
+        _ => return None,
+    };
+    let scale = u32::from_be_bytes(payload.get(scale_at..scale_at + 4)?.try_into().ok()?);
+    let ticks = if wide {
+        u64::from_be_bytes(payload.get(duration_at..duration_at + 8)?.try_into().ok()?)
+    } else {
+        u64::from(u32::from_be_bytes(
+            payload.get(duration_at..duration_at + 4)?.try_into().ok()?,
+        ))
+    };
+    if scale == 0 || ticks == 0 || ticks == if wide { u64::MAX } else { u64::from(u32::MAX) } {
+        return None;
+    }
+    let seconds = ticks as f64 / f64::from(scale);
+    (seconds.is_finite() && seconds > 0.).then_some(seconds)
+}
 fn mp4_box(bytes: &[u8], offset: u64, total: u64) -> Option<(u64, [u8; 4])> {
     let kind = bytes.get(4..8)?.try_into().ok()?;
     let size = u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?);
@@ -776,6 +904,102 @@ mod tests {
             .get(i as usize)
             .copied()
             .unwrap_or((i % 251) as u8)
+    }
+    #[test]
+    fn continuous_timeline_reads_real_movie_clocks_without_media_or_foreign_authority() {
+        tauri::async_runtime::block_on(async {
+            let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let origin = fixture.local_addr().unwrap();
+            let mode = Arc::new(AtomicUsize::new(0));
+            let bytes = Arc::new(AtomicUsize::new(0));
+            let m = mode.clone();
+            let count = bytes.clone();
+            let upstream = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = fixture.accept().await {
+                    let request = read_request(&mut socket).await.unwrap();
+                    let mode = m.load(Ordering::SeqCst);
+                    let mut payload = vec![0; if mode == 1 { 32 } else { 20 }];
+                    payload[0] = u8::from(mode == 1);
+                    let scale_at = if mode == 1 { 20 } else { 12 };
+                    payload[scale_at..scale_at + 4]
+                        .copy_from_slice(&(if mode == 2 { 0_u32 } else { 1000 }).to_be_bytes());
+                    if mode == 1 {
+                        payload[24..32].copy_from_slice(&12345_u64.to_be_bytes());
+                    } else {
+                        payload[16..20].copy_from_slice(&12345_u32.to_be_bytes());
+                    }
+                    let mut tail = ((16 + payload.len()) as u32).to_be_bytes().to_vec();
+                    tail.extend_from_slice(b"moov");
+                    tail.extend_from_slice(&((8 + payload.len()) as u32).to_be_bytes());
+                    tail.extend_from_slice(b"mvhd");
+                    tail.extend(payload);
+                    let moov = 512 * PART;
+                    let total = if mode == 3 {
+                        moov
+                    } else {
+                        moov + tail.len() as u64
+                    };
+                    let (start, end) =
+                        requested_range(request.range.as_deref().unwrap(), total).unwrap();
+                    let mut prefix = 8_u32.to_be_bytes().to_vec();
+                    prefix.extend_from_slice(b"ftyp");
+                    prefix.extend_from_slice(&((moov - 8) as u32).to_be_bytes());
+                    prefix.extend_from_slice(b"mdat");
+                    let body: Vec<u8> = (start..=end)
+                        .map(|i| {
+                            if i < 16 {
+                                prefix[i as usize]
+                            } else if i >= moov {
+                                tail[(i - moov) as usize]
+                            } else {
+                                0
+                            }
+                        })
+                        .collect();
+                    count.fetch_add(body.len(), Ordering::SeqCst);
+                    socket.write_all(format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nETag: \"fixture\"\r\nConnection: close\r\n\r\n",body.len()).as_bytes()).await.unwrap();
+                    socket.write_all(&body).await.unwrap();
+                }
+            });
+            let server = OutboundMediaServer::with_client(Client::new()).unwrap();
+            let identity = auth();
+            for mode_value in 0..4 {
+                mode.store(mode_value, Ordering::SeqCst);
+                bytes.store(0, Ordering::SeqCst);
+                let url = fixture_route(&server, &identity, origin);
+                let result = server.metadata(&identity, &url).await;
+                if mode_value < 2 {
+                    assert!((result.unwrap() - 12.345).abs() < 0.000001);
+                } else {
+                    assert!(result.is_err());
+                }
+                assert!(
+                    bytes.load(Ordering::SeqCst) < 66000,
+                    "skip the 512 MiB mdat with bounded headers"
+                );
+                let before = bytes.load(Ordering::SeqCst);
+                let other = auth();
+                let (user, _) = other.managed_session().unwrap();
+                other
+                    .set_managed_session(user, "different-token".into())
+                    .unwrap();
+                assert!(server.metadata(&other, &url).await.is_err());
+                assert!(server
+                    .metadata(&identity, &url.replace("127.0.0.1", "example.com"))
+                    .await
+                    .is_err());
+                server
+                    .release(&identity, std::slice::from_ref(&url))
+                    .unwrap();
+                assert!(server.metadata(&identity, &url).await.is_err());
+                assert_eq!(
+                    bytes.load(Ordering::SeqCst),
+                    before,
+                    "rejected authority never reads upstream"
+                );
+            }
+            upstream.abort();
+        });
     }
     #[test]
     fn missing_mp4_index_is_detected_without_downloading_the_video() {

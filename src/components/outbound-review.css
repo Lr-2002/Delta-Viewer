@@ -215,3 +215,10 @@
 
 .outbound-anomalous-button {color:#805b16 !important;border-color:#dfca9a !important;}
 .outbound-recordings button strong.anomalous {color:#805b16;}
+
+.outbound-video-item.is-missing,.outbound-video-item.is-failed { border-color:#b96852; }
+.outbound-video-loading { padding:14px; text-align:center; overflow:auto; overflow-wrap:anywhere; }
+.outbound-camera-issue { position:absolute; bottom:0; left:0; right:0; padding:6px; color:#ffdfb5; background:#583314e8; font-size:11px; text-align:center; }
+.outbound-source-issues { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:6px 0; color:#9a3c2a; font-size:11px; }
+.outbound-source-issues button { background:#fff5f0; border:1px solid #e7bfb1; border-radius:4px; padding:3px 6px; color:inherit; cursor:pointer; }
+.outbound-decision button[aria-pressed=true] { box-shadow:inset 0 0 0 2px #91919c; }
