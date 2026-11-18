@@ -1,8 +1,6 @@
 name: Candidate recovery delivery
 
 on:
-  push:
-    branches: [work/lan-candidate-downloads-20261118]
   workflow_dispatch:
     inputs:
       platform:

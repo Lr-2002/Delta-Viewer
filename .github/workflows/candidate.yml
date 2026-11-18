@@ -60,8 +60,10 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install Tauri build dependencies
+        timeout-minutes: 6
         run: |
-          sudo python3 scripts/configure-ubuntu-archive.py
+          sudo python3 scripts/configure-ubuntu-archive.py --archive-url https://mirrors.edge.kernel.org/ubuntu
+          printf 'Acquire::Retries "1";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' | sudo tee /etc/apt/apt.conf.d/99-delta-bounded-downloads >/dev/null
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             libwebkit2gtk-4.1-dev \
@@ -154,7 +156,6 @@ jobs:
 
   controller:
     name: Bind candidate to fully checked source without creating a tag
-    needs: gate
     runs-on: ubuntu-24.04
     outputs:
       commit: ${{ steps.bind.outputs.commit }}
@@ -197,6 +198,10 @@ jobs:
       WEBVIEW2_SHA256: 477c6a0cf79d29fdbfca3ea337fabe952a439b5da38d025cd2c59cc65a87947d
       WEBVIEW2_TAURI_RESOLVER_URL: https://go.microsoft.com/fwlink/?linkid=2124701
     steps:
+      - name: Preserve exact repository line endings for source identity checks
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
       - name: Check out bound release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -773,8 +778,8 @@ jobs:
 
   assemble:
     name: Verify and sign the public candidate manifest
-    needs: [controller, windows, macos, linux_deb]
-    if: ${{ always() && needs.controller.result == 'success' && (needs.windows.result == 'success' || needs.windows.result == 'skipped') && (needs.macos.result == 'success' || needs.macos.result == 'skipped') && (needs.linux_deb.result == 'success' || needs.linux_deb.result == 'skipped') }}
+    needs: [gate, controller, windows, macos, linux_deb]
+    if: ${{ always() && needs.gate.result == 'success' && needs.controller.result == 'success' && (needs.windows.result == 'success' || needs.windows.result == 'skipped') && (needs.macos.result == 'success' || needs.macos.result == 'skipped') && (needs.linux_deb.result == 'success' || needs.linux_deb.result == 'skipped') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
