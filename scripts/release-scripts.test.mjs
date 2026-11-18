@@ -842,7 +842,7 @@ test("ephemeral Ubuntu runners select a reachable signed archive mirror", async 
   const legacy = "deb http://azure.archive.ubuntu.com/ubuntu jammy main\ndeb http://security.ubuntu.com/ubuntu jammy-security main\n";
   const deb822 = "Types: deb\nURIs: https://azure.archive.ubuntu.com/ubuntu/\nSuites: noble noble-updates\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n";
   const custom = "deb https://example.invalid/ubuntu noble main\n";
-  const mirrors = "http://azure.archive.ubuntu.com/ubuntu\thttps://archive.ubuntu.com/ubuntu\nhttp://security.ubuntu.com/ubuntu\nhttps://example.invalid/ubuntu\n";
+  const mirrors = "http://azure.archive.ubuntu.com/ubuntu\thttps://archive.ubuntu.com/ubuntu\nhttp://us-east-2.ec2.archive.ubuntu.com/ubuntu\nhttps://eu-west-1.ec2.archive.ubuntu.com/ubuntu\nhttp://security.ubuntu.com/ubuntu\nhttps://example.invalid/ubuntu\nhttps://us-east-2.ec2.archive.ubuntu.com.evil.invalid/ubuntu\n";
   const mirrorSource = "Types: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\nSuites: noble noble-updates\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n";
   const files = [["sources.list", legacy], ["sources.list.d/ubuntu.sources", deb822], ["sources.list.d/custom.list", custom], ["apt-mirrors.txt", mirrors], ["sources.list.d/mirror.sources", mirrorSource]];
   for (const [name,contents] of files) await writeFile(path.join(fixture,name),contents);
@@ -850,7 +850,7 @@ test("ephemeral Ubuntu runners select a reachable signed archive mirror", async 
   const selectedArchive = "https://mirrors.edge.kernel.org/ubuntu";
   const run = () => execFileSync("python3",[script,"--apt-root",fixture,"--archive-url",selectedArchive],{encoding:"utf8"});
   run();
-  const expected = contents => contents.replaceAll(/https?:\/\/(?:azure\.archive|archive|security)\.ubuntu\.com\/ubuntu/g,selectedArchive);
+  const expected = contents => contents.replaceAll(/https?:\/\/(?:azure\.archive|[a-z0-9-]+\.ec2\.archive|archive|security)\.ubuntu\.com\/ubuntu/g,selectedArchive);
   for (const [name,contents] of files) assert.equal(await readFile(path.join(fixture,name),"utf8"),expected(contents));
   assert.equal(run(),"","already configured sources are untouched");
 

@@ -20,7 +20,7 @@ UBUNTU_ARCHIVE_CANDIDATES = (
     "https://archive.ubuntu.com/ubuntu",
 )
 UBUNTU_ARCHIVE_URL = re.compile(
-    r"https?://(?:azure\.archive|archive|security)\.ubuntu\.com/ubuntu(?=[/\s]|$)"
+    r"https?://(?:azure\.archive|[a-z0-9-]+\.ec2\.archive|archive|security)\.ubuntu\.com/ubuntu(?=[/\s]|$)"
 )
 
 

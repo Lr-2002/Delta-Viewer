@@ -4197,5 +4197,10 @@
   "异常与无效原因独立窗口、独立常用词；高倍速连续预读与缓冲恢复优化；修正服务短暂不可用时误显示没有任务。": "Separate anomalous and invalid reason dialogs and saved reasons; improved continuous reads and high-speed buffering; temporary service errors no longer appear as an empty task list.",
   "高倍速缺数据恢复后暂停已恢复镜头共同储备缓冲，避免部分镜头继续前进而其余镜头暂停。": "During high-speed recovery, recovered cameras wait together for buffered data instead of advancing while their peers are paused.",
   "已暂停镜头在等待期间再次缺少解码数据时继续恢复，保留所选倍速，暂停操作立即取消。": "A paused camera that loses decoder readiness during buffering can recover again. The selected speed is restored, and pausing cancels playback immediately.",
-  "包含异常／无效独立原因库、连续分段时间轴、13档倍速、固定七路、已审结论修改及服务中断恢复提示。": "Includes separate anomalous and invalid reason libraries, a continuous timeline, 13 playback speeds, seven camera slots, editable reviews, and service interruption recovery messages."
+  "包含异常／无效独立原因库、连续分段时间轴、13档倍速、固定七路、已审结论修改及服务中断恢复提示。": "Includes separate anomalous and invalid reason libraries, a continuous timeline, 13 playback speeds, seven camera slots, editable reviews, and service interruption recovery messages.",
+  "外发审核支持已审修改、独立异常／无效原因库、连续分段回放、13档倍速和固定七路；修正发布测试并保留高倍速共同恢复。": "Editable reviews, separate anomalous and invalid reason libraries, continuous segment playback, 13 speeds, and seven camera slots. Fixes release tests and preserves synchronized high-speed recovery.",
+  "已审视频可修改有效／异常／无效和原因，统计随之更新；改审留在当前条目，首次审核自动下一条。": "Revise saved reviews between valid, anomalous, and invalid, including reasons and updated counts. Revisions stay on the current recording; first decisions advance automatically.",
+  "异常／无效原因使用独立窗口与常用库，所有分段连续回放，固定七路显示缺失或损坏，支持13档倍速。": "Separate anomalous and invalid dialogs and saved reasons, continuous playback across all segments, seven camera slots showing missing or damaged media, and 13 playback speeds.",
+  "高倍速恢复时七路共同储备缓冲；6倍和8倍仍受网络、解码能力限制，不保证所有电脑流畅。": "All seven cameras wait together for buffered data during high-speed recovery. Playback at 6x and 8x still depends on network and decoding capacity and may pause on some computers.",
+  "修正七路媒体回归的响应读取调度及临时构建环境镜像配置，保留超时、完整性和取消验证。": "Fixes concurrent response draining in the seven-camera regression and archive configuration on temporary build runners, preserving timeout, integrity, and cancellation checks."
 }

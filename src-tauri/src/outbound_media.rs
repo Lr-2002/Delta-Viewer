@@ -1126,11 +1126,16 @@ mod tests {
             let m = mode.clone();
             let a = active.clone();
             let started = starts.clone();
+            // Build the immutable fixture before request deadlines start. Seven
+            // clients must measure transport, rather than regenerate 112 MiB
+            // of debug-build pattern data while other native tests run.
+            let fixture_bytes = Arc::new((0..17 * PART + 17).map(fixture_byte).collect::<Vec<_>>());
             let upstream = tokio::spawn(async move {
                 while let Ok((mut socket, _)) = fixture.accept().await {
                     let m = m.clone();
                     let a = a.clone();
                     let started = started.clone();
+                    let fixture_bytes = fixture_bytes.clone();
                     tokio::spawn(async move {
                         let request = read_request(&mut socket).await.unwrap();
                         let mode = m.load(Ordering::SeqCst);
@@ -1147,7 +1152,7 @@ mod tests {
                             a.fetch_sub(1, Ordering::SeqCst);
                             return;
                         }
-                        let total = 17 * PART + 17;
+                        let total = fixture_bytes.len() as u64;
                         let (start, end) = request
                             .range
                             .as_deref()
@@ -1164,11 +1169,13 @@ mod tests {
                         if request.method == "HEAD" {
                             return;
                         }
-                        let bytes = (start..=end)
-                            .take(if mode == 2 { 11 } else { usize::MAX })
-                            .map(fixture_byte)
-                            .collect::<Vec<_>>();
-                        let _ = socket.write_all(&bytes).await;
+                        let bytes = &fixture_bytes[start as usize..=end as usize];
+                        let bytes = if mode == 2 {
+                            &bytes[..11.min(bytes.len())]
+                        } else {
+                            bytes
+                        };
+                        let _ = socket.write_all(bytes).await;
                     });
                 }
             });
@@ -1181,18 +1188,25 @@ mod tests {
             let server = OutboundMediaServer::with_client(client.clone()).unwrap();
             let auth = auth();
             let url = fixture_route(&server, &auth, origin);
-            let responses = futures_util::future::join_all(
-                (0..7).map(|_| client.get(&url).header("Range", "bytes=0-").send()),
-            )
-            .await;
-            for response in responses {
-                let response = response.unwrap();
+            // Drain every camera concurrently, as the real seven players do.
+            // Per-byte assertions run after every body finishes, so checking
+            // one camera cannot consume another camera's request deadline.
+            let bodies = futures_util::future::join_all((0..7).map(|_| async {
+                let response = client
+                    .get(&url)
+                    .header("Range", "bytes=0-")
+                    .send()
+                    .await
+                    .unwrap();
                 assert_eq!(response.status(), 206);
                 assert_eq!(
                     response.headers()["content-range"],
                     format!("bytes 0-{}/{}", WINDOW - 1, 17 * PART + 17)
                 );
-                let bytes = response.bytes().await.unwrap();
+                response.bytes().await.unwrap()
+            }))
+            .await;
+            for bytes in bodies {
                 assert_eq!(bytes.len(), WINDOW as usize);
                 assert!(
                     bytes
