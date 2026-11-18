@@ -4202,5 +4202,19 @@
   "已审视频可修改有效／异常／无效和原因，统计随之更新；改审留在当前条目，首次审核自动下一条。": "Revise saved reviews between valid, anomalous, and invalid, including reasons and updated counts. Revisions stay on the current recording; first decisions advance automatically.",
   "异常／无效原因使用独立窗口与常用库，所有分段连续回放，固定七路显示缺失或损坏，支持13档倍速。": "Separate anomalous and invalid dialogs and saved reasons, continuous playback across all segments, seven camera slots showing missing or damaged media, and 13 playback speeds.",
   "高倍速恢复时七路共同储备缓冲；6倍和8倍仍受网络、解码能力限制，不保证所有电脑流畅。": "All seven cameras wait together for buffered data during high-speed recovery. Playback at 6x and 8x still depends on network and decoding capacity and may pause on some computers.",
-  "修正七路媒体回归的响应读取调度及临时构建环境镜像配置，保留超时、完整性和取消验证。": "Fixes concurrent response draining in the seven-camera regression and archive configuration on temporary build runners, preserving timeout, integrity, and cancellation checks."
+  "修正七路媒体回归的响应读取调度及临时构建环境镜像配置，保留超时、完整性和取消验证。": "Fixes concurrent response draining in the seven-camera regression and archive configuration on temporary build runners, preserving timeout, integrity, and cancellation checks.",
+  "外发审核仅按交付平台星矩公司归属展示；视频缺失或损坏时可填写独立原因提交异常／无效，有效仍须七路就绪。": "Outbound review is limited to the delivery platform’s Xingju company. Missing or damaged videos can be reviewed as anomalous or invalid with separate reasons; valid data still requires all seven cameras.",
+  "外发审核按交付平台星矩公司真实归属筛选，名称不含关键词的本公司数据可审核，其他公司同名数据不混入。": "Filter outbound review by the delivery platform’s authoritative Xingju company membership. Include its datasets without name keywords and exclude similarly named datasets from other companies.",
+  "视频缺失、损坏或明确读取失败时可选择原因提交异常／无效；有效数据仍须所有视频就绪。": "Missing, damaged, or failed video sources can receive an anomalous or invalid decision with a reason. Valid decisions still require every video to be ready.",
+  "无效原因新增数据缺失、视频损坏；异常原因新增部分数据缺失、部分视频损坏，各自独立保存。": "Invalid reasons now include missing data and damaged videos. Anomalous reasons include partially missing data and partially damaged videos, saved separately.",
+  "保留已审修改、统计更新、首次审核自动下一条和提交回执不明时只读核对。": "Preserves editable reviews, updated counts, automatic advancement after a first decision, and read-only reconciliation of uncertain receipts.",
+  "录制存在缺失相机或分段，可查看已有视频，并填写原因提交异常或无效。": "Some cameras or segments are missing. You can watch the available videos and submit an anomalous or invalid decision with a reason.",
+  "有效数据须全部视频就绪；缺失或读取失败时可填写原因提交异常或无效。": "Valid data requires every video to be ready. Missing or failed sources can receive an anomalous or invalid decision with a reason.",
+  "暂无可审核的星矩公司批次": "No Xingju company batches are available for review",
+  "数据缺失": "Missing data",
+  "视频损坏": "Damaged video",
+  "部分数据缺失": "Partially missing data",
+  "部分视频损坏": "Partially damaged video",
+  "外发审核尚未配置星矩公司归属，请联系管理员。": "The Xingju company scope for outbound review has not been configured. Contact an administrator.",
+  "此录制没有可用视频，可选择缺失原因提交异常或无效。": "This recording has no available videos. Select a missing-data reason to submit an anomalous or invalid decision."
 }

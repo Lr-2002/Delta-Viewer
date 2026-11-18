@@ -41,6 +41,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     page.on('pageerror',error=>console.error('OUTBOUND_APP_PAGE_ERROR',error.message));
     await page.route('https://outbound.fixture/**', async route => {
       await page.waitForFunction(() => window.fixtureMediaAllowed === true);
+      if(await page.evaluate(()=>window.fixtureVideoFails===true)){await route.fulfill({status:404,body:''});return;}
       const range = route.request().headers().range;
       const match = range && /^bytes=(\d+)-(\d*)$/.exec(range);
       const start = match ? Number(match[1]) : 0;
@@ -395,7 +396,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.locator('.outbound-video-item').count(),7,'a missing part keeps its real camera slot visible');
     assert.equal(await page.locator('video').count(),7,'missing camera still owns a frontend player');
     assert.equal(await page.locator('video[src]').count(),6);
-    assert.equal(await page.getByRole('button',{name:'有效数据'}).isDisabled(),true,'missing camera blocks decisions');
+    assert.equal(await page.getByRole('button',{name:'有效数据'}).isDisabled(),true,'missing camera blocks approval');
     assert.ok(!(await page.locator('video[src]').evaluateAll(v=>v.map(x=>parseInt(x.getAttribute('src').slice(-64),16)-1))).includes(49),'next camera part must not shift into the missing first segment');
     await page.waitForFunction(()=>!document.querySelector('input[aria-label="视频播放位置"]').disabled).catch(async error=>{console.error(JSON.stringify(await page.evaluate(()=>({calls:window.fixtureCalls.reduce((a,x)=>(a[x.action]=(a[x.action]||0)+1,a),{}),heading:document.querySelector('.outbound-player-heading')?.textContent,alerts:[...document.querySelectorAll('[role=alert]')].map(x=>x.textContent),videos:[...document.querySelectorAll('video')].map(v=>({src:v.getAttribute('src'),ready:v.readyState,duration:v.duration})),status:document.querySelector('.outbound-playback-status')?.textContent}))));throw error;});
     await slider.click({position:{x:(await slider.boundingBox()).width*.15,y:10}});
@@ -425,6 +426,45 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     }
     // The server may commit a claim and lose its response. Read authority,
     // never send the claim twice; preserve an explicit unknown state if reads fail.
+    // A diagnosed source failure can be reviewed with a reason, while valid
+    // still requires every camera. First decisions advance; revisions stay.
+    await page.evaluate(()=>{
+      window.fixtureVideoFails=true;window.fixtureMediaCode='OUTBOUND_MEDIA_INDEX_MISSING';
+      window.fixtureBatch.recordings.forEach(row=>row.decision=null);
+      window.fixtureBatch.recordings[0].videos=Array.from({length:7},(_,segment)=>({segment,label:`${['cam0','cam1','cam2','t265_left','t265_right','extension_left','extension_right'][segment]}/video.mp4`,size:1024,sha256:null}));
+      window.fixtureCalls=[];
+    });
+    await page.getByRole('button',{name:'刷新外发批次'}).click();
+    await page.getByRole('button',{name:'录制 001 待审',exact:true}).click();
+    await page.getByRole('alert').filter({hasText:'以下视频读取失败'}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).isDisabled(),true);
+    assert.equal(await page.getByRole('button',{name:'无效数据',exact:true}).isDisabled(),false);
+    await page.getByRole('button',{name:'无效数据',exact:true}).click();
+    await page.getByRole('button',{name:'视频损坏',exact:true}).click();
+    await page.getByRole('button',{name:'确认无效',exact:true}).click();
+    await page.getByRole('button',{name:'录制 002 待审',exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'录制 002 待审',exact:true}).getAttribute('aria-pressed'),'true');
+    assert.equal(await page.evaluate(()=>window.fixtureBatch.recordings[0].decision.reason),'视频损坏');
+    await page.evaluate(()=>{window.fixtureVideoFails=false;window.fixtureMediaCode=null;window.fixtureBatch.recordings[0].videos=window.fixtureBatch.recordings[0].videos.slice(0,6);});
+    await page.getByRole('button',{name:'刷新外发批次'}).click();
+    await page.getByRole('button',{name:'录制 001 无效',exact:true}).click();
+    await page.getByText('此相机没有本段源文件',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'异常数据',exact:true}).click();
+    assert.equal(await page.getByRole('dialog',{name:'选择异常原因',exact:true}).getByRole('button',{name:'数据缺失',exact:true}).count(),0);
+    await page.getByRole('button',{name:'部分数据缺失',exact:true}).click();
+    await page.getByRole('button',{name:'保存修改',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'录制 001 异常',exact:true}).getAttribute('aria-pressed'),'true');
+    assert.deepEqual(await page.evaluate(()=>[window.fixtureBatch.reviewed,window.fixtureBatch.invalid,window.fixtureBatch.anomalous]),[1,0,1]);
+    await page.evaluate(()=>{window.fixtureBatch.recordings[0].videos=[];window.fixtureBatch.recordings[0].decision=null;});
+    await page.getByRole('button',{name:'刷新外发批次'}).click();
+    await page.getByRole('button',{name:'录制 001 待审',exact:true}).click();
+    assert.equal(await page.locator('video').count(),7,'a recording with no videos retains all missing camera slots');
+    assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).isDisabled(),true);
+    await page.getByRole('button',{name:'无效数据',exact:true}).click();
+    await page.getByRole('button',{name:'数据缺失',exact:true}).click();
+    await page.getByRole('button',{name:'确认无效',exact:true}).click();
+    assert.equal(await page.evaluate(()=>window.fixtureBatch.recordings[0].decision.reason),'数据缺失');
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(row=>row.action==='decide').length),3,'source failures do not replay review writes');
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__outbound`);
     await page.getByRole('button',{name:'领取并打开'}).first().waitFor();
     await page.evaluate(()=>{window.fixtureHoldClaim=false;window.fixtureUncertainAction='claim';window.fixtureMediaAllowed=true;window.fixtureSlowSegment=null;});
@@ -533,7 +573,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.addInitScript(()=>window.fixtureListFails=true);
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__outbound`);
     await page.getByText('批次读取失败，将自动重试，也可点击刷新。',{exact:true}).waitFor();
-    assert.equal(await page.getByText('暂无可审核的星炬批次',{exact:true}).count(),0,'failed fetch cannot be presented as an empty queue');
+    assert.equal(await page.getByText('暂无可审核的星矩公司批次',{exact:true}).count(),0,'failed fetch cannot be presented as an empty queue');
     await page.evaluate(()=>window.fixtureListFails=false);await page.getByRole('button',{name:'刷新外发批次',exact:true}).click();
     await page.locator('.outbound-task-list article').first().waitFor();const countBeforeFailure=await page.locator('.outbound-task-list article').count();
     await page.evaluate(()=>window.fixtureListFails=true);await page.getByRole('button',{name:'刷新外发批次',exact:true}).click();

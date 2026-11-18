@@ -10,9 +10,9 @@ export interface OutboundBatch {
   id: string; name: string; version: number; claim: string | null; total: number; reviewed: number;
   valid: number; invalid: number; anomalous?: number; decisionValues?: OutboundDecisionValue[]; rate: number | null; recordings: OutboundRecording[];
 }
-export const OUTBOUND_INVALID_REASONS = ["无实际意义动作", "测试数据", "设备没有正确佩戴"] as const;
+export const OUTBOUND_INVALID_REASONS = ["无实际意义动作", "测试数据", "设备没有正确佩戴", "数据缺失", "视频损坏"] as const;
 
-export const OUTBOUND_ANOMALOUS_REASONS = ["部分动作无效", "部分画面遮挡", "部分时段设备佩戴异常"] as const;
+export const OUTBOUND_ANOMALOUS_REASONS = ["部分动作无效", "部分画面遮挡", "部分时段设备佩戴异常", "部分数据缺失", "部分视频损坏"] as const;
 
 export const OUTBOUND_CAMERAS = ["cam0", "cam1", "cam2", "t265_left", "t265_right", "extension_left", "extension_right"] as const;
 
@@ -147,6 +147,8 @@ export async function outboundMediaFailure(url:string):Promise<string|null> {
       OUTBOUND_MEDIA_INDEX_MISSING:"源视频缺少播放索引，文件未完整封装；重试无法修复，请联系数据提供方检查原录制。",
       OUTBOUND_MEDIA_CONTAINER_INVALID:"源视频容器结构不完整，请联系数据提供方检查原录制。",
       OUTBOUND_MEDIA_EXPIRED:"视频访问凭证已失效，请重试失败视频；若仍失败，请刷新批次核对领取状态。",
+      OUTBOUND_COMPANY_NOT_CONFIGURED:"外发审核尚未配置星矩公司归属，请联系管理员。",
+      OUTBOUND_VIDEO_MISSING:"此录制没有可用视频，可选择缺失原因提交异常或无效。",
       OUTBOUND_MEDIA_TIMEOUT:"视频读取超时，请检查网络后重试失败视频。",
       OUTBOUND_MEDIA_NETWORK:"视频传输中断，请检查网络后重试失败视频。",
       OUTBOUND_MEDIA_BUSY:"视频读取服务繁忙，请稍后重试失败视频。",
