@@ -45,3 +45,21 @@ test('a pending play promise from a retired recording cannot block the next reco
    assert.equal(next.calls,1,'the next recording starts even when the old WebView2 play promise never settles');
  }finally{transport.dispose();}
 });
+
+test('a shorter camera cannot truncate a longer part, and the group reports its end once',async()=>{
+ const code=ts.transpileModule(readFileSync(new URL('../src/lib/outbound-playback.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
+ const {OutboundPlayback}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+ class Player extends EventTarget {
+   currentTime=0;readyState=4;ended=false;seeking=false;playbackRate=1;
+   constructor(duration){super();this.duration=duration;this.buffered={length:1,start:()=>0,end:()=>duration};}
+   play(){return Promise.resolve();} pause(){}
+ }
+ let ends=0,last;
+ const transport=new OutboundPlayback(state=>last=state,()=>assert.fail('unexpected failure'),()=>ends++);
+ try{
+  const short=new Player(3),long=new Player(8);transport.attach(0,short);transport.attach(1,long);transport.setMaster(0);transport.play();
+  short.currentTime=3;short.ended=true;short.dispatchEvent(new Event('ended'));assert.equal(ends,0);assert.equal(last.playing,true);assert.equal(last.duration,8);
+  long.currentTime=8;long.ended=true;long.dispatchEvent(new Event('ended'));long.dispatchEvent(new Event('ended'));
+  assert.equal(ends,1);assert.equal(last.position,8);assert.equal(last.playing,false);
+ }finally{transport.dispose();}
+});

@@ -1,15 +1,15 @@
 /** Keep one shared ticket budget across rapid recording changes. Superseded
  * queued work never reaches IPC; late successful tickets are released. */
-export class OutboundVideoLoader<T> {
+export class OutboundVideoLoader<T,R=string> {
   private generation=0;
   private active=0;
-  private queue:{item:T;generation:number;request:(item:T)=>Promise<string>;loaded:(item:T,url:string)=>void;failed:(item:T,error:unknown)=>void;done:()=>void}[]=[];
+  private queue:{item:T;generation:number;request:(item:T)=>Promise<R>;loaded:(item:T,url:R)=>void;failed:(item:T,error:unknown)=>void;done:()=>void}[]=[];
   private remaining=0;
   private finished:(()=>void)|null=null;
-  private release:(url:string)=>void;
-  constructor(release:(url:string)=>void){this.release=release;}
+  private release:(url:R)=>void;
+  constructor(release:(url:R)=>void){this.release=release;}
   cancel(){this.generation++;this.queue=[];this.remaining=0;this.finished=null;}
-  replace(items:T[],request:(item:T)=>Promise<string>,loaded:(item:T,url:string)=>void,failed:(item:T,error:unknown)=>void,done:()=>void){
+  replace(items:T[],request:(item:T)=>Promise<R>,loaded:(item:T,url:R)=>void,failed:(item:T,error:unknown)=>void,done:()=>void){
     this.cancel();
     const generation=this.generation;
     this.remaining=items.length;this.finished=done;
