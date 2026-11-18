@@ -1,0 +1,13 @@
+import {readFile} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+import {verifyApplicationTitle} from './application-title.mjs';
+import {parseReleaseChangelog} from './release-changelog.mjs';
+const commit=process.env.CANDIDATE_COMMIT;
+if(!/^[a-f0-9]{40}$/.test(commit||'')||execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim()!==commit)throw Error('Candidate commit mismatch');
+if(execFileSync('git',['status','--porcelain=v1','--untracked-files=all'],{encoding:'utf8'}).trim())throw Error('Candidate source must be clean');
+const pkg=JSON.parse(await readFile('package.json','utf8')),config=JSON.parse(await readFile('src-tauri/tauri.conf.json','utf8'));
+if(!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(pkg.version)||config.version!==pkg.version)throw Error('Candidate version mismatch');
+const cargo=await readFile('src-tauri/Cargo.toml','utf8'),lock=await readFile('src-tauri/Cargo.lock','utf8');
+if(!cargo.includes(`version = "${pkg.version}"`)||!lock.includes(`name = "dohc-viewer"\nversion = "${pkg.version}"`))throw Error('Candidate Rust version mismatch');
+verifyApplicationTitle(config,pkg.version);parseReleaseChangelog(await readFile('CHANGELOG.md','utf8'),pkg.version);
+console.log(JSON.stringify({channel:'candidate',commit,version:pkg.version,githubReleaseCreated:false}));

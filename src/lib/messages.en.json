@@ -4146,5 +4146,11 @@
   "选择异常原因": "Select a reason for anomalous data",
   "关闭异常原因": "Close anomalous data reasons",
   "确认异常": "Confirm anomalous data",
-  "已保存为常用审核原因。": "Saved as a common review reason."
+  "已保存为常用审核原因。": "Saved as a common review reason.",
+  "正在检查候选及正式更新，数据载入可继续进行。": "Checking candidate and stable updates. You can keep working.",
+  "当前已是最新候选版本，尚未正式发布。": "You have the latest candidate. It has not been formally released.",
+  "发布通道：公开候选更新 · 尚未发布 GitHub 正式版": "Channel: public candidate · Not yet a stable GitHub release",
+  "候选更新服务 · HTTPS": "Candidate update service · HTTPS",
+  "公开候选更新，尚未发布为 GitHub 正式版。安装由您确认；保留工作后再重启。": "Public candidate, not yet a stable GitHub release. Choose when to install and save your work before restarting.",
+  "当前没有可安装的更新。": "No installable updates are currently available."
 }
