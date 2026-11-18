@@ -1,6 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
-import {copyFile,lstat,mkdir,mkdtemp,readFile,rename,rm,writeFile} from 'node:fs/promises';
+import {chmod,copyFile,lstat,mkdir,mkdtemp,readFile,rename,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -89,7 +89,7 @@ export async function publishCandidate({input,root,publicKey}){
   if(existing){
    if(!existing.isDirectory()||existing.isSymbolicLink()||!(await readFile(path.join(final,'latest.json'))).equals(await readFile(path.join(staging,'latest.json'))))throw Error('Candidate version already exists with different bytes');
    await verifyCandidate({input:final,publicKey});
-  }else await rename(staging,final);
+  }else {await chmod(staging,0o755);await rename(staging,final);}
   // Never replace a newer public candidate with a late build.
   const latest=path.join(root,'latest.json'),old=await boundedFile(latest,maxJSON).catch(e=>{if(e.code!=='ENOENT')throw e;return null;});
   if(old){const previous=JSON.parse(Buffer.from(JSON.parse(old).payload,'base64'));const a=previous.version.split('.').map(Number),b=manifest.version.split('.').map(Number);let cmp=0;for(let i=0;i<3&&!cmp;i++)cmp=b[i]-a[i];if(cmp<0)throw Error('Refusing candidate pointer downgrade');}

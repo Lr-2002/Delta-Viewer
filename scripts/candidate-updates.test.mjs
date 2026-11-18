@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createHash,generateKeyPairSync,randomBytes,sign} from 'node:crypto';
-import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {candidateBase,nameFor,verifyCandidate,publishCandidate,validateCandidate} from './candidate-updates.mjs';
@@ -34,6 +34,7 @@ test('publication keeps public versions immutable, publishes exact signed bytes,
  const root=await mkdtemp(path.join(tmpdir(),'candidate-publish-')),key=signer(),input=path.join(root,'input'),output=path.join(root,'served');
  try{
   await fixture(input,key);await publishCandidate({input,root:output,publicKey:key.publicKey});const first=await readFile(path.join(output,'latest.json'));
+  if(process.platform!=='win32')assert.equal((await stat(path.join(output,'releases/v9.1.0'))).mode&0o777,0o755,'Public update assets must be traversable by the nginx worker');
   await verifyCandidate({input:path.join(output,'releases/v9.1.0'),publicKey:key.publicKey});await publishCandidate({input,root:output,publicKey:key.publicKey});
   await fixture(input,key,'9.1.0',m=>m.notes='different content');await assert.rejects(publishCandidate({input,root:output,publicKey:key.publicKey}),/different bytes/);assert.deepEqual(await readFile(path.join(output,'latest.json')),first);
   await fixture(input,key,'9.0.9');await assert.rejects(publishCandidate({input,root:output,publicKey:key.publicKey}),/downgrade/);assert.deepEqual(await readFile(path.join(output,'latest.json')),first);
