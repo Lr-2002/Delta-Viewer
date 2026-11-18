@@ -122,10 +122,10 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
           <option value="github">{t("GitHub（外网备用）")}</option>
         </select>
       </label>
-      {phase === "checking" && <p role="status">{t("正在检查所选线路的正式版本，数据载入可继续进行。")}</p>}
-      {phase === "current" && <p role="status">{info?.downloadSource === "lan" ? t("公司内网已同步至 v{0}，当前无需更新。", [tr(info.latestVersion)]) : t("已是最新正式版本。")}</p>}
+      {phase === "checking" && <p role="status">{t("正在检查候选及正式更新，数据载入可继续进行。")}</p>}
+      {phase === "current" && <p role="status">{info?.downloadSource === "lan" ? t("公司内网已同步至 v{0}，当前无需更新。", [tr(info.latestVersion)]) : info?.downloadSource === "candidate" ? t("当前已是最新候选版本，尚未正式发布。") : t("当前没有可安装的更新。")}</p>}
       <div className="app-update-notes">{available ? <><h3>{t("本次更新内容")}</h3><pre>{info?.notes || t("此版本未提供更新说明。")}</pre></> : <><h3>{t("当前版本更新摘要")}</h3><p>{tr(currentSummary)}</p><ul>{currentNotes.map((note, i) => <li key={i}>{tr(note)}</li>)}</ul></>}</div>
-      <p className="muted">{t("发布来源：github.com/Lr-2002/Delta-Viewer · 正式 Release")}<br />{t("下载线路：")}{info?.downloadSource === "lan" ? t("公司内网 · 无需访问 GitHub") : info?.downloadSource === "github" ? "GitHub" : t("等待检查")}</p>
+      <p className="muted">{info?.downloadSource === "candidate" ? t("发布通道：公开候选更新 · 尚未发布 GitHub 正式版") : t("发布来源：github.com/Lr-2002/Delta-Viewer · 正式 Release")}<br />{t("下载线路：")}{info?.downloadSource === "lan" ? t("公司内网 · 无需访问 GitHub") : info?.downloadSource === "github" ? "GitHub" : info?.downloadSource === "candidate" ? t("候选更新服务 · HTTPS") : t("等待检查")}</p>
       {tr(info?.sourceNote && <p className="muted update-source-note">{tr(info.sourceNote)}</p>)}
       {busy && <p role="status">{t("正在处理数据或导出，请等待完成后再下载或安装更新。")}</p>}
       {tr(error && <p className="update-error" role="alert">{tr(error)}{t("。当前版本可继续使用。")}</p>)}

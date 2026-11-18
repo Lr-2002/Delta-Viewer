@@ -13,6 +13,29 @@ pub async fn call(
     let action = input["action"]
         .as_str()
         .ok_or_else(|| AppError::Message("OUTBOUND_REQUEST_INVALID".into()))?;
+    if action == "media-status" {
+        if input.as_object().is_none_or(|object| object.len() != 2) {
+            return Err(AppError::Message("OUTBOUND_REQUEST_INVALID".into()));
+        }
+        let url = input["url"]
+            .as_str()
+            .ok_or_else(|| AppError::Message("OUTBOUND_REQUEST_INVALID".into()))?;
+        let code = media
+            .ok_or_else(|| AppError::Message("OUTBOUND_MEDIA_TRANSPORT_UNAVAILABLE".into()))?
+            .status(auth, url)?;
+        return Ok(serde_json::json!({"code":code}));
+    }
+    if action == "release-media" {
+        if input.as_object().is_none_or(|object| object.len() != 2) {
+            return Err(AppError::Message("OUTBOUND_REQUEST_INVALID".into()));
+        }
+        let urls: Vec<String> = serde_json::from_value(input["urls"].clone())
+            .map_err(|_| AppError::Message("OUTBOUND_REQUEST_INVALID".into()))?;
+        media
+            .ok_or_else(|| AppError::Message("OUTBOUND_MEDIA_TRANSPORT_UNAVAILABLE".into()))?
+            .release(auth, &urls)?;
+        return Ok(serde_json::json!({"released":true}));
+    }
     if !matches!(
         action,
         "list" | "claim" | "release" | "decide" | "video-url" | "save-reason-option"

@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export interface OutboundVideo { segment: number; label: string; size: number; sha256: string | null }
-export interface OutboundDecision { value: "valid" | "invalid"; reason?: string; actor: string; at: string }
+export type OutboundDecisionValue = "valid" | "invalid" | "anomalous";
+export interface OutboundDecision { value: OutboundDecisionValue; reason?: string; actor: string; at: string }
 export interface OutboundRecording { id: string; name: string; videos: OutboundVideo[]; decision: OutboundDecision | null }
 export interface OutboundBatch {
   reasonOptions?: string[];
   id: string; name: string; version: number; claim: string | null; total: number; reviewed: number;
-  valid: number; invalid: number; rate: number | null; recordings: OutboundRecording[];
+  valid: number; invalid: number; anomalous?: number; decisionValues?: OutboundDecisionValue[]; rate: number | null; recordings: OutboundRecording[];
 }
 export const OUTBOUND_INVALID_REASONS = ["无实际意义动作", "测试数据", "设备没有正确佩戴"] as const;
 
@@ -55,7 +56,7 @@ export async function listOutboundBatches(datasetId?: string, protocol?:Outbound
 }
 export const saveOutboundReasonOption = (reason: string) =>
   outboundCall<{ reasonOptions: string[] }>({ action: "save-reason-option", reason });
-export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: "valid" | "invalid", reason?: string, protocol?:OutboundProtocol) {
+export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: OutboundDecisionValue, reason?: string, protocol?:OutboundProtocol) {
   const input={action,datasetId:batch.id,version:batch.version,
     ...(recordingId?{recordingId,value,...(reason?{reason}:{})}:{})};
   // Keep a full claim response so entering the workspace needs no second read.
@@ -105,4 +106,30 @@ export function outboundError(reason: unknown) {
 
 export function outboundResultUncertain(reason: unknown) {
   return /OUTBOUND_(?:USER_CENTER_(?:TIMEOUT|UNAVAILABLE)|RESPONSE_(?:INTERRUPTED|INVALID|TOO_LARGE)|NETWORK_UNAVAILABLE|HTTP_50[0234]|REQUEST_FAILED(?::\s*OUTBOUND_HTTP_50[0234])?$)/.test(String(reason));
+}
+
+// Local resource cleanup only. The native side never forwards this action.
+export async function releaseOutboundVideos(urls:string[]) {
+  if(!urls.length)return;
+  try {await outboundCall({action:"release-media",urls});} catch { /* Session change already invalidates its routes. */ }
+}
+
+export async function outboundMediaFailure(url:string):Promise<string|null> {
+  try {
+    const {code}=await outboundCall<{code:string|null}>({action:"media-status",url});
+    const messages:Record<string,string>={
+      OUTBOUND_MEDIA_INDEX_MISSING:"源视频缺少播放索引，文件未完整封装；重试无法修复，请联系数据提供方检查原录制。",
+      OUTBOUND_MEDIA_CONTAINER_INVALID:"源视频容器结构不完整，请联系数据提供方检查原录制。",
+      OUTBOUND_MEDIA_EXPIRED:"视频访问凭证已失效，请重试失败视频；若仍失败，请刷新批次核对领取状态。",
+      OUTBOUND_MEDIA_TIMEOUT:"视频读取超时，请检查网络后重试失败视频。",
+      OUTBOUND_MEDIA_NETWORK:"视频传输中断，请检查网络后重试失败视频。",
+      OUTBOUND_MEDIA_BUSY:"视频读取服务繁忙，请稍后重试失败视频。",
+      OUTBOUND_MEDIA_UPSTREAM:"视频源站暂时不可用，请稍后重试失败视频。",
+      OUTBOUND_SOURCE_CHANGED:"原始视频来源发生变化，未用于审核。",
+      OUTBOUND_VIDEO_NOT_FOUND:"源视频文件不可用，请联系管理员核对来源。",
+      OUTBOUND_MEDIA_INTEGRITY:"视频响应与源文件信息不一致，已停止读取，请联系管理员检查。",
+      OUTBOUND_MEDIA_RESPONSE_INVALID:"视频读取服务返回异常，请稍后重试失败视频。",
+    };
+    return code?messages[code]??null:null;
+  } catch { return null; }
 }

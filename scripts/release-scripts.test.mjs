@@ -847,7 +847,7 @@ test("ephemeral Ubuntu runners select a reachable signed archive mirror", async 
   const files = [["sources.list", legacy], ["sources.list.d/ubuntu.sources", deb822], ["sources.list.d/custom.list", custom], ["apt-mirrors.txt", mirrors], ["sources.list.d/mirror.sources", mirrorSource]];
   for (const [name,contents] of files) await writeFile(path.join(fixture,name),contents);
   const script = path.join(root,"scripts/configure-ubuntu-archive.py");
-  const selectedArchive = "https://us.archive.ubuntu.com/ubuntu";
+  const selectedArchive = "https://mirrors.edge.kernel.org/ubuntu";
   const run = () => execFileSync("python3",[script,"--apt-root",fixture,"--archive-url",selectedArchive],{encoding:"utf8"});
   run();
   const expected = contents => contents.replaceAll(/https?:\/\/(?:azure\.archive|archive|security)\.ubuntu\.com\/ubuntu/g,selectedArchive);
@@ -872,7 +872,10 @@ test("ephemeral Ubuntu runners select a reachable signed archive mirror", async 
 
   for (const name of ["ci.yml","release.yml"]) {
     const workflow=await readFile(path.join(root,".github/workflows",name),"utf8");
-    assert.match(workflow,/sudo python3 scripts\/configure-ubuntu-archive\.py\n\s+sudo apt-get update/);
+    assert.match(workflow,/sudo python3 scripts\/configure-ubuntu-archive\.py --archive-url https:\/\/mirrors\.edge\.kernel\.org\/ubuntu/);
+    assert.match(workflow,/Acquire::Retries "1"/);
+    assert.match(workflow,/Acquire::https::Timeout "30"/);
+    assert.match(workflow,/99-delta-bounded-downloads[^\n]*\n\s+sudo apt-get update/);
     assert.doesNotMatch(workflow,/--allow-unauthenticated|trusted=yes/);
   }
 });

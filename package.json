@@ -1,7 +1,7 @@
 {
   "name": "dohc-viewer",
   "private": true,
-  "version": "1.11.4",
+  "version": "1.11.6",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -14,7 +14,7 @@
     "check:full": "node scripts/release-check.mjs --full",
     "check:bundle": "node scripts/release-check.mjs --full --bundle",
     "test:d1-manager": "node --test --test-concurrency=1 scripts/d1-manager.test.mjs scripts/d1-services-ui.test.mjs",
-    "test:outbound-review": "node --test --test-concurrency=1 scripts/outbound-review-bridge.test.mjs scripts/outbound-review-session.test.mjs scripts/outbound-review.test.mjs",
+    "test:outbound-review": "node --test --test-concurrency=1 scripts/outbound-video-loader.test.mjs scripts/outbound-review-bridge.test.mjs scripts/outbound-review-session.test.mjs scripts/outbound-review.test.mjs",
     "test:demo-flow": "node --test scripts/demo-flow.test.mjs",
     "check:linux": "node scripts/check-linux-package.mjs",
     "check:release-scripts": "node --test scripts/download-reviewed-ffmpeg.test.mjs scripts/release-scripts.test.mjs",
@@ -40,7 +40,7 @@
     "user-center:install": "bash scripts/install-user-center-macos.sh",
     "test:client-management:browser": "node --test --experimental-strip-types scripts/client-versions.test.ts && node --test scripts/client-management-browser.test.mjs",
     "test:cloud-qc": "node --test --test-concurrency=1 scripts/cloud-qc.test.mjs scripts/cloud-qc-preview.test.mjs",
-    "test:app-updates": "node --test scripts/app-updates.test.mjs",
+    "test:app-updates": "node --test scripts/candidate-updates.test.mjs scripts/app-updates.test.mjs",
     "test:review-extensions": "node --test --test-concurrency=1 scripts/custom-rejection-browser.test.mjs scripts/media-failure-browser.test.mjs scripts/skeleton-library.test.mjs",
     "test:loading-progress": "node --test scripts/loading-progress.test.mjs",
     "test:i18n": "node --test scripts/i18n-browser.test.mjs"

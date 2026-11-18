@@ -611,7 +611,7 @@ export interface TaskProgress {
 }
 
 export interface AppUpdateInfo {
-  downloadSource?: "lan" | "github";
+  downloadSource?: "lan" | "github" | "candidate";
   sourceNote?: string | null;
   ready: boolean;
   currentVersion: string;

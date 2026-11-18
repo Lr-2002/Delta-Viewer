@@ -11,7 +11,7 @@ export class OutboundPlayback {
   private listeners = new Map<number, () => void>();
   private intent = false;
   private held = false;
-  private starting = false;
+  private starting: number | null = null;
   private priming = false;
   private primingUntil = 0;
   private generation = 0;
@@ -141,18 +141,18 @@ export class OutboundPlayback {
         // A decoded first frame may represent only .25 seconds of high-rate
         // video. Reserve a small lead once at start/seek, capped at two seconds;
         // ongoing recovery keeps the hungry decoder running as before.
-        if (!this.starting && [...this.players.values()].every(v => v.readyState >= 3 && !v.seeking
+        if (this.starting !== this.generation && [...this.players.values()].every(v => v.readyState >= 3 && !v.seeking
           && (!this.priming || performance.now() >= this.primingUntil || this.hasStartupBuffer(v)))) {
           const generation = this.generation;
           this.held = false;
           this.priming = false;
-          this.starting = true;
+          this.starting = generation;
           void Promise.all([...this.players.values()].map(player => player.play())).catch(error => {
             // Our pause/seek can abort an in-flight play promise.
             if (generation === this.generation && this.intent && !this.held && error?.name !== "AbortError") {
               this.pause(); this.failed();
             }
-          }).finally(() => { this.starting = false; });
+          }).finally(() => { if (this.starting === generation) this.starting = null; });
         }
       } else {
         for (const player of this.players.values()) {

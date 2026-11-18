@@ -73,7 +73,7 @@ test('updates check in background, require download/install consent and retain w
           import {AppUpdates} from '/src/components/AppUpdates.tsx'; import '/src/styles.css';
           window.downloads=0;window.installs=0;window.saved=0;window.histories=0;window.fail='';window.releaseReady=false;const mode=new URLSearchParams(location.search).get('mode');
           window.checks=0;window.deferCheck=true;window.cached=mode==='cached';if(mode==='failed')window.fail='check';
-          async function check(){window.checks++;if(window.deferCheck)await new Promise(resolve=>window.finishCheck=resolve);if(window.fail==='check')throw Error('HTTP 503');return {currentVersion:'1.0.63',latestVersion:'1.0.64',available:true,ready:window.cached,notes:'- 改善回放体验。\\n- 修复审核问题。',publishedAt:'2026-10-15T00:00:00Z'};}
+          async function check(){window.checks++;if(window.deferCheck)await new Promise(resolve=>window.finishCheck=resolve);if(window.fail==='check')throw Error('HTTP 503');return {currentVersion:'1.0.63',latestVersion:'1.0.64',available:true,ready:window.cached,notes:'- 改善回放体验。\\n- 修复审核问题。',publishedAt:'2026-10-15T00:00:00Z',downloadSource:mode==='candidate'?'candidate':'github',sourceNote:mode==='candidate'?'公开候选更新，尚未发布为 GitHub 正式版。安装由您确认；保留工作后再重启。':null};}
           function App(){const [busy,setBusy]=useState(false);window.setBusy=setBusy;return React.createElement('main',{},
             React.createElement('p',{id:'data'},'数据已加载，审核可以继续'),
             React.createElement(AppUpdates,{version:'1.0.63',currentSummary:'更新改从 GitHub 正式 Release 获取。',currentNotes:['后台检查','主动下载'],busy,check,
@@ -96,6 +96,12 @@ test('updates check in background, require download/install consent and retain w
   await page.evaluate(()=>{window.deferCheck=false;window.finishCheck()});
   await page.getByText('新版本 v1.0.64 可用',{exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>window.downloads),0,'discovery never auto downloads');
+  const candidatePage=await browser.newPage();await candidatePage.goto(server.resolvedUrls.local[0]+'__updates?mode=candidate');
+  await candidatePage.waitForFunction(()=>window.finishCheck);await candidatePage.evaluate(()=>{window.deferCheck=false;window.finishCheck()});
+  await candidatePage.getByRole('button',{name:'版本与更新',exact:true}).click();
+  await candidatePage.getByRole('dialog').locator('p.muted').filter({hasText:'发布通道：公开候选更新 · 尚未发布 GitHub 正式版'}).waitFor();
+  assert.equal(await candidatePage.evaluate(()=>window.downloads+window.installs),0,'public candidate requires explicit download and installation');await candidatePage.close();
+
   await page.getByRole('button',{name:'稍后提醒',exact:true}).click();
   await page.reload();await page.waitForFunction(()=>window.finishCheck);
   await page.evaluate(()=>{window.deferCheck=false;window.finishCheck()});

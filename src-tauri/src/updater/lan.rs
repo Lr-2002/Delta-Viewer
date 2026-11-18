@@ -15,6 +15,7 @@ pub enum UpdateSource {
 
 #[derive(Clone, Copy)]
 pub(super) enum DownloadRoute {
+    Candidate,
     Lan,
     Github,
 }
@@ -22,12 +23,14 @@ pub(super) enum DownloadRoute {
 impl DownloadRoute {
     pub(super) fn name(self) -> &'static str {
         match self {
+            Self::Candidate => "candidate",
             Self::Lan => "lan",
             Self::Github => "github",
         }
     }
     pub(super) fn label(self) -> &'static str {
         match self {
+            Self::Candidate => "候选更新",
             Self::Lan => "公司内网",
             Self::Github => "GitHub",
         }
@@ -36,6 +39,7 @@ impl DownloadRoute {
         canonical_version(&format!("v{version}"))?;
         let name = asset_name(version, target)?;
         match self {
+            Self::Candidate => candidate::asset_url(version, target),
             Self::Github => super::asset_url(version, &name),
             Self::Lan => Url::parse(&format!(
                 "{BASE_URL}/releases/v{version}/{}",
@@ -45,6 +49,19 @@ impl DownloadRoute {
         }
     }
     pub(super) fn client(self, timeout: Duration) -> AppResult<Client> {
+        if matches!(self, Self::Candidate) {
+            #[cfg(not(target_os = "windows"))]
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            return Client::builder()
+                .https_only(true)
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(2))
+                .timeout(timeout)
+                .read_timeout(Duration::from_secs(30))
+                .user_agent(concat!("Delta-Viewer/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .map_err(update_check_error);
+        }
         if matches!(self, Self::Github) {
             return super::client(timeout);
         }

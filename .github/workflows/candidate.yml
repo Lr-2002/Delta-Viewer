@@ -1,0 +1,816 @@
+name: Candidate updates
+
+on:
+  push:
+    branches: [work/data-workspace-maintenance-20261117]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Build the candidate platform needed for acceptance'
+        type: choice
+        default: windows
+        options: [windows, macos, linux_deb, all]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.12.1"
+  RUST_VERSION: "1.97.1"
+
+jobs:
+  gate:
+    name: Build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: "./src-tauri -> target"
+          key: ci-ubuntu-x64
+          cache-bin: "false"
+          cache-all-crates: "false"
+          cache-workspace-crates: "false"
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Install Tauri build dependencies
+        timeout-minutes: 6
+        run: |
+          sudo python3 scripts/configure-ubuntu-archive.py --archive-url https://mirrors.edge.kernel.org/ubuntu
+          printf 'Acquire::Retries "1";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' | sudo tee /etc/apt/apt.conf.d/99-delta-bounded-downloads >/dev/null
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            patchelf \
+            ffmpeg
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for playback coverage
+        run: pnpm exec playwright-core install --with-deps chromium
+
+      - name: Run playback regression coverage
+        run: pnpm test:playback
+
+      - name: Run task center interaction regressions
+        run: pnpm test:task-center
+
+      - name: Run cloud QC and review extension regressions
+        env:
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
+        run: |
+          pnpm test:cloud-qc
+          pnpm test:review-extensions
+
+      - name: Run NAS task index regressions
+        run: python3 scripts/task-index-server.test.py
+
+      - name: Run review audit recovery regressions
+        run: pnpm test:review-audit:browser
+
+      - name: Run local review writeback confirmation regressions
+        run: pnpm test:source-review:browser
+
+      - name: Run native MP4 playback regression coverage
+        env:
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
+        run: pnpm test:native-playback
+
+      - name: Run release workflow regression coverage
+        run: pnpm check:release-scripts
+
+      - name: Run proofreading frame and interaction regressions
+        env:
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
+        run: pnpm test:proofreading
+
+      - name: Run consent-based GitHub update flow regressions
+        env:
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
+        run: pnpm test:app-updates
+
+      - name: Run admin mode and client reminder regressions
+        env:
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
+        run: |
+          pnpm test:user-center
+          pnpm test:client-management:browser
+
+      - name: Verify native installer reuses validated metadata without HTTP
+        run: cargo test --manifest-path src-tauri/Cargo.toml -p tauri-plugin-updater delta_metadata_tests
+
+      - name: Run shared release gate (including issue-location regression)
+        run: pnpm check
+
+      - name: Run browser operation-ownership smoke test
+        run: pnpm test:concurrency:browser
+
+      - name: Run required browser regression checks
+        env:
+          DEMO_FLOW_REQUIRE_BROWSER: "1"
+          DIALOG_RECOVERY_REQUIRE_BROWSER: "1"
+          PLAYWRIGHT_BROWSER_EXECUTABLE: /usr/bin/google-chrome
+          PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
+        run: |
+          test -x "$PLAYWRIGHT_BROWSER_EXECUTABLE"
+          "$PLAYWRIGHT_BROWSER_EXECUTABLE" --version
+          pnpm test:demo-flow
+          pnpm test:d1-manager
+          pnpm test:outbound-review
+          pnpm test:session-activation
+          pnpm test:loading-progress
+          pnpm test:dialog-recovery
+
+      - name: Check Wiki sources
+        run: pnpm check:wiki
+
+  controller:
+    name: Bind candidate to fully checked source without creating a tag
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.bind.outputs.commit }}
+      version: ${{ steps.bind.outputs.version }}
+      tag: ${{ steps.bind.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify candidate source identity
+        id: bind
+        env:
+          CANDIDATE_COMMIT: ${{ github.sha }}
+        run: |
+          node scripts/verify-candidate-source.mjs
+          echo "commit=$CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
+          version="$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=candidate-v$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows 10+ x64 unsigned installer
+    needs: controller
+    if: ${{ (github.event_name == 'push' && 'windows' == 'windows') || inputs.platform == 'windows' || inputs.platform == 'all' }}
+    runs-on: windows-2022
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      FFMPEG_URL: https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64
+      FFMPEG_SHA256: 04e1307997530f9cf2fe35cba2ca7e8875ca91da02f89d6c7243df819c94ad00
+      FFMPEG_LICENSE_URL: https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/win32-x64.LICENSE
+      FFMPEG_LICENSE_SHA256: 8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903
+      FFMPEG_NOTICE_URL: https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/win32-x64.README
+      FFMPEG_NOTICE_SHA256: a636a7183c58006351acbaf35303c0ed85c6e1320fd4e80de453ba6157de6311
+      FFMPEG_BUILD_ID: ffmpeg-static-b6.1.1-gyan-6.1.1-essentials
+      WEBVIEW2_URL: https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/d06c217f-cef1-471d-a639-fad978ef4a40/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
+      WEBVIEW2_SHA256: 477c6a0cf79d29fdbfca3ea337fabe952a439b5da38d025cd2c59cc65a87947d
+      WEBVIEW2_TAURI_RESOLVER_URL: https://go.microsoft.com/fwlink/?linkid=2124701
+    steps:
+      - name: Preserve exact repository line endings for source identity checks
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - name: Check out bound release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.controller.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: "./src-tauri -> target"
+          key: candidate-native-windows-x64
+          cache-bin: "false"
+          cache-all-crates: "false"
+          cache-workspace-crates: "false"
+          save-if: "false"
+
+      - name: Reverify exact candidate source
+        env:
+          CANDIDATE_COMMIT: ${{ needs.controller.outputs.commit }}
+        run: node scripts/verify-candidate-source.mjs
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Stage reviewed offline WebView2 installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:WEBVIEW2_URL) -or
+              [string]::IsNullOrWhiteSpace($env:WEBVIEW2_SHA256) -or
+              [string]::IsNullOrWhiteSpace($env:WEBVIEW2_TAURI_RESOLVER_URL)) {
+            throw "Missing reviewed WebView2 source, hash, or Tauri resolver URL"
+          }
+          $reviewedUri = [Uri]$env:WEBVIEW2_URL
+          $expectedPrefix = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/"
+          if (-not $reviewedUri.AbsoluteUri.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "WEBVIEW2_WINDOWS_X64_URL must be an exact Microsoft filestreamingservice HTTPS URL"
+          }
+          $segments = $reviewedUri.AbsolutePath.Trim("/").Split("/")
+          if ($segments.Count -lt 2) { throw "Pinned WebView2 URL has no GUID/file path" }
+          $reviewedGuid = $segments[$segments.Count - 2]
+          $reviewedFileName = [Uri]::UnescapeDataString($segments[$segments.Count - 1])
+          $parsedGuid = [Guid]::Empty
+          if (-not [Guid]::TryParse($reviewedGuid, [ref]$parsedGuid) -or
+              [string]::IsNullOrWhiteSpace($reviewedFileName)) {
+            throw "Pinned WebView2 URL has an invalid GUID or file name"
+          }
+          $reviewedRoot = Join-Path $env:RUNNER_TEMP "webview2-reviewed"
+          New-Item -ItemType Directory -Force -Path $reviewedRoot | Out-Null
+          $reviewedInstaller = Join-Path $reviewedRoot $reviewedFileName
+          Invoke-WebRequest -Uri $reviewedUri -OutFile $reviewedInstaller
+          $actualHash = (Get-FileHash -LiteralPath $reviewedInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:WEBVIEW2_SHA256.ToLowerInvariant()) {
+            throw "Reviewed WebView2 SHA-256 mismatch"
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $reviewedInstaller
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+              -not $signature.SignerCertificate.Subject.Contains("Microsoft")) {
+            throw "Reviewed WebView2 installer does not have a valid Microsoft signature"
+          }
+
+          # Tauri resolves the evergreen URL only to choose a cache key. Bind that key to reviewed bytes.
+          $resolverUri = [Uri]$env:WEBVIEW2_TAURI_RESOLVER_URL
+          if ($resolverUri.Scheme -ne "https") {
+            throw "Tauri WebView2 resolver URL must use HTTPS"
+          }
+          $resolverResponse = Invoke-WebRequest -Uri $resolverUri -Method Head -MaximumRedirection 10
+          [Uri]$resolvedUri = $resolverResponse.BaseResponse.RequestMessage.RequestUri
+          if (-not $resolvedUri.AbsoluteUri.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Tauri WebView2 resolver returned an unexpected URL: $resolvedUri"
+          }
+          $resolvedSegments = $resolvedUri.AbsolutePath.Trim("/").Split("/")
+          if ($resolvedSegments.Count -lt 2) { throw "Resolved Tauri WebView2 URL has no GUID/file path" }
+          $resolvedGuid = $resolvedSegments[$resolvedSegments.Count - 2]
+          $resolvedFileName = [Uri]::UnescapeDataString($resolvedSegments[$resolvedSegments.Count - 1])
+          $parsedResolvedGuid = [Guid]::Empty
+          if (-not [Guid]::TryParse($resolvedGuid, [ref]$parsedResolvedGuid) -or
+              [string]::IsNullOrWhiteSpace($resolvedFileName)) {
+            throw "Resolved Tauri WebView2 URL has an invalid GUID or file name"
+          }
+          $cache = Join-Path $env:GITHUB_WORKSPACE "src-tauri\target\.tauri\x64\$resolvedGuid"
+          New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          $installer = Join-Path $cache $resolvedFileName
+          Copy-Item -LiteralPath $reviewedInstaller -Destination $installer -Force
+          $cachedHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($cachedHash -ne $env:WEBVIEW2_SHA256.ToLowerInvariant()) {
+            throw "Tauri WebView2 cache does not contain the reviewed SHA-256"
+          }
+          Write-Host "Bound reviewed WebView2 payload to Tauri cache key $resolvedGuid/$resolvedFileName"
+
+      - name: Download and stage reviewed Windows FFmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $required = @(
+            "FFMPEG_URL",
+            "FFMPEG_SHA256",
+            "FFMPEG_LICENSE_URL",
+            "FFMPEG_LICENSE_SHA256",
+            "FFMPEG_NOTICE_URL",
+            "FFMPEG_NOTICE_SHA256",
+            "FFMPEG_BUILD_ID"
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Missing pinned release input: $name"
+            }
+          }
+          if (([Uri]$env:FFMPEG_URL).Scheme -ne "https" -or
+              ([Uri]$env:FFMPEG_LICENSE_URL).Scheme -ne "https" -or
+              ([Uri]$env:FFMPEG_NOTICE_URL).Scheme -ne "https") {
+            throw "FFmpeg binary, license, and notice URLs must use HTTPS"
+          }
+          $dependencyRoot = Join-Path $env:RUNNER_TEMP "ffmpeg-reviewed"
+          New-Item -ItemType Directory -Path $dependencyRoot | Out-Null
+          $binary = Join-Path $dependencyRoot "ffmpeg.exe"
+          $license = Join-Path $dependencyRoot "FFmpeg-LICENSE.txt"
+          $notice = Join-Path $dependencyRoot "FFmpeg-BUILD-README.txt"
+          node scripts/download-reviewed-ffmpeg.mjs $dependencyRoot
+          if ($LASTEXITCODE -ne 0) { throw "Reviewed FFmpeg dependency download failed" }
+          $licenseHash = (Get-FileHash -LiteralPath $license -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($licenseHash -ne $env:FFMPEG_LICENSE_SHA256.ToLowerInvariant()) {
+            throw "Reviewed FFmpeg license SHA-256 mismatch"
+          }
+          $noticeHash = (Get-FileHash -LiteralPath $notice -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($noticeHash -ne $env:FFMPEG_NOTICE_SHA256.ToLowerInvariant()) {
+            throw "Reviewed FFmpeg build notice SHA-256 mismatch"
+          }
+          .\scripts\stage-ffmpeg.ps1 `
+            -Source $binary `
+            -ExpectedSha256 $env:FFMPEG_SHA256 `
+            -LicenseFile @($license, $notice) `
+            -SourceUrl $env:FFMPEG_URL `
+            -BuildId $env:FFMPEG_BUILD_ID `
+            -ReviewedPortable
+
+      - name: Create separate Windows installer and updater configurations
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installerConfig = [ordered]@{
+            bundle = [ordered]@{
+              useLocalToolsDir = $true
+            }
+          }
+          $updaterConfig = [ordered]@{
+            bundle = [ordered]@{
+              useLocalToolsDir = $true
+              windows = [ordered]@{
+                webviewInstallMode = [ordered]@{
+                  type = "downloadBootstrapper"
+                  silent = $true
+                }
+              }
+            }
+          }
+          $installerConfigPath = Join-Path $env:RUNNER_TEMP "tauri-release-installer.json"
+          $updaterConfigPath = Join-Path $env:RUNNER_TEMP "tauri-release-updater.json"
+          [IO.File]::WriteAllText($installerConfigPath, (($installerConfig | ConvertTo-Json -Depth 8) + "`n"))
+          [IO.File]::WriteAllText($updaterConfigPath, (($updaterConfig | ConvertTo-Json -Depth 8) + "`n"))
+
+      - name: Build unsigned offline NSIS installer
+        run: pnpm tauri build --ci --bundles nsis --no-sign --config "$env:RUNNER_TEMP\tauri-release-installer.json"
+
+      - name: Verify native Windows QC catalog, batch rename and pending writeback
+        run: |
+          cargo test --release --manifest-path src-tauri/Cargo.toml review_catalog::tests
+          cargo test --release --manifest-path src-tauri/Cargo.toml batch_rename::tests
+          cargo test --release --manifest-path src-tauri/Cargo.toml explicit_batch_rename
+          cargo test --release --manifest-path src-tauri/Cargo.toml task_index::tests
+
+      - name: Verify native Windows updater network regressions
+        shell: pwsh
+        run: |
+          cargo test --release --manifest-path src-tauri/Cargo.toml updater::
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --release --manifest-path src-tauri/Cargo.toml -p tauri-plugin-updater delta_metadata_tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify native Windows machine annotation identity regressions
+        shell: pwsh
+        run: |
+          cargo test --release --manifest-path src-tauri/Cargo.toml machine_annotation::
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Archive native updater diagnostic harness
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-updater-diagnostics
+          path: src-tauri/target/release/deps/dohc_viewer_lib-*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Verify unsigned state, install, launch, resources, and uninstall
+        shell: pwsh
+        run: |
+          .\scripts\verify-release-windows.ps1 `
+            -Version "${{ needs.controller.outputs.version }}" `
+            -Tag "${{ needs.controller.outputs.tag }}" `
+            -Commit "${{ needs.controller.outputs.commit }}" `
+            -WebView2Url "$env:WEBVIEW2_URL" `
+            -WebView2Sha256 "$env:WEBVIEW2_SHA256" `
+            -OutputDirectory "$env:RUNNER_TEMP\release-assets"
+
+      - name: Build bounded NSIS updater without duplicate WebView2 payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $nsisDirectory = "src-tauri\target\release\bundle\nsis"
+          if (Test-Path -LiteralPath $nsisDirectory) {
+            Remove-Item -LiteralPath $nsisDirectory -Recurse -Force
+          }
+          pnpm tauri build --ci --bundles nsis --no-sign --config "$env:RUNNER_TEMP\tauri-release-updater.json"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to build the NSIS updater installer" }
+
+      - name: Sign and stage bounded Windows updater
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $updaters = @(Get-ChildItem -LiteralPath "src-tauri\target\release\bundle\nsis" -File -Filter "*.exe")
+          if ($updaters.Count -ne 1) {
+            throw "Expected exactly one NSIS updater installer, found $($updaters.Count)"
+          }
+          if ($updaters[0].Length -lt 1MB -or $updaters[0].Length -gt 64MB) {
+            throw "NSIS updater installer is outside the 1-64 MiB bounded-memory contract"
+          }
+          $scratch = Join-Path $env:RUNNER_TEMP "nsis-updater-contents"
+          New-Item -ItemType Directory -Path $scratch | Out-Null
+          $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          & $sevenZip x -y "-o$scratch" $updaters[0].FullName | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7-Zip could not extract the NSIS updater" }
+          $webViewPayloads = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -Filter "MicrosoftEdgeWebView2RuntimeInstaller*.exe")
+          if ($webViewPayloads.Count -ne 0) {
+            throw "NSIS updater must not duplicate the offline WebView2 payload"
+          }
+          $apps = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -Filter "dohc-viewer.exe")
+          $ffmpegs = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -Filter "ffmpeg.exe")
+          $manifests = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -Filter "ffmpeg-manifest.json")
+          $licenses = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -Filter "FFmpeg.txt")
+          if ($apps.Count -ne 1 -or $ffmpegs.Count -ne 1 -or $manifests.Count -ne 1 -or $licenses.Count -ne 1) {
+            throw "NSIS updater is missing the application or reviewed FFmpeg resources"
+          }
+          $updaterAuthenticode = Get-AuthenticodeSignature -LiteralPath $updaters[0].FullName
+          $appAuthenticode = Get-AuthenticodeSignature -LiteralPath $apps[0].FullName
+          if ($updaterAuthenticode.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned -or
+              $appAuthenticode.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned) {
+            throw "NSIS updater or application unexpectedly contains Authenticode"
+          }
+          pnpm tauri signer sign $updaters[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "Failed to sign the NSIS updater archive" }
+          $signature = "$($updaters[0].FullName).sig"
+          if (-not (Test-Path -LiteralPath $signature -PathType Leaf)) {
+            throw "NSIS updater signature is missing"
+          }
+          $name = "Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_windows-x64-updater.exe"
+          Copy-Item -LiteralPath $updaters[0].FullName -Destination (Join-Path $env:RUNNER_TEMP "release-assets\$name")
+          Copy-Item -LiteralPath $signature -Destination (Join-Path $env:RUNNER_TEMP "release-assets\$name.sig")
+
+      - name: Attest Windows installer provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_windows-x64-setup.exe
+
+      - name: Upload verified Windows release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-native-windows-x64
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+  macos:
+    name: macOS 12+ arm64 unsigned DMG
+    needs: controller
+    if: ${{ (github.event_name == 'push' && 'macos' == 'windows') || inputs.platform == 'macos' || inputs.platform == 'all' }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      FFMPEG_SOURCE_URL: https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2
+      FFMPEG_SOURCE_SHA256: 9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7
+      FFMPEG_SOURCE_REVISION: 38b88335f99e76ed89ff3c93f877fdefce736c13
+      FFMPEG_BUILD_ID: ffmpeg-8.1.2-dohc-minimal-lgpl
+    steps:
+      - name: Check out bound release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.controller.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up Rust target
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-apple-darwin
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: "./src-tauri -> target"
+          key: release-aarch64-apple-darwin
+          cache-bin: "false"
+          cache-all-crates: "false"
+          cache-workspace-crates: "false"
+          save-if: "false"
+
+      - name: Reverify exact candidate source
+        env:
+          CANDIDATE_COMMIT: ${{ needs.controller.outputs.commit }}
+        run: node scripts/verify-candidate-source.mjs
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and stage reviewed macOS FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_archive="$RUNNER_TEMP/ffmpeg-n8.1.2.tar.gz"
+          curl \
+            --fail \
+            --location \
+            --proto '=https' \
+            --tlsv1.2 \
+            --silent \
+            --show-error \
+            "$FFMPEG_SOURCE_URL" \
+            --output "$source_archive"
+          bash scripts/build-ffmpeg-macos.sh \
+            --source-archive "$source_archive" \
+            --expected-source-sha256 "$FFMPEG_SOURCE_SHA256" \
+            --source-url "$FFMPEG_SOURCE_URL" \
+            --source-revision "$FFMPEG_SOURCE_REVISION" \
+            --build-id "$FFMPEG_BUILD_ID"
+
+      - name: Build ad-hoc-sealed app and headless DMG
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: |
+          set -euo pipefail
+          pnpm tauri build --ci --target aarch64-apple-darwin --bundles app --no-sign
+          bundle_root="src-tauri/target/aarch64-apple-darwin/release/bundle"
+          app_count="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')"
+          [[ "$app_count" == "1" ]] || { echo "Expected one app bundle, found $app_count" >&2; exit 1; }
+          app="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' -print)"
+          bash scripts/seal-macos-app-adhoc.sh --app "$app"
+          updater="$bundle_root/macos/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.app.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "$updater" -C "$(dirname "$app")" "$(basename "$app")"
+          updater_size="$(stat -f '%z' "$updater")"
+          (( updater_size >= 1048576 && updater_size <= 67108864 )) || {
+            echo "macOS updater archive is outside the 1-64 MiB bounded-memory contract" >&2
+            exit 1
+          }
+          mkdir -p "$bundle_root/dmg"
+          bash scripts/make-dmg.sh \
+            --app "$app" \
+            --output "$bundle_root/dmg/Delta-Viewer_${{ needs.controller.outputs.version }}_arm64.dmg"
+
+      - name: Verify native macOS batch rename and pending writeback
+        run: |
+          cargo test --release --manifest-path src-tauri/Cargo.toml batch_rename::tests
+          cargo test --release --manifest-path src-tauri/Cargo.toml explicit_batch_rename
+          cargo test --release --manifest-path src-tauri/Cargo.toml task_index::tests
+
+      - name: Verify ad-hoc seal, Gatekeeper state, DMG, resources, and startup
+        shell: bash
+        run: |
+          bash scripts/verify-release-macos.sh \
+            --target aarch64-apple-darwin \
+            --arch arm64 \
+            --version "${{ needs.controller.outputs.version }}" \
+            --tag "${{ needs.controller.outputs.tag }}" \
+            --commit "${{ needs.controller.outputs.commit }}" \
+            --output "$RUNNER_TEMP/release-assets"
+
+      - name: Verify, sign, and stage macOS updater
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          updater="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.app.tar.gz"
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          tar -xzf "$updater" -C "$scratch"
+          extracted_count="$(find "$scratch" -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')"
+          [[ "$extracted_count" == "1" ]] || { echo "Updater archive must contain one app" >&2; exit 1; }
+          extracted_app="$(find "$scratch" -maxdepth 1 -type d -name '*.app' -print)"
+          codesign --verify --deep --strict "$extracted_app"
+          pnpm tauri signer sign "$updater"
+          test -f "$updater.sig"
+          cp "$updater" "$updater.sig" "$RUNNER_TEMP/release-assets/"
+
+      - name: Attest macOS installer provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_macos-arm64.dmg
+
+      - name: Upload verified macOS release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-native-macos-arm64
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+  linux_deb:
+    name: Ubuntu 22.04+ x86_64 unsigned deb
+    needs: controller
+    if: ${{ (github.event_name == 'push' && 'linux_deb' == 'windows') || inputs.platform == 'linux_deb' || inputs.platform == 'all' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      FFMPEG_SOURCE_URL: https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n8.1.2
+      FFMPEG_SOURCE_SHA256: 9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7
+      FFMPEG_SOURCE_REVISION: 38b88335f99e76ed89ff3c93f877fdefce736c13
+      FFMPEG_BUILD_ID: ffmpeg-8.1.2-dohc-minimal-lgpl
+    steps:
+      - name: Check out bound release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.controller.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: "./src-tauri -> target"
+          key: release-linux-x64
+          cache-bin: "false"
+          cache-all-crates: "false"
+          cache-workspace-crates: "false"
+          save-if: "false"
+
+      - name: Install Linux build and smoke-test dependencies
+        run: |
+          sudo python3 scripts/configure-ubuntu-archive.py
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            dbus-x11 \
+            elfutils \
+            file \
+            jq \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf \
+            xvfb
+
+      - name: Reverify exact candidate source
+        env:
+          CANDIDATE_COMMIT: ${{ needs.controller.outputs.commit }}
+        run: node scripts/verify-candidate-source.mjs
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and stage reviewed Linux FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_archive="$RUNNER_TEMP/ffmpeg-n8.1.2.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error \
+            "$FFMPEG_SOURCE_URL" --output "$source_archive"
+          bash scripts/build-ffmpeg-linux.sh \
+            --source-archive "$source_archive" \
+            --expected-source-sha256 "$FFMPEG_SOURCE_SHA256" \
+            --source-url "$FFMPEG_SOURCE_URL" \
+            --source-revision "$FFMPEG_SOURCE_REVISION" \
+            --build-id "$FFMPEG_BUILD_ID"
+
+      - name: Build unsigned Linux Debian package
+        run: pnpm tauri build --ci --bundles deb --no-sign
+
+      - name: Stage, install, and verify Ubuntu 22.04+ Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb="$(find src-tauri/target -type f -path '*/release/bundle/deb/*.deb' -print -quit)"
+          [[ -n "$deb" ]] || { echo "Tauri did not produce a Debian package" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          formal_deb="$RUNNER_TEMP/release-assets/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_ubuntu-22.04+-x64.deb"
+          install -m 0644 "$deb" "$formal_deb"
+          bash scripts/verify-release-deb.sh \
+            --deb "$formal_deb" \
+            --version "${{ needs.controller.outputs.version }}" \
+            --tag "${{ needs.controller.outputs.tag }}" \
+            --commit "${{ needs.controller.outputs.commit }}" \
+            --output-directory "$RUNNER_TEMP/release-assets"
+
+      - name: Sign verified Ubuntu deb for automatic updates
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          deb="$RUNNER_TEMP/release-assets/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_ubuntu-22.04+-x64.deb"
+          size="$(stat -c '%s' "$deb")"
+          (( size >= 1048576 && size <= 67108864 )) || {
+            echo "Ubuntu updater deb is outside the 1-64 MiB bounded-memory contract" >&2
+            exit 1
+          }
+          pnpm tauri signer sign "$deb"
+          test -f "$deb.sig"
+
+      - name: Attest Ubuntu deb provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/Delta-Viewer_${{ needs.controller.outputs.version }}_UNSIGNED_ubuntu-22.04+-x64.deb
+
+      - name: Upload verified Ubuntu deb artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-native-ubuntu-deb-x64
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble:
+    name: Verify and sign the public candidate manifest
+    needs: [gate, controller, windows, macos, linux_deb]
+    if: ${{ always() && needs.gate.result == 'success' && needs.controller.result == 'success' && (needs.windows.result == 'success' || needs.windows.result == 'skipped') && (needs.macos.result == 'success' || needs.macos.result == 'skipped') && (needs.linux_deb.result == 'success' || needs.linux_deb.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.controller.outputs.commit }}
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: candidate-native-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/candidate-native
+      - name: Prepare and verify exact candidate packages
+        run: node scripts/candidate-updates.mjs prepare --input "$RUNNER_TEMP/candidate-native" --output "$RUNNER_TEMP/candidate" --target all-present --commit "${{ needs.controller.outputs.commit }}"
+      - name: Sign candidate metadata without publishing a GitHub Release
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri signer sign "$RUNNER_TEMP/candidate/candidate-payload.json"
+      - name: Seal and reverify the candidate set
+        run: |
+          node scripts/candidate-updates.mjs seal --input "$RUNNER_TEMP/candidate"
+          node scripts/candidate-updates.mjs verify --input "$RUNNER_TEMP/candidate"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: signed-candidate-${{ needs.controller.outputs.version }}
+          path: ${{ runner.temp }}/candidate/*
+          if-no-files-found: error
+          retention-days: 30

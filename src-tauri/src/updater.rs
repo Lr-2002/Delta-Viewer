@@ -1,3 +1,4 @@
+mod candidate;
 pub mod history;
 mod lan;
 mod network;
@@ -311,7 +312,8 @@ pub async fn check(
 ) -> AppResult<AppUpdateInfo> {
     *state.0.lock().map_err(update_check_error)? = None;
     let current_version = app.package_info().version.to_string();
-    let candidate = lan::resolve(requested).await?;
+    let (stable, preview) = tokio::join!(lan::resolve(requested), candidate::resolve(app));
+    let candidate = candidate::choose(stable, preview)?;
     let lan::Candidate {
         version,
         manifest,
@@ -319,7 +321,11 @@ pub async fn check(
         note,
         published_at,
     } = candidate;
-    let manifest_url = asset_url(&version, "latest.json")?;
+    let manifest_url = if matches!(route, lan::DownloadRoute::Candidate) {
+        Url::parse(&format!("{}/latest.json", candidate::BASE_URL)).map_err(update_check_error)?
+    } else {
+        asset_url(&version, "latest.json")?
+    };
     let remote_version = semver::Version::parse(&version).map_err(update_check_error)?;
     let current = semver::Version::parse(&current_version).map_err(update_check_error)?;
     if remote_version <= current {
@@ -578,16 +584,19 @@ fn check_cancelled(cancelled: &AtomicBool) -> AppResult<()> {
     }
 }
 
-fn verify_signature(app: &AppHandle, update: &Update, bytes: &[u8]) -> AppResult<()> {
-    let wrapped_public_key = app
-        .config()
+fn signing_public_key(app: &AppHandle) -> AppResult<String> {
+    app.config()
         .plugins
         .0
         .get("updater")
         .and_then(|config| config.get("pubkey"))
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| update_manifest_error("应用未配置更新公钥"))?;
-    verify_minisign(wrapped_public_key, &update.signature, bytes)
+        .map(str::to_owned)
+        .ok_or_else(|| update_manifest_error("应用未配置更新公钥"))
+}
+
+fn verify_signature(app: &AppHandle, update: &Update, bytes: &[u8]) -> AppResult<()> {
+    verify_minisign(&signing_public_key(app)?, &update.signature, bytes)
 }
 
 fn verify_minisign(

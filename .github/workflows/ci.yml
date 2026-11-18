@@ -56,8 +56,10 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install Tauri build dependencies
+        timeout-minutes: 8
         run: |
-          sudo python3 scripts/configure-ubuntu-archive.py
+          sudo python3 scripts/configure-ubuntu-archive.py --archive-url https://mirrors.edge.kernel.org/ubuntu
+          printf 'Acquire::Retries "1";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' | sudo tee /etc/apt/apt.conf.d/99-delta-bounded-downloads >/dev/null
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             libwebkit2gtk-4.1-dev \

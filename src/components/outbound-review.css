@@ -212,3 +212,6 @@
 @media (max-width: 720px) { .outbound-progress > span { white-space: nowrap; } .outbound-toolbar .outbound-progress { margin-left: auto; } }
 
 .outbound-task-list .outbound-task-error{color:#a12d2d;}.outbound-task-list .outbound-task-feedback{color:#2d6d4a;}
+
+.outbound-anomalous-button {color:#805b16 !important;border-color:#dfca9a !important;}
+.outbound-recordings button strong.anomalous {color:#805b16;}
