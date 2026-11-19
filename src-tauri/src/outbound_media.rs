@@ -45,6 +45,25 @@ struct Route {
     inspected: tokio::sync::Mutex<Option<bool>>,
     failure: Mutex<Option<&'static str>>,
 }
+// Drive upstream bodies even while the browser applies socket backpressure.
+// Dropping a browser request still aborts its bounded in-flight reads.
+struct PartTask(tokio::task::JoinHandle<Result<Part, ()>>);
+impl std::future::Future for PartTask {
+    type Output = Result<Part, ()>;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.0)
+            .poll(cx)
+            .map(|result| result.unwrap_or(Err(())))
+    }
+}
+impl Drop for PartTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 impl Route {
     fn fail(&self, code: &'static str) {
         if let Ok(mut failure) = self.failure.lock() {
@@ -378,7 +397,7 @@ impl OutboundMediaServer {
     }
     async fn proxy(
         &self,
-        route: &Route,
+        route: &Arc<Route>,
         request: &Request,
         writer: &mut OwnedWriteHalf,
     ) -> Result<(), ()> {
@@ -404,21 +423,19 @@ impl OutboundMediaServer {
                     // Poll all four blocks together, including the first. A
                     // first-block barrier halves throughput on high-rate cam0.
                     let chunks = (start..=end).step_by(PART as usize).map(|offset| {
-                        let etag = etag.as_deref();
-                        async move {
-                            self.part(
-                                route,
-                                offset,
-                                offset.saturating_add(PART - 1).min(end),
-                                Some((total, etag)),
-                            )
-                            .await
-                        }
+                        self.spawn_part(
+                            route,
+                            offset,
+                            offset.saturating_add(PART - 1).min(end),
+                            total,
+                            etag.clone(),
+                        )
                     });
                     let mut chunks = stream::iter(chunks).buffered(4);
                     let first = chunks.next().await.ok_or(())??;
                     headers(writer, 206, end - start + 1, Some((start, end, total))).await?;
                     writer.write_all(&first.body).await.map_err(|_| ())?;
+                    drop(first);
                     while let Some(chunk) = chunks.next().await {
                         let chunk = chunk?;
                         if !route.valid() {
@@ -444,17 +461,16 @@ impl OutboundMediaServer {
                 }
                 headers(writer, 206, end - start + 1, Some((start, end, total))).await?;
                 writer.write_all(&first.body).await.map_err(|_| ())?;
-                let rest = (first.end + 1..=end).step_by(PART as usize).map(|offset| {
-                    let etag = etag.as_deref();
-                    async move {
-                        self.part(
-                            route,
-                            offset,
-                            offset.saturating_add(PART - 1).min(end),
-                            Some((total, etag)),
-                        )
-                        .await
-                    }
+                let next = first.end + 1;
+                drop(first);
+                let rest = (next..=end).step_by(PART as usize).map(|offset| {
+                    self.spawn_part(
+                        route,
+                        offset,
+                        offset.saturating_add(PART - 1).min(end),
+                        total,
+                        etag.clone(),
+                    )
                 });
                 let mut parts = stream::iter(rest).buffered(3);
                 while let Some(part) = parts.next().await {
@@ -534,6 +550,22 @@ impl OutboundMediaServer {
             return Err(());
         }
         Ok(())
+    }
+    fn spawn_part(
+        &self,
+        route: &Arc<Route>,
+        start: u64,
+        end: u64,
+        total: u64,
+        etag: Option<String>,
+    ) -> PartTask {
+        let server = self.clone();
+        let route = route.clone();
+        PartTask(tokio::spawn(async move {
+            server
+                .part(&route, start, end, Some((total, etag.as_deref())))
+                .await
+        }))
     }
     async fn part(
         &self,
@@ -907,6 +939,64 @@ mod tests {
             .get(i as usize)
             .copied()
             .unwrap_or((i % 251) as u8)
+    }
+    #[test]
+    fn paused_browser_body_does_not_expire_healthy_upstream_reads() {
+        tauri::async_runtime::block_on(async {
+            let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let origin = fixture.local_addr().unwrap();
+            let mut data = vec![0x5a; (WINDOW + 123) as usize];
+            data[..16].copy_from_slice(b"\0\0\0\x08ftyp\0\0\0\x08moov");
+            let data = Arc::new(data);
+            let expected = data.clone();
+            let upstream = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = fixture.accept().await {
+                    let data = data.clone();
+                    tokio::spawn(async move {
+                        let request = read_request(&mut socket).await.unwrap();
+                        let total = data.len() as u64;
+                        let (start, end) =
+                            requested_range(request.range.as_deref().unwrap(), total).unwrap();
+                        let header = format!("HTTP/1.1 206 OK\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nETag: \"fixture\"\r\nConnection: close\r\n\r\n", end-start+1);
+                        if socket.write_all(header.as_bytes()).await.is_ok() {
+                            let _ = socket.write_all(&data[start as usize..=end as usize]).await;
+                        }
+                    });
+                }
+            });
+            let source = Client::builder()
+                .no_proxy()
+                .http1_only()
+                .timeout(Duration::from_secs(1))
+                .build()
+                .unwrap();
+            let server = OutboundMediaServer::with_client(source).unwrap();
+            let auth = auth();
+            let url = fixture_route(&server, &auth, origin);
+            let browser = Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap();
+            let response = browser
+                .get(&url)
+                .header("Range", "bytes=0-")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 206);
+            // Model the decoder not consuming the socket beyond a source
+            // request deadline. Source bytes remain fast and available.
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            let bytes = response.bytes().await.unwrap();
+            assert_eq!(bytes.len(), WINDOW as usize);
+            assert!(
+                bytes.as_ref() == &expected[..WINDOW as usize],
+                "resumed stream must remain exact and ordered"
+            );
+            assert_eq!(server.status(&auth, &url).unwrap(), None);
+            upstream.abort();
+        });
     }
     #[test]
     fn continuous_timeline_reads_real_movie_clocks_without_media_or_foreign_authority() {
