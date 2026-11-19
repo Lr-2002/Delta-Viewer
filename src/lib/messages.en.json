@@ -1,4 +1,13 @@
 {
+  "修正暂停时切换高速浏览或倍速后进度显示回跳；包含独立异常／无效原因管理和常用项删除。": "Fixed stale timeline positions when changing browsing mode or speed while paused; includes separate anomalous/invalid reason management and removal of saved reasons.",
+  "新增可选高速浏览与异常／无效独立原因管理，支持常用原因删除、排序；保留七路原画质与暂停逐帧。": "Added optional fast browsing and separate anomalous/invalid reason dialogs with removal and ordering of saved reasons; preserves seven original-quality cameras and precise paused inspection.",
+  "每类最多 30 个、每项 80 字；异常与无效分别保存，排序按账号在本机记忆。": "Up to 30 reasons per category, 80 characters each. Anomalous and invalid reasons are saved separately; order is stored per account on this computer.",
+  "请输入 1–80 字的单行原因。": "Enter a single-line reason of 1–80 characters.",
+  "异常原因选项": "Anomalous reason options",
+  "无效原因选项": "Invalid reason options",
+  "高速浏览": "Fast browsing",
+  "4×及以上生效：保留原画质，抽帧无声浏览；暂停后可逐帧检查。": "At 4× and above: sample frames at original quality without audio. Pause for frame-by-frame inspection.",
+  "新增可选高速浏览，4×及以上减少展示帧数，保留七路原画质，暂停后可精确逐帧；包含高倍速瞬态等待修复。": "Added optional fast browsing at 4× and above, with fewer displayed frames across all seven original-quality cameras and precise inspection when paused; includes transient decoder-wait fixes.",
   "  整理餐具  ": " Clean up the dishes. ",
   " · {0} 台待更新": " · {0} clients awaiting update",
   " · {0} 异常": " · {0} errors",
@@ -4263,5 +4272,9 @@
   "当前视频无法确认恒定帧间隔，暂不支持精确逐帧。其他播放和审核操作仍可使用。": "The video has no confirmed constant frame interval, so exact frame stepping is unavailable. Other playback and review controls remain available.",
   "暂时无法读取帧间隔，请稍后重试逐帧。其他播放和审核操作仍可使用。": "Could not read the frame interval. Try frame stepping again later. Other playback and review controls remain available.",
   "新增按账号保存的快捷键设置，可自定义上下一条、播放暂停、片段切换及逐帧等操作；保留原有默认键，导航不会提交审核。": "Adds per-account keyboard shortcut settings for recording navigation, playback, segments and frame stepping. Existing defaults are preserved; navigation does not submit a review.",
-  "清除": "Clear"
+  "清除": "Clear",
+  "修复高倍速短暂解码等待导致七路反复启停的卡顿；保留原画质、连续分段和同步缓冲，通过软件内版本与更新下载。": "Fix repeated seven-camera pauses caused by brief decode gaps at high speeds; preserve original quality, continuous segments and synchronized buffering. Download in Version & Updates.",
+  "修复高倍速已有视频缓冲时，短暂解码等待被放大为七路反复暂停、降速和恢复的卡顿。": "Fix brief decode gaps repeatedly pausing, slowing down and restarting all seven cameras at high playback speeds even when media is buffered.",
+  "忽略已经恢复的迟到等待事件；持续缺数据仍同步缓冲，暂停、拖动、改速和切换录制及时取消旧等待。": "Ignore delayed waiting events after recovery. Sustained stalls still buffer together; pause, seek, speed changes and recording switches cancel old waits.",
+  "保留七路原画质、连续分段、全部倍速、账号快捷键和独立审核结果；新版继续通过软件“版本与更新”下载使用。": "Preserve seven-camera original quality, continuous segments, all speeds, account shortcuts and independent review results. Download updates in Version & Updates."
 }

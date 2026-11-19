@@ -1,6 +1,6 @@
 import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import {memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState,type CSSProperties,type VideoHTMLAttributes} from "react";
-import {ArrowLeft,AlertTriangle,Check,CheckCircle2,ChevronRight,Expand,Film,LoaderCircle,Minimize,Pause,Play,RefreshCw,Save,Video,Volume2,VolumeX,X,XCircle} from "lucide-react";
+import {ArrowLeft,AlertTriangle,CheckCircle2,ChevronRight,Expand,Film,LoaderCircle,Minimize,Pause,Play,RefreshCw,Video,Volume2,VolumeX,XCircle} from "lucide-react";
 import type {UserIdentity} from "../types";
 import {changeOutboundBatch,fetchOutboundVideo,releaseOutboundVideos,outboundMediaFailure,listOutboundBatches,OUTBOUND_INVALID_REASONS,OUTBOUND_ANOMALOUS_REASONS,outboundError,outboundResultUncertain,outboundVideoParts,outboundTimeline,fetchOutboundMetadata,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording,type OutboundProtocol,type OutboundDecisionValue} from "../lib/outbound-review";
 import {OutboundVideoLoader} from "../lib/outbound-video-loader";
@@ -8,9 +8,10 @@ import {OutboundPlayback} from "../lib/outbound-playback";
 import {fetchOutboundFrameStep} from "../lib/outbound-review";
 import {useShortcuts} from "../lib/use-shortcuts";
 import {matchShortcut,shortcutBlocked} from "../lib/shortcuts";
+import {OutboundReasonDialog} from "./OutboundReasonDialog";
 import "./outbound-review.css";
 
-interface Props {currentUser:UserIdentity;workspaceBusy?:boolean;view?:"tasks"|"workspace";initialBatch?:OutboundBatch;onOpenReview?:(batch:OutboundBatch,isCurrent?:()=>boolean)=>Promise<void>;onReturnToTasks?:()=>void;suspended?:boolean}
+interface Props {reasonPreferenceOwner?:string;currentUser:UserIdentity;workspaceBusy?:boolean;view?:"tasks"|"workspace";initialBatch?:OutboundBatch;onOpenReview?:(batch:OutboundBatch,isCurrent?:()=>boolean)=>Promise<void>;onReturnToTasks?:()=>void;suspended?:boolean}
 type TaskAction="claim"|"release"|"open"|"verify";
 type TaskFeedback={error:boolean;message:string};
 type TimelineState={recordingId:string;source?:OutboundRecording["videos"];durations:Record<number,number>;failed:Record<number,string>};
@@ -47,7 +48,7 @@ export function OutboundReviewTasks(props:Props){
   return <OutboundReviewSession key={`${currentUser.username}:${currentUser.role}:${Boolean(currentUser.canManage)}:${view}`} {...props}/>;
 }
 
-function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",initialBatch,onOpenReview,onReturnToTasks,suspended=false}:Props){
+function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=false,view="tasks",initialBatch,onOpenReview,onReturnToTasks,suspended=false}:Props){
   useLanguage();
   const shortcutBindings=useShortcuts();
   const frameSteps=useRef(new Map<string,number|null>());
@@ -80,6 +81,7 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
   const [position,setPosition]=useState(0);
 
   const [speed,setSpeed]=useState(1);
+  const [highSpeedBrowsing,setHighSpeedBrowsing]=useState(false);
   const [buffering,setBuffering]=useState(false);
   const [muted,setMuted]=useState(true);
   const [primaryFilled,setPrimaryFilled]=useState(true);
@@ -87,7 +89,6 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
   const [error,setError]=useState("");
   const [reasonDialog,setReasonDialog]=useState<"invalid"|"anomalous"|null>(null);
   const [selectedReason,setSelectedReason]=useState("");
-  const [customReason,setCustomReason]=useState("");
   const [notice,setNotice]=useState("");
   const [unconfirmed,setUnconfirmed]=useState<Record<string,"claim"|"release">>({});
   const [workspaceUnconfirmed,setWorkspaceUnconfirmed]=useState(false);
@@ -118,7 +119,6 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
   const canReject=videosReady||sourceProblem;
   const frameAllowed=useRef(false);
   frameAllowed.current=!suspended&&!workspaceBusy&&!busy&&!workspaceUnconfirmed&&!reasonDialog&&isOwner;
-  const availableReasons=useMemo(()=>[...new Set(reasonDialog==="anomalous"?[...OUTBOUND_ANOMALOUS_REASONS,...anomalousReasonOptions]:[...OUTBOUND_INVALID_REASONS,...reasonOptions])],[reasonDialog,reasonOptions,anomalousReasonOptions]);
   const attachPlayer=useCallback((segment:number,element:HTMLVideoElement|null)=>{
     if(element)players.current.set(segment,element);else players.current.delete(segment);
     playback.current?.attach(segment,element);
@@ -205,7 +205,7 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
     const options=value==="anomalous"?[...OUTBOUND_ANOMALOUS_REASONS,...anomalousReasonOptions]:[...OUTBOUND_INVALID_REASONS,...reasonOptions];
     const previous=recording?.decision?.value===value?recording.decision.reason??"":"";
     setSelectedReason(options.includes(previous)?previous:"");
-    setCustomReason("");setReasonDialog(value);
+    setReasonDialog(value);
   }
   async function act(action:"claim"|"release"|"decide",value?:OutboundDecisionValue,reason?:string){
     if(!batch||busyRef.current||workspaceUnconfirmed)return;
@@ -219,7 +219,7 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
       if(action==="release"){setNotice("已释放批次。");if(view==="workspace")onReturnToTasks?.();}
       if(action==="decide"){
         const revising=Boolean(recording?.decision);
-        setReasonDialog(null);setSelectedReason("");setCustomReason("");setNotice(revising?"审核结论修改已保存。":"审核结论已保存。");
+        setReasonDialog(null);setSelectedReason("");setNotice(revising?"审核结论修改已保存。":"审核结论已保存。");
         const next=result.batch.recordings.find(item=>!item.decision);
         if(next&&!recording?.decision)setRecordingId(next.id);
       }
@@ -234,7 +234,7 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
           setWorkspaceUnconfirmed(false);
           const saved=fresh.recordings.find(item=>item.id===recording?.id)?.decision;
           if(action==="decide"&&saved&&saved.value===value&&saved.actor===currentUser.username&&(value==="valid"||saved.reason===reason)){
-            setReasonDialog(null);setSelectedReason("");setCustomReason("");setNotice("已核对：审核结论已保存。");
+            setReasonDialog(null);setSelectedReason("");setNotice("已核对：审核结论已保存。");
             const next=fresh.recordings.find(item=>!item.decision);
             if(next&&!recording?.decision)setRecordingId(next.id);
             return;
@@ -448,16 +448,13 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
     }else if(action==="release"&&!fresh.claim)feedback("已核对：批次已释放。");
     else feedback(fresh.claim?"已核对：批次当前由其他审核员领取，请刷新查看。":"已核对：批次尚未领取，可以重新领取。",true);
   }
-  async function addReason(){
-    const value=customReason.trim();
-    if(!value||!reasonDialog||busyRef.current)return;
-    busyRef.current=true;setBusy(true);setError("");
+  async function saveReason(reason:string,remove:boolean,category:"invalid"|"anomalous"){
+    if(busyRef.current)throw new Error("正在保存，请稍后重试。");
+    busyRef.current=true;setBusy(true);
     try{
-      const result=await saveOutboundReasonOption(value,reasonDialog);
-      if(reasonDialog==="anomalous")setAnomalousReasonOptions(result.reasonOptions);else setReasonOptions(result.reasonOptions);
-      setSelectedReason(value);setCustomReason("");setNotice("已保存为常用审核原因。");
-    }catch(cause){setError(outboundError(cause));}
-    finally{busyRef.current=false;setBusy(false);}
+      const result=await saveOutboundReasonOption(reason,category,remove);
+      if(category==="anomalous")setAnomalousReasonOptions(result.reasonOptions);else setReasonOptions(result.reasonOptions);
+    }finally{busyRef.current=false;setBusy(false);}
   }
 
   const recordingList=batch?<RecordingList recordings={batch.recordings} selectedId={recording?.id??""} disabled={busy||workspaceBusy} onSelect={setRecordingId}/>:null;
@@ -500,7 +497,7 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
                 rememberDuration(video.segment,player.duration);updateClock();
               }} onError={event=>{if(video&&state?.urls[video.segment])mediaFailed(video.segment,video.label,event.currentTarget);}}/>{(!ready||failure)&&<div className="outbound-video-loading">{!video ? <span>{t("此相机没有本段源文件")}</span> : failure ? <span>{tr(failure)}</span> : <><LoaderCircle size={20} className="spin"/><span>{state?.urls[video.segment] ? t("正在缓冲") : t("正在连接")}</span></>}</div>}{video&&ready&&!failure&&otherIssue&&<div className="outbound-camera-issue">{t("其他分段缺失或读取失败")}</div>}</div>
             </article>;})}</div>
-            <div className="outbound-transport" aria-label={t("回放控制")}><button className="button outbound-play-button" type="button" aria-label={playing||transitionIntent ? t("暂停") : t("全局播放")} disabled={(!playbackReady&&!transitionIntent)||busy||workspaceBusy||suspended} onClick={togglePlayback}>{playing||transitionIntent ? <Pause size={18}/> : <Play size={18}/>}</button><span className="outbound-time">{tr(formatTime(fullPosition))}<span> / {fullDuration ? tr(formatTime(fullDuration)) : t("时长待确认")}</span></span><input type="range" aria-label={t("视频播放位置")} min={0} max={fullDuration||1} step={0.01} value={Math.min(fullPosition,fullDuration||1)} disabled={!timeline.complete||suspended||busy||workspaceBusy} onChange={event=>seek(Number(event.target.value))}/><span className="outbound-playback-status" role="status">{buffering ? <><LoaderCircle size={13} className="spin"/>{t("正在缓冲")}</> : opening ? t("已就绪 {0}/{1}", [videoState?.ready.length ?? 0, partVideos.length]) : !timeline.complete&&!Object.keys(sourceFailures).length ? t("正在读取总时长") : playbackReady ? t("同步回放") : t("等待视频")}</span><button className="icon-button" type="button" title={muted ? t("开启主相机声音") : t("静音")} aria-label={muted ? t("开启主相机声音") : t("静音")} onClick={()=>setMuted(value=>!value)}>{muted ? <VolumeX size={16}/> : <Volume2 size={16}/>}</button><select aria-label={t("播放速度")} value={speed} onChange={event=>{const rate=Number(event.target.value);setSpeed(rate);playback.current?.setSpeed(rate);}}>{[.25,.5,.75,1,1.25,1.5,1.75,2,2.5,3,4,6,8].map(rate=><option key={rate} value={rate}>{rate}×</option>)}</select></div>
+            <div className="outbound-transport" aria-label={t("回放控制")}><button className="button outbound-play-button" type="button" aria-label={playing||transitionIntent ? t("暂停") : t("全局播放")} disabled={(!playbackReady&&!transitionIntent)||busy||workspaceBusy||suspended} onClick={togglePlayback}>{playing||transitionIntent ? <Pause size={18}/> : <Play size={18}/>}</button><span className="outbound-time">{tr(formatTime(fullPosition))}<span> / {fullDuration ? tr(formatTime(fullDuration)) : t("时长待确认")}</span></span><input type="range" aria-label={t("视频播放位置")} min={0} max={fullDuration||1} step={0.01} value={Math.min(fullPosition,fullDuration||1)} disabled={!timeline.complete||suspended||busy||workspaceBusy} onChange={event=>seek(Number(event.target.value))}/><span className="outbound-playback-status" role="status">{buffering ? <><LoaderCircle size={13} className="spin"/>{t("正在缓冲")}</> : opening ? t("已就绪 {0}/{1}", [videoState?.ready.length ?? 0, partVideos.length]) : !timeline.complete&&!Object.keys(sourceFailures).length ? t("正在读取总时长") : playbackReady ? t("同步回放") : t("等待视频")}</span><button className="icon-button" type="button" title={muted ? t("开启主相机声音") : t("静音")} aria-label={muted ? t("开启主相机声音") : t("静音")} onClick={()=>setMuted(value=>!value)}>{muted ? <VolumeX size={16}/> : <Volume2 size={16}/>}</button><select aria-label={t("播放速度")} value={speed} onChange={event=>{const rate=Number(event.target.value);setSpeed(rate);playback.current?.setSpeed(rate);}}>{[.25,.5,.75,1,1.25,1.5,1.75,2,2.5,3,4,6,8].map(rate=><option key={rate} value={rate}>{rate}×</option>)}</select><label className="browse-control" title={t("4×及以上生效：保留原画质，抽帧无声浏览；暂停后可逐帧检查。") }><input type="checkbox" checked={highSpeedBrowsing} disabled={busy||workspaceBusy||suspended} onChange={event=>{setHighSpeedBrowsing(event.target.checked);playback.current?.setBrowsing(event.target.checked);}}/>{t("高速浏览")}</label></div>
             <div className="outbound-decision"><span>{recording.decision ? t("已由 {0} 于 {1} 判为{2}{3}", [recording.decision.actor, tr(new Date(recording.decision.at).toLocaleString(localeTag(),{hour12:false})), recording.decision.value==="valid" ? t("有效") : recording.decision.value==="anomalous" ? t("异常") : t("无效"), recording.decision.reason ? t(" · {0}", [reasonLabel(recording.decision.reason)]) : ""]) +" "+t("可重新选择结论或修改原因，保存后更新统计。") : videosReady ? t("请根据完整原始视频判断数据有效性") : t("有效数据须全部视频就绪；缺失或读取失败时可填写原因提交异常或无效。")}</span>
               <button className="button button-primary outbound-valid-button" type="button" disabled={!isOwner||busy||workspaceBusy||workspaceUnconfirmed||!videosReady||recording.decision?.value==="valid"} aria-pressed={recording.decision?.value==="valid"} title={recording.decision ? t("将当前结论修改为有效") : undefined} onClick={()=>void act("decide","valid")}><CheckCircle2 size={16}/>{t("有效数据")}</button>
               <button className="button button-secondary outbound-anomalous-button" type="button" title={batch.decisionValues?.includes("anomalous") ? t("本条录制同时包含有效与无效内容") : t("交付服务尚不支持异常结论，请联系管理员更新服务")} disabled={!isOwner||busy||workspaceBusy||workspaceUnconfirmed||!canReject||!batch.decisionValues?.includes("anomalous")} aria-pressed={recording.decision?.value==="anomalous"} onClick={()=>chooseReason("anomalous")}><AlertTriangle size={16}/>{t("异常数据")}</button>
@@ -510,7 +507,8 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
         </> : <div className="outbound-empty">{t("此批次没有可审核录制")}</div>}
       </div>}
     </div>}
-    {reasonDialog&&<div className="outbound-dialog-backdrop" role="presentation"><section key={reasonDialog} className={`outbound-reason-dialog outbound-${reasonDialog}-reasons`} role="dialog" aria-modal="true" aria-labelledby={`outbound-${reasonDialog}-reason-title`}><header><div><h3 id={`outbound-${reasonDialog}-reason-title`}>{reasonDialog==="anomalous" ? t("选择异常原因") : t("选择无效原因")}</h3><p>{reasonDialog==="anomalous" ? t("异常原因仅用于异常数据，常用项独立保存。") : t("无效原因仅用于无效数据，常用项独立保存。")}</p></div><button className="icon-button" type="button" aria-label={reasonDialog==="anomalous" ? t("关闭异常原因") : t("关闭无效原因")} onClick={()=>setReasonDialog(null)}><X size={18}/></button></header><div className="outbound-reason-options">{availableReasons.map(reason=><button type="button" key={reason} aria-pressed={selectedReason===reason} onClick={()=>setSelectedReason(reason)}>{selectedReason===reason ? <Check size={15}/> : null}{reasonLabel(reason)}</button>)}</div><form onSubmit={event=>{event.preventDefault();void addReason();}}><label htmlFor={`outbound-${reasonDialog}-custom-reason`}>{reasonDialog==="anomalous" ? t("新增常用异常原因") : t("新增常用无效原因")}</label><div><input id={`outbound-${reasonDialog}-custom-reason`} maxLength={80} value={customReason} disabled={busy} onChange={event=>setCustomReason(event.target.value)} placeholder={t("输入原因并保存")}/><button className="button button-secondary" type="submit" disabled={busy||!customReason.trim()}><Save size={15}/>{t("保存常用项")}</button></div></form><footer><button className="button button-secondary" type="button" disabled={busy} onClick={()=>setReasonDialog(null)}>{t("取消")}</button><button className="button button-primary" type="button" disabled={busy||workspaceBusy||workspaceUnconfirmed||!isOwner||!selectedReason||!canReject||(recording?.decision?.value===reasonDialog&&recording.decision.reason===selectedReason)} onClick={()=>void act("decide",reasonDialog,selectedReason)}>{busy ? <LoaderCircle size={16} className="spin"/> : null}{recording?.decision ? t("保存修改") : reasonDialog==="anomalous" ? t("确认异常") : t("确认无效")}</button></footer></section></div>}
+    {reasonDialog&&<OutboundReasonDialog key={reasonDialog} category={reasonDialog} owner={reasonPreferenceOwner??currentUser.username} options={reasonDialog==="anomalous"?anomalousReasonOptions:reasonOptions} value={selectedReason} onChange={setSelectedReason} disabled={busy||workspaceBusy||suspended} revising={Boolean(recording?.decision)} canSubmit={!workspaceUnconfirmed&&Boolean(isOwner)&&canReject&&!(recording?.decision?.value===reasonDialog&&recording.decision.reason===selectedReason)} onSave={(reason,remove)=>saveReason(reason,remove,reasonDialog)} onClose={()=>setReasonDialog(null)} onSubmit={()=>void act("decide",reasonDialog,selectedReason)}/>}
+
   </section>;
 }
 

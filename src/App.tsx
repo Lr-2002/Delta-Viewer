@@ -227,6 +227,9 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.12.6": "修正暂停时切换高速浏览或倍速后进度显示回跳；包含独立异常／无效原因管理和常用项删除。",
+  "1.12.5": "新增可选高速浏览与异常／无效独立原因管理，支持常用原因删除、排序；保留七路原画质与暂停逐帧。",
+  "1.12.4": "修复高倍速短暂解码等待导致七路反复启停的卡顿；保留原画质、连续分段和同步缓冲，通过软件内版本与更新下载。",
   "1.12.3": "新增按账号保存的快捷键设置，可自定义上下一条、播放暂停、片段切换及逐帧等操作；保留原有默认键，导航不会提交审核。",
   "1.12.2": "修复外发视频缓冲暂停时误超时中断，恢复接收后继续完整读取；保留七路原画质、连续分段和已审修改。",
   "1.12.1": "外发审核仅按交付平台星矩公司归属展示；视频缺失或损坏时可填写独立原因提交异常／无效，有效仍须七路就绪。",
@@ -475,6 +478,8 @@ function App() {
   const [clipEndFrame, setClipEndFrame] = useState(0);
   const [machinePreviewRange, setMachinePreviewRange] = useState<ExportRange | null>(null);
   const [speed, setSpeed] = useState(1);
+  const [highSpeedBrowsing, setHighSpeedBrowsing] = useState(false);
+  const sampledPlayback = highSpeedBrowsing && speed > 3;
   const [fpsOverride, setFpsOverride] = useState<number | null>(null);
   const { playing, setPlaying, requested: playbackRequested } = usePlaybackIntent();
   const [operationBusy, setBusy] = useState(false);
@@ -878,6 +883,20 @@ function App() {
     let animationFrame = 0;
 
     const tick = (nowMs: number) => {
+      if (sampledPlayback) {
+        if (!playbackRequested.current) return;
+        // All visible cameras finish the current sample before advancing.
+        // Bound elapsed time so a stalled source never creates a seek backlog.
+        if (nowMs - lastAdvanceTimeMs >= 250 && availableStreams.every(stream => settledFrameByStreamRef.current.get(stream.name) === frameRef.current)) {
+          const next = Math.min(playbackEnd, frameRef.current + Math.max(1, Math.round(Math.min(500, nowMs - lastAdvanceTimeMs) * playbackFps * speed / 1000)));
+          lastAdvanceTimeMs = nowMs;
+          frameRef.current = next;
+          setCurrentFrame(next);
+          if (next >= playbackEnd) { setPlaying(false); return; }
+        }
+        animationFrame = window.requestAnimationFrame(tick);
+        return;
+      }
       // Native MP4 presentation is the authoritative playback clock. Its
       // callback advances the timeline, while the skeleton reads the same
       // video's continuous currentTime without ever gating video playback.
@@ -921,7 +940,7 @@ function App() {
 
     animationFrame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [availableStreams, data, playbackFps, playing, primaryPlaybackEndFrame, primarySourceFps, primaryStreamName, speed]);
+  }, [availableStreams, data, playbackFps, playing, primaryPlaybackEndFrame, primarySourceFps, primaryStreamName, sampledPlayback, speed]);
 
   async function openSource(path: string, autoLoad = false, assignment = assignedTasks, propagateFailure = false, preferredEpisodeRoot?: string) {
     if (reviewUnsaved.current) {
@@ -1956,7 +1975,7 @@ function App() {
       if(action==="togglePlayback")togglePlayback();
       else if(action==="previousFrame"||action==="nextFrame"){setPlaying(false);moveFrame(action==="previousFrame"?-1:1);}
       else if(action==="rangeStart"||action==="rangeEnd"){setPlaying(false);seekFrame(action==="rangeStart"?playbackStart:primaryPlaybackEndFrame);}
-      else if(action==="slower"||action==="faster"){const rates=[.25,.5,1,2],index=rates.indexOf(speed);setSpeed(rates[Math.max(0,Math.min(rates.length-1,index+(action==="faster"?1:-1)))]);}
+      else if(action==="slower"||action==="faster"){const rates=[.25,.5,1,2,3,4,6,8],index=rates.indexOf(speed);setSpeed(rates[Math.max(0,Math.min(rates.length-1,index+(action==="faster"?1:-1)))]);}
       else if(action==="clipStart")updateClipStart(frameRef.current);
       else if(action==="clipEnd")updateClipEnd(frameRef.current);
     };
@@ -2179,9 +2198,10 @@ function App() {
                           <label className="speed-control">
                             <Gauge size={16} />
                             <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label={t("播放速度")}>
-                              <option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>{t("1×（正常速度）")}</option><option value={2}>2×</option>
+                              <option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>{t("1×（正常速度）")}</option><option value={2}>2×</option><option value={3}>3×</option><option value={4}>4×</option><option value={6}>6×</option><option value={8}>8×</option>
                             </select>
                           </label>
+                          <label className="browse-control" title={t("4×及以上生效：保留原画质，抽帧无声浏览；暂停后可逐帧检查。") }><input type="checkbox" checked={highSpeedBrowsing} onChange={event => setHighSpeedBrowsing(event.target.checked)}/>{t("高速浏览")}</label>
                           <label className="fps-control" title={t("播放帧率")}>
                             <Timer size={16} />
                             <select value={fpsOverride ?? "auto"} onChange={(event) => setFpsOverride(event.target.value === "auto" ? null : Number(event.target.value))} aria-label={t("播放帧率")}>
@@ -2359,7 +2379,7 @@ function App() {
       {tr(managerNavigationError && <div className="alert-banner alert-error" role="alert"><CircleAlert size={17}/><span>{tr(managerNavigationError)}</span><button className="text-button" onClick={()=>setManagerNavigationError("")}>{t("关闭")}</button></div>)}
       <ManagerWorkspace key={`${workspaceMode}:${currentUser?.username ?? "local"}:${authStatus.userCenter.serviceId ?? "local"}`}
         section={managerSection} navigationRevision={managerNavigationRevision} busy={busy} beginOperation={beginManagerOperation} onNavigate={next => void navigateManager(next)} />
-      {managerSection==="data"&&outboundBatch&&currentUser&&!showManagement&&<OutboundReviewTasks key={`${authStatus.userCenter.serviceId}:${currentUser.username}:${outboundBatch.id}`} currentUser={currentUser} initialBatch={outboundBatch} view="workspace" workspaceBusy={busy} suspended={personalTaskOpen} onReturnToTasks={()=>setPersonalTaskOpen(true)}/>}
+      {managerSection==="data"&&outboundBatch&&currentUser&&!showManagement&&<OutboundReviewTasks key={`${authStatus.userCenter.serviceId}:${currentUser.username}:${outboundBatch.id}`} currentUser={currentUser} reasonPreferenceOwner={shortcutOwner} initialBatch={outboundBatch} view="workspace" workspaceBusy={busy} suspended={personalTaskOpen} onReturnToTasks={()=>setPersonalTaskOpen(true)}/>}
       <div className={`workspace${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`} hidden={managerSection !== "data"||!!outboundBatch} inert={managerSection !== "data"||!!outboundBatch}>
         <aside className="sidebar" style={{ "--sidebar-scale": sidebarScale } as CSSProperties}>
           <div className="sidebar-heading">
@@ -2504,7 +2524,9 @@ function App() {
                             frameId={currentFrame}
                             isPrimary={stream.name === primaryStreamName}
                             playing={playing}
-                            nativePlaybackEnabled={playing && playbackPrimed}
+                            nativePlaybackEnabled={playing && playbackPrimed && !sampledPlayback}
+                            highSpeedBrowsing={sampledPlayback}
+                            exactFrameSeek={highSpeedBrowsing}
                             playbackHeld={playbackHeld}
                             readAheadEnabled={playing}
                             readAheadFrames={stream.name === primaryStreamName

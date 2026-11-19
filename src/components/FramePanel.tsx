@@ -34,6 +34,7 @@ interface FramePanelProps {
   playbackFps?: number;
   exactFrameSeek?: boolean;
   speed?: number;
+  highSpeedBrowsing?: boolean;
   className?: string;
   onFrameSettled?: (stream: string, frameId: number) => void;
   onFirstFrameAvailable?: (root: string, stream: string) => void;
@@ -86,6 +87,7 @@ export const FramePanel = memo(function FramePanel({
   playbackFps = 30,
   exactFrameSeek = false,
   speed = 1,
+  highSpeedBrowsing = false,
   className = "",
   onFrameSettled,
   onFirstFrameAvailable,
@@ -222,7 +224,7 @@ export const FramePanel = memo(function FramePanel({
     : 0;
   requestedVideoTimeRef.current = Math.max(0, videoLocalSeconds);
   const adaptiveUrl = nativeVideo?.adaptivePaths?.[videoSegmentIndex];
-  const useAdaptive = Boolean(adaptiveUrl && quality !== "original" && !adaptiveFailed);
+  const useAdaptive = Boolean(adaptiveUrl && quality !== "original" && !adaptiveFailed && !highSpeedBrowsing);
   const videoUrl = useAdaptive ? adaptiveUrl : nativeVideo?.paths[videoSegmentIndex];
 
   useEffect(() => {
@@ -354,7 +356,7 @@ export const FramePanel = memo(function FramePanel({
     // Re-seeking them from every React timeline tick causes visible stalls,
     // especially when a NAS-backed secondary stream is delayed. Paused seeks
     // and MP4 segment changes remain frame-accurate.
-    if (playing) {
+    if (playing && !highSpeedBrowsing) {
       if (isPrimary || video.seeking || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return;
       const now = performance.now();
       if (now - lastNativeCorrectionRef.current < 250) return;
@@ -377,11 +379,12 @@ export const FramePanel = memo(function FramePanel({
       }
       return;
     }
-    if (exactFrameSeek) {
+    if (exactFrameSeek || highSpeedBrowsing) {
       // Coalesce scrub events while decoding a seek; only the newest target survives.
       const seekLatest = () => {
-        if (!video.seeking && Math.abs(video.currentTime - requestedVideoTimeRef.current) > 0.001) {
-          video.currentTime = requestedVideoTimeRef.current;
+        const target = Math.min(video.duration || Infinity, requestedVideoTimeRef.current);
+        if (!video.seeking && Math.abs(video.currentTime - target) > 0.001) {
+          video.currentTime = target;
         }
       };
       seekLatest();
@@ -391,11 +394,22 @@ export const FramePanel = memo(function FramePanel({
     if (Math.abs(video.currentTime - videoLocalSeconds) > 0.001) {
       video.currentTime = Math.max(0, videoLocalSeconds);
     }
-  }, [exactFrameSeek, frameId, isPrimary, mediaClockRatio, speed, nativeVideoActive, playing, videoLocalSeconds, videoSegmentIndex, videoUrl]);
+  }, [exactFrameSeek, frameId, highSpeedBrowsing, isPrimary, mediaClockRatio, speed, nativeVideoActive, playing, videoLocalSeconds, videoSegmentIndex, videoUrl]);
 
   useEffect(() => {
     if (!nativeVideoActive) return;
     const video = videoRef.current;
+    if (highSpeedBrowsing && playing && video) {
+      const target = Math.min(video.duration || Infinity, requestedVideoTimeRef.current);
+      const settled = () => {
+        if (!video.seeking && video.readyState >= 2 && Math.abs(video.currentTime - target) < .04)
+          onFrameSettled?.(stream.name, frameId);
+      };
+      settled();
+      video.addEventListener("seeked", settled);
+      video.addEventListener("loadeddata", settled);
+      return () => { video.removeEventListener("seeked", settled); video.removeEventListener("loadeddata", settled); };
+    }
     if (!playing || !video || typeof video.requestVideoFrameCallback !== "function") {
       onFrameSettled?.(stream.name, frameId);
       return;
@@ -425,7 +439,7 @@ export const FramePanel = memo(function FramePanel({
         video.cancelVideoFrameCallback(callbackId);
       }
     };
-  }, [frameId, isPrimary, nativePlaybackEnabled, nativeVideoActive, onFrameSettled, playing, stream.name, videoUrl]);
+  }, [frameId, highSpeedBrowsing, isPrimary, nativePlaybackEnabled, nativeVideoActive, onFrameSettled, playing, stream.name, videoUrl]);
 
   useLayoutEffect(() => {
     if (!isPrimary || !nativePlaybackEnabled || !nativeVideoActive || !nativeVideo) return undefined;
@@ -683,7 +697,7 @@ export const FramePanel = memo(function FramePanel({
           onLoadedData={() => {
             setVideoStatus("ready");
             onFirstFrameAvailable?.(root, stream.name);
-            if (!nativePlaybackEnabled) onFrameSettled?.(stream.name, frameId);
+            if (!nativePlaybackEnabled && !highSpeedBrowsing) onFrameSettled?.(stream.name, frameId);
           }}
           onPlaying={() => {
             setVideoStatus("playing");

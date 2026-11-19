@@ -76,8 +76,8 @@ export async function listOutboundBatches(datasetId?: string, protocol?:Outbound
     return legacy();
   }
 }
-export const saveOutboundReasonOption = (reason: string, category:"invalid"|"anomalous") =>
-  outboundCall<{ reasonOptions: string[] }>({ action: "save-reason-option", reason, category });
+export const saveOutboundReasonOption = (reason: string, category:"invalid"|"anomalous", remove=false) =>
+  outboundCall<{ reasonOptions: string[] }>({ action: "save-reason-option", reason, category,...(remove?{remove:true}:{}) });
 export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: OutboundDecisionValue, reason?: string, protocol?:OutboundProtocol) {
   const input={action,datasetId:batch.id,version:batch.version,
     ...(recordingId?{recordingId,value,...(reason?{reason,reasonCategory:value}:{})}:{})};

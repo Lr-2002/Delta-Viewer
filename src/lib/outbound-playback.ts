@@ -9,6 +9,7 @@ export interface OutboundPlaybackState {
 export class OutboundPlayback {
   private players = new Map<number, HTMLVideoElement>();
   private listeners = new Map<number, () => void>();
+  private decodeGaps = new Map<number, ReturnType<typeof setTimeout>>();
   private intent = false;
   private held = false;
   private starting: number | null = null;
@@ -17,6 +18,10 @@ export class OutboundPlayback {
   private recoveryUntil = 0;
   private generation = 0;
   private speed = 1;
+  private browsing = false;
+  private browsePosition: number | null = null;
+  private browseTarget: number | null = null;
+  private browseAt = 0;
   private masterId: number | null = null;
   private timer: ReturnType<typeof setInterval>;
 
@@ -26,6 +31,7 @@ export class OutboundPlayback {
 
   attach(id: number, player: HTMLVideoElement | null) {
     if (this.players.get(id) === player) return;
+    this.clearDecodeGap(id);
     this.listeners.get(id)?.();
     this.listeners.delete(id);
     this.players.delete(id);
@@ -34,16 +40,38 @@ export class OutboundPlayback {
       player.defaultPlaybackRate = this.speed;
       player.playbackRate = this.speed;
       const waiting = () => {
-        if (this.intent && !player.ended) this.hold();
+        if (this.sampled()) return;
+        // WebView2 may deliver an old waiting event after decoding recovered.
+        // Treating it as a fresh stall flushes all seven healthy decoders.
+        if (!this.intent || player.ended || player.seeking || player.readyState >= 3) return;
+        if (this.speed <= 3 || this.held || !this.hasBuffer(player, this.speed * .25)) {
+          this.hold();
+          return;
+        }
+        if (this.decodeGaps.has(id)) return;
+        const generation = this.generation;
+        // Coalesce sub-frame decode gaps only when compressed media is ahead.
+        // A sustained stall still holds peers within .12 media seconds; no
+        // grace applies to network starvation, ordinary rates or active seeks.
+        this.decodeGaps.set(id, setTimeout(() => {
+          this.decodeGaps.delete(id);
+          if (generation === this.generation && this.intent && this.players.get(id) === player
+            && !player.ended && !player.seeking && player.readyState < 3) this.hold();
+        }, Math.min(30, 120 / this.speed)));
       };
-      const canplay = () => this.tick();
+      const canplay = () => {
+        if (player.readyState >= 3) this.clearDecodeGap(id);
+        this.tick();
+      };
       const ended = () => this.tick();
       player.addEventListener("waiting", waiting);
       player.addEventListener("canplay", canplay);
+      player.addEventListener("seeked", canplay);
       player.addEventListener("ended", ended);
       this.listeners.set(id, () => {
         player.removeEventListener("waiting", waiting);
         player.removeEventListener("canplay", canplay);
+        player.removeEventListener("seeked", canplay);
         player.removeEventListener("ended", ended);
         player.pause();
       });
@@ -66,10 +94,50 @@ export class OutboundPlayback {
     const master = this.master();
     const durations = [...this.players.values()].map(v => v.duration).filter(v => Number.isFinite(v) && v > 0);
     this.report({ playing: this.intent, buffering: this.intent && this.held,
-      position: master?.currentTime ?? 0, duration: durations.length ? Math.max(...durations) : 0 });
+      position: this.sampled() ? this.browsePosition ?? master?.currentTime ?? 0 : master?.currentTime ?? 0,
+      duration: durations.length ? Math.max(...durations) : 0 });
+  }
+
+  private sampled() { return this.browsing && this.speed > 3; }
+
+  setBrowsing(enabled: boolean) {
+    if (this.browsing === enabled) return;
+    const resume = this.intent;
+    this.pause();
+    this.browsing = enabled;
+    this.browsePosition = this.master()?.currentTime ?? 0;
+    if (resume) this.play();
+    else this.publish();
+  }
+
+  private browseTick() {
+    const now = performance.now();
+    // A single seek per camera may be in flight. Never queue skipped samples
+    // behind a slow network or decoder, or report time that wasn't displayed.
+    if ([...this.players.values()].some(v => v.seeking || v.readyState < 2 || v.error)) {
+      this.held = now - this.browseAt >= 500;
+      return;
+    }
+    this.held = false;
+    if (this.browseTarget !== null) {
+      this.browsePosition = this.browseTarget;
+      this.browseTarget = null;
+    }
+    const end = Math.max(...[...this.players.values()].map(v => Number.isFinite(v.duration) ? v.duration : 0));
+    if ((this.browsePosition ?? 0) >= end) { this.pause(); this.finished(); return; }
+    if (now - this.browseAt < 250) return;
+    const target = Math.min(end, (this.browsePosition ?? 0) + Math.min(500, now - this.browseAt) * this.speed / 1000);
+    this.browseAt = now;
+    this.browseTarget = target;
+    this.held = false;
+    for (const player of this.players.values()) {
+      player.pause();
+      player.currentTime = Math.min(target, player.duration);
+    }
   }
 
   private hold() {
+    this.clearDecodeGaps();
     if (!this.held) this.recoveryUntil = performance.now() + (this.speed > 3 ? 2500 : 0);
     this.held = true;
     // Keep the starved decoder trying to play. Pausing it at HAVE_CURRENT_DATA
@@ -87,10 +155,21 @@ export class OutboundPlayback {
 
   play() {
     if (!this.players.size) return;
+    this.clearDecodeGaps();
     this.intent = true;
     this.prime();
     this.generation++;
     const master = this.master()!;
+    if (this.sampled()) {
+      this.browsePosition = master.currentTime;
+      this.browseTarget = null;
+      this.browseAt = performance.now();
+      this.priming = false;
+      this.held = false;
+      for (const player of this.players.values()) { player.pause(); player.playbackRate = 1; }
+      this.publish();
+      return;
+    }
     // A user start/seek may align once. Continuous playback never seeks peers.
     for (const player of this.players.values()) {
       if (player !== master && player.readyState >= 1 && Math.abs(player.currentTime - master.currentTime) > .12)
@@ -101,10 +180,13 @@ export class OutboundPlayback {
   }
 
   pause() {
+    this.clearDecodeGaps();
     this.intent = false;
     this.held = false;
     this.priming = false;
     this.generation++;
+    this.browsePosition = this.browseTarget ?? this.browsePosition;
+    this.browseTarget = null;
     for (const player of this.players.values()) {
       player.pause();
       player.playbackRate = this.speed;
@@ -113,7 +195,11 @@ export class OutboundPlayback {
   }
 
   seek(time: number) {
+    this.clearDecodeGaps();
     this.generation++;
+    this.browsePosition = time;
+    this.browseTarget = null;
+    this.browseAt = performance.now();
     for (const player of this.players.values()) {
       player.pause();
       if (player.readyState >= 1)
@@ -125,8 +211,17 @@ export class OutboundPlayback {
   }
 
   setSpeed(speed: number) {
+    const wasSampled = this.sampled();
+    this.clearDecodeGaps();
     const increased = speed > this.speed;
     this.speed = speed;
+    if (wasSampled || this.sampled()) {
+      const resume = this.intent;
+      this.pause();
+      this.browsePosition = this.master()?.currentTime ?? 0;
+      if (resume) this.play();
+      return;
+    }
     if (speed <= 3) this.recoveryUntil = 0;
     for (const player of this.players.values()) {
       player.defaultPlaybackRate = speed;
@@ -145,6 +240,10 @@ export class OutboundPlayback {
 
   private hasStartupBuffer(player: HTMLVideoElement, recovery = false) {
     const needed = Math.min((this.speed > 3 ? recovery ? 1.5 : 3 : 1.25) * this.speed, Math.max(0, player.duration - player.currentTime - .04));
+    return this.hasBuffer(player, needed);
+  }
+
+  private hasBuffer(player: HTMLVideoElement, needed: number) {
     for (let i = 0; i < player.buffered.length; i++) {
       if (player.buffered.start(i) <= player.currentTime + .02
         && player.buffered.end(i) - player.currentTime >= needed) return true;
@@ -152,9 +251,20 @@ export class OutboundPlayback {
     return false;
   }
 
+  private clearDecodeGap(id: number) {
+    clearTimeout(this.decodeGaps.get(id));
+    this.decodeGaps.delete(id);
+  }
+
+  private clearDecodeGaps() {
+    for (const timer of this.decodeGaps.values()) clearTimeout(timer);
+    this.decodeGaps.clear();
+  }
+
   private tick() {
     const master = this.master();
     if (this.intent && master) {
+      if (this.sampled()) { this.browseTick(); this.publish(); return; }
       if (master.ended) { this.pause(); this.finished(); return; }
       if (this.held) {
         // A decoded first frame may represent only .25 seconds of high-rate
@@ -210,6 +320,7 @@ export class OutboundPlayback {
   }
 
   dispose() {
+    this.clearDecodeGaps();
     this.intent = false;
     this.generation++;
     clearInterval(this.timer);

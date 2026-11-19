@@ -11,6 +11,8 @@ declare global {
       seek: (frame: number) => void;
       play: (playing: boolean) => void;
       speed: (speed: number) => void;
+      browse: (enabled: boolean) => void;
+      sample: (frame: number) => void;
     };
     __nativeStreams: StreamSummary[];
     __nativeEnd: number;
@@ -21,6 +23,7 @@ function NativePlaybackHarness() {
   const [frame, setFrame] = useState(0);
   const { playing, setPlaying, requested } = usePlaybackIntent();
   const [speed, setSpeed] = useState(1);
+  const [browsing, setBrowsing] = useState(false);
   const [buffering, setBuffering] = useState<Record<string, boolean>>({});
   const clockActive = useRef(false);
   const presented = useCallback((_stream: string, next: number) => {
@@ -37,23 +40,25 @@ function NativePlaybackHarness() {
       seek: (next) => { setPlaying(false); setFrame(next); },
       play: setPlaying,
       speed: setSpeed,
+      browse: setBrowsing,
+      sample: setFrame,
     };
   }, []);
   // Also exercises older FramePanel builds driven by the external UI clock.
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || browsing) return;
     const timer = window.setInterval(() => {
       if (!clockActive.current) setFrame((current) => Math.min(window.__nativeEnd, current + 1));
     }, 1000 / (30 * speed));
     return () => clearInterval(timer);
-  }, [playing, speed]);
+  }, [browsing, playing, speed]);
   return <main>
     <output id="position" data-playing={playing}>{frame}</output>
     <div className="camera-grid">
       {window.__nativeStreams.map((stream, index) => <FramePanel
         key={stream.name} root="/native-playback-fixture" stream={stream}
         isPrimary={index === 0} frameId={frame} playing={playing}
-        nativePlaybackEnabled={playing} playbackHeld={Object.values(buffering).some(Boolean)} playbackFps={30} playbackEndFrame={window.__nativeEnd}
+        highSpeedBrowsing={browsing} nativePlaybackEnabled={playing && !browsing} playbackHeld={Object.values(buffering).some(Boolean)} playbackFps={30} playbackEndFrame={window.__nativeEnd}
         speed={speed} className={`camera-${index}`} onFramePresented={presented}
         onNativeClockChange={clockChanged}
         onBufferingChange={bufferingChanged}

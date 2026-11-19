@@ -1814,3 +1814,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .language-toolbar-switch { display:inline-flex; flex:0 0 auto; }
 .language-toolbar-switch .language-toggle { position:static; }
+
+.browse-control { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; font-size: 11px; white-space: nowrap; cursor: pointer; }
+.browse-control input[type=checkbox] { flex: none; width: 14px; min-width: 14px; height: 14px; margin: 0; accent-color: #3d3d45; }

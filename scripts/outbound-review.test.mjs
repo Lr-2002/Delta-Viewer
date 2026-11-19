@@ -90,8 +90,9 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
           return { url: 'https://outbound.fixture/api/platform/manager-outbound/media/' + (input.segment+1).toString(16).padStart(64,'0') };
         }
         if (input.action === 'save-reason-option') {
+          if(window.fixtureReasonFailure)throw Error('OUTBOUND_USER_CENTER_TIMEOUT');
           const options=input.category==='anomalous'?window.fixtureAnomalousReasonOptions:window.fixtureReasonOptions;
-          if (!options.includes(input.reason)) options.push(input.reason);
+          if(input.remove){const at=options.indexOf(input.reason);if(at>=0)options.splice(at,1);}else if (!options.includes(input.reason)) options.push(input.reason);
           return { reasonOptions: [...options],category:input.category };
         }
         if (input.version !== window.fixtureBatch.version) throw Error('OUTBOUND_VERSION_CONFLICT');
@@ -263,6 +264,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.ok(cameraSizes[0].width>cameraSizes[1].width*2,'main camera uses the original replay width ratio');
     assert.ok(cameraSizes[0].height>cameraSizes[1].height*1.8,'main camera spans both peer rows');
     await page.getByRole('button', { name: '无效数据' }).click();
+    await page.getByRole('button',{name:'添加常用原因',exact:true}).click();
     await page.getByLabel('新增常用无效原因').fill('画面遮挡');
     await page.getByRole('button',{name:'Switch to English',exact:true}).click();
     assert.equal(await page.getByLabel('Add common invalid reason').inputValue(),'画面遮挡','draft survives a language change');
@@ -311,10 +313,33 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     const anomalyDialog=page.getByRole('dialog',{name:'选择异常原因',exact:true});
     assert.equal(await anomalyDialog.getByRole('button',{name:'测试数据',exact:true}).count(),0,'invalid defaults are excluded from anomalous dialog');
     assert.equal(await anomalyDialog.getByRole('button',{name:'画面遮挡',exact:true}).count(),0,'invalid custom reasons are excluded');
+    await page.getByRole('button',{name:'添加常用原因',exact:true}).click();
     await anomalyDialog.getByLabel('新增常用异常原因',{exact:true}).fill('前半段动作异常');
     await anomalyDialog.getByRole('button',{name:'保存常用项',exact:true}).click();
     await anomalyDialog.getByRole('button',{name:'前半段动作异常',exact:true}).waitFor();
     assert.deepEqual(await page.evaluate(()=>[window.fixtureAnomalousReasonOptions.includes('前半段动作异常'),window.fixtureReasonOptions.includes('前半段动作异常')]),[true,false]);
+    await anomalyDialog.getByRole('button',{name:'添加常用原因',exact:true}).click();
+    await anomalyDialog.getByLabel('新增常用异常原因',{exact:true}).fill('画面遮挡');
+    await anomalyDialog.getByRole('button',{name:'保存常用项',exact:true}).click();
+    await anomalyDialog.getByRole('button',{name:'调整顺序',exact:true}).click();
+    const firstOption=anomalyDialog.getByRole('group',{name:'异常原因选项'}).locator('button').first();
+    await firstOption.press('Alt+ArrowRight');
+    const sortedReasons=await anomalyDialog.getByRole('group',{name:'异常原因选项'}).locator('button').allTextContents();
+    await page.evaluate(()=>window.fixtureReasonFailure=true);
+    await anomalyDialog.getByRole('button',{name:'移除常用原因 画面遮挡',exact:true}).click();
+    await anomalyDialog.getByRole('alert').waitFor();
+    assert.equal(await anomalyDialog.getByRole('button',{name:'画面遮挡',exact:true}).count(),1,'failed removal keeps the suggestion');
+    await page.evaluate(()=>window.fixtureReasonFailure=false);
+    const decisionsBeforeDelete=await page.evaluate(()=>JSON.stringify(window.fixtureBatch.recordings.map(x=>x.decision)));
+    await anomalyDialog.getByRole('button',{name:'移除常用原因 画面遮挡',exact:true}).click();
+    await anomalyDialog.getByRole('button',{name:'画面遮挡',exact:true}).waitFor({state:'detached'});
+    assert.deepEqual(await page.evaluate(()=>[window.fixtureAnomalousReasonOptions.includes('画面遮挡'),window.fixtureReasonOptions.includes('画面遮挡')]),[false,true],'removal affects only its category');
+    assert.equal(await page.evaluate(()=>JSON.stringify(window.fixtureBatch.recordings.map(x=>x.decision))),decisionsBeforeDelete,'deleting a common reason never alters saved reviews');
+    await anomalyDialog.getByRole('button',{name:'取消',exact:true}).click();
+    await page.getByRole('button',{name:'异常数据',exact:true}).click();
+    assert.equal((await anomalyDialog.getByRole('group',{name:'异常原因选项'}).locator('button').allTextContents())[0],sortedReasons[0],'reopening retains only this category order');
+    await anomalyDialog.getByRole('button',{name:'前半段动作异常',exact:true}).click();
+
     await page.getByRole('button',{name:'保存修改',exact:true}).click();
     await page.getByRole('button',{name:'录制 001 异常',exact:true}).waitFor();
     await page.getByRole('button',{name:'无效数据',exact:true}).click();
@@ -348,6 +373,16 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.getByRole('navigation',{name:'视频分段'}).count(),0,'no separate segment tabs');
     await page.evaluate(()=>window.segmentPlayers=[...document.querySelectorAll('video')]);
     assert.deepEqual(await page.getByRole('combobox',{name:'播放速度',exact:true}).locator('option').evaluateAll(options=>options.map(o=>Number(o.value))),[.25,.5,.75,1,1.25,1.5,1.75,2,2.5,3,4,6,8]);
+    await page.getByRole('checkbox',{name:'高速浏览',exact:true}).check();
+    await page.getByRole('combobox',{name:'播放速度',exact:true}).selectOption('8');
+    await page.getByRole('button',{name:'全局播放',exact:true}).click();
+    await page.waitForFunction(()=>Number(document.querySelector('[aria-label="视频播放位置"]').value)>8);
+    await page.getByRole('button',{name:'暂停',exact:true}).click();
+    await page.waitForFunction(()=>[...document.querySelectorAll('video')].every(v=>v.paused&&!v.seeking));
+    const browsePaused=await page.locator('video').evaluateAll(v=>v.map(p=>p.currentTime));
+    await page.waitForTimeout(400);
+    assert.deepEqual(await page.locator('video').evaluateAll(v=>v.map(p=>p.currentTime)),browsePaused,'sampled browsing pauses without late seeks, including across parts');
+    await page.getByRole('checkbox',{name:'高速浏览',exact:true}).uncheck();
     await page.getByRole('combobox',{name:'播放速度',exact:true}).selectOption('8');
     await slider.click({position:{x:(await slider.boundingBox()).width*(7.4/64),y:10}});
     await page.getByRole('button',{name:'全局播放',exact:true}).click();
@@ -540,6 +575,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.waitForFunction(()=>!document.querySelector('.outbound-anomalous-button')?.disabled);
     await page.getByRole('button',{name:'异常数据',exact:true}).click();
     await page.getByRole('dialog',{name:'选择异常原因',exact:true}).waitFor();
+    await page.getByRole('button',{name:'添加常用原因',exact:true}).click();
     await page.getByLabel('新增常用异常原因',{exact:true}).fill('部分片段无实际动作');
     await page.getByRole('button',{name:'保存常用项',exact:true}).click();
     await page.getByRole('button',{name:'部分片段无实际动作',exact:true}).waitFor();

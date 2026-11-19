@@ -312,6 +312,18 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
         await page.waitForFunction(() => Number(document.getElementById("position").textContent) > 8);
       }
     }
+    if (!sampleRoot) {
+      await page.evaluate(()=>{window.__nativePlayback.play(false);window.__nativePlayback.browse(true);window.__nativePlayback.speed(8);window.__nativePlayback.sample(30);window.__nativePlayback.play(true);});
+      for (const frame of [30,75,100,145]) {
+        await page.evaluate(frame=>window.__nativePlayback.sample(frame),frame);
+        await page.waitForFunction(frame=>[...document.querySelectorAll('video')].every(v=>v.paused&&!v.seeking&&Math.abs(v.currentTime-(frame/30%3))<.04),frame);
+      }
+      await page.evaluate(()=>{window.__nativePlayback.play(false);window.__nativePlayback.seek(146);});
+      await page.waitForFunction(()=>[...document.querySelectorAll('video')].every(v=>v.paused&&!v.seeking&&Math.abs(v.currentTime-(146/30%3))<.04));
+      const pausedSamples=await page.locator('video').evaluateAll(v=>v.map(x=>x.currentTime));
+      await page.waitForTimeout(350);
+      assert.deepEqual(await page.locator('video').evaluateAll(v=>v.map(x=>x.currentTime)),pausedSamples,'fast browsing retains exact paused frame after a segment change');
+    }
     const stats = await page.evaluate(() => window.__nativeStats);
     const finished = await page.evaluate(() => ({ wall: performance.now(), media: document.querySelector("video").currentTime }));
     const result = { transport: mediaConfig ? "production-rust-loopback" : "test-node-loopback", started, finished, moving, stats, errors };
