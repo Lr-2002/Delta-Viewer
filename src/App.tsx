@@ -8,6 +8,7 @@ import { CloudQcSyncStatus } from "./components/CloudQcSyncStatus";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type RefObject } from "react";
 import {
   Activity,
+  Keyboard,
   BookOpenText,
   Check,
   ChevronRight,
@@ -41,6 +42,9 @@ import {
 import { ManagerWorkspace } from "./components/ManagerWorkspace";
 import { deviceSections, type ManagerSection } from "./lib/d1";
 import { AppUpdates } from "./components/AppUpdates";
+import { ShortcutSettings } from "./components/ShortcutSettings";
+import { ShortcutProvider, useShortcutPreferences } from "./lib/use-shortcuts";
+import { matchShortcut, shortcutBlocked } from "./lib/shortcuts";
 import { ReleaseDownload } from "./components/ReleaseDownload";
 import { MachineAnnotationPanel, flushMachineReviewSaves } from "./components/MachineAnnotationPanel";
 import { AuthScreen } from "./components/AuthScreen";
@@ -223,6 +227,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.12.3": "新增按账号保存的快捷键设置，可自定义上下一条、播放暂停、片段切换及逐帧等操作；保留原有默认键，导航不会提交审核。",
   "1.12.2": "修复外发视频缓冲暂停时误超时中断，恢复接收后继续完整读取；保留七路原画质、连续分段和已审修改。",
   "1.12.1": "外发审核仅按交付平台星矩公司归属展示；视频缺失或损坏时可填写独立原因提交异常／无效，有效仍须七路就绪。",
   "1.12.0": "外发审核支持已审修改、独立异常／无效原因库、连续分段回放、13档倍速和固定七路；修正发布测试并保留高倍速共同恢复。",
@@ -487,6 +492,10 @@ function App() {
   const isManagedWorkspace = workspaceMode === "managed";
   const isOfflineWorkspace = workspaceMode === "offline";
   const reviewStorageUsername = isOfflineWorkspace ? "offline:local:v1" : authStatus?.currentUser?.username ?? "";
+  const shortcutOwner = isOfflineWorkspace ? "offline:local:v1" : authStatus?.currentUser ? JSON.stringify([authStatus.userCenter.serviceId ?? "demo", authStatus.currentUser.username]) : "";
+  const shortcutPreferences = useShortcutPreferences(shortcutOwner);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  useEffect(() => setShortcutsOpen(false), [shortcutOwner]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [releaseHistoryOpen, setReleaseHistoryOpen] = useState(false);
   const [releaseHistory, setReleaseHistory] = useState<ReleaseHistoryEntry[]>([]);
@@ -1516,32 +1525,7 @@ function App() {
     setPlaying(nextPlaying);
   }
 
-  useEffect(() => {
-    if (!data || managementMode || managerSection !== "data") return;
-    const handleShortcut = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      if (document.querySelector("dialog[open]") || target?.closest("input, textarea, select, button, [contenteditable='true']")) return;
-      if (event.code === "Space") {
-        event.preventDefault();
-        togglePlayback();
-      } else if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        moveFrame(-1);
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        moveFrame(1);
-      } else if (event.key === "[" && view === "review" && !machinePreviewRange) {
-        event.preventDefault();
-        updateClipStart(frameRef.current);
-      } else if (event.key === "]" && view === "review" && !machinePreviewRange) {
-        event.preventDefault();
-        updateClipEnd(frameRef.current);
-      }
-    };
-    window.addEventListener("keydown", handleShortcut);
-    return () => window.removeEventListener("keydown", handleShortcut);
-  }, [data, clipStartFrame, clipEndFrame, machinePreviewRange, playing, view, managementMode, managerSection]);
+
 
   function exitMachinePreview() {
     setMachinePreviewRange(null);
@@ -1954,6 +1938,32 @@ function App() {
     [scan?.episodes, skippedEpisodeRoots, reviewedEpisodes],
   );
   const displayedEpisodes = visibleEpisodes;
+  useEffect(() => {
+    if (managementMode || managerSection !== "data" || outboundBatch || personalTaskOpen || shortcutsOpen || busy) return;
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.repeat || shortcutBlocked(event)) return;
+      const action=matchShortcut(event,shortcutPreferences.bindings,"data",["previousRecording","nextRecording","togglePlayback","previousFrame","nextFrame","rangeStart","rangeEnd","slower","faster","clipStart","clipEnd"]);
+      if(!action)return;
+      if(action==="previousRecording"||action==="nextRecording"){
+        if(reviewUnsaved.current||!displayedEpisodes.length)return;
+        const index=displayedEpisodes.findIndex(e=>e.root===(loadedEpisodeSourceRoot??selectedEpisode?.root));
+        const next=index+(action==="nextRecording"?1:-1),target=displayedEpisodes[next];
+        event.preventDefault();if(target)void loadEpisodeForReview(target,true);return;
+      }
+      if(!data)return;
+      if((action==="clipStart"||action==="clipEnd")&&(view!=="review"||machinePreviewRange))return;
+      event.preventDefault();
+      if(action==="togglePlayback")togglePlayback();
+      else if(action==="previousFrame"||action==="nextFrame"){setPlaying(false);moveFrame(action==="previousFrame"?-1:1);}
+      else if(action==="rangeStart"||action==="rangeEnd"){setPlaying(false);seekFrame(action==="rangeStart"?playbackStart:primaryPlaybackEndFrame);}
+      else if(action==="slower"||action==="faster"){const rates=[.25,.5,1,2],index=rates.indexOf(speed);setSpeed(rates[Math.max(0,Math.min(rates.length-1,index+(action==="faster"?1:-1)))]);}
+      else if(action==="clipStart")updateClipStart(frameRef.current);
+      else if(action==="clipEnd")updateClipEnd(frameRef.current);
+    };
+    window.addEventListener("keydown",handleShortcut);
+    return()=>window.removeEventListener("keydown",handleShortcut);
+  },[data,managementMode,managerSection,outboundBatch,personalTaskOpen,shortcutsOpen,busy,displayedEpisodes,loadedEpisodeSourceRoot,selectedEpisode?.root,shortcutPreferences.bindings,view,machinePreviewRange,playing,speed,playbackStart,primaryPlaybackEndFrame]);
+
   function toggleRejection(episode: EpisodeSummary, checked: boolean) {
     setBatchRejectionSelection(previous => {
       const next = { ...previous };
@@ -2075,10 +2085,11 @@ function App() {
   }
 
   const currentUser = authStatus.currentUser;
-  const updateControls = (taskBusy: boolean) => !IS_DEVELOPMENT_EDITION ? <AppUpdates version={APP_VERSION}
+  const shortcutButton = <button className="icon-button" type="button" title={t("快捷键设置")} aria-label={t("快捷键设置")} onClick={() => setShortcutsOpen(true)}><Keyboard size={17}/></button>;
+  const updateControls = (taskBusy: boolean) => <>{showManagement ? shortcutButton : null}{!IS_DEVELOPMENT_EDITION ? <AppUpdates version={APP_VERSION}
     currentSummary={tr(RELEASE_SUMMARIES_ZH[APP_VERSION]) ?? t("查看本次版本的改进与修复。")}
     currentNotes={releaseHistory.find(item => item.version === APP_VERSION)?.notes ?? []} busy={taskBusy}
-    onDownload={downloadAvailableUpdate} onInstall={installAvailableUpdate} onViewHistory={() => setReleaseHistoryOpen(true)} /> : null;
+    onDownload={downloadAvailableUpdate} onInstall={installAvailableUpdate} onViewHistory={() => setReleaseHistoryOpen(true)} /> : null}</>;
   const canManage = currentUser?.canManage || currentUser?.role === "admin";
   const showManagement = Boolean(canManage && !managerAdminHome && (managementMode || currentUser?.role === "admin"));
   const ownedSyncStatus = reviewSyncStatus?.owner === `${authStatus.userCenter.serviceId ?? "demo"}:${currentUser?.username}` ? reviewSyncStatus : undefined;
@@ -2179,7 +2190,8 @@ function App() {
                           </label>
   </> : null;
   return (
-    <>
+    <ShortcutProvider bindings={shortcutPreferences.bindings}>
+      {shortcutsOpen && <ShortcutSettings key={shortcutOwner} bindings={shortcutPreferences.bindings} onSave={shortcutPreferences.save} onClose={() => setShortcutsOpen(false)}/>}
       {isManagedWorkspace && currentUser && <ClientPresence key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={`${authStatus.userCenter.serviceId}:${currentUser.username}`} />}
       {isManagedWorkspace && currentUser?.role === "operator" && <SourceWritebackClient key={`writeback:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || playing} onBusy={setSourcePublishing} onWritten={()=>setBatchReviewRevision(value=>value+1)}/>}
       {showManagement && currentUser && <SupervisionDashboard writebackOwner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} currentUser={currentUser} onLogout={logout} onManagerHome={() => {setManagerSection("home");setManagerAdminHome(true);setManagementMode(false);}} updateBusy={busy} updateControls={updateControls}
@@ -2216,6 +2228,7 @@ function App() {
           {sourcePath ? <span className="source-dot" /> : null}
         </div>}
         <div className="topbar-actions">
+          {shortcutButton}
           <button className="icon-button version-history-trigger" type="button" onClick={() => setReleaseHistoryOpen(true)} title={t("查看历史版本")} aria-label={t("查看历史版本")}><BookOpenText size={16}/></button>
           {managerSection === "data" && canManage && <button className="button button-secondary management-mode-button" disabled={busy || reviewHasUnsaved} onClick={openManagement}>{t("管理模式")}</button>}
           {managerSection === "data" && !outboundBatch && <StatusBadge status={status} />}
@@ -2647,7 +2660,7 @@ function App() {
         </main>
       </div>
     </div>
-    </>
+    </ShortcutProvider>
   );
 }
 

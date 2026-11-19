@@ -1,0 +1,24 @@
+.shortcut-settings { width:min(820px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:20px;border:1px solid var(--border,#ccc);border-radius:8px;color:var(--text,#222);background:var(--panel,#fff);box-sizing:border-box;overflow:auto; }
+.shortcut-settings::backdrop { background:rgb(0 0 0 / 42%); }
+.shortcut-settings[open] { display:flex;flex-direction:column;height:min(860px,calc(100dvh - 32px));overflow:hidden; }
+.shortcut-settings>header,.shortcut-settings>p,.shortcut-settings>label,.shortcut-settings>footer { flex-shrink:0; }
+.shortcut-settings header,.shortcut-settings footer { display:flex;align-items:center;gap:10px; }
+.shortcut-settings header { justify-content:space-between; }
+.shortcut-settings h2 { margin:0;font-size:18px; }
+.shortcut-settings header p,.shortcut-help { font-size:12px;color:var(--muted,#666);line-height:1.6; }
+.shortcut-search { display:flex;align-items:center;gap:12px;font-size:12px; }
+.shortcut-search input { flex:1;min-width:0; }
+.shortcut-list { margin:14px 0;min-height:0;overflow:auto;flex:1; }
+.shortcut-list h3,.shortcut-list summary { font-size:13px;font-weight:600;margin:16px 0 6px; }
+.shortcut-list summary { cursor:pointer; }
+.shortcut-list summary span { display:block;font-size:11px;font-weight:400;color:var(--muted,#666);margin-top:4px; }
+.shortcut-row { display:grid;grid-template-columns:minmax(0,1fr) minmax(110px,180px) auto 28px;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--border,#ddd);font-size:12px; }
+.shortcut-row small { display:block;font-size:11px;color:var(--muted,#666);margin-top:3px; }
+.shortcut-settings .button-secondary { width:auto;padding:0 10px;font-size:12px; }
+.shortcut-binding { min-height:32px;padding:5px 8px;border:1px solid var(--border,#bbb);border-radius:4px;background:var(--panel,#fff);color:inherit;font:inherit;overflow-wrap:anywhere; }
+.shortcut-binding[aria-pressed=true] { outline:2px solid currentColor;outline-offset:1px; }
+.shortcut-row.has-conflict .shortcut-binding { border:2px solid currentColor; }
+.shortcut-error { font-size:12px;font-weight:600;line-height:1.6; }
+.shortcut-settings footer { margin-top:16px;flex-wrap:wrap; }
+.shortcut-settings footer>span { flex:1; }
+@media(max-width:600px){.shortcut-settings {padding:12px;}.shortcut-row {grid-template-columns:minmax(0,1fr) minmax(90px,120px) 28px;}.shortcut-row>.button {grid-column:2;grid-row:auto;}.shortcut-row>.icon-button {grid-column:3;}.shortcut-row>span {grid-row:span 2;}.shortcut-settings footer .button {font-size:11px;}}

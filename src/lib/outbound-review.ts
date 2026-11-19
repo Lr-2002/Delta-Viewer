@@ -59,6 +59,7 @@ export function outboundTimeline(parts: ReturnType<typeof outboundVideoParts>["p
 }
 
 export const fetchOutboundMetadata = (url:string) => outboundCall<{duration:number}>({action:"media-metadata",url});
+export const fetchOutboundFrameStep = (url:string) => outboundCall<{frameStep:number|null}>({action:"media-frame-step",url});
 
 const outboundCall = <T,>(input: Record<string, unknown>) => invoke<T>("outbound_review_call", { input });
 type BatchList = { batches: OutboundBatch[]; reasonOptions: string[]; anomalousReasonOptions?:string[] };

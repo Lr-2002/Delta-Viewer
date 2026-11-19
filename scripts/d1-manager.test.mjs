@@ -581,11 +581,12 @@ test("AP configuration keeps Wi-Fi interactive and opens the native OTA panel",a
     await page.getByRole("navigation",{name:"设备页面功能"}).getByRole("button",{name:"设备页面",exact:true}).click();
     await frame.getByLabel("Wi-Fi 名称",{exact:true}).fill("Office fixture");await frame.getByLabel("Wi-Fi 密码",{exact:true}).fill("fixture-network-password");
     page.once("dialog",dialog=>dialog.dismiss());await frame.getByRole("button",{name:"连接网络",exact:true}).click();
+    await page.getByText("设备页面未能打开，请检查连接后重试。",{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0);
     await frame.getByLabel("Wi-Fi 密码",{exact:true}).fill("fixture-network-password");
     let confirmation="";page.once("dialog",async dialog=>{confirmation=dialog.message();await dialog.accept();});
     await frame.getByRole("button",{name:"连接网络",exact:true}).click();
-    await page.waitForTimeout(1000);
+    await page.getByRole("heading",{name:"设备正在配网",exact:true}).waitFor();
     if(!(await page.getByRole("heading",{name:"设备正在配网",exact:true}).count()))throw new Error(JSON.stringify({confirmation,apiCalls:await page.evaluate(()=>window.pageApiCalls),frameText:await frame.locator("body").innerText(),pageErrors:errors}));
     await page.getByRole("progressbar",{name:"等待设备配网结果"}).waitFor();
     assert.match(confirmation,/热点会断开/);

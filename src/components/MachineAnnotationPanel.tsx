@@ -1,4 +1,6 @@
 import { t, tr, useLanguage } from "../lib/i18n";
+import { useShortcuts } from "../lib/use-shortcuts";
+import { DEFAULT_SHORTCUTS, formatShortcut, labelShortcutCandidates, matchShortcut, shortcutChord } from "../lib/shortcuts";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
 import { reopenMachineReview, deferMachineReview, isTauriRuntime, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
@@ -77,6 +79,7 @@ export function MachineAnnotationPanel(props: Props) {
 
 function MachineAnnotationEditor({ data, username, busy, suspended = false, sourceName, onSourceBusy, onComplete, onReviewSaved, onUnsavedChange, playback, channel, onChannelChange }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void; channel: "action" | "skeleton"; onChannelChange: (channel: "action" | "skeleton") => void }) {
   useLanguage();
+  const shortcutBindings = useShortcuts();
   const root = data.summary.root;
   const skeletonMode = channel === "skeleton";
   const [result, setResult] = useState<MachineAnnotation | null>(null);
@@ -361,17 +364,18 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
     };
     const handler = (event: KeyboardEvent) => {
       if (suspended) return;
-      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing || event.keyCode === 229 || !/^[0-9]$/.test(event.key) || !available(event.target as HTMLElement | null)) { cancel(); return; }
-      if (event.repeat) { event.preventDefault(); return; }
-      const next = digits + event.key;
-      const number = Number(next);
-      if (!number || number > labelLibrary.length) { cancel(); return; }
-      event.preventDefault(); event.stopImmediatePropagation();
-      digits = next;
-      clearTimeout(timer);
-      // Wait only when the number can prefix a larger slot, e.g. 1 -> 10.
-      if (number * 10 <= labelLibrary.length) timer = setTimeout(apply, 650);
-      else apply();
+      if(event.defaultPrevented||event.isComposing||event.keyCode===229||!available(event.target as HTMLElement|null)){cancel();return;}
+      const chord=shortcutChord(event);
+      const custom=labelLibrary.findIndex((_,index)=>shortcutBindings[`label${index+1}`]!==DEFAULT_SHORTCUTS[`label${index+1}`]&&shortcutBindings[`label${index+1}`]===chord);
+      if(custom>=0){event.preventDefault();event.stopImmediatePropagation();cancel();if(!event.repeat){recordReviewInteraction("shortcut",{value:`标签 ${custom+1}`,labelId:labelLibrary[custom].id},root);applyLabelRef.current(labelLibrary[custom].text);}return;}
+      if(event.ctrlKey||event.metaKey||event.altKey||event.shiftKey||!/^[0-9]$/.test(event.key)){cancel();return;}
+      if(event.repeat){event.preventDefault();return;}
+      const next=digits+event.key,candidates=labelShortcutCandidates(shortcutBindings,next,labelLibrary.length);
+      if(!candidates.length){cancel();return;}
+      event.preventDefault();event.stopImmediatePropagation();digits=next;clearTimeout(timer);
+      const exact=candidates.includes(Number(next));
+      if(candidates.some(number=>String(number).length>next.length))timer=setTimeout(()=>{if(exact)apply();else cancel();},650);
+      else if(exact)apply();
     };
     window.addEventListener("keydown", handler, true);
     window.addEventListener("pointerdown", cancel, true);
@@ -384,7 +388,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
       window.removeEventListener("blur", cancel);
       document.removeEventListener("focusin", cancel);
     };
-  }, [canEdit, suspended, active?.sourceIndex, labelLibrary, labelLibraryOpen, draggedLabelId, root]);
+  }, [canEdit, suspended, active?.sourceIndex, labelLibrary, labelLibraryOpen, draggedLabelId, root, shortcutBindings]);
   const outputName = skeletonMode ? SKELETON_SOURCE : loadedSource.current?.endsWith("desorption.json") ? "desorption.json" : review?.outputName || "description.json";
   const seek = useCallback((next: number) => {
     setFrame(next); setPlaying(false);
@@ -492,10 +496,12 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (suspended) return;
-      if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing || document.querySelector("dialog[open], [role='dialog']")) return;
+      if (event.defaultPrevented || event.isComposing || event.keyCode===229 || document.querySelector("dialog[open], [role='dialog']")) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest("textarea, select, [contenteditable='true'], .sidebar, .view-tabs, .label-library") || target?.matches("input:not([type='range'])")) return;
-      if (event.code === "Space") {
+      const action=matchShortcut(event,shortcutBindings,"review",["togglePlayback","previousSegment","nextSegment","previousFrame","nextFrame","splitSegment","approveReview","rangeStart","rangeEnd"]);
+      if(!action)return;
+      if (action === "togglePlayback") {
         if (!event.repeat) recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation();
         if (!event.repeat) { if (playback) playback.onToggle(); else setPlaying((value) => !value); }
@@ -503,25 +509,27 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
       }
       if (!canEdit || !rows.length) return;
       if (target?.closest("button") && !target.closest(".machine-segment-description, .review-span, .review-edge") && event.key === "Enter") return;
-      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      if (action === "previousSegment" || action === "nextSegment") {
         recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation();
         const index = Math.max(0, rows.findIndex((item) => item.sourceIndex === active?.sourceIndex));
-        const next = rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))];
+        const next = rows[Math.max(0, Math.min(rows.length - 1, index + (action === "nextSegment" ? 1 : -1)))];
         if (next) choose(next.sourceIndex);
-      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      } else if (action === "previousFrame" || action === "nextFrame") {
         recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation();
-        const delta = event.key === "ArrowLeft" ? -1 : 1;
+        const delta = action === "previousFrame" ? -1 : 1;
         if (boundaryFocus.current === "playhead" && result) seek(Math.max(0, Math.min(editFrameCount - 1, visibleFrame + delta)));
         else if (active && boundaryFocus.current !== "playhead") boundary(boundaryFocus.current, active[boundaryFocus.current] + delta);
-      } else if (event.code === "KeyX" || event.key.toLowerCase() === "x") {
+      } else if (action === "rangeStart" || action === "rangeEnd") {
+        event.preventDefault();event.stopImmediatePropagation();seek(action === "rangeStart" ? active?.startFrame ?? 0 : active?.endFrame ?? editFrameCount-1);
+      } else if (action === "splitSegment") {
         event.preventDefault(); event.stopImmediatePropagation();
         if (!event.repeat) {
           recordReviewInteraction("shortcut", { value: event.code }, root);
           splitSegment();
         }
-      } else if (event.key === "Enter" && !event.repeat && !skeletonMode) {
+      } else if (action === "approveReview" && !event.repeat && !skeletonMode) {
         recordReviewInteraction("shortcut", { value: event.code }, root);
         event.preventDefault(); event.stopImmediatePropagation(); void finish("approved");
       }
@@ -663,7 +671,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
         void persist({ specialTags: next, segments: editsRef.current, status: "pending" });
       }} /> }
     {playback ? <section className="quality-timeline" aria-label={t("校对时间轴")}>
-      <div className="proofreading-transport">{tr(playback.controls)}<button className="icon-button" type="button" aria-label={t("剪切片段")} aria-keyshortcuts="X" title={t("剪切片段：在当前帧分割 (X)")} disabled={!canEdit || !active || active.endFrame <= active.startFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
+      <div className="proofreading-transport">{tr(playback.controls)}<button className="icon-button" type="button" aria-label={t("剪切片段")} aria-keyshortcuts={shortcutBindings.splitSegment || undefined} title={`${t("剪切片段")} (${formatShortcut(shortcutBindings.splitSegment)})`} disabled={!canEdit || !active || active.endFrame <= active.startFrame} onClick={splitSegment}><Scissors size={17} /></button></div>
       {valid && <ReviewTimeline frame={visibleFrame} frameCount={editFrameCount} start={active?.startFrame ?? 0}
         end={active?.endFrame ?? editFrameCount - 1} editable={canEdit && Boolean(active)} segments={rows}
         selected={active?.sourceIndex} onSeek={seek} onBoundary={boundary} previewBoundary={previewBoundary} onChoose={choose} onBoundaryFocus={(kind) => { boundaryFocus.current = kind; }} />}

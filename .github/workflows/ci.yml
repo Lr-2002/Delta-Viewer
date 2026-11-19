@@ -108,7 +108,9 @@ jobs:
       - name: Run proofreading frame and interaction regressions
         env:
           PLAYWRIGHT_CHROMIUM: /usr/bin/google-chrome
-        run: pnpm test:proofreading
+        run: |
+          pnpm test:proofreading
+          pnpm test:shortcuts
 
       - name: Run consent-based GitHub update flow regressions
         env:

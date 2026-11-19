@@ -5,6 +5,9 @@ import type {UserIdentity} from "../types";
 import {changeOutboundBatch,fetchOutboundVideo,releaseOutboundVideos,outboundMediaFailure,listOutboundBatches,OUTBOUND_INVALID_REASONS,OUTBOUND_ANOMALOUS_REASONS,outboundError,outboundResultUncertain,outboundVideoParts,outboundTimeline,fetchOutboundMetadata,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording,type OutboundProtocol,type OutboundDecisionValue} from "../lib/outbound-review";
 import {OutboundVideoLoader} from "../lib/outbound-video-loader";
 import {OutboundPlayback} from "../lib/outbound-playback";
+import {fetchOutboundFrameStep} from "../lib/outbound-review";
+import {useShortcuts} from "../lib/use-shortcuts";
+import {matchShortcut,shortcutBlocked} from "../lib/shortcuts";
 import "./outbound-review.css";
 
 interface Props {currentUser:UserIdentity;workspaceBusy?:boolean;view?:"tasks"|"workspace";initialBatch?:OutboundBatch;onOpenReview?:(batch:OutboundBatch,isCurrent?:()=>boolean)=>Promise<void>;onReturnToTasks?:()=>void;suspended?:boolean}
@@ -46,6 +49,9 @@ export function OutboundReviewTasks(props:Props){
 
 function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",initialBatch,onOpenReview,onReturnToTasks,suspended=false}:Props){
   useLanguage();
+  const shortcutBindings=useShortcuts();
+  const frameSteps=useRef(new Map<string,number|null>());
+  const framePending=useRef(false);
   const [batches,setBatches]=useState<OutboundBatch[]>(initialBatch?[initialBatch]:[]);
   const [anomalousReasonOptions,setAnomalousReasonOptions]=useState<string[]>(initialBatch?.anomalousReasonOptions??[]);
   const [reasonOptions,setReasonOptions]=useState<string[]>(initialBatch?.reasonOptions??[]);
@@ -110,6 +116,8 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
   const videosReady=playbackReady&&!missingSource&&timeline.complete&&!Object.keys(sourceFailures).length;
   const sourceProblem=Boolean(recording&&(!recording.videos.length||missingSource||hasVideoFailures));
   const canReject=videosReady||sourceProblem;
+  const frameAllowed=useRef(false);
+  frameAllowed.current=!suspended&&!workspaceBusy&&!busy&&!workspaceUnconfirmed&&!reasonDialog&&isOwner;
   const availableReasons=useMemo(()=>[...new Set(reasonDialog==="anomalous"?[...OUTBOUND_ANOMALOUS_REASONS,...anomalousReasonOptions]:[...OUTBOUND_INVALID_REASONS,...reasonOptions])],[reasonDialog,reasonOptions,anomalousReasonOptions]);
   const attachPlayer=useCallback((segment:number,element:HTMLVideoElement|null)=>{
     if(element)players.current.set(segment,element);else players.current.delete(segment);
@@ -334,6 +342,56 @@ function OutboundReviewSession({currentUser,workspaceBusy=false,view="tasks",ini
     else if(fullDuration>0&&fullPosition>=fullDuration-.05)void openVideos(0,0,true);
     else playback.current?.play();
   }
+  async function stepFrame(direction:number){
+    const primary=partVideos.find(video=>video.camera===grouped.primaryCamera);
+    const player=primary&&players.current.get(primary.segment),url=primary&&videoState?.urls[primary.segment];
+    if(!player||!url||framePending.current||player.readyState<1||!Number.isFinite(player.duration))return;
+    pendingStart.current=null;setTransitionIntent(false);playback.current?.pause();
+    const generation=requestGeneration.current,at=player.currentTime;
+    framePending.current=true;
+    try{
+      let step=frameSteps.current.get(url);
+      if(step===undefined)step=(await fetchOutboundFrameStep(url)).frameStep;
+      if(generation!==requestGeneration.current||!frameAllowed.current||players.current.get(primary.segment)!==player||!player.paused||Math.abs(player.currentTime-at)>.001)return;
+      frameSteps.current.clear();frameSteps.current.set(url,step);
+      if(!step||!Number.isFinite(step)||step<=0){setNotice("当前视频无法确认恒定帧间隔，暂不支持精确逐帧。其他播放和审核操作仍可使用。");return;}
+      setNotice("");playback.current?.seek(Math.max(0,Math.min(player.duration-step/2,at+direction*step)));
+    }catch{if(generation===requestGeneration.current)setNotice("暂时无法读取帧间隔，请稍后重试逐帧。其他播放和审核操作仍可使用。");}
+    finally{framePending.current=false;}
+  }
+  useEffect(()=>{frameSteps.current.clear();},[recordingId,recording?.videos]);
+  useEffect(()=>{
+    const handler=(event:KeyboardEvent)=>{
+      if(view!=="workspace"||suspended||workspaceBusy||busyRef.current||workspaceUnconfirmed||reasonDialog||!isOwner||!batch||!recording||shortcutBlocked(event))return;
+      const action=matchShortcut(event,shortcutBindings,"outbound",["previousRecording","nextRecording","togglePlayback","previousSegment","nextSegment","previousFrame","nextFrame","rangeStart","rangeEnd","slower","faster","mute"]);
+      if(!action)return;
+      event.preventDefault();
+      if(event.repeat&&!["previousFrame","nextFrame"].includes(action))return;
+      if(action==="previousRecording"||action==="nextRecording"){
+        const index=batch.recordings.findIndex(item=>item.id===recording.id),next=batch.recordings[index+(action==="nextRecording"?1:-1)];
+        if(next)setRecordingId(next.id);
+      }else if(action==="previousSegment"||action==="nextSegment"){
+        const next=partIndex+(action==="nextSegment"?1:-1);
+        if(next>=0&&next<grouped.parts.length)void openVideos(next,0,false);
+      }else if(action==="mute")setMuted(value=>!value);
+      else if(action==="slower"||action==="faster"){
+        const rates=[.25,.5,.75,1,1.25,1.5,1.75,2,2.5,3,4,6,8],rate=rates[Math.max(0,Math.min(rates.length-1,rates.indexOf(speed)+(action==="faster"?1:-1)))];
+        setSpeed(rate);playback.current?.setSpeed(rate);
+      }else if(action==="togglePlayback"){
+        if(playbackReady||transitionIntent)togglePlayback();
+      }else if(!opening&&videoState?.recordingId===recording.id&&videoState.part===partIndex){
+        if(action==="previousFrame"||action==="nextFrame")void stepFrame(action==="nextFrame"?1:-1);
+        else if(action==="rangeStart"||action==="rangeEnd"){
+          if(timeline.complete)seek(action==="rangeStart"?0:timeline.duration);
+          else {
+            const duration=timeline.spans[partIndex]?.duration;
+            if(action==="rangeStart"||duration>0){pendingStart.current=null;playback.current?.seek(action==="rangeStart"?0:duration);}
+          }
+        }
+      }
+    };
+    window.addEventListener("keydown",handler);return()=>window.removeEventListener("keydown",handler);
+  });
   function markReady(segment:number){
     const player=players.current.get(segment);if(player&&!player.error&&player.readyState>=3)rememberDuration(segment,player.duration);
     updateClock();

@@ -550,6 +550,7 @@ after(async () => { await browser?.close(); await server?.close(); });
 
 async function open(page, query, username = "review-test") {
   await page.goto(`${url}?${query}`);
+  await page.getByRole("button", { name: "登录工作区" }).or(page.getByLabel("显示名称")).first().waitFor();
   if (await page.getByRole("button", { name: "登录工作区" }).count()) await page.getByRole("button", { name: "登录工作区" }).click();
   await page.getByLabel("显示名称").fill("Review Test");
   await page.locator('input[autocomplete="username"]').fill(username);

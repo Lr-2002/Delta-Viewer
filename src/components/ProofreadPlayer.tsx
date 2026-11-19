@@ -1,4 +1,6 @@
 import { t, tr, useLanguage } from "../lib/i18n";
+import { useShortcuts } from "../lib/use-shortcuts";
+import { matchShortcut, shortcutBlocked } from "../lib/shortcuts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { FramePanel } from "./FramePanel";
@@ -31,6 +33,7 @@ interface Props {
 
 export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame, start, end, playing, onFrame, onPlaying, skeleton, skeletonError, segments, selected, editable, onBoundary, previewBoundary, onChoose, onBoundaryFocus }: Props) {
   useLanguage();
+  const shortcutBindings=useShortcuts();
   const [fps, setFps] = useState(30);
   const nativeClock = useRef(false);
   const skeletonPresenter = useRef<((frame: number) => void) | null>(null);
@@ -67,20 +70,22 @@ export function ProofreadPlayer({ root, stream, offset, step, frameCount, frame,
   }, [playing, fps, offset, step, end]);
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
-      if (document.querySelector("dialog[open]") || (event.target as HTMLElement | null)?.closest("input, textarea, select, button, [contenteditable='true']")) return;
+      if (event.repeat || shortcutBlocked(event)) return;
+      const action=matchShortcut(event,shortcutBindings,"review",["togglePlayback","previousFrame","nextFrame"]);
+      if(!action)return;
       const current = latest.current;
-      if (event.code === "Space") {
+      if (action === "togglePlayback") {
         event.preventDefault();
         if (!current.playing && (current.frame < current.start || current.frame >= current.end)) current.onFrame(current.start);
         current.onPlaying(!current.playing);
-      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      } else if (action === "previousFrame" || action === "nextFrame") {
         event.preventDefault(); current.onPlaying(false);
-        current.onFrame(Math.max(0, Math.min(frameCount - 1, current.frame + (event.key === "ArrowLeft" ? -1 : 1))));
+        current.onFrame(Math.max(0, Math.min(frameCount - 1, current.frame + (action === "previousFrame" ? -1 : 1))));
       }
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, [frameCount]);
+  }, [frameCount,shortcutBindings]);
   const seek = (next: number) => { onPlaying(false); onFrame(Math.max(0, Math.min(frameCount - 1, next))); };
   return <div className="quality-player">
     <div className="quality-camera">

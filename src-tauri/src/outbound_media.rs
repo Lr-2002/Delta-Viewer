@@ -246,6 +246,78 @@ impl OutboundMediaServer {
         }
     }
 
+    /// Frame stepping is opt-in. Read at most one MiB of index, never media
+    /// payload or a guessed FPS; unsupported timing must not poison playback.
+    pub async fn frame_step(&self, auth: &AuthState, url: &str) -> AppResult<Option<f64>> {
+        let session = auth.managed_session()?;
+        let token = self.local_token(url)?;
+        let route = self
+            .routes
+            .lock()
+            .map_err(|_| invalid())?
+            .get(&token)
+            .filter(|route| route.session == session && route.valid())
+            .cloned()
+            .ok_or_else(invalid)?;
+        let result =
+            tokio::time::timeout(Duration::from_secs(25), self.movie_frame_step(&route)).await;
+        if !route.valid() || auth.managed_session()? != session {
+            return Err(AppError::Message("OUTBOUND_ACCOUNT_CHANGED".into()));
+        }
+        match result {
+            Ok(Ok(step)) => Ok(step),
+            _ => Err(AppError::Message("OUTBOUND_FRAME_STEP_UNAVAILABLE".into())),
+        }
+    }
+
+    async fn movie_frame_step(&self, route: &Route) -> Result<Option<f64>, ()> {
+        let verified = route.verified.lock().map_err(|_| ())?.clone();
+        let first = self
+            .part(
+                route,
+                0,
+                65535,
+                verified.as_ref().map(|(n, e)| (*n, e.as_deref())),
+            )
+            .await?;
+        let expected = Some((first.total, first.etag.as_deref()));
+        let mut offset = 0_u64;
+        for _ in 0..64 {
+            if offset >= first.total {
+                return Ok(None);
+            }
+            let extra;
+            let bytes = if offset.saturating_add(16) <= first.body.len() as u64 {
+                &first.body[offset as usize..]
+            } else {
+                extra = self
+                    .part(route, offset, (offset + 15).min(first.total - 1), expected)
+                    .await?;
+                &extra.body
+            };
+            let Some((size, kind)) = mp4_box(bytes, offset, first.total) else {
+                return Ok(None);
+            };
+            if &kind == b"moov" {
+                if size > PART {
+                    return Ok(None);
+                }
+                let index;
+                let bytes = if offset + size <= first.body.len() as u64 {
+                    &first.body[offset as usize..(offset + size) as usize]
+                } else {
+                    index = self
+                        .part(route, offset, offset + size - 1, expected)
+                        .await?;
+                    &index.body
+                };
+                return Ok(mp4_child(bytes, b"moov").and_then(constant_video_step));
+            }
+            offset += size;
+        }
+        Ok(None)
+    }
+
     async fn movie_duration(&self, route: &Route) -> Result<f64, ()> {
         let verified = route.verified.lock().map_err(|_| ())?.clone();
         let first = self
@@ -689,6 +761,114 @@ impl OutboundMediaServer {
         Ok(())
     }
 }
+fn mp4_children(mut bytes: &[u8]) -> Option<Vec<([u8; 4], &[u8])>> {
+    let mut children = Vec::new();
+    while !bytes.is_empty() {
+        if children.len() >= 128 {
+            return None;
+        }
+        let (size, kind) = mp4_box(bytes, 0, bytes.len() as u64)?;
+        let header = if bytes.get(..4)? == [0, 0, 0, 1] {
+            16
+        } else {
+            8
+        };
+        children.push((kind, bytes.get(header..size as usize)?));
+        bytes = &bytes[size as usize..];
+    }
+    Some(children)
+}
+fn mp4_child<'a>(bytes: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
+    mp4_children(bytes)?
+        .into_iter()
+        .find_map(|(k, p)| (&k == kind).then_some(p))
+}
+fn constant_video_step(movie: &[u8]) -> Option<f64> {
+    for (kind, track) in mp4_children(movie)? {
+        if &kind != b"trak" {
+            continue;
+        }
+        let media = mp4_child(track, b"mdia")?;
+        if mp4_child(media, b"hdlr")?.get(8..12)? != b"vide" {
+            continue;
+        }
+        let clock = mp4_child(media, b"mdhd")?;
+        let at = match clock.first()? {
+            0 => 12,
+            1 => 20,
+            _ => return None,
+        };
+        let scale = u32::from_be_bytes(clock.get(at..at + 4)?.try_into().ok()?);
+        let sample_table = mp4_child(mp4_child(media, b"minf")?, b"stbl")?;
+        let table = mp4_child(sample_table, b"stts")?;
+        if table.get(..4)? != [0, 0, 0, 0] {
+            return None;
+        }
+        let count = u32::from_be_bytes(table.get(4..8)?.try_into().ok()?) as usize;
+        if scale == 0 || count == 0 || count > 65536 || table.len() != 8 + count * 8 {
+            return None;
+        }
+        let mut delta = None;
+        let mut sample_count = 0_i64;
+        for entry in table[8..].chunks_exact(8) {
+            let samples = u32::from_be_bytes(entry[..4].try_into().ok()?);
+            let ticks = u32::from_be_bytes(entry[4..].try_into().ok()?);
+            if samples == 0 || ticks == 0 || delta.is_some_and(|d| d != ticks) {
+                return None;
+            }
+            delta = Some(ticks);
+            sample_count += i64::from(samples);
+        }
+        // B-frame decode order can differ from display order. Verify that the
+        // composition runs still cover one contiguous frame lattice, without
+        // expanding a potentially enormous per-sample timestamp array.
+        if let Some((_, composition)) = mp4_children(sample_table)?
+            .into_iter()
+            .find(|(k, _)| k == b"ctts")
+        {
+            composition_clock(composition, i64::from(delta?), sample_count)?;
+        }
+        let step = f64::from(delta?) / f64::from(scale);
+        return (step.is_finite() && step > 0. && step <= 1.).then_some(step);
+    }
+    None
+}
+fn composition_clock(table: &[u8], delta: i64, samples: i64) -> Option<()> {
+    let version = *table.first()?;
+    if version > 1 || table.get(1..4)? != [0, 0, 0] {
+        return None;
+    }
+    let count = u32::from_be_bytes(table.get(4..8)?.try_into().ok()?) as usize;
+    if count == 0 || count > 65536 || table.len() != 8 + count * 8 {
+        return None;
+    }
+    let mut runs = Vec::with_capacity(count);
+    let mut decoded = 0_i64;
+    let mut residue = None;
+    for entry in table[8..].chunks_exact(8) {
+        let n = i64::from(u32::from_be_bytes(entry[..4].try_into().ok()?));
+        let ticks = if version == 1 {
+            i64::from(i32::from_be_bytes(entry[4..].try_into().ok()?))
+        } else {
+            i64::from(u32::from_be_bytes(entry[4..].try_into().ok()?))
+        };
+        let rem = ticks.rem_euclid(delta);
+        if n == 0 || residue.is_some_and(|r| r != rem) {
+            return None;
+        }
+        residue = Some(rem);
+        let start = decoded + (ticks - rem) / delta;
+        runs.push((start, start + n));
+        decoded += n;
+    }
+    if decoded != samples {
+        return None;
+    }
+    runs.sort_unstable();
+    runs.windows(2)
+        .all(|pair| pair[0].1 == pair[1].0)
+        .then_some(())
+}
 fn movie_clock(payload: &[u8]) -> Option<f64> {
     let (scale_at, duration_at, wide) = match payload.first()? {
         0 => (12, 16, false),
@@ -999,6 +1179,58 @@ mod tests {
         });
     }
     #[test]
+    fn frame_clock_uses_video_track_and_rejects_variable_or_truncated_timing() {
+        assert!((constant_video_step(&frame_movie(1000, &[100, 100])).unwrap() - 0.1).abs() < 1e-9);
+        assert!(constant_video_step(&frame_movie(1000, &[100, 200])).is_none());
+        assert!(constant_video_step(&frame_movie(0, &[100])).is_none());
+        assert!(constant_video_step(&frame_movie(1000, &[0])).is_none());
+        let mut truncated = frame_movie(1000, &[100]);
+        truncated.pop();
+        assert!(constant_video_step(&truncated).is_none());
+        let table = |offsets: &[i32]| {
+            let mut bytes = vec![1, 0, 0, 0];
+            bytes.extend_from_slice(&(offsets.len() as u32).to_be_bytes());
+            for offset in offsets {
+                bytes.extend_from_slice(&1_u32.to_be_bytes());
+                bytes.extend_from_slice(&offset.to_be_bytes());
+            }
+            bytes
+        };
+        assert!(composition_clock(&table(&[100, 200, -200, -100]), 100, 4).is_some());
+        assert!(composition_clock(&table(&[100, 200, -200, -50]), 100, 4).is_none());
+        assert!(composition_clock(&table(&[100, 200, -200, 0]), 100, 4).is_none());
+        assert!(composition_clock(&table(&[100, 200, -200, -100]), 100, 5).is_none());
+    }
+    fn test_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut bytes = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+    fn frame_movie(scale: u32, deltas: &[u32]) -> Vec<u8> {
+        let mut hdlr = vec![0; 12];
+        hdlr[8..12].copy_from_slice(b"vide");
+        let mut clock = vec![0; 24];
+        clock[12..16].copy_from_slice(&scale.to_be_bytes());
+        let mut stts = vec![0; 4];
+        stts.extend_from_slice(&(deltas.len() as u32).to_be_bytes());
+        for delta in deltas {
+            stts.extend_from_slice(&10_u32.to_be_bytes());
+            stts.extend_from_slice(&delta.to_be_bytes());
+        }
+        let mut media = test_box(b"hdlr", &hdlr);
+        media.extend(test_box(b"mdhd", &clock));
+        media.extend(test_box(
+            b"minf",
+            &test_box(b"stbl", &test_box(b"stts", &stts)),
+        ));
+        let video = test_box(b"trak", &test_box(b"mdia", &media));
+        hdlr[8..12].copy_from_slice(b"soun");
+        let mut movie = test_box(b"trak", &test_box(b"mdia", &test_box(b"hdlr", &hdlr)));
+        movie.extend(video);
+        movie
+    }
+    #[test]
     fn continuous_timeline_reads_real_movie_clocks_without_media_or_foreign_authority() {
         tauri::async_runtime::block_on(async {
             let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -1021,11 +1253,12 @@ mod tests {
                     } else {
                         payload[16..20].copy_from_slice(&12345_u32.to_be_bytes());
                     }
-                    let mut tail = ((16 + payload.len()) as u32).to_be_bytes().to_vec();
-                    tail.extend_from_slice(b"moov");
-                    tail.extend_from_slice(&((8 + payload.len()) as u32).to_be_bytes());
-                    tail.extend_from_slice(b"mvhd");
-                    tail.extend(payload);
+                    let mut movie = test_box(b"mvhd", &payload);
+                    movie.extend(frame_movie(
+                        1000,
+                        if mode == 2 { &[100, 200] } else { &[100] },
+                    ));
+                    let tail = test_box(b"moov", &movie);
                     let moov = 512 * PART;
                     let total = if mode == 3 {
                         moov
@@ -1070,6 +1303,17 @@ mod tests {
                     bytes.load(Ordering::SeqCst) < 66000,
                     "skip the 512 MiB mdat with bounded headers"
                 );
+                bytes.store(0, Ordering::SeqCst);
+                let step = server.frame_step(&identity, &url).await.unwrap();
+                if mode_value < 2 {
+                    assert!((step.unwrap() - 0.1).abs() < 1e-9);
+                } else {
+                    assert_eq!(step, None);
+                }
+                assert!(
+                    bytes.load(Ordering::SeqCst) < 66000,
+                    "frame clock skips media payload too"
+                );
                 let before = bytes.load(Ordering::SeqCst);
                 let other = auth();
                 let (user, _) = other.managed_session().unwrap();
@@ -1077,6 +1321,7 @@ mod tests {
                     .set_managed_session(user, "different-token".into())
                     .unwrap();
                 assert!(server.metadata(&other, &url).await.is_err());
+                assert!(server.frame_step(&other, &url).await.is_err());
                 assert!(server
                     .metadata(&identity, &url.replace("127.0.0.1", "example.com"))
                     .await
@@ -1085,6 +1330,7 @@ mod tests {
                     .release(&identity, std::slice::from_ref(&url))
                     .unwrap();
                 assert!(server.metadata(&identity, &url).await.is_err());
+                assert!(server.frame_step(&identity, &url).await.is_err());
                 assert_eq!(
                     bytes.load(Ordering::SeqCst),
                     before,
