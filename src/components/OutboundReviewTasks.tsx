@@ -260,7 +260,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     const probes=grouped.parts.flat().filter(file=>!active.has(file.segment)&&(!measured[file.segment]||sourceFailures[file.segment]));
     const settled=(file:typeof files[number])=>{if(active.has(file.segment)&&--remaining===0)setOpening(false);};
     ticketLoader.replace([...files,...probes],async video=>{
-      const url=await fetchOutboundVideo(batch,recording,video.segment);
+      const url=await fetchOutboundVideo(batch,recording,video.segment,video.camera);
       if(generation!==requestGeneration.current){void releaseOutboundVideos([url]);throw new Error("OUTBOUND_CANCELLED");}
       mediaUrls.current.add(url);
       if(active.has(video.segment))return {url};
@@ -309,7 +309,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     const current=new Set(partVideos.map(video=>video.segment));
     const probes=grouped.parts.flat().filter(video=>!current.has(video.segment)&&(!measured[video.segment]||sourceFailures[video.segment]));
     ticketLoader.replace([...files,...probes],async video=>{
-      const url=await fetchOutboundVideo(batch,recording,video.segment);
+      const url=await fetchOutboundVideo(batch,recording,video.segment,video.camera);
       if(generation!==requestGeneration.current){void releaseOutboundVideos([url]);throw new Error("OUTBOUND_CANCELLED");}
       mediaUrls.current.add(url);
       if(current.has(video.segment))return {url};

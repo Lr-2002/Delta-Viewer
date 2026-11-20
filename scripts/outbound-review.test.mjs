@@ -149,6 +149,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.waitForFunction(() => [...document.querySelectorAll('video')].length === 7
       && [...document.querySelectorAll('video')].every(video => video.readyState >= 3));
     await page.waitForFunction(()=>!document.querySelector('.outbound-valid-button')?.disabled);
+    assert.deepEqual(await page.evaluate(()=>[...new Set(window.fixtureCalls.filter(call=>call.action==='video-url').map(call=>call.mediaLane))].sort()),[0,1,2,3,4,5,6],'each of the seven cameras selects its independent native origin');
     assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='list').length),initialLists,'workspace does not refetch every batch');
     const displayCalls=await page.evaluate(()=>window.fixtureCalls.length);
     const primary=page.locator('.outbound-video-item.is-primary');

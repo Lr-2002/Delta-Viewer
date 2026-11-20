@@ -251,7 +251,18 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
         paused.mediaTimes, "buffering must freeze the media clocks");
       assert.ok(await page.evaluate(() => [...document.querySelectorAll("video")].every((video,i) => i === 1 ? !video.paused : video.paused)),
         "healthy peers pause while the hungry decoder keeps its play intent to recover");
-      await page.evaluate(() => { const video=document.querySelectorAll('video')[1]; delete video.buffered; delete video.readyState; delete video.currentTime; video.dispatchEvent(new Event('canplay')); });
+      // WebView2 can suspend a paused loader after it has a future frame,
+      // below our compressed-byte reserve. Waiting for more bytes then holds
+      // every camera indefinitely because the browser has stopped requesting.
+      await page.evaluate(() => {
+        const video=document.querySelectorAll('video')[1];
+        Object.defineProperty(video,'readyState',{configurable:true,value:3});
+        Object.defineProperty(video,'networkState',{configurable:true,value:1});
+        Object.defineProperty(video,'buffered',{configurable:true,value:{length:1,start:()=>0,end:()=>video.currentTime+.1}});
+        video.dispatchEvent(new Event('canplay'));
+      });
+      await page.waitForFunction(() => [...document.querySelectorAll('video')].every(v => !v.paused && !v.seeking),null,{timeout:1500});
+      await page.evaluate(() => { const video=document.querySelectorAll('video')[1]; delete video.networkState; delete video.buffered; delete video.readyState; delete video.currentTime; video.dispatchEvent(new Event('canplay')); });
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => !v.paused && !v.seeking));
       const resumedAt = await page.evaluate(() => document.querySelector("video").currentTime);
       // Recovery may legitimately align a paused camera. Measure the speed

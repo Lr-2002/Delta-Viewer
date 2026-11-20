@@ -227,6 +227,12 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.13.3": "新增中英文文档中心与互动教程，支持搜索、续学和重新学习；补齐连续回放、审核修改、快捷键、高速浏览及安装包下载说明。",
+  "1.13.2": "修复软件内安装包下载入口：已准备好的 Windows 安装包可直接下载，无需等待三平台或 GitHub 正式发布。",
+  "1.13.1": "优化外发高码率主相机的分块读取，保留副路读取能力；继续支持七路原画质、连续播放及本地恢复等待修正。",
+  "1.13.0": "修复七路视频恢复后仍长时间共同等待的问题；恢复等待设为有界并识别浏览器暂停加载，保留外发主路读取优化、七路同步和原画质。",
+  "1.12.9": "优化外发4K主相机的分块读取与带宽分配；修复3×等待期间其他镜头无法恢复解码的问题，保留七路同步与原画质。",
+  "1.12.8": "修复七路视频共用读取连接导致排队等待的问题；本地与外发按相机独立读取，修正暂停后切换倍速的时间显示。",
   "1.12.7": "加快目录进入与未标注数据载入；修复本地／NAS播放重复等待和解码恢复，优化连续读取及切换响应。",
   "1.12.6": "修正暂停时切换高速浏览或倍速后进度显示回跳；包含独立异常／无效原因管理和常用项删除。",
   "1.12.5": "新增可选高速浏览与异常／无效独立原因管理，支持常用原因删除、排序；保留七路原画质与暂停逐帧。",
@@ -1055,6 +1061,7 @@ function App() {
         ensureOperationActive(owner);
         handleLoadResult(first, loadResult);
       }
+      if (autoLoad) window.dispatchEvent(new Event("d1-guide-source-selected"));
     } catch (reason) {
       const cancelled = toMessage(reason).includes("任务已取消");
       if (loadingEpisode) {
@@ -2611,6 +2618,7 @@ function App() {
                           ? { ...current, [data.summary.root]: saved.status ?? "pending" } : current);
                       }}
                       onUnsavedChange={handleReviewUnsaved} onComplete={(status, local) => {
+                        window.dispatchEvent(new Event("d1-guide-review-saved"));
                         const nextRoot = nextAvailableEpisodeRoot(data.summary.root);
                         setNotice(`${data.summary.name} ${local ? "审核结果已保存本机，待恢复后确认写回 NAS，任务进度暂不增加。" : `质检${status === "approved" ? "通过" : "不通过"}，review 已保存。`}${nextRoot ? "正在载入下一条。" : "已是最后一条。"}`);
                         if (!local) setReviewedEpisodes((current) => ({ ...current, [data.summary.root]: status }));

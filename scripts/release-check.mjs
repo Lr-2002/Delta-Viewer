@@ -736,6 +736,7 @@ async function main() {
     );
 
     await runCommand(report, "interface language state regression", commands.pnpm, pnpmArguments(["test:i18n"]));
+    await runCommand(report, "documentation center regression", commands.pnpm, pnpmArguments(["test:guides"]));
 
     // The remote worker runs only on Debian D1; these fixtures mock every install.
     if (process.platform === "linux") {

@@ -54,11 +54,22 @@ fn parse(version: &str, value: serde_json::Value) -> AppResult<Vec<Installer>> {
     let entries = value["installers"]
         .as_array()
         .ok_or_else(|| update_manifest_error("没有历史版本安装包清单"))?;
-    if entries.len() != PLATFORMS.len() {
-        return Err(update_manifest_error("历史版本三平台安装包不完整"));
+    // Explicit manual preview downloads can ship as soon as one platform is
+    // ready. Official releases retain their complete three-platform contract.
+    let preview = value["channel"] == "preview";
+    if (!value["channel"].is_null() && !preview && value["channel"] != "stable")
+        || entries.is_empty()
+        || entries.len() > PLATFORMS.len()
+        || (!preview && entries.len() != PLATFORMS.len())
+        || entries
+            .iter()
+            .any(|entry| !PLATFORMS.iter().any(|(key, _, _)| entry["key"] == *key))
+    {
+        return Err(update_manifest_error("安装包平台清单不完整或无效"));
     }
     PLATFORMS
         .iter()
+        .filter(|(key, _, _)| !preview || entries.iter().any(|entry| entry["key"] == *key))
         .map(|(key, label, _)| {
             let matched: Vec<_> = entries
                 .iter()
@@ -249,5 +260,48 @@ mod tests {
         let value = serde_json::json!({"schemaVersion":1,"version":"1.9.4","installers":entries});
         assert_eq!(parse("1.9.4", value.clone()).unwrap().len(), 3);
         assert!(parse("1.9.3", value).is_err());
+    }
+    #[test]
+    fn manual_preview_download_accepts_only_the_platforms_actually_built() {
+        let file = name("1.13.1", "windows-x64").unwrap();
+        let entry = serde_json::json!({"key":"windows-x64","fileName":file,
+            "url":url("1.13.1",&file).unwrap().as_str(),
+            "size":MIN_UPDATE_BYTES,"sha256":"a".repeat(64)});
+        let preview = serde_json::json!({"schemaVersion":1,"channel":"preview",
+            "version":"1.13.1","installers":[entry.clone()]});
+        let installers = parse("1.13.1", preview.clone()).unwrap();
+        assert_eq!(installers.len(), 1);
+        assert_eq!(installers[0].key, "windows-x64");
+        for change in ["stable", "candidate", "unknown"] {
+            let mut invalid = preview.clone();
+            invalid["channel"] = change.into();
+            assert!(parse("1.13.1", invalid).is_err());
+        }
+        let mut missing = preview.clone();
+        missing.as_object_mut().unwrap().remove("channel");
+        assert!(parse("1.13.1", missing).is_err());
+        for entries in [
+            serde_json::json!([]),
+            serde_json::json!([entry.clone(), entry.clone()]),
+        ] {
+            let mut invalid = preview.clone();
+            invalid["installers"] = entries;
+            assert!(parse("1.13.1", invalid).is_err());
+        }
+        for (key, bad) in [
+            ("key", serde_json::json!("linux-other")),
+            ("fileName", serde_json::json!("../setup.exe")),
+            (
+                "url",
+                serde_json::json!("https://example.invalid/setup.exe"),
+            ),
+            ("size", serde_json::json!(0)),
+            ("sha256", serde_json::json!("bad")),
+        ] {
+            let mut invalid = preview.clone();
+            invalid["installers"][0][key] = bad;
+            assert!(parse("1.13.1", invalid).is_err());
+        }
+        assert!(parse("1.13.2", preview).is_err());
     }
 }

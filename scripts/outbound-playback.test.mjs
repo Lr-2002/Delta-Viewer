@@ -120,3 +120,27 @@ test('optional browsing samples seven original sources together without queuing 
   t.mock.timers.tick(1000);assert.equal(finished,1);
  }finally{playback.dispose();}
 });
+
+
+test('ordinary 3x buffering recovers a paused peer that also loses decoded readiness',async t=>{
+ t.mock.timers.enable({apis:['setInterval','setTimeout']});
+ const states=[],players=Array.from({length:7},()=>Object.assign(new Decoder(),{ahead:60}));
+ const playback=new OutboundPlayback(s=>states.push(s),()=>assert.fail('play failed'));
+ try{
+  players.forEach((p,i)=>playback.attach(i,p));playback.setSpeed(3);playback.play();await flush();
+  const hungry=players[0],peer=players[2];hungry.readyState=2;hungry.dispatchEvent(new Event('waiting'));
+  assert.equal(states.at(-1).buffering,true);assert.equal(hungry.paused,false);
+  assert.equal(hungry.playbackRate,2,'recovery should not consume decoded runway at the stalled 3x rate');
+  assert.ok(players.slice(1).every(p=>p.paused));
+  peer.readyState=2;t.mock.timers.tick(160);await flush();
+  assert.equal(peer.paused,false,'a paused decoder needs play intent to regain future data at ordinary rates too');
+  hungry.readyState=4;hungry.dispatchEvent(new Event('canplay'));await flush();
+  assert.equal(states.at(-1).buffering,true);assert.equal(hungry.paused,true,'recovered cameras wait for the remaining peer');
+  peer.readyState=4;peer.dispatchEvent(new Event('canplay'));await flush();
+  assert.equal(states.at(-1).buffering,false);assert.ok(players.every(p=>!p.paused&&p.playbackRate===3));
+  assert.ok(players.every(p=>p.currentTime===10),'recovery does not seek or skip source frames');
+  hungry.readyState=2;hungry.dispatchEvent(new Event('waiting'));playback.pause();
+  hungry.readyState=4;hungry.dispatchEvent(new Event('canplay'));t.mock.timers.tick(160);await flush();
+  assert.ok(players.every(p=>p.paused&&p.playbackRate===3),'late recovery cannot undo user pause');
+ }finally{playback.dispose();}
+});

@@ -8,12 +8,13 @@ pub async fn call(
     data: &Path,
     auth: &AuthState,
     media: Option<&OutboundMediaServer>,
-    input: Value,
+    mut input: Value,
 ) -> AppResult<Value> {
     let action = input["action"]
         .as_str()
-        .ok_or_else(|| AppError::Message("OUTBOUND_REQUEST_INVALID".into()))?;
-    if matches!(action, "media-metadata" | "media-frame-step") {
+        .ok_or_else(|| AppError::Message("OUTBOUND_REQUEST_INVALID".into()))?
+        .to_owned();
+    if matches!(action.as_str(), "media-metadata" | "media-frame-step") {
         if input.as_object().is_none_or(|object| object.len() != 2) {
             return Err(AppError::Message("OUTBOUND_REQUEST_INVALID".into()));
         }
@@ -52,12 +53,29 @@ pub async fn call(
         return Ok(serde_json::json!({"released":true}));
     }
     if !matches!(
-        action,
+        action.as_str(),
         "list" | "claim" | "release" | "decide" | "video-url" | "save-reason-option"
     ) {
         return Err(AppError::Message("OUTBOUND_REQUEST_INVALID".into()));
     }
     let video = action == "video-url";
+    // A local scheduling hint only: never forward it to the delivery service
+    // or use it to choose an upstream object or bypass its authorization.
+    let lane = if video {
+        match input
+            .as_object_mut()
+            .and_then(|object| object.remove("mediaLane"))
+        {
+            None => 0,
+            Some(value) => value
+                .as_u64()
+                .filter(|lane| *lane < crate::media_origins::CAMERA_COUNT as u64)
+                .ok_or_else(|| AppError::Message("OUTBOUND_REQUEST_INVALID".into()))?
+                as usize,
+        }
+    } else {
+        0
+    };
     let session = auth.managed_session()?;
     let result = crate::user_center::outbound_review_request(data, auth, input).await?;
     if !video {
@@ -68,5 +86,5 @@ pub async fn call(
     let url = result["url"]
         .as_str()
         .ok_or_else(|| AppError::Message("OUTBOUND_VIDEO_URL_INVALID".into()))?;
-    Ok(serde_json::json!({"url": media.register(auth, session, url)?}))
+    Ok(serde_json::json!({"url": media.register(auth, session, url, lane)?}))
 }

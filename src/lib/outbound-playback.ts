@@ -148,7 +148,7 @@ export class OutboundPlayback {
       // A decoder with data can recover at a modest rate while its peers wait.
       // The requested rate is restored before the group resumes; this is not
       // a hidden change to the user's playback speed or source quality.
-      else if (this.speed > 3) player.playbackRate = Math.min(this.speed, 2);
+      else player.playbackRate = Math.min(this.speed, 2);
     }
     this.publish();
   }
@@ -220,6 +220,7 @@ export class OutboundPlayback {
       this.pause();
       this.browsePosition = this.master()?.currentTime ?? 0;
       if (resume) this.play();
+      else this.publish();
       return;
     }
     if (speed <= 3) this.recoveryUntil = 0;
@@ -284,7 +285,7 @@ export class OutboundPlayback {
               this.pause(); this.failed();
             }
           }).finally(() => { if (this.starting === generation) this.starting = null; });
-        } else if (this.speed > 3) {
+        } else {
           // Once a hungry decoder has a frame again, stop it alongside its
           // peers while the reserve refills. Continuing at 2x here consumes
           // the new bytes and lets its clock run ahead during the group hold.

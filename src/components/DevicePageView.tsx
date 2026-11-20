@@ -4,11 +4,58 @@ import {useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode} f
 import {ArrowLeft, RefreshCw, LoaderCircle, CheckCircle2, AlertCircle} from "lucide-react";
 import type {DevicePage, DevicePageApiRequest, DevicePageApiResponse} from "../lib/d1";
 
+
+const deviceGuideControls: Record<string, string> = {
+  "wifi-name": "form[data-d1-form=configure] [name=ssid]",
+  "wifi-password": "form[data-d1-form=configure] [name=password]",
+  "wifi-submit": "form[data-d1-form=configure] button[type=submit],form[data-d1-form=configure] button:not([type])",
+  "display-name": "#deviceName",
+  "save-name": "#saveDeviceName",
+  "new-name": "#newName",
+  "add-name": "#addName",
+  "device-task": "#deviceTask",
+  "save-task": "#saveDeviceTask",
+  "new-task": "#newTask",
+  "add-task": "#addTask",
+  "camera-field": "#cameraRows input,#cameraConfigRows input,#cameraConfig input",
+  "camera-save": "#saveCameraConfig",
+  "runtime-link": "a[data-d1-route='/config']",
+  "runtime-category": "#category",
+  "runtime-field": "#fields select,#fields input",
+  "runtime-save": "#save",
+};
+
 function bridgeScript(token:string):string {
   const script = `(function(){
 const token=__TOKEN__,pending=new Map();let serial=0,ready=false,openOta=false,otaRetry;
 const hello=()=>window.parent.postMessage({type:"d1-page-ready",token},"*");
 const handshake=setInterval(hello,100);hello();
+
+const guideSelectors=__GUIDE_SELECTORS__;
+let guideKey="",guideTarget=null,guideStatus="";
+const guideStyle=document.createElement("style");
+guideStyle.textContent="[data-d1-guide-focus]{outline:3px solid #0eb9a6!important;outline-offset:4px!important;box-shadow:0 0 0 4px #e2fffa,0 0 0 150vmax #10182799!important;position:relative!important;z-index:99!important}";
+document.head.append(guideStyle);
+function notifyGuide(action){window.parent.postMessage({type:"d1-page-guide-action",token,selector:guideKey,action},"*")}
+function updateGuide(){
+  const selector=Object.hasOwn(guideSelectors,guideKey)?guideSelectors[guideKey]:null;
+  const target=selector?[...document.querySelectorAll(selector)].find(el=>el.getClientRects().length&&!el.matches(":disabled,[aria-disabled=true]")):null;
+  if(guideTarget!==target){guideTarget?.removeAttribute("data-d1-guide-focus");guideTarget=target;guideTarget?.setAttribute("data-d1-guide-focus","");guideTarget?.scrollIntoView({block:"nearest"})}
+  const status=target?"located":"missing";if(guideKey&&status!==guideStatus){guideStatus=status;notifyGuide(status)}
+}
+let guideTimer;
+window.addEventListener("message",event=>{
+  const data=event.data;if(event.source!==window.parent||data?.token!==token||data.type!=="d1-page-guide-target")return;
+  guideKey=typeof data.selector==="string"?data.selector:"";guideStatus="";clearInterval(guideTimer);
+  updateGuide();if(guideKey)guideTimer=setInterval(updateGuide,160);
+});
+for(const action of ["click","change"])document.addEventListener(action,event=>{
+  if(event.isTrusted&&guideKey&&guideTarget?.contains(event.target))notifyGuide(action);
+},true);
+document.addEventListener("keydown",event=>{
+  if(event.isTrusted&&guideKey&&event.key==="Escape"){event.preventDefault();notifyGuide("exit")}
+},true);
+
 function sendOpenOta(){if(!openOta||!ready)return;window.parent.postMessage({type:"d1-page-open-ota",token},"*");if(!otaRetry)otaRetry=setInterval(()=>{if(openOta&&ready)window.parent.postMessage({type:"d1-page-open-ota",token},"*")},100)}
 function route(value){const url=new URL(value,"http://d1.invalid/");if(url.origin!=="http://d1.invalid"||url.search||!["/","/status","/config","/configure","/api/v1/runtime-config","/api/v1/camera-config","/api/v1/device-name","/api/v1/device-task"].includes(url.pathname))throw new Error("此设备功能暂不可用");return url.pathname}
 function request(path,method,headers,body,navigate=false){const id=String(++serial);return new Promise(resolve=>{const timer=setTimeout(()=>{pending.delete(id);resolve({status:504,contentType:"application/json",body:JSON.stringify({message:method==="GET"?"设备响应超时，请重试":"尚未确认是否保存成功，请先重新读取配置核对，勿重复提交"})})},method==="GET"?15000:75000);const message={type:"d1-page-request",token,id,path,method,headers,body,navigate};pending.set(id,{resolve,timer,message});if(ready)window.parent.postMessage(message,"*")})}
@@ -17,7 +64,7 @@ window.fetch=async(input,init={})=>{try{const requestObject=input instanceof Req
 document.addEventListener("click",event=>{const link=event.target instanceof Element?event.target.closest("a"):null;if(!link)return;event.preventDefault();try{const raw=link.getAttribute("data-d1-route")||link.getAttribute("href");if(!raw||raw==="#")return;void request(route(raw),"GET",{},undefined,true)}catch{}});
 document.addEventListener("click",event=>{if(event.target instanceof Element&&event.target.closest("#ota-relay,#labMaint")){event.preventDefault();event.stopImmediatePropagation();openOta=true;sendOpenOta();}},true);
 document.addEventListener("submit",event=>{event.preventDefault();const form=event.target;if(!(form instanceof HTMLFormElement)||form.getAttribute("data-d1-form")!=="configure")return;const fields=new FormData(form),body=JSON.stringify({ssid:fields.get("ssid"),password:fields.get("password")});const password=form.querySelector('input[name="password"]');if(password)password.value="";void request("/configure","POST",{"content-type":"application/json"},body,true)});
-})()`.replace("__TOKEN__",JSON.stringify(token));
+})()`.replace("__TOKEN__",JSON.stringify(token)).replace("__GUIDE_SELECTORS__",JSON.stringify(deviceGuideControls));
   return script;
 }
 
@@ -107,13 +154,16 @@ export function DevicePageView({page,busy,showConnectionMode,connectionModeLabel
   const token=useMemo(()=>crypto.randomUUID(),[page,navigation]);
   const requestHandler=useRef(onRequest);requestHandler.current=onRequest;
   const html=useMemo(()=>interactiveDeviceHtml(navigation?.html??page.html,navigation?{...page,status:null}:page,token),[page,token,navigation]);
+  const guideSelector=useRef("");
+  const sendGuide=()=>frame.current?.contentWindow?.postMessage({type:"d1-page-guide-target",token,selector:guideSelector.current},"*");
   const sendLanguage=()=>frame.current?.contentWindow?.postMessage({type:"d1-page-language",token,language:getLanguage(),messages:presentationMessages()},"*");
   useLayoutEffect(()=>{sendLanguage();},[language,token]);
   useLayoutEffect(()=>{
     const onMessage=(event:MessageEvent)=>{
       if(event.source!==frame.current?.contentWindow)return;
       const message=event.data;
-      if(message?.type==="d1-page-ready"&&message.token===token){frame.current?.contentWindow?.postMessage({type:"d1-page-host-ready",token},"*");sendLanguage();return;}
+      if(message?.type==="d1-page-ready"&&message.token===token){frame.current?.contentWindow?.postMessage({type:"d1-page-host-ready",token},"*");sendLanguage();sendGuide();return;}
+      if(message?.type==="d1-page-guide-action"&&message.token===token&&message.selector===guideSelector.current&&Object.hasOwn(deviceGuideControls,message.selector)&&["located","missing","click","change","exit"].includes(message.action)){window.dispatchEvent(new CustomEvent("d1-guide-frame-action",{detail:{selector:message.selector,action:message.action}}));return;}
       if(message?.type==="d1-page-open-ota"&&message.token===token){frame.current?.contentWindow?.postMessage({type:"d1-page-open-ota-ack",token},"*");setActivePanel("upgrade");requestAnimationFrame(()=>otaContainer.current?.querySelector("button")?.focus({preventScroll:true}));return;}
       if(message?.type!=="d1-page-request"||message.token!==token||typeof message.id!=="string"||typeof message.path!=="string"||!(["GET","PUT","POST"] as string[]).includes(message.method))return;
       const request:DevicePageApiRequest={path:message.path,method:message.method,body:typeof message.body==="string"?message.body:undefined,ifMatch:typeof message.headers?.["if-match"]==="string"?message.headers["if-match"]:undefined};
@@ -127,7 +177,9 @@ export function DevicePageView({page,busy,showConnectionMode,connectionModeLabel
         frame.current?.contentWindow?.postMessage(response,"*");
       }).catch(()=>frame.current?.contentWindow?.postMessage({type:"d1-page-response",token,id:message.id,status:502,contentType:"application/json",body:JSON.stringify({message:"无法读取设备页面"})},"*"));
     };
-    window.addEventListener("message",onMessage);return()=>window.removeEventListener("message",onMessage);
+    const onGuide=(event:Event)=>{const value=(event as CustomEvent<unknown>).detail;guideSelector.current=typeof value==="string"&&Object.hasOwn(deviceGuideControls,value)?value:"";sendGuide();};
+    window.addEventListener("message",onMessage);window.addEventListener("d1-guide-frame-target",onGuide);
+    return()=>{window.removeEventListener("message",onMessage);window.removeEventListener("d1-guide-frame-target",onGuide);};
   },[page.address,token]);
   useEffect(()=>{
     if(!provisioning||provisioning.state!=="waiting")return;

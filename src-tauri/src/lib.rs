@@ -26,6 +26,7 @@ mod importer;
 mod machine_annotation;
 mod machine_review;
 mod media_diagnostics;
+mod media_origins;
 mod media_stream_server;
 mod model;
 mod mp4_clock;
@@ -3043,7 +3044,7 @@ async fn get_video_source(
                 // Asset-protocol registration duplicates filesystem work and is
                 // only needed when the loopback service is unavailable.
                 *path = server
-                    .register(&file_path)
+                    .register(&file_path, &stream)
                     .map_err(|error| error.to_string())?;
             } else {
                 scope

@@ -8,7 +8,7 @@ use futures_util::{stream, StreamExt};
 use reqwest::{Client, Response, Url};
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -22,19 +22,44 @@ use tokio::{
 };
 const PREFIX: &str = "/outbound-media/";
 const PART: u64 = 1024 * 1024;
-// One browser range spans several decode buffers, keeping the four-request
-// pipeline filled across the old 4 MiB boundary. At most four 1 MiB bodies are
-// resident; response length does not increase parallelism or retain media.
+// One browser range spans several decode buffers. Per-route read plans keep
+// at most 4 MiB resident, independent of response length; no media is retained
+// after the response. The seven local origins share their original 16 slots.
 const WINDOW: u64 = 16 * PART;
 const LIFETIME: Duration = Duration::from_secs(3600);
 type Session = (UserIdentity, String);
 #[derive(Clone)]
 pub struct OutboundMediaServer {
-    address: SocketAddr,
+    addresses: Arc<Vec<SocketAddr>>,
     routes: Arc<Mutex<HashMap<String, Arc<Route>>>>,
     client: Client,
 }
+#[derive(Clone, Copy)]
+struct ReadPlan {
+    bytes: u64,
+    parallel: usize,
+}
+impl ReadPlan {
+    fn for_lane(lane: usize) -> Self {
+        if lane == 0 {
+            // Smaller blocks keep the high-bitrate primary pipeline moving
+            // across uneven request latency, within the same 4 MiB budget.
+            Self {
+                bytes: PART / 4,
+                parallel: 16,
+            }
+        } else {
+            // Low-bitrate peers need fewer upstream requests and leave more
+            // bandwidth for cam0. All seven continue reading concurrently.
+            Self {
+                bytes: PART,
+                parallel: 2,
+            }
+        }
+    }
+}
 struct Route {
+    plan: ReadPlan,
     url: Url,
     auth: AuthState,
     session: Session,
@@ -119,34 +144,53 @@ impl OutboundMediaServer {
         Self::with_client(client)
     }
     fn with_client(client: Client) -> AppResult<Self> {
-        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        listener.set_nonblocking(true)?;
+        let listeners = crate::media_origins::bind()?;
+        let addresses = Arc::new(
+            listeners
+                .iter()
+                .map(|listener| listener.local_addr())
+                .collect::<std::io::Result<Vec<_>>>()?,
+        );
+        for listener in &listeners {
+            listener.set_nonblocking(true)?;
+        }
         let server = Self {
-            address: listener.local_addr()?,
+            addresses,
             routes: Arc::default(),
             client,
         };
-        let state = server.clone();
-        tauri::async_runtime::spawn(async move {
-            let Ok(listener) = TcpListener::from_std(listener) else {
-                return;
-            };
-            let slots = Arc::new(Semaphore::new(16));
-            while let Ok((mut socket, _)) = listener.accept().await {
-                let state = state.clone();
-                let permit = slots.clone().try_acquire_owned();
-                tauri::async_runtime::spawn(async move {
-                    let Ok(_permit) = permit else {
-                        let _ = socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").await;
-                        return;
-                    };
-                    let _ = state.serve(socket).await;
-                });
-            }
-        });
+        // The limit belongs to the whole transport, not to each camera origin.
+        let slots = Arc::new(Semaphore::new(16));
+        for listener in listeners {
+            let state = server.clone();
+            let slots = slots.clone();
+            tauri::async_runtime::spawn(async move {
+                let Ok(listener) = TcpListener::from_std(listener) else {
+                    return;
+                };
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    let state = state.clone();
+                    let permit = slots.clone().try_acquire_owned();
+                    tauri::async_runtime::spawn(async move {
+                        let Ok(_permit) = permit else {
+                            let _ = socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").await;
+                            return;
+                        };
+                        let _ = state.serve(socket).await;
+                    });
+                }
+            });
+        }
         Ok(server)
     }
-    pub fn register(&self, auth: &AuthState, session: Session, url: &str) -> AppResult<String> {
+    pub fn register(
+        &self,
+        auth: &AuthState,
+        session: Session,
+        url: &str,
+        lane: usize,
+    ) -> AppResult<String> {
+        let address = self.addresses.get(lane).ok_or_else(invalid)?;
         let url = allowed_url(url)?;
         if auth.managed_session()? != session {
             return Err(AppError::Message("OUTBOUND_ACCOUNT_CHANGED".into()));
@@ -168,6 +212,7 @@ impl OutboundMediaServer {
         routes.insert(
             token.clone(),
             Arc::new(Route {
+                plan: ReadPlan::for_lane(lane),
                 url,
                 auth: auth.clone(),
                 session,
@@ -178,14 +223,17 @@ impl OutboundMediaServer {
                 failure: Mutex::new(None),
             }),
         );
-        Ok(format!("http://{}{PREFIX}{token}", self.address))
+        Ok(format!("http://{address}{PREFIX}{token}"))
     }
     fn local_token(&self, value: &str) -> AppResult<String> {
         let url = Url::parse(value).map_err(|_| invalid())?;
         let token = url.path().strip_prefix(PREFIX).ok_or_else(invalid)?;
         if url.scheme() != "http"
             || url.host_str() != Some("127.0.0.1")
-            || url.port() != Some(self.address.port())
+            || !self
+                .addresses
+                .iter()
+                .any(|address| url.port() == Some(address.port()))
             || !url.username().is_empty()
             || url.password().is_some()
             || url.query().is_some()
@@ -397,27 +445,17 @@ impl OutboundMediaServer {
         if urls.len() > 32 {
             return Err(invalid());
         }
+        let tokens = urls
+            .iter()
+            .map(|url| self.local_token(url))
+            .collect::<AppResult<Vec<_>>>()?;
         let mut routes = self.routes.lock().map_err(|_| invalid())?;
-        for value in urls {
-            let url = Url::parse(value).map_err(|_| invalid())?;
-            let token = url.path().strip_prefix(PREFIX).ok_or_else(invalid)?;
-            if url.scheme() != "http"
-                || url.host_str() != Some("127.0.0.1")
-                || url.port() != Some(self.address.port())
-                || !url.username().is_empty()
-                || url.password().is_some()
-                || url.query().is_some()
-                || url.fragment().is_some()
-                || token.len() != 64
-                || !token.bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                return Err(invalid());
-            }
+        for token in tokens {
             if routes
-                .get(token)
+                .get(&token)
                 .is_some_and(|route| route.session == session)
             {
-                if let Some(route) = routes.remove(token) {
+                if let Some(route) = routes.remove(&token) {
                     route.released.store(true, Ordering::Relaxed);
                 }
             }
@@ -492,18 +530,20 @@ impl OutboundMediaServer {
                             .map_err(|_| ());
                     }
                     let end = start.saturating_add(WINDOW - 1).min(total - 1);
-                    // Poll all four blocks together, including the first. A
-                    // first-block barrier halves throughput on high-rate cam0.
-                    let chunks = (start..=end).step_by(PART as usize).map(|offset| {
-                        self.spawn_part(
-                            route,
-                            offset,
-                            offset.saturating_add(PART - 1).min(end),
-                            total,
-                            etag.clone(),
-                        )
-                    });
-                    let mut chunks = stream::iter(chunks).buffered(4);
+                    // Dispatch the full bounded pipeline, including the first.
+                    // A separate first-block barrier wastes high-rate capacity.
+                    let chunks = (start..=end)
+                        .step_by(route.plan.bytes as usize)
+                        .map(|offset| {
+                            self.spawn_part(
+                                route,
+                                offset,
+                                offset.saturating_add(route.plan.bytes - 1).min(end),
+                                total,
+                                etag.clone(),
+                            )
+                        });
+                    let mut chunks = stream::iter(chunks).buffered(route.plan.parallel);
                     let first = chunks.next().await.ok_or(())??;
                     headers(writer, 206, end - start + 1, Some((start, end, total))).await?;
                     writer.write_all(&first.body).await.map_err(|_| ())?;
@@ -518,7 +558,12 @@ impl OutboundMediaServer {
                     return writer.shutdown().await.map_err(|_| ());
                 }
                 let first = self
-                    .part(route, start, start.saturating_add(PART - 1), None)
+                    .part(
+                        route,
+                        start,
+                        start.saturating_add(route.plan.bytes - 1),
+                        None,
+                    )
                     .await?;
                 let total = first.total;
                 let end = start.saturating_add(WINDOW - 1).min(total - 1);
@@ -535,16 +580,18 @@ impl OutboundMediaServer {
                 writer.write_all(&first.body).await.map_err(|_| ())?;
                 let next = first.end + 1;
                 drop(first);
-                let rest = (next..=end).step_by(PART as usize).map(|offset| {
-                    self.spawn_part(
-                        route,
-                        offset,
-                        offset.saturating_add(PART - 1).min(end),
-                        total,
-                        etag.clone(),
-                    )
-                });
-                let mut parts = stream::iter(rest).buffered(3);
+                let rest = (next..=end)
+                    .step_by(route.plan.bytes as usize)
+                    .map(|offset| {
+                        self.spawn_part(
+                            route,
+                            offset,
+                            offset.saturating_add(route.plan.bytes - 1).min(end),
+                            total,
+                            etag.clone(),
+                        )
+                    });
+                let mut parts = stream::iter(rest).buffered(route.plan.parallel);
                 while let Some(part) = parts.next().await {
                     let part = part?;
                     if !route.valid() {
@@ -1013,7 +1060,13 @@ async fn headers(
 mod tests {
     use super::*;
     use crate::model::WorkspaceMode;
+    use std::net::Ipv4Addr;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn test_runtime<F: std::future::Future>(future: F) -> F::Output {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        tauri::async_runtime::block_on(future)
+    }
 
     fn auth() -> AuthState {
         let auth = AuthState::default();
@@ -1032,6 +1085,11 @@ mod tests {
         server.routes.lock().unwrap().insert(
             token.clone(),
             Arc::new(Route {
+                // Preserve the existing four-block transport regression.
+                plan: ReadPlan {
+                    bytes: PART,
+                    parallel: 4,
+                },
                 url: Url::parse(&format!("http://{origin}/video")).unwrap(),
                 auth: auth.clone(),
                 session: auth.managed_session().unwrap(),
@@ -1042,7 +1100,7 @@ mod tests {
                 failure: Mutex::new(None),
             }),
         );
-        format!("http://{}{PREFIX}{token}", server.address)
+        format!("http://{}{PREFIX}{token}", server.addresses[0])
     }
     #[test]
     fn only_fixed_private_video_tickets_can_be_registered() {
@@ -1063,9 +1121,63 @@ mod tests {
             assert!(allowed_url(&bad).is_err());
         }
     }
+
+    #[test]
+    fn seven_outbound_origins_keep_session_and_route_validation() {
+        test_runtime(async {
+            let server = OutboundMediaServer::with_client(Client::new()).unwrap();
+            let auth = auth();
+            let upstream = format!(
+                "https://114.111.19.219/api/platform/manager-outbound/media/{}",
+                "a".repeat(64)
+            );
+            let tickets: Vec<_> = (0..7)
+                .map(|lane| {
+                    server
+                        .register(&auth, auth.managed_session().unwrap(), &upstream, lane)
+                        .unwrap()
+                })
+                .collect();
+            let ports: std::collections::HashSet<_> = tickets
+                .iter()
+                .map(|ticket| Url::parse(ticket).unwrap().port().unwrap())
+                .collect();
+            assert_eq!(ports.len(), 7);
+            let client = Client::new();
+            for ticket in &tickets {
+                assert_eq!(server.status(&auth, ticket).unwrap(), None);
+                assert_eq!(
+                    client
+                        .request(reqwest::Method::OPTIONS, ticket)
+                        .send()
+                        .await
+                        .unwrap()
+                        .status(),
+                    204
+                );
+            }
+            assert!(server
+                .register(&auth, auth.managed_session().unwrap(), &upstream, 7)
+                .is_err());
+            let other_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let mut other = Url::parse(&tickets[0]).unwrap();
+            other
+                .set_port(Some(other_listener.local_addr().unwrap().port()))
+                .unwrap();
+            assert!(
+                server.status(&auth, other.as_str()).is_err(),
+                "an unrelated loopback server is not a transport origin"
+            );
+            server.release(&auth, &tickets).unwrap();
+            for ticket in &tickets {
+                assert!(server.status(&auth, ticket).is_err());
+                assert_eq!(client.get(ticket).send().await.unwrap().status(), 404);
+            }
+        });
+    }
     #[test]
     fn retiring_tickets_revokes_live_routes_without_touching_other_sessions() {
-        tauri::async_runtime::block_on(async {
+        test_runtime(async {
             let server = OutboundMediaServer::with_client(Client::new()).unwrap();
             let auth = auth();
             let ticket = server
@@ -1076,6 +1188,7 @@ mod tests {
                         "https://114.111.19.219/api/platform/manager-outbound/media/{}",
                         "a".repeat(64)
                     ),
+                    0,
                 )
                 .unwrap();
             let token = Url::parse(&ticket)
@@ -1122,7 +1235,7 @@ mod tests {
     }
     #[test]
     fn paused_browser_body_does_not_expire_healthy_upstream_reads() {
-        tauri::async_runtime::block_on(async {
+        test_runtime(async {
             let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let origin = fixture.local_addr().unwrap();
             let mut data = vec![0x5a; (WINDOW + 123) as usize];
@@ -1232,7 +1345,7 @@ mod tests {
     }
     #[test]
     fn continuous_timeline_reads_real_movie_clocks_without_media_or_foreign_authority() {
-        tauri::async_runtime::block_on(async {
+        test_runtime(async {
             let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let origin = fixture.local_addr().unwrap();
             let mode = Arc::new(AtomicUsize::new(0));
@@ -1342,7 +1455,7 @@ mod tests {
     }
     #[test]
     fn missing_mp4_index_is_detected_without_downloading_the_video() {
-        tauri::async_runtime::block_on(async {
+        test_runtime(async {
             let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let origin = fixture.local_addr().unwrap();
             let mode = Arc::new(AtomicUsize::new(0));
@@ -1451,9 +1564,81 @@ mod tests {
         });
     }
     #[test]
+    fn camera_read_plans_dispatch_their_pipeline_before_the_first_body() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        test_runtime(async {
+            for (lane, expected_parallel, expected_bytes) in
+                [(0, 16, PART / 4), (1, 2, PART), (6, 2, PART)]
+            {
+                let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+                let origin = listener.local_addr().unwrap();
+                let starts = Arc::new(AtomicUsize::new(0));
+                let began = starts.clone();
+                let upstream = tokio::spawn(async move {
+                    while let Ok((mut socket, _)) = listener.accept().await {
+                        let began = began.clone();
+                        tokio::spawn(async move {
+                            let request = read_request(&mut socket).await.unwrap();
+                            let (start, end) =
+                                requested_range(request.range.as_deref().unwrap(), WINDOW).unwrap();
+                            assert_eq!(
+                                end - start + 1,
+                                expected_bytes,
+                                "request size follows the camera plan"
+                            );
+                            began.fetch_add(1, Ordering::SeqCst);
+                            // Deliberately withhold every first-wave body. A
+                            // serialized first request or underfilled pipeline
+                            // cannot pass this barrier before the client deadline.
+                            while began.load(Ordering::SeqCst) < expected_parallel {
+                                tokio::time::sleep(Duration::from_millis(2)).await;
+                            }
+                            let header = format!("HTTP/1.1 206 OK\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{WINDOW}\r\nETag: \"fixture\"\r\nConnection: close\r\n\r\n", end-start+1);
+                            socket.write_all(header.as_bytes()).await.unwrap();
+                            socket
+                                .write_all(&vec![0x5a; expected_bytes as usize])
+                                .await
+                                .unwrap();
+                        });
+                    }
+                });
+                let client = Client::builder()
+                    .http1_only()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(3))
+                    .build()
+                    .unwrap();
+                let server = OutboundMediaServer::with_client(client.clone()).unwrap();
+                let auth = auth();
+                let url = fixture_route(&server, &auth, origin);
+                {
+                    let mut routes = server.routes.lock().unwrap();
+                    let route = Arc::get_mut(routes.values_mut().next().unwrap()).unwrap();
+                    route.plan = ReadPlan::for_lane(lane);
+                    *route.inspected.get_mut() = Some(true);
+                    *route.verified.get_mut().unwrap() = Some((WINDOW, Some("\"fixture\"".into())));
+                }
+                let response = client
+                    .get(url)
+                    .header("Range", "bytes=0-")
+                    .send()
+                    .await
+                    .unwrap();
+                let body = response.bytes().await.unwrap();
+                assert_eq!(body.len(), WINDOW as usize);
+                assert!(body.iter().all(|b| *b == 0x5a));
+                assert_eq!(
+                    starts.load(Ordering::SeqCst),
+                    (WINDOW / expected_bytes) as usize
+                );
+                upstream.abort();
+            }
+        });
+    }
+    #[test]
     fn seven_cameras_ranges_integrity_logout_and_disconnect() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        tauri::async_runtime::block_on(async {
+        test_runtime(async {
             let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let origin = fixture.local_addr().unwrap();
             let mode = Arc::new(AtomicUsize::new(0));
@@ -1608,7 +1793,7 @@ mod tests {
                 }
             }
             mode.store(4, Ordering::SeqCst);
-            let mut raw = TcpStream::connect(server.address).await.unwrap();
+            let mut raw = TcpStream::connect(server.addresses[0]).await.unwrap();
             let path = Url::parse(&url).unwrap().path().to_owned();
             raw.write_all(
                 format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nRange: bytes=0-\r\n\r\n")

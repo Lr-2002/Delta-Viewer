@@ -94,8 +94,9 @@ export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" 
   return {...result,batch:{...result.batch,recordings:result.batch.recordings.map(recording=>
     ({...recording,videos:recording.videos??videos.get(recording.id)??[]}))}};
 }
-export async function fetchOutboundVideo(batch: OutboundBatch, recording: OutboundRecording, segment: number) {
-  const result = await outboundCall<{ url: string }>({ action: "video-url", datasetId: batch.id, recordingId: recording.id, segment });
+export async function fetchOutboundVideo(batch: OutboundBatch, recording: OutboundRecording, segment: number, camera: string) {
+  const mediaLane = Math.max(0, (OUTBOUND_CAMERAS as readonly string[]).indexOf(camera));
+  const result = await outboundCall<{ url: string }>({ action: "video-url", datasetId: batch.id, recordingId: recording.id, segment, mediaLane });
   const url = new URL(result.url);
   const native = url.protocol === "http:" && url.hostname === "127.0.0.1" && Boolean(url.port)
     && /^\/outbound-media\/[a-f0-9]{64}$/.test(url.pathname);

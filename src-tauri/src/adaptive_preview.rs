@@ -380,17 +380,22 @@ pub fn register_preview(
                 if relative.extension().and_then(|value| value.to_str()) != Some("ts") {
                     return Err(invalid("预览分片格式无效"));
                 }
-                let url = server.register_preview_fragment(&directory, &relative, part.size)?;
+                let url = server.register_preview_fragment(
+                    &directory,
+                    &relative,
+                    part.size,
+                    stream_name,
+                )?;
                 body.push_str(&format!("#EXTINF:{:.6},\n{url}\n", part.duration));
             }
             body.push_str("#EXT-X-ENDLIST\n");
-            let url = server.register_playlist(body)?;
+            let url = server.register_playlist(body, stream_name)?;
             master.push_str(&format!(
                 "#EXT-X-STREAM-INF:BANDWIDTH={},RESOLUTION={}x{},FRAME-RATE={:.6}\n{url}\n",
                 variant.bandwidth, variant.width, variant.height, stream.media_fps
             ));
         }
-        playlists.push(server.register_playlist(master)?);
+        playlists.push(server.register_playlist(master, stream_name)?);
     }
     Ok(Some(playlists))
 }

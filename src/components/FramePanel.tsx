@@ -275,6 +275,8 @@ export const FramePanel = memo(function FramePanel({
     if (hls) hls.nextLevel = quality === "auto" ? -1 : hls.levels.findIndex((level) => level.height === Number(quality));
   }, [quality]);
 
+  const nominalRateRef = useRef(speed * mediaClockRatio);
+  nominalRateRef.current = speed * mediaClockRatio;
   useEffect(() => {
     const video = videoRef.current;
     if (!nativeVideoActive || !video) return;
@@ -286,11 +288,14 @@ export const FramePanel = memo(function FramePanel({
     if (!nativeVideoActive || !video) return;
     if (!nativePlaybackEnabled) {
       video.pause();
+      video.playbackRate = nominalRateRef.current;
       setVideoStatus("ready");
       onBufferingChange?.(stream.name, false);
       return;
     }
     let active = true;
+    let runwayDeadline = 0;
+    let recovering = false;
     const pauseForBuffering = () => {
       // Presentation callbacks can lag behind a running decoder. Freeze the
       // shared clock at the primary's actual position before pausing it.
@@ -300,6 +305,9 @@ export const FramePanel = memo(function FramePanel({
     const resume = () => {
       if (!active || video.seeking || video.ended) return;
       if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+        runwayDeadline = performance.now() + 250;
+        recovering = true;
+        video.playbackRate = Math.min(nominalRateRef.current, 2);
         onBufferingChange?.(stream.name, true);
         setVideoStatus("buffering");
         // A hungry decoder must retain its play intent. Pausing it together
@@ -321,16 +329,24 @@ export const FramePanel = memo(function FramePanel({
       // on every poll pauses healthy NAS streams before they run out of data.
       // A real waiting event below still freezes all cameras together.
       if (!video.paused && !playbackHeldRef.current) {
+        runwayDeadline = 0;
+        if (recovering) { video.playbackRate = nominalRateRef.current; recovering = false; }
         onBufferingChange?.(stream.name, false);
         setVideoStatus("playing");
         return;
       }
       const remaining = Math.max(0, video.duration - video.currentTime);
-      const runway = Math.min(0.25 * video.playbackRate, 2, remaining);
+      const runway = Math.min(0.25 * nominalRateRef.current, 2, remaining);
+      if (!runwayDeadline) runwayDeadline = performance.now() + 250;
       const buffered = Array.from({ length: video.buffered.length }, (_, index) => index)
         .some((index) => video.buffered.start(index) <= video.currentTime + 0.01
           && video.buffered.end(index) - video.currentTime >= runway - 0.02);
-      if (!buffered) {
+      // A paused WebView2 loader can choose NETWORK_IDLE with a decoded
+      // future frame but less compressed media than our reserve. It will not
+      // fetch more until playback resumes. Never deadlock seven cameras on
+      // that extra reserve; active reads get only a short, bounded refill.
+      if (!buffered && video.networkState !== HTMLMediaElement.NETWORK_IDLE
+        && performance.now() < runwayDeadline) {
         pauseForBuffering();
         setVideoStatus("buffering");
         onBufferingChange?.(stream.name, true);
@@ -338,6 +354,9 @@ export const FramePanel = memo(function FramePanel({
       }
       onBufferingChange?.(stream.name, false);
       if (playbackHeldRef.current) { pauseForBuffering(); return; }
+      runwayDeadline = 0;
+      recovering = false;
+      video.playbackRate = nominalRateRef.current;
       if (video.paused) void video.play().catch(() => { if (active) setVideoStatus("ready"); });
     };
     const waitForRunway = () => {
@@ -345,6 +364,9 @@ export const FramePanel = memo(function FramePanel({
       // or a user seek may be in progress. Neither should stop the group.
       if (!active || video.ended || video.seeking || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
       if (isPrimary) primaryClockReporterRef.current?.(video.currentTime);
+      runwayDeadline = performance.now() + 250;
+      recovering = true;
+      video.playbackRate = Math.min(nominalRateRef.current, 2);
       setVideoStatus("buffering");
       onBufferingChange?.(stream.name, true);
     };
@@ -381,7 +403,7 @@ export const FramePanel = memo(function FramePanel({
     // especially when a NAS-backed secondary stream is delayed. Paused seeks
     // and MP4 segment changes remain frame-accurate.
     if (playing && !highSpeedBrowsing) {
-      if (isPrimary || video.seeking || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return;
+      if (playbackHeldRef.current || isPrimary || video.seeking || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return;
       const now = performance.now();
       if (now - lastNativeCorrectionRef.current < 250) return;
       const drift = videoLocalSeconds - video.currentTime;

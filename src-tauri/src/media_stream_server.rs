@@ -1,7 +1,7 @@
 use crate::error::{AppError, AppResult};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -13,7 +13,7 @@ const MAX_MEDIA_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct MediaStreamServer {
-    address: SocketAddrV4,
+    addresses: Arc<Vec<SocketAddr>>,
     nonce: [u8; 32],
     routes: Arc<Mutex<HashMap<String, MediaRoute>>>,
 }
@@ -34,13 +34,14 @@ enum MediaRoute {
 }
 
 impl MediaStreamServer {
-    pub fn register_playlist(&self, body: String) -> AppResult<String> {
+    pub fn register_playlist(&self, body: String, camera: &str) -> AppResult<String> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&self.nonce);
         hasher.update(body.as_bytes());
         self.register_preview_route(
             hasher.finalize().to_hex().to_string(),
             MediaRoute::Playlist(Arc::new(body.into_bytes())),
+            camera,
         )
     }
 
@@ -49,6 +50,7 @@ impl MediaStreamServer {
         root: &Path,
         relative: &Path,
         size: u64,
+        camera: &str,
     ) -> AppResult<String> {
         let path = root.join(relative);
         let mut hasher = blake3::Hasher::new();
@@ -62,10 +64,16 @@ impl MediaStreamServer {
                 path,
                 size,
             },
+            camera,
         )
     }
 
-    fn register_preview_route(&self, token: String, route: MediaRoute) -> AppResult<String> {
+    fn register_preview_route(
+        &self,
+        token: String,
+        route: MediaRoute,
+        camera: &str,
+    ) -> AppResult<String> {
         let mut routes = self
             .routes
             .lock()
@@ -74,47 +82,59 @@ impl MediaStreamServer {
             return Err(AppError::Message("预览路由已达上限，请重启 Viewer".into()));
         }
         routes.insert(token.clone(), route);
-        Ok(format!("http://{}/media/{token}", self.address))
+        Ok(format!(
+            "http://{}/media/{token}",
+            self.addresses[crate::media_origins::camera_lane(camera)]
+        ))
     }
 
     pub fn start() -> AppResult<Self> {
-        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
-        let address = match listener.local_addr()? {
-            std::net::SocketAddr::V4(address) => address,
-            _ => return Err(AppError::Message("本机媒体流没有绑定 IPv4 回环地址".into())),
-        };
+        let listeners = crate::media_origins::bind()?;
+        let addresses = Arc::new(
+            listeners
+                .iter()
+                .map(|listener| listener.local_addr())
+                .collect::<io::Result<Vec<_>>>()?,
+        );
         let mut nonce = [0_u8; 32];
         getrandom::fill(&mut nonce)
             .map_err(|_| AppError::Message("无法生成本机媒体流安全令牌".into()))?;
         let routes = Arc::new(Mutex::new(HashMap::new()));
-        let server_routes = routes.clone();
-        thread::Builder::new()
-            .name("dohc-media-stream".into())
-            .spawn(move || {
-                for connection in listener.incoming() {
-                    let Ok(stream) = connection else {
-                        continue;
-                    };
-                    let routes = server_routes.clone();
-                    let _ = thread::Builder::new()
-                        .name("dohc-media-response".into())
-                        .spawn(move || {
-                            let _ = serve_connection(stream, &routes);
-                        });
-                }
-            })?;
+        for listener in listeners {
+            let server_routes = routes.clone();
+            thread::Builder::new()
+                .name("dohc-media-stream".into())
+                .spawn(move || {
+                    for connection in listener.incoming() {
+                        let Ok(stream) = connection else {
+                            continue;
+                        };
+                        let routes = server_routes.clone();
+                        let _ = thread::Builder::new()
+                            .name("dohc-media-response".into())
+                            .spawn(move || {
+                                let _ = serve_connection(stream, &routes);
+                            });
+                    }
+                })?;
+        }
         Ok(Self {
-            address,
+            addresses,
             nonce,
             routes,
         })
     }
 
-    pub fn register(&self, path: &Path) -> AppResult<String> {
-        self.register_file(path, "video/mp4")
+    pub fn register(&self, path: &Path, camera: &str) -> AppResult<String> {
+        self.register_file(path, "video/mp4", camera)
     }
 
-    fn register_file(&self, path: &Path, mime_type: &'static str) -> AppResult<String> {
+    fn register_file(
+        &self,
+        path: &Path,
+        mime_type: &'static str,
+        camera: &str,
+    ) -> AppResult<String> {
         let canonical = path.canonicalize()?;
         if !canonical.is_file() {
             return Err(AppError::MissingPath(canonical.display().to_string()));
@@ -133,7 +153,10 @@ impl MediaStreamServer {
                     mime_type,
                 },
             );
-        Ok(format!("http://{}/media/{token}", self.address))
+        Ok(format!(
+            "http://{}/media/{token}",
+            self.addresses[crate::media_origins::camera_lane(camera)]
+        ))
     }
 
     pub fn register_jpeg_directory(&self, path: &Path) -> AppResult<String> {
@@ -151,7 +174,7 @@ impl MediaStreamServer {
             .lock()
             .map_err(|_| AppError::Message("本机媒体流路由不可用".into()))?
             .insert(token.clone(), MediaRoute::JpegDirectory(canonical));
-        Ok(format!("http://{}/frames/{token}", self.address))
+        Ok(format!("http://{}/frames/{token}", self.addresses[0]))
     }
 }
 
@@ -463,6 +486,67 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn seven_cameras_read_ranges_through_independent_loopback_origins() {
+        let root = std::env::temp_dir().join(format!(
+            "dohc-camera-origins-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let file = root.join("camera.mp4");
+        fs::write(&file, b"0123456789").unwrap();
+        let server = MediaStreamServer::start().unwrap();
+        let cameras = [
+            "cam0",
+            "cam1",
+            "cam2",
+            "t265_left",
+            "t265_right",
+            "extension_left",
+            "extension_right",
+        ];
+        let urls: Vec<_> = cameras
+            .iter()
+            .map(|camera| server.register(&file, camera).unwrap())
+            .collect();
+        let origins: std::collections::HashSet<_> = urls
+            .iter()
+            .map(|url| url.split("/media/").next().unwrap())
+            .collect();
+        assert_eq!(
+            origins.len(),
+            7,
+            "long camera responses must not share Chromium's six-connection pool"
+        );
+        for url in &urls {
+            let (address, path) = url
+                .strip_prefix("http://")
+                .unwrap()
+                .split_once('/')
+                .unwrap();
+            assert!(address.starts_with("127.0.0.1:"));
+            let mut socket = TcpStream::connect(address).unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            write!(
+                socket,
+                "GET /{path} HTTP/1.1\r\nHost: {address}\r\nRange: bytes=3-6\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = Vec::new();
+            socket.read_to_end(&mut response).unwrap();
+            assert!(response.starts_with(b"HTTP/1.1 206"));
+            assert!(response.ends_with(b"\r\n\r\n3456"));
+        }
+        assert_eq!(fs::read(&file).unwrap(), b"0123456789");
+        fs::remove_file(file).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
     fn media_copy_is_bounded_and_preserves_range_tail() {
         let bytes: Vec<u8> = (0..2 * 1024 * 1024 + 37).map(|i| (i % 251) as u8).collect();
         let mut input = bytes.as_slice();
@@ -535,7 +619,7 @@ mod tests {
                 .iter()
                 .map(|segment| {
                     server
-                        .register(&root.join(segment["path"].as_str().unwrap()))
+                        .register(&root.join(segment["path"].as_str().unwrap()), name)
                         .unwrap()
                 })
                 .collect();
@@ -575,7 +659,7 @@ mod tests {
         let path = root.join("preview.mp4");
         fs::write(&path, b"0123456789").unwrap();
         let server = MediaStreamServer::start().unwrap();
-        let url = server.register(&path).unwrap();
+        let url = server.register(&path, "cam0").unwrap();
         let address_and_path = url.strip_prefix("http://").unwrap();
         let (address, request_path) = address_and_path.split_once('/').unwrap();
         let mut stream = TcpStream::connect(address).unwrap();
@@ -609,7 +693,7 @@ mod tests {
         let bytes = vec![17_u8; (MAX_MEDIA_RESPONSE_BYTES + 1024) as usize];
         fs::write(&path, &bytes).unwrap();
         let server = MediaStreamServer::start().unwrap();
-        let url = server.register(&path).unwrap();
+        let url = server.register(&path, "cam0").unwrap();
         let address_and_path = url.strip_prefix("http://").unwrap();
         let (address, request_path) = address_and_path.split_once('/').unwrap();
         let request = |method: &str, range: Option<&str>| {
@@ -684,7 +768,7 @@ mod tests {
         assert!(headers.contains(&format!("Content-Length: {}", bytes.len())));
         assert!(response[separator + 4..].is_empty());
 
-        let stream_url = server.register_file(&path, "video/mp2t").unwrap();
+        let stream_url = server.register_file(&path, "video/mp2t", "cam0").unwrap();
         let stream_path = stream_url.strip_prefix("http://").unwrap();
         let (stream_address, stream_request_path) = stream_path.split_once('/').unwrap();
         let mut stream = TcpStream::connect(stream_address).unwrap();
@@ -764,7 +848,7 @@ mod tests {
         let server = MediaStreamServer::start().unwrap();
         for stream in ["cam0", "cam1", "cam2", "t265_left", "t265_right"] {
             let path = root.join(format!("{stream}/{stream}-00000.mp4"));
-            let url = server.register(&path).unwrap();
+            let url = server.register(&path, "cam0").unwrap();
             let output = Command::new("gst-discoverer-1.0")
                 .arg(&url)
                 .output()
