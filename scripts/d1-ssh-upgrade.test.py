@@ -53,6 +53,47 @@ class UpgradeTest(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
+    def support_archive(self):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w:gz') as archive:
+            manifest = json.dumps({'schema':'dohc.device.support-bundle.v1','bundle_id':'b18a915d-f012-4c96-8dcb-56391da07c92'}).encode()
+            member = tarfile.TarInfo('manifest.json')
+            member.size = len(manifest)
+            archive.addfile(member, io.BytesIO(manifest))
+        return stream.getvalue()
+
+    def test_support_bundle_is_bounded_device_scoped_and_deleted_only_after_download(self):
+        support_root = self.base / 'support'
+        self.patch('SUPPORT_ROOT', support_root)
+        archive = self.support_archive()
+        summary = {'schema':'dohc.device.support-bundle.v1','bundle_id':'b18a915d-f012-4c96-8dcb-56391da07c92',
+                   'bytes':len(archive),'sha256':hashlib.sha256(archive).hexdigest()}
+        def run(args, **kwargs):
+            self.assertEqual(args[:3], ['/usr/local/bin/dci','support-bundle','--since=-30 min'])
+            output = Path(args[args.index('--output')+1])
+            output.write_bytes(archive)
+            return types.SimpleNamespace(returncode=0,stdout=json.dumps(summary),stderr='')
+        self.patch('subprocess.run',run)
+        identity={'deviceId':'b18a915d-f012-4c96-8dcb-56391da07c92','cid':'0123456789abcdef0123456789abcdef'}
+        prepared=upgrade.support_bundle_prepare(identity)
+        transferred=upgrade.support_bundle_read(dict(identity,temporaryId=prepared['temporaryId']))
+        self.assertEqual(transferred['archiveBase64'],__import__('base64').b64encode(archive).decode())
+        self.assertTrue(upgrade.support_bundle_cleanup(dict(identity,temporaryId=prepared['temporaryId']))['cleaned'])
+        self.assertFalse((support_root/(prepared['temporaryId']+'.tar.gz')).exists())
+
+    def test_support_bundle_refuses_changed_identity_invalid_ids_and_expired_files(self):
+        support_root=self.base/'support';self.patch('SUPPORT_ROOT',support_root)
+        with self.assertRaisesRegex(ValueError,'SUPPORT_DEVICE_CHANGED'):
+            upgrade.support_bundle_prepare({'deviceId':'other','cid':'0123456789abcdef0123456789abcdef'})
+        support_root.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError,'SUPPORT_TEMPORARY_ID_INVALID'):
+            upgrade.support_bundle_read({'deviceId':self.identity['deviceId'],'cid':self.identity['cid'],'temporaryId':'../../latest.json'})
+        expired=support_root/('a'*32+'.tar.gz');expired.write_bytes(b'old')
+        import os,time
+        os.utime(expired,(time.time()-upgrade.SUPPORT_MAX_AGE_SECONDS-10,)*2)
+        upgrade.expire_support_bundles(support_root)
+        self.assertFalse(expired.exists())
+
     def build_package(self):
         data = self.base / 'deb'
         (data / 'DEBIAN').mkdir(parents=True)

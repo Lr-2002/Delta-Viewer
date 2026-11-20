@@ -1,11 +1,11 @@
-import { tr } from "./i18n";
+import { t, tr } from "./i18n";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import packageInfo from "../../package.json";
 import d1Configuration from "../../config/d1-manager.json";
-import type { DeviceAvailability, DeviceConnectionMode, DeviceBundlePreview, DeviceBundleRequest, DeviceRun, DevicePage, DevicePageApiRequest, DevicePageApiResponse, DevicePageRequest, DeviceUpgradeRequest, OtaLogRecord, WifiSnapshot, WifiNetwork, OtaServiceStatus, OtaPreview, OtaSubmitResult, DeviceOtaStatus, DiagnosticServiceStatus, LogPreview, LogUploadReceipt } from "./d1";
+import type { DeviceSupportBundleReceipt, DeviceAvailability, DeviceConnectionMode, DeviceBundlePreview, DeviceBundleRequest, DeviceRun, DevicePage, DevicePageApiRequest, DevicePageApiResponse, DevicePageRequest, DeviceUpgradeRequest, OtaLogRecord, WifiSnapshot, WifiNetwork, OtaServiceStatus, OtaPreview, OtaSubmitResult, DeviceOtaStatus, DiagnosticServiceStatus, LogPreview, LogUploadReceipt } from "./d1";
 
 const browserOtaStatus = ():OtaServiceStatus => ({enabled:false,origin:null,channel:null,trust:"digest_only",trustKeyId:null,detail:"请在桌面客户端使用应用升级。"});
 const browserLogStatus = ():DiagnosticServiceStatus => ({enabled:false,origin:null,detail:"请在桌面客户端上传诊断日志。"});
@@ -49,6 +49,10 @@ export async function confirmDeviceOtaUpgrade(version:string):Promise<boolean> {
   const message=`即将升级设备至${version}。请先停止录制、自检和压力测试，并保持供电及设备连接。升级过程中请勿关机或断电。是否继续？`;
   return isTauriRuntime()?confirm(tr(message),{title:tr("确认设备升级"),kind:"warning",okLabel:tr("确认"),cancelLabel:tr("取消")}):window.confirm(tr(message));
 }
+export async function confirmSupportBundleCollection(deviceId:string,destination:string):Promise<boolean> {
+  const message=t("设备：{0}\n采集范围：最近 30 分钟内的 DOHC 白名单服务日志，每个服务最多 500 行；设备侧脱敏，支持包最大 4 MiB。\n保存位置：{1}\n支持包只保存到此电脑，不上传到售后平台。保存并校验成功后，Manager 会清理设备上的临时包。是否开始采集？",[deviceId,destination]);
+  return isTauriRuntime()?confirm(message,{title:tr("确认采集 D1 日志"),kind:"warning",okLabel:tr("确认"),cancelLabel:tr("取消")}):window.confirm(message);
+}
 export async function uploadDiagnosticLogs(previewId:string,operationId:number):Promise<LogUploadReceipt> {
   if(!isTauriRuntime())throw new Error("请在桌面客户端上传诊断日志。");
   return invoke("d1_logs_upload",{request:{previewId},operationId});
@@ -75,6 +79,18 @@ export async function previewDeviceBundle(request:DeviceBundleRequest): Promise<
 export async function exportDeviceBundle(request:DeviceBundleRequest,destinationParent:string,previewHash:string,operationId:number):Promise<string> {
   if(!isTauriRuntime()) throw new Error("请在桌面客户端导出诊断包。");
   return invoke("d1_export_bundle",{request,destinationParent,previewHash,operationId});
+}
+export async function collectDeviceSupportBundle(request:DeviceUpgradeRequest,expectedDeviceId:string,operationId:number):Promise<DeviceSupportBundleReceipt> {
+  if(!isTauriRuntime()) throw new Error("请在桌面客户端连接 D1 并采集日志。");
+  return invoke("d1_collect_support_bundle",{request:{...request,apAddress:request.apAddress??null},expectedDeviceId,operationId});
+}
+export async function readSupportBundleInventory():Promise<import("./d1").DeviceSupportBundleInventory> {
+  if(!isTauriRuntime())return {directory:"",records:[]};
+  return invoke("d1_support_inventory");
+}
+export async function exportDeviceSupportBundle(bundleId:string,destinationParent:string,operationId:number):Promise<string> {
+  if(!isTauriRuntime())throw new Error("请在桌面客户端另存日志支持包。");
+  return invoke("d1_support_export",{bundleId,destinationParent,operationId});
 }
 import { createAuditFlusher } from "./audit-flush";
 export async function getWifiInventory(refresh=false):Promise<WifiSnapshot> {

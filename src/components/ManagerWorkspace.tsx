@@ -9,6 +9,7 @@ import "./manager-workspace.css";
 import {DeviceRuntimePanel} from "./DeviceRuntimePanel";
 import {DevicePageView} from "./DevicePageView";
 import {DeviceOtaPanel} from "./DeviceOtaPanel";
+import {DeviceSupportBundlePanel} from "./DeviceSupportBundlePanel";
 import {DiagnosticLogPanel} from "./DiagnosticLogPanel";
 
 type Operation={id:number;finish:()=>void};
@@ -366,12 +367,12 @@ export function ManagerWorkspace({section,navigationRevision=0,busy,beginOperati
       {working==="diagnostics"&&<p className="manager-running" role="status">{t("正在读取 D1 健康报告…")}</p>}
       {run ? <><div className="manager-run-summary" role="status"><strong>{tr(deviceTaskLabels[run.status])}</strong><span>{tr(time(run.finishedAtMs))}{!connected ? t(" · 当前未取得设备报告") : ""}</span><div className="manager-result-counts" aria-label={t("检测结果统计")}>{resultOrder.filter(status=>counts[status]>0).map(status=><ResultBadge key={status} status={status} label={t("{0} {1}", [tr(deviceResultLabels[status]), counts[status]])}/>)}</div></div><div className="manager-checks" hidden={!!statusPage}>{[...run.checks].sort((a,b)=>resultOrder.indexOf(a.status)-resultOrder.indexOf(b.status)).map(check=><DiagnosticCard check={check} snapshot={run.observation} key={check.id}/>)}</div></> : !working&&!statusPage&&<section className="manager-empty compact"><ClipboardList size={30}/><h2>{t("尚未运行检测")}</h2><p>{connected ? t("运行设备检测，读取当前状态和告警。") : tr(connectionLabel)}</p>{!connected&&<button className="button button-secondary" onClick={()=>onNavigate("device")}>{t("前往连接设备")}</button>}</section>}
     </>}
-    {section==="support"&&<div className="manager-support-layout"><section className="manager-card"><header className="manager-device-heading"><h2>{t("本地诊断包")}</h2><FileArchive size={21}/></header><p>{t("包含本次设备健康观测与检测摘要，暂不包含原始设备日志。")}</p>{run ? <>
+    {section==="support"&&<><DeviceSupportBundlePanel request={upgradeRequest} busy={disabled} beginOperation={beginOperation} onError={setError}/><div className="manager-support-layout"><section className="manager-card"><header className="manager-device-heading"><h2>{t("本地诊断包")}</h2><FileArchive size={21}/></header><p>{t("包含本次设备健康观测与检测摘要；设备服务日志请使用上方的 D1 设备日志采集。")}</p>{run ? <>
       <dl className="manager-metadata"><div><dt>{t("设备标识")}</dt><dd>{run.device?.id ?? t("本次未能读取")}</dd></div><div><dt>{t("应用版本")}</dt><dd>{tr(run.device?.applicationVersion) ?? t("本次未能读取")}</dd></div><div><dt>{t("观测范围")}</dt><dd>{tr(time(run.startedAtMs))} — {tr(time(run.finishedAtMs))}</dd></div></dl>
       <div className="manager-actions"><button className="button button-secondary" disabled={disabled||!isTauriRuntime()} onClick={()=>void prepare()}><ClipboardList size={17}/>{t("预览检测包")}</button>{preview&&<button className="button button-primary" disabled={disabled} onClick={()=>void exportBundle()}><Download size={17}/>{t("导出到本机")}</button>}{working==="export"&&operation.current&&<button className="button button-secondary" disabled={cancelling} onClick={()=>void cancel()}>{t("取消导出")}</button>}</div>
       {!isTauriRuntime()&&<p>{t("请在桌面客户端预览并导出诊断包。")}</p>}
       {preview&&<div className="manager-package-preview" aria-label={t("诊断包预览")}><p>{tr(preview.privacy)}</p>{preview.files.map(file=><article key={file.name}><strong>{file.name}</strong><span>{file.bytes}{" " + t("字节")}</span><code>SHA-256 {tr(file.sha256)}</code></article>)}</div>}
       {tr(output&&<div className="manager-export-success" role="status"><CheckCircle2 size={18}/><span>{t("已导出：")}{tr(output)}</span><button className="text-button" onClick={()=>void revealOutput(output).catch(cause=>setError(errorText(cause)))}>{t("打开所在位置")}</button></div>)}
-    </> : <div className="manager-empty compact"><FileArchive size={30}/><h2>{t("还没有检测记录")}</h2><p>{t("完成设备检测后，即可预览和导出。")}</p><button className="button button-secondary" onClick={()=>onNavigate("diagnostics")}>{t("前往检测")}</button></div>}</section><DiagnosticLogPanel run={run} busy={disabled} beginOperation={beginOperation} onError={setError}/></div>}
+    </> : <div className="manager-empty compact"><FileArchive size={30}/><h2>{t("还没有检测记录")}</h2><p>{t("完成设备检测后，即可预览和导出。")}</p><button className="button button-secondary" onClick={()=>onNavigate("diagnostics")}>{t("前往检测")}</button></div>}</section><DiagnosticLogPanel run={run} busy={disabled} beginOperation={beginOperation} onError={setError}/></div></>}
   </main>;
 }

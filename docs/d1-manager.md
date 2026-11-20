@@ -117,7 +117,7 @@ Rust三类强类型连接，AP地址与模式不匹配在网络调用前拒绝�
 - `diagnostics.json`：本次实际查询的状态、判断、证据；查询失败也如实保留，无虚构身份。
 - `health.json`：仅当范围包含本次有效观测时才有，内容为受限健康字段；不是原始设备日志。
 
-不包含人员名称、任务、账号、审核队列、SSH/连接密钥或任意原始 JSON；设备可变文本含凭据/个人字段标志或控制符时丢弃。原始设备日志尚未采集，不承诺此过滤器覆盖未知日志格式。预览 hash 必须匹配最终包；每文件独占 partial、flush/sync、回读，最终使用 `storage::publish_noreplace`；失败/取消清理自身 partial，已有包不覆盖。
+不包含人员名称、任务、账号、审核队列、SSH/连接密钥或任意原始 JSON；设备可变文本含凭据/个人字段标志或控制符时丢弃。此状态摘要包不包含原始设备日志；新增设备日志入口使用独立的服务日志脱敏流程，不承诺过滤器覆盖未知日志格式。预览 hash 必须匹配最终包；每文件独占 partial、flush/sync、回读，最终使用 `storage::publish_noreplace`；失败/取消清理自身 partial，已有包不覆盖。
 
 ## OTA 与协议待确认
 
@@ -133,4 +133,12 @@ DCI 主动检测和原始日志另需正式命令/参数/错误码/输出版本�
 
 骨架用户交付文件为 `skeleton.description.json`；内部状态存 `.session_meta/.d1-manager`，兼容旧侧车。用户选择保留跨版本保护，因此 `.description.lock` 继续用于与 1.6.2 互斥，不自动删除。
 
-本轮不部署业务服务、不改 NAS/真实审核记录、不推送通知、不安装/推送/tag/发布。未来三平台正式交付仍经 main CI、自动 annotated tag 和完整 Release；新安装品牌迁移及覆盖升级数据保全须原生单独验收。Windows 实机通过不能代替 macOS/Ubuntu 或全部硬件验证。
+本轮日志候选仅上推功能分支和 PR，不部署业务服务、不改 NAS/真实审核记录、不推送通知、不安装、不合并主线或创建 tag/Release。未来三平台正式交付仍经 main CI、自动 annotated tag 和完整 Release；新安装品牌迁移及覆盖升级数据保全须原生单独验收。Windows 实机通过不能代替 macOS/Ubuntu 或全部硬件验证。
+
+### 设备日志候选移植（2026-11-20）
+
+在“日志与支持 → D1 设备日志”点击“采集并保存到本机”，核对设备和保存位置后确认。设备须支持 dci support-bundle（DOHC PR #58）；固定采集最近 30 分钟的六个 DOHC 服务、每服务最多 500 行，设备脱敏后打包，最大 4 MiB。Manager 核对设备身份、大小与 SHA-256，回读后保存至当前账号隔离的本机目录；成功保存后清理设备临时包。可打开位置、另存副本或查看记录，默认保留 30 天、合计 1 GiB。不自动上传售后平台。旧版设备提示不支持时先部署对应 DOHC 功能；失败以实际提示为准。
+
+采集通过固定 SSH 主机指纹与受限命令完成，不开放任意远程路径。设备临时目录 /run/dohc-manager-support 最多保存四个包；重启清除，后续采集会清理超过一小时的包。Manager 本机保存路径为 appLocalData/reports/device-support/{owner-hash}/{bundle-id}/，使用 create-new、回读及原子 no-replace；另存副本不由应用清理。
+
+2026-11-18 旧候选成功记录：IP 192.168.188.1，CID 末八位 82f01c00，运行版本 1.3.1；独立调试扩展增加设备命令，未替换系统 release。Windows 原生 Manager 保存支持包 387c776e-6daa-4331-86cc-3b07ba4e2155，5,510 字节，SHA-256 96c101599a3ec84b163d076fcc5f2646aa6172eb5c3f62f1ec1a4d275aafa10a。六服务日志与 manifest 摘要核验通过，设备临时包已清理。该记录不代表当前 main 移植候选已实机验收，当前结果与限制见 device-support-bundle-migration-20261120.md。

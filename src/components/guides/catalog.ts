@@ -192,6 +192,12 @@ lesson("support", "diagnostic-bundle", "预览并导出本地诊断包", "Previe
   on("导出到本机", "Export locally", nativePicker, ".manager-export-success"),
   on("打开所在位置", "Open location"),
 ], { wiki: "Device-Management", needs: ["先完成测试设备检测。", "Complete diagnostics on a test device first."] });
+lesson("support", "device-support-local", "采集设备服务日志并保存到本机", "Collect device service logs locally", [
+  c(".manager-navigation button", "日志与支持", "Logs and support"),
+  observe(".manager-support-bundle", "核对设备日志范围与保存位置", "Check collection scope and save location", ["需桌面客户端、已连接的测试 D1 和设备 support-bundle 命令。", "Requires the desktop app, a connected test D1 and the device support-bundle command."]),
+  c(".manager-support-bundle button", "采集并保存到本机", "Collect and save locally", ["核对确认框后继续；采集服务日志，不启动录制或上传售后平台。", "Review the confirmation before continuing. This collects service logs without starting recording or uploading to support."]),
+  observe(".manager-support-bundle", "等待实际校验及保存结果", "Wait for verified save result", ["失败时保留错误，不重复安装或修改设备。成功后可打开位置或另存副本。", "Retain failure details without reinstalling or modifying the device. After success, open the location or save a copy."]),
+], { wiki: "Device-Management", needs: device, writes: true });
 lesson("support", "support-upload", "预览并上传售后诊断日志", "Preview and send diagnostics to support", [
   c(".manager-navigation button", "日志与支持", "Logs and support"),
   c(".manager-support-upload button:first-child", "预览检测与日志", "Preview diagnostics and logs", nativePicker, ".manager-log-preview"),

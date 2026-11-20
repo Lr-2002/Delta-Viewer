@@ -23,6 +23,12 @@ import uuid
 
 ROOT = Path('/var/lib/dohc-manager-upgrade')
 LIMIT = 512 * 1024 * 1024
+SUPPORT_ROOT = Path('/run/dohc-manager-support')
+SUPPORT_SCHEMA = 'dohc.device.support-bundle.v1'
+SUPPORT_MAX_BYTES = 4 * 1024 * 1024
+SUPPORT_MAX_FILES = 4
+SUPPORT_MAX_AGE_SECONDS = 3600
+SUPPORT_ID = re.compile(r'^[0-9a-f]{32}$')
 
 
 def load(path, default=None):
@@ -514,6 +520,143 @@ def worker(directory):
         update('FAILED', message, 'error')
 
 
+def support_directory():
+    if SUPPORT_ROOT.is_symlink():
+        raise ValueError('SUPPORT_DIRECTORY_INVALID')
+    SUPPORT_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not SUPPORT_ROOT.is_dir():
+        raise ValueError('SUPPORT_DIRECTORY_INVALID')
+    os.chmod(SUPPORT_ROOT, 0o700)
+    return SUPPORT_ROOT
+
+
+def expire_support_bundles(directory):
+    now = time.time()
+    for path in directory.iterdir():
+        if not re.fullmatch(r'[0-9a-f]{32}\.tar\.gz', path.name) or path.is_symlink():
+            continue
+        try:
+            if not path.is_file():
+                continue
+            if now - path.stat().st_mtime > SUPPORT_MAX_AGE_SECONDS:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def support_bundle_path(directory, temporary_id):
+    if not isinstance(temporary_id, str) or not SUPPORT_ID.fullmatch(temporary_id):
+        raise ValueError('SUPPORT_TEMPORARY_ID_INVALID')
+    return directory / (temporary_id + '.tar.gz')
+
+
+def support_identity(payload):
+    actual = identity()
+    if not isinstance(payload, dict) or any(
+            payload.get(key) != actual[key] for key in ('deviceId', 'cid')):
+        raise ValueError('SUPPORT_DEVICE_CHANGED: 设备身份已变化，请重新连接后采集')
+    return actual
+
+
+def support_bundle_prepare(payload):
+    support_identity(payload)
+    directory = support_directory()
+    expire_support_bundles(directory)
+    existing = [path for path in directory.iterdir()
+                if re.fullmatch(r'[0-9a-f]{32}\.tar\.gz', path.name)
+                and not path.is_symlink() and path.is_file()]
+    if len(existing) >= SUPPORT_MAX_FILES:
+        raise ValueError('SUPPORT_TEMPORARY_LIMIT: 设备上有未清理的支持包，请稍后重试')
+
+    temporary_id = uuid.uuid4().hex
+    output = support_bundle_path(directory, temporary_id)
+    try:
+        result = subprocess.run(
+            ['/usr/local/bin/dci', 'support-bundle', '--since=-30 min', '--lines=500',
+             '--output', str(output), '--json'],
+            capture_output=True, text=True, timeout=45,
+        )
+    except FileNotFoundError as error:
+        raise ValueError('SUPPORT_BUNDLE_UNSUPPORTED: 当前设备未安装 DCI 支持包命令，请先更新 DOHC') from error
+    if result.returncode:
+        if 'invalid choice' in result.stderr and 'support-bundle' in result.stderr:
+            raise ValueError('SUPPORT_BUNDLE_UNSUPPORTED: 当前 DOHC 不支持日志采集，请先更新设备应用')
+        raise ValueError('SUPPORT_BUNDLE_CREATE_FAILED: 设备无法生成支持包')
+    try:
+        summary = json.loads(result.stdout)
+    except (TypeError, ValueError) as error:
+        raise ValueError('SUPPORT_BUNDLE_RESPONSE_INVALID') from error
+    if not isinstance(summary, dict) or summary.get('schema') != SUPPORT_SCHEMA:
+        raise ValueError('SUPPORT_BUNDLE_SCHEMA_INVALID')
+    bundle_id = summary.get('bundle_id')
+    if not isinstance(bundle_id, str) or not re.fullmatch(
+            r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+            bundle_id):
+        raise ValueError('SUPPORT_BUNDLE_ID_INVALID')
+    if output.is_symlink() or not output.is_file():
+        raise ValueError('SUPPORT_BUNDLE_FILE_INVALID')
+    size = output.stat().st_size
+    if not 0 < size <= SUPPORT_MAX_BYTES:
+        output.unlink(missing_ok=True)
+        raise ValueError('SUPPORT_BUNDLE_SIZE_INVALID')
+    digest = hashlib.sha256(output.read_bytes()).hexdigest()
+    if summary.get('bytes') != size or summary.get('sha256') != digest:
+        output.unlink(missing_ok=True)
+        raise ValueError('SUPPORT_BUNDLE_DIGEST_MISMATCH')
+    return dict(schema=SUPPORT_SCHEMA, temporaryId=temporary_id,
+                bundleId=bundle_id, bytes=size, sha256=digest,
+                since='-30 min', linesPerService=500)
+
+
+def support_bundle_read(payload):
+    support_identity(payload)
+    directory = support_directory()
+    expire_support_bundles(directory)
+    temporary_id = payload.get('temporaryId') if isinstance(payload, dict) else None
+    path = support_bundle_path(directory, temporary_id)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('SUPPORT_BUNDLE_EXPIRED: 设备临时支持包已过期，请重新采集')
+    size = path.stat().st_size
+    if not 0 < size <= SUPPORT_MAX_BYTES:
+        raise ValueError('SUPPORT_BUNDLE_SIZE_INVALID')
+    content = path.read_bytes()
+    try:
+        with tarfile.open(path, mode='r:gz') as archive:
+            member = archive.getmember('manifest.json')
+            if not member.isfile() or member.size > 128 * 1024:
+                raise ValueError('SUPPORT_BUNDLE_MANIFEST_INVALID')
+            manifest = json.load(archive.extractfile(member))
+    except (OSError, tarfile.TarError, KeyError, TypeError, ValueError) as error:
+        raise ValueError('SUPPORT_BUNDLE_ARCHIVE_INVALID') from error
+    bundle_id = manifest.get('bundle_id') if isinstance(manifest, dict) else None
+    if not isinstance(bundle_id, str) or not re.fullmatch(
+            r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+            bundle_id):
+        raise ValueError('SUPPORT_BUNDLE_ID_INVALID')
+    return dict(schema=SUPPORT_SCHEMA, temporaryId=temporary_id,
+                bundleId=bundle_id, bytes=size,
+                sha256=hashlib.sha256(content).hexdigest(),
+                archiveBase64=base64.b64encode(content).decode('ascii'))
+
+
+def support_bundle_cleanup(payload):
+    support_identity(payload)
+    directory = support_directory()
+    temporary_id = payload.get('temporaryId') if isinstance(payload, dict) else None
+    path = support_bundle_path(directory, temporary_id)
+    if path.is_symlink():
+        raise ValueError('SUPPORT_BUNDLE_FILE_INVALID')
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        directory.rmdir()
+    except OSError:
+        pass
+    return dict(cleaned=True)
+
+
 def entry(action, payload=None, source=None):
     if action == 'read':
         result = read()
@@ -523,6 +666,12 @@ def entry(action, payload=None, source=None):
         result = transfer(payload, incoming=action == 'receive')
     elif action == 'launch':
         result = launch(payload, source)
+    elif action == 'support_bundle_prepare':
+        result = support_bundle_prepare(payload)
+    elif action == 'support_bundle_read':
+        result = support_bundle_read(payload)
+    elif action == 'support_bundle_cleanup':
+        result = support_bundle_cleanup(payload)
     else:
         raise ValueError('OTA_ACTION_INVALID')
     print(json.dumps(result, ensure_ascii=False))

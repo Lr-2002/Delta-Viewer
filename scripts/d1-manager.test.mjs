@@ -371,6 +371,11 @@ test("Real device UI shows reported identity and failures without any simulation
       await navigate(page,"日志与支持");await page.getByText("test-d1-device",{exact:true}).waitFor();
       assert.equal(await page.getByRole("button",{name:"预览检测与日志"}).isDisabled(),true);
       assert.equal(await page.getByRole("button",{name:"上传到售后",exact:true}).isDisabled(),true);await page.getByText("上传服务待接入",{exact:true}).waitFor();await noOverflow(page);
+      const deviceLogs=page.getByRole("region",{name:"采集 D1 设备日志"});
+      await deviceLogs.getByRole("heading",{name:"D1 设备日志",exact:true}).waitFor();
+      assert.equal(await deviceLogs.getByRole("button",{name:"采集并保存到本机",exact:true}).isDisabled(),true,"web preview cannot collect a hardware support bundle");
+      await deviceLogs.getByText("仅在你点击并确认后采集，不定时传输、不上传维护平台。",{exact:false}).waitFor();
+      await noOverflow(page);
       await page.screenshot({path:resolve(reportRoot,`support-${viewport.width}.png`),fullPage:true});
       await navigate(page,"设备管理");
       await page.evaluate(()=>{window.deviceFixture={...window.deviceFixture,connection:"not_connected",identity:null,observation:null,selectedInterfaceId:null,realDeviceEnabled:false,linkDiscovery:{...window.deviceFixture.linkDiscovery,status:"no_candidates",candidates:[]}};});
