@@ -21,6 +21,8 @@ use tokio::net::TcpSocket;
 
 const WORKER: &str = include_str!("d1_ssh_upgrade.py");
 const MAX_RESPONSE: usize = 1024 * 1024;
+const MAX_SUPPORT_BUNDLE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SUPPORT_RESPONSE: usize = 6 * 1024 * 1024;
 #[derive(Default)]
 pub struct SshState(Mutex<BTreeMap<String, (String, String, String)>>);
 
@@ -111,6 +113,11 @@ async fn exchange(
     cancelled: &AtomicBool,
     input: Option<&[u8]>,
 ) -> Result<(Value, String), String> {
+    let timeout = action_timeout(action);
+    let is_support = matches!(
+        action,
+        "support_bundle_prepare" | "support_bundle_read" | "support_bundle_cleanup"
+    );
     let operation = async {
         let socket = TcpSocket::new_v4().map_err(|_| "OTA_SSH_SOCKET: 无法创建 SSH 连接")?;
         if let Some(local) = local {
@@ -124,15 +131,7 @@ async fn exchange(
             .map_err(|_| "OTA_SSH_CONNECT: 无法连接设备 SSH（22），请检查设备 IP 和连接")?;
         let observed = Arc::new(Mutex::new(None));
         let config = Arc::new(client::Config {
-            inactivity_timeout: Some(Duration::from_secs(
-                if matches!(action, "receive" | "download") {
-                    660
-                } else if matches!(action, "check" | "stage") {
-                    45
-                } else {
-                    25
-                },
-            )),
+            inactivity_timeout: Some(timeout),
             ..Default::default()
         });
         let mut session = client::connect_stream(
@@ -181,7 +180,12 @@ async fn exchange(
         while let Some(message) = channel.wait().await {
             match message {
                 ChannelMsg::Data { data } => {
-                    if bytes.len() + data.len() > MAX_RESPONSE {
+                    let limit = if action == "support_bundle_read" {
+                        MAX_SUPPORT_RESPONSE
+                    } else {
+                        MAX_RESPONSE
+                    };
+                    if bytes.len() + data.len() > limit {
                         return Err("OTA_SSH_RESPONSE_TOO_LARGE".into());
                     }
                     bytes.extend_from_slice(&data);
@@ -200,6 +204,9 @@ async fn exchange(
             .await;
         if exit != Some(0) {
             let message = String::from_utf8_lossy(&stderr);
+            if is_support {
+                return Err(support_command_error(&message));
+            }
             let safe = crate::d1_logs::safe_message(message.trim())
                 .unwrap_or_else(|| "设备命令未正常结束".into());
             return Err(format!("OTA_SSH_COMMAND: {safe}"));
@@ -214,23 +221,72 @@ async fn exchange(
         Ok((value, fingerprint))
     };
     tokio::pin!(operation);
-    let deadline = tokio::time::sleep(Duration::from_secs(
-        if matches!(action, "receive" | "download") {
-            660
-        } else if matches!(action, "check" | "stage") {
-            45
-        } else {
-            25
-        },
-    ));
+    let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
+    let timeout_error = match action {
+        "launch" => "OTA_SSH_UNCONFIRMED: 发送回执超时，请先刷新状态，不要重复升级",
+        _ if is_support => "SUPPORT_SSH_TIMEOUT: 设备日志操作超时，请检查设备连接",
+        _ => "OTA_SSH_TIMEOUT: 读取 SSH 升级状态超时",
+    };
+    let cancel_error = if is_support {
+        "SUPPORT_CANCELLED: 日志采集已取消，未保存本地支持包"
+    } else {
+        "OTA_CANCELLED: 已停止等待；已提交的设备安装仍会继续，请刷新状态"
+    };
     loop {
         tokio::select! {
             result=&mut operation=>return result,
-            _=&mut deadline=>return Err(if action=="launch" {"OTA_SSH_UNCONFIRMED: 发送回执超时，请先刷新状态，不要重复升级"}else{"OTA_SSH_TIMEOUT: 读取 SSH 升级状态超时"}.into()),
-            _=tokio::time::sleep(Duration::from_millis(100))=>if cancelled.load(Ordering::Acquire){return Err("OTA_CANCELLED: 已停止等待；已提交的设备安装仍会继续，请刷新状态".into())}
+            _=&mut deadline=>return Err(timeout_error.into()),
+            _=tokio::time::sleep(Duration::from_millis(100))=>if cancelled.load(Ordering::Acquire){return Err(cancel_error.into())}
         }
     }
+}
+
+fn support_command_error(stderr: &str) -> String {
+    // Python tracebacks contain source paths and potentially sensitive text.
+    // Recognize only a known final exception code and supply our own UI message.
+    let code = stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .and_then(|line| line.trim().strip_prefix("ValueError: "))
+        .map(|line| line.split(':').next().unwrap_or(line));
+    let (code, message) = match code {
+        Some("SUPPORT_BUNDLE_UNSUPPORTED") => (
+            "SUPPORT_BUNDLE_UNSUPPORTED",
+            "当前设备未安装日志支持包命令，请先部署包含 dci support-bundle 的 DOHC 版本后重试。",
+        ),
+        Some("SUPPORT_TEMPORARY_LIMIT") => (
+            "SUPPORT_TEMPORARY_LIMIT",
+            "设备临时支持包数量已达上限，请等待过期后重试。",
+        ),
+        Some("SUPPORT_DEVICE_CHANGED") => (
+            "SUPPORT_DEVICE_CHANGED",
+            "设备身份已变化，请重新连接并确认采集目标。",
+        ),
+        Some("SUPPORT_BUNDLE_EXPIRED") => (
+            "SUPPORT_BUNDLE_EXPIRED",
+            "设备临时支持包已过期，请重新采集。",
+        ),
+        Some("SUPPORT_BUNDLE_CREATE_FAILED") => (
+            "SUPPORT_BUNDLE_CREATE_FAILED",
+            "设备无法生成日志支持包，请检查设备端采集命令。",
+        ),
+        _ => (
+            "SUPPORT_SSH_COMMAND",
+            "设备日志命令未正常结束，未确认本机保存成功。",
+        ),
+    };
+    format!("{code}: {message}")
+}
+
+fn action_timeout(action: &str) -> Duration {
+    Duration::from_secs(match action {
+        "receive" | "download" => 660,
+        "check" | "stage" => 45,
+        "support_bundle_prepare" | "support_bundle_read" | "support_bundle_cleanup" => 60,
+        _ => 25,
+    })
 }
 
 fn parse(value: Value) -> Result<SshStatus, String> {
@@ -453,6 +509,179 @@ pub async fn check_release(
     parse(value)
 }
 
+struct SupportBundleMetadata {
+    temporary_id: String,
+    bundle_id: String,
+    bytes: usize,
+    sha256: String,
+}
+
+fn support_metadata(value: &Value) -> Result<SupportBundleMetadata, String> {
+    let temporary_id = value["temporaryId"]
+        .as_str()
+        .filter(|id| {
+            id.len() == 32
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        .ok_or("SUPPORT_TEMPORARY_ID_INVALID")?;
+    let bundle_id = value["bundleId"]
+        .as_str()
+        .filter(|id| crate::d1_support::valid_uuid(id))
+        .ok_or("SUPPORT_BUNDLE_ID_INVALID")?;
+    let bytes = value["bytes"]
+        .as_u64()
+        .and_then(|size| usize::try_from(size).ok())
+        .filter(|size| (1..=MAX_SUPPORT_BUNDLE_BYTES).contains(size))
+        .ok_or("SUPPORT_BUNDLE_SIZE_INVALID")?;
+    let sha256 = value["sha256"]
+        .as_str()
+        .filter(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        .ok_or("SUPPORT_BUNDLE_DIGEST_INVALID")?;
+    if value["schema"].as_str() != Some("dohc.device.support-bundle.v1") {
+        return Err("SUPPORT_BUNDLE_SCHEMA_INVALID".into());
+    }
+    Ok(SupportBundleMetadata {
+        temporary_id: temporary_id.to_owned(),
+        bundle_id: bundle_id.to_owned(),
+        bytes,
+        sha256: sha256.to_owned(),
+    })
+}
+
+fn decode_support_archive(
+    value: &Value,
+    expected: &SupportBundleMetadata,
+) -> Result<Vec<u8>, String> {
+    let actual = support_metadata(value)?;
+    if actual.temporary_id != expected.temporary_id
+        || actual.bytes != expected.bytes
+        || actual.sha256 != expected.sha256
+        || value["bundleId"].as_str() != Some(expected.bundle_id.as_str())
+    {
+        return Err("SUPPORT_BUNDLE_CHANGED: 设备临时支持包与预览不一致".into());
+    }
+    let encoded = value["archiveBase64"]
+        .as_str()
+        .ok_or("SUPPORT_BUNDLE_DATA_MISSING")?;
+    let archive = STANDARD
+        .decode(encoded)
+        .map_err(|_| "SUPPORT_BUNDLE_ENCODING_INVALID")?;
+    if archive.len() != expected.bytes
+        || !archive.starts_with(&[0x1f, 0x8b])
+        || format!("{:x}", Sha256::digest(&archive)) != expected.sha256
+    {
+        return Err("SUPPORT_BUNDLE_DIGEST_MISMATCH: 支持包传输校验失败".into());
+    }
+    Ok(archive)
+}
+
+pub struct SupportContext<'a> {
+    pub root: &'a Path,
+    pub owner: &'a str,
+    pub history_owner: &'a str,
+    pub expected_device_id: &'a str,
+    pub authorize: &'a (dyn Fn() -> Result<(), String> + Sync),
+}
+
+pub async fn collect_support_bundle(
+    state: &SshState,
+    context: SupportContext<'_>,
+    request: &DeviceRequest,
+    cancelled: &AtomicBool,
+) -> Result<crate::d1_support::Receipt, String> {
+    let SupportContext {
+        root,
+        owner,
+        history_owner,
+        expected_device_id,
+        authorize,
+    } = context;
+    authorize()?;
+    let status = status(state, root, owner, request).await?;
+    if status.device_id != expected_device_id {
+        return Err("SUPPORT_DEVICE_CHANGED: 当前设备与确认设备不一致，请重新连接".into());
+    }
+    let entry_key = key(owner, request)?;
+    let (fingerprint, device_id, cid) = state
+        .0
+        .lock()
+        .map_err(|_| "OTA_SSH_STATE")?
+        .get(&entry_key)
+        .cloned()
+        .ok_or("OTA_SSH_STATE")?;
+    authorize()?;
+    let identity = json!({"deviceId":device_id,"cid":cid});
+    let (prepared, _) = call(
+        request,
+        Some(fingerprint.clone()),
+        "support_bundle_prepare",
+        &identity,
+        cancelled,
+        None,
+    )
+    .await?;
+    let metadata = support_metadata(&prepared)?;
+    let payload = json!({"temporaryId":metadata.temporary_id,"bundleId":metadata.bundle_id,"deviceId":device_id,"cid":cid});
+    authorize()?;
+    let (transferred, _) = call(
+        request,
+        Some(fingerprint.clone()),
+        "support_bundle_read",
+        &payload,
+        cancelled,
+        None,
+    )
+    .await?;
+    let archive = decode_support_archive(&transferred, &metadata)?;
+    authorize()?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SUPPORT_CANCELLED: 日志采集已取消，未保存本地支持包".into());
+    }
+    let local_root = root.to_path_buf();
+    let local_owner = history_owner.to_owned();
+    let local_device = device_id.clone();
+    let bundle_id = metadata.bundle_id.clone();
+    let digest = metadata.sha256.clone();
+    let mut receipt = tauri::async_runtime::spawn_blocking(move || {
+        crate::d1_support::save(
+            &local_root,
+            &local_owner,
+            &local_device,
+            &bundle_id,
+            &digest,
+            &archive,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    authorize()?;
+    // Saving and read-back verification must succeed before any remote deletion.
+    let cleanup = call(
+        request,
+        Some(fingerprint),
+        "support_bundle_cleanup",
+        &payload,
+        &AtomicBool::new(false),
+        None,
+    )
+    .await;
+    if !matches!(cleanup,Ok((ref value,_)) if value["cleaned"].as_bool()==Some(true)) {
+        let warning = "本机支持包已保存；设备临时文件未能立即清理，将在设备重启或后续采集时清理。";
+        receipt.cleanup_warning = Some(match receipt.cleanup_warning {
+            Some(previous) => format!("{previous} {warning}"),
+            None => warning.into(),
+        });
+    }
+    Ok(receipt)
+}
+
 pub struct UpgradeContext<'a> {
     pub root: &'a Path,
     pub owner: &'a str,
@@ -557,6 +786,22 @@ mod tests {
         assert!(!cmd.contains("touch /tmp"));
         assert!(!cmd.contains("`foo`"));
         assert!(!cmd.contains("\n"));
+    }
+    #[test]
+    fn support_error_preserves_known_reason_without_disclosing_traceback() {
+        let traceback = "Traceback (most recent call last):\n  File /private/token=secret.py\nValueError: SUPPORT_BUNDLE_UNSUPPORTED: token=secret /private/path\n";
+        let message = support_command_error(traceback);
+        assert!(message.starts_with("SUPPORT_BUNDLE_UNSUPPORTED:"));
+        assert!(message.contains("dci support-bundle"));
+        assert!(!message.contains("secret"));
+        assert!(!message.contains("/private"));
+        assert!(
+            support_command_error("ValueError: SUPPORT_BUNDLE_UNSUPPORTED_EXTRA: secret")
+                .starts_with("SUPPORT_SSH_COMMAND:")
+        );
+        assert!(
+            support_command_error("RuntimeError: token=secret").starts_with("SUPPORT_SSH_COMMAND:")
+        );
     }
     #[test]
     fn ssh_final_state_is_not_inferred_from_upload() {

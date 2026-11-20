@@ -96,3 +96,6 @@ export const otaStateLabels:Record<string,string> = {
 };
 export interface DeviceBundleRequest {runId:string; fromMs:number; toMs:number}
 export interface DeviceBundlePreview extends DeviceBundleRequest {source:"physical_device";files:{name:string;bytes:number;sha256:string}[];planHash:string;filteredMessages:number;privacy:string}
+
+export interface DeviceSupportBundleReceipt {deviceId:string;bundleId:string;path:string;bytes:number;sha256:string;collectedAtMs:number;cleanupWarning:string|null}
+export interface DeviceSupportBundleInventory {directory:string;records:DeviceSupportBundleReceipt[]}

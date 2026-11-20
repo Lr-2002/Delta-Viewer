@@ -16,6 +16,7 @@ mod d1_page;
 mod d1_service_test;
 mod d1_services;
 mod d1_ssh;
+mod d1_support;
 mod d1_wifi;
 mod dataset_layout;
 mod episode_metadata;
@@ -297,6 +298,87 @@ async fn d1_ota_submit(
         &task.cancelled(),
     )
     .await;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_collect_support_bundle(
+    ssh: State<'_, d1_ssh::SshState>,
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    request: d1_device::DeviceRequest,
+    expected_device_id: String,
+    operation_id: u64,
+) -> Result<d1_support::Receipt, String> {
+    let owner = d1_owner(&auth)?;
+    let root = base_app_data_root(&app)?;
+    let history = user_center::d1_history_owner(&root, &auth).map_err(|e| e.to_string())?;
+    let task = control.start(operation_id)?;
+    let authorize = || {
+        if d1_owner(&auth)? != owner {
+            return Err("D1_SESSION_CHANGED".into());
+        }
+        Ok(())
+    };
+    let result = d1_ssh::collect_support_bundle(
+        &ssh,
+        d1_ssh::SupportContext {
+            root: &root,
+            owner: &owner,
+            history_owner: &history,
+            expected_device_id: &expected_device_id,
+            authorize: &authorize,
+        },
+        &request,
+        &task.cancelled(),
+    )
+    .await;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_support_inventory(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+) -> Result<d1_support::Inventory, String> {
+    let owner = d1_owner(&auth)?;
+    let root = base_app_data_root(&app)?;
+    let history = user_center::d1_history_owner(&root, &auth).map_err(|e| e.to_string())?;
+    let result =
+        tauri::async_runtime::spawn_blocking(move || d1_support::inventory(&root, &history))
+            .await
+            .map_err(|e| e.to_string())?;
+    if d1_owner(&auth)? != owner {
+        return Err("D1_SESSION_CHANGED".into());
+    }
+    result
+}
+
+#[tauri::command]
+async fn d1_support_export(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    control: State<'_, TaskControl>,
+    bundle_id: String,
+    destination_parent: String,
+    operation_id: u64,
+) -> Result<String, String> {
+    let owner = d1_owner(&auth)?;
+    let root = base_app_data_root(&app)?;
+    let history = user_center::d1_history_owner(&root, &auth).map_err(|e| e.to_string())?;
+    let _task = control.start(operation_id)?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        d1_support::export(&root, &history, &bundle_id, Path::new(&destination_parent))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     if d1_owner(&auth)? != owner {
         return Err("D1_SESSION_CHANGED".into());
     }
@@ -3268,6 +3350,9 @@ pub fn run() {
             d1_ota_preview,
             d1_ota_submit,
             d1_ota_status,
+            d1_collect_support_bundle,
+            d1_support_inventory,
+            d1_support_export,
             d1_ota_check_device,
             d1_ota_history,
             d1_ota_log_preview,
