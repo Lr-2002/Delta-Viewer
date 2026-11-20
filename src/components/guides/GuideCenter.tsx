@@ -436,7 +436,7 @@ export function GuideCenter() {
     setVisibleCenter(true);
   }
 
-  const entry = <button ref={triggerRef} type="button" className={"button button-secondary guide-entry" + (toolbar ? "" : " guide-entry-fallback")} title={name}
+  const entry = <button ref={triggerRef} type="button" className={"button button-secondary guide-entry" + (toolbar ? "" : " guide-entry-fallback")} title={name} aria-label={name}
     onClick={() => setVisibleCenter(true)}><BookOpen size={17} /><span>{name}</span></button>;
 
   return <>

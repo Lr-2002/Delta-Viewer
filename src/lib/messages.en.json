@@ -4287,5 +4287,6 @@
   "新增中英文文档中心与互动教程，支持搜索、续学和重新学习；补齐连续回放、审核修改、快捷键、高速浏览及安装包下载说明。": "Adds a bilingual Documentation Center with search, interactive guides, resume and restart; covers continuous playback, decision revisions, shortcuts, fast browsing and installer downloads.",
   "接入软件内文档中心，提供中英文图文教程、搜索、互动高亮、续学与重新学习，支持离线阅读。": "Adds offline Chinese and English illustrated documentation, search, interactive highlighting, resume and restart.",
   "补齐 1.11.6 之后的连续分段、审核修改、缺失数据处理、独立原因库、账号快捷键、高速浏览及软件内安装包下载教程，并按当前控件修正步骤。": "Updates guides beyond 1.11.6 for continuous parts, review revisions, missing data, independent reason libraries, account shortcuts, fast browsing and in-app installer downloads, using current controls.",
-  "增加当前功能中英文手册；保留实际操作确认、登录、播放与审核状态，未接入的日志包与 Agent 如实标明。": "Adds a current bilingual feature manual, preserves confirmations, sign-in, playback and review state, and identifies bundle reception and Agent support as not yet available."
+  "增加当前功能中英文手册；保留实际操作确认、登录、播放与审核状态，未接入的日志包与 Agent 如实标明。": "Adds a current bilingual feature manual, preserves confirmations, sign-in, playback and review state, and identifies bundle reception and Agent support as not yet available.",
+  "修正文档中心入口导致校对顶栏换行的问题，保留图表与审核按钮的可见区域。": "Keep the proofreading toolbar on one row at standard desktop widths so the chart and review buttons stay visible."
 }

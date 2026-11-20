@@ -227,6 +227,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.13.5": "修正文档中心入口导致校对顶栏换行的问题，保留图表与审核按钮的可见区域。",
   "1.13.3": "新增中英文文档中心与互动教程，支持搜索、续学和重新学习；补齐连续回放、审核修改、快捷键、高速浏览及安装包下载说明。",
   "1.13.2": "修复软件内安装包下载入口：已准备好的 Windows 安装包可直接下载，无需等待三平台或 GitHub 正式发布。",
   "1.13.1": "优化外发高码率主相机的分块读取，保留副路读取能力；继续支持七路原画质、连续播放及本地恢复等待修正。",
