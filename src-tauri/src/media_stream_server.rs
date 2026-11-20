@@ -1,6 +1,5 @@
 use crate::error::{AppError, AppResult};
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -8,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-const MAX_MEDIA_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
+// A longer sequential response avoids repeatedly reopening seven files on an
+// HDD/NAS. copy_media_range still retains only its single 1 MiB buffer.
+const MAX_MEDIA_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct MediaStreamServer {
@@ -235,7 +236,14 @@ fn serve_connection(
         }
         _ => return write_empty_response(&mut stream, "404 Not Found", &[]),
     };
-    let mut file = match File::open(path) {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    if mime_type == "video/mp4" {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_SEQUENTIAL_SCAN);
+    }
+    let mut file = match options.open(path) {
         Ok(file) => file,
         Err(_) => return write_empty_response(&mut stream, "404 Not Found", &[]),
     };

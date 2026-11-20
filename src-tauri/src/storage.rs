@@ -13,14 +13,68 @@ const MANIFEST_MIN_RESERVE: u64 = 1024 * 1024;
 const MANIFEST_BYTES_PER_FILE: u64 = 256;
 const EXPORT_MIN_RESERVE: u64 = 64 * 1024 * 1024;
 
-/// Reading a remote source does not require free-space or filesystem queries.
+/// Reading a source does not require free-space or filesystem queries.
 /// Keep strict volume_info for write preflights and formal storage diagnostics.
 pub fn source_volume_info(path: &Path) -> AppResult<VolumeInfo> {
     #[cfg(windows)]
     let remote = remote_source_root(path);
     #[cfg(not(windows))]
     let remote = None;
-    source_volume_with(path, remote, volume_info)
+    source_volume_with(path, remote, |path| {
+        #[cfg(windows)]
+        let (root, filesystem, drive_type) = {
+            use std::os::windows::ffi::OsStrExt;
+            use std::path::{Component, Prefix};
+            use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+            use windows_sys::Win32::System::WindowsProgramming::{
+                DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOVABLE,
+            };
+            let root = match path.components().next() {
+                Some(Component::Prefix(prefix)) => match prefix.kind() {
+                    Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                        format!("{}:\\", char::from(letter))
+                    }
+                    _ => path.display().to_string(),
+                },
+                _ => path.display().to_string(),
+            };
+            let wide: Vec<u16> = std::ffi::OsStr::new(&root)
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            let kind = match unsafe { GetDriveTypeW(wide.as_ptr()) } {
+                DRIVE_FIXED => "fixed",
+                DRIVE_REMOVABLE => "removable",
+                DRIVE_CDROM => "optical",
+                DRIVE_RAMDISK => "ramdisk",
+                _ => "unknown",
+            };
+            (root, None, kind.into())
+        };
+        #[cfg(not(windows))]
+        let (root, filesystem, drive_type) = if cfg!(target_os = "macos") {
+            (
+                path.display().to_string(),
+                None,
+                if network_source_filter()(path) {
+                    "remote"
+                } else {
+                    "fixed"
+                }
+                .into(),
+            )
+        } else {
+            platform_volume_details(path)
+        };
+        Ok(VolumeInfo {
+            capacity_known: false,
+            root,
+            filesystem,
+            drive_type,
+            total_bytes: 0,
+            available_bytes: 0,
+        })
+    })
 }
 
 fn source_volume_with(

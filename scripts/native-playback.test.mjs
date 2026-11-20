@@ -197,14 +197,33 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
         "playable NAS buffer below the startup threshold must not pause running cameras");
       assert.deepEqual(shortRunwayResult.pauses, [], "polling must not cause shared stop/start cycles");
       assert.ok(shortRunwayResult.advance > .35, JSON.stringify(shortRunwayResult));
+      // Leave enough media before the three-second segment boundary for the
+      // following injected wait; reaching that boundary is a different test.
+      await page.evaluate(() => window.__nativePlayback.seek(15));
+      await page.waitForFunction(() => [...document.querySelectorAll('video')].every(v => !v.seeking && Math.abs(v.currentTime - .5) < .05));
+      await page.evaluate(() => window.__nativePlayback.play(true));
+      await page.waitForFunction(() => [...document.querySelectorAll('video')].every(v => !v.paused && v.readyState >= 3));
+      const staleWaiting = await page.evaluate(() => {
+        const eventCount = window.__nativeStats.events.length;
+        const time = document.querySelector('video').currentTime;
+        document.querySelectorAll('video')[1].dispatchEvent(new Event('waiting'));
+        return {eventCount, time};
+      });
+      await page.waitForTimeout(200);
+      assert.deepEqual(await page.evaluate(before => window.__nativeStats.events.slice(before.eventCount)
+        .filter(e => e.event === 'pause' || e.event === 'seeking'), staleWaiting), [],
+      "a waiting event delivered after recovery must not pause or seek any camera");
       await page.evaluate(() => {
         const primary = document.querySelectorAll("video")[1];
-        const tail = primary.currentTime + .05;
+        const stalledTime = primary.currentTime;
+        const tail = stalledTime + .05;
+        Object.defineProperty(primary, 'readyState', {configurable:true, value:2});
+        Object.defineProperty(primary, 'currentTime', {configurable:true, get:()=>stalledTime});
         Object.defineProperty(primary, "buffered", { configurable: true,
           value: { length: 1, start: () => 0, end: () => tail } });
         primary.dispatchEvent(new Event("waiting"));
       });
-      await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => v.paused));
+      await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v,i) => i === 1 ? !v.paused : v.paused));
       const paused = await page.evaluate(async () => {
         // A frame submitted before pause can still report its presentation.
         // Let that callback and React's paint finish before taking the snapshot.
@@ -230,8 +249,9 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
         "buffering must freeze the shared timeline");
       assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll("video")].map((video) => video.currentTime)),
         paused.mediaTimes, "buffering must freeze the media clocks");
-      assert.ok(await page.evaluate(() => [...document.querySelectorAll("video")].every((video) => video.paused)));
-      await page.evaluate(() => { delete document.querySelectorAll("video")[1].buffered; });
+      assert.ok(await page.evaluate(() => [...document.querySelectorAll("video")].every((video,i) => i === 1 ? !video.paused : video.paused)),
+        "healthy peers pause while the hungry decoder keeps its play intent to recover");
+      await page.evaluate(() => { const video=document.querySelectorAll('video')[1]; delete video.buffered; delete video.readyState; delete video.currentTime; video.dispatchEvent(new Event('canplay')); });
       await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v) => !v.paused && !v.seeking));
       const resumedAt = await page.evaluate(() => document.querySelector("video").currentTime);
       // Recovery may legitimately align a paused camera. Measure the speed
@@ -274,12 +294,15 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
         const beforeHold = await page.locator("video").first().evaluate(v => v.currentTime);
         await page.evaluate(() => {
           const secondary = document.querySelectorAll("video")[1];
-          const tail = secondary.currentTime + .05;
+          const stalledTime = secondary.currentTime;
+          const tail = stalledTime + .05;
+          Object.defineProperty(secondary, 'readyState', {configurable:true, value:2});
+          Object.defineProperty(secondary, 'currentTime', {configurable:true, get:()=>stalledTime});
           Object.defineProperty(secondary, "buffered", { configurable: true,
             value: { length: 1, start: () => 0, end: () => tail } });
           secondary.dispatchEvent(new Event("waiting"));
         });
-        await page.waitForFunction(() => [...document.querySelectorAll("video")].every(v => v.paused));
+        await page.waitForFunction(() => [...document.querySelectorAll("video")].every((v,i) => i===1 ? !v.paused : v.paused));
         await page.waitForTimeout(250);
         const held = await page.evaluate(() => ({
           primary: document.querySelector("video").currentTime,
@@ -290,7 +313,7 @@ test(`native MP4 playback handles discovery, buffering, seeks and completion (pr
         assert.ok(Math.abs(held.frame / 30 - held.primary) < .04,
           "shared hold uses the actual primary clock, not a stale presentation");
         await page.evaluate(() => {
-          delete document.querySelectorAll("video")[1].buffered;
+          const v=document.querySelectorAll('video')[1];delete v.buffered;delete v.currentTime;delete v.readyState;v.dispatchEvent(new Event('canplay'));
         });
         await page.waitForFunction(() => [...document.querySelectorAll("video")].every(v => !v.paused));
         await page.evaluate(() => {

@@ -113,6 +113,9 @@ export const FramePanel = memo(function FramePanel({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const primaryClockReporterRef = useRef<((mediaTime: number) => void) | null>(null);
   const requestedVideoTimeRef = useRef(0);
+  const playbackHeldRef = useRef(playbackHeld);
+  playbackHeldRef.current = playbackHeld;
+  const reconcilePlaybackRef = useRef<(() => void) | null>(null);
   const lastNativeCorrectionRef = useRef(0);
   const [nativeVideo, setNativeVideo] = useState<VideoSource | null>(null);
   const [videoSourceChecked, setVideoSourceChecked] = useState(false);
@@ -228,6 +231,18 @@ export const FramePanel = memo(function FramePanel({
   const videoUrl = useAdaptive ? adaptiveUrl : nativeVideo?.paths[videoSegmentIndex];
 
   useEffect(() => {
+    const video = videoRef.current;
+    if (!nativeVideoActive || !video || useAdaptive) return;
+    return () => {
+      // Detaching a DOM node alone can leave its decoder and disk reads alive
+      // until GC. Cancel the old source before loading the next recording.
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    };
+  }, [nativeVideoActive, useAdaptive, videoUrl]);
+
+  useEffect(() => {
     if (!useAdaptive || !videoUrl) return;
     let active = true;
     const video = videoRef.current;
@@ -284,9 +299,12 @@ export const FramePanel = memo(function FramePanel({
     };
     const resume = () => {
       if (!active || video.seeking || video.ended) return;
-      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
         onBufferingChange?.(stream.name, true);
         setVideoStatus("buffering");
+        // A hungry decoder must retain its play intent. Pausing it together
+        // with healthy peers can prevent canplay, even with bytes in memory.
+        if (video.paused) void video.play().catch(() => undefined);
         return;
       }
       const target = requestedVideoTimeRef.current;
@@ -302,12 +320,13 @@ export const FramePanel = memo(function FramePanel({
       // decoder, not a minimum buffer for continuous playback. Requiring it
       // on every poll pauses healthy NAS streams before they run out of data.
       // A real waiting event below still freezes all cameras together.
-      if (!video.paused && !playbackHeld) {
+      if (!video.paused && !playbackHeldRef.current) {
         onBufferingChange?.(stream.name, false);
+        setVideoStatus("playing");
         return;
       }
       const remaining = Math.max(0, video.duration - video.currentTime);
-      const runway = Math.min(0.75 * video.playbackRate, remaining);
+      const runway = Math.min(0.25 * video.playbackRate, 2, remaining);
       const buffered = Array.from({ length: video.buffered.length }, (_, index) => index)
         .some((index) => video.buffered.start(index) <= video.currentTime + 0.01
           && video.buffered.end(index) - video.currentTime >= runway - 0.02);
@@ -318,16 +337,17 @@ export const FramePanel = memo(function FramePanel({
         return;
       }
       onBufferingChange?.(stream.name, false);
-      if (playbackHeld) { pauseForBuffering(); return; }
+      if (playbackHeldRef.current) { pauseForBuffering(); return; }
       if (video.paused) void video.play().catch(() => { if (active) setVideoStatus("ready"); });
     };
     const waitForRunway = () => {
-      if (!active || video.ended) return;
-      pauseForBuffering();
+      // waiting is queued: by delivery the camera may already have recovered,
+      // or a user seek may be in progress. Neither should stop the group.
+      if (!active || video.ended || video.seeking || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
+      if (isPrimary) primaryClockReporterRef.current?.(video.currentTime);
       setVideoStatus("buffering");
       onBufferingChange?.(stream.name, true);
     };
-    if (playbackHeld) pauseForBuffering();
     // Browser buffers stay in memory. A paused decoder starts only after a
     // short runway; a running decoder waits for an actual buffering event.
     video.addEventListener("waiting", waitForRunway);
@@ -335,19 +355,23 @@ export const FramePanel = memo(function FramePanel({
     video.addEventListener("canplay", resume);
     video.addEventListener("seeked", resume);
     const timer = window.setInterval(resume, 100);
+    reconcilePlaybackRef.current = resume;
     // resume() already aligns a paused camera when needed. Seeking again on
     // every shared-hold transition can rewind a running primary to a stale
     // presentation callback and trigger another disk read.
     resume();
     return () => {
       active = false;
+      reconcilePlaybackRef.current = null;
       window.clearInterval(timer);
       video.removeEventListener("waiting", waitForRunway);
       video.removeEventListener("progress", resume);
       video.removeEventListener("canplay", resume);
       video.removeEventListener("seeked", resume);
     };
-  }, [exactFrameSeek, isPrimary, nativePlaybackEnabled, playbackHeld, nativeVideoActive, onBufferingChange, stream.name, videoSegmentIndex, videoUrl]);
+  }, [exactFrameSeek, isPrimary, nativePlaybackEnabled, nativeVideoActive, onBufferingChange, stream.name, videoSegmentIndex, videoUrl]);
+
+  useEffect(() => { reconcilePlaybackRef.current?.(); }, [playbackHeld]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -451,10 +475,10 @@ export const FramePanel = memo(function FramePanel({
     let active = true;
     let callbackId = 0;
     let lastReportedMediaTime = -Infinity;
-    const reportMediaTime = (mediaTime: number) => {
+    const reportMediaTime = (mediaTime: number, freeze = false) => {
       // A presentation queued by the compositor can arrive after a shared
       // buffering pause or during a seek. Neither may advance the UI clock.
-      if (!active || video.paused || video.seeking) return;
+      if (!active || video.paused || video.seeking || (playbackHeldRef.current && !freeze)) return;
       // A delayed compositor frame must not move continuous playback behind
       // the position already frozen for a shared buffering pause. Explicit
       // seeks and segment changes recreate this reporter with a fresh clock.
@@ -473,7 +497,7 @@ export const FramePanel = memo(function FramePanel({
       );
       onFramePresented?.(stream.name, Math.round(timelinePosition), timelinePosition);
     };
-    primaryClockReporterRef.current = reportMediaTime;
+    primaryClockReporterRef.current = time => reportMediaTime(time, true);
     if (typeof video.requestVideoFrameCallback !== "function") {
       // Older WebViews still follow media time, including when buffering stops
       // it. An independent UI timer would run ahead of a stalled decoder.
@@ -699,11 +723,7 @@ export const FramePanel = memo(function FramePanel({
             onFirstFrameAvailable?.(root, stream.name);
             if (!nativePlaybackEnabled && !highSpeedBrowsing) onFrameSettled?.(stream.name, frameId);
           }}
-          onPlaying={() => {
-            setVideoStatus("playing");
-            onBufferingChange?.(stream.name, false);
-          }}
-          onWaiting={() => { setVideoStatus("buffering"); if (nativePlaybackEnabled) onBufferingChange?.(stream.name, true); }}
+          onPlaying={() => reconcilePlaybackRef.current?.()}
           onStalled={() => setVideoStatus("buffering")}
           onEnded={() => {
             onBufferingChange?.(stream.name, false);

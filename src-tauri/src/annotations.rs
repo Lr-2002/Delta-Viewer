@@ -335,6 +335,24 @@ pub fn suggest_trajectory_code(data_root: &Path, task_id: &str) -> AppResult<Str
     Ok(format!("{}-{next:03}", task.code_prefix))
 }
 
+/// Most review-only installations never save action annotations. Do not scan
+/// all source media for an identity when the local revision store is empty.
+pub fn load_annotation_on_demand(
+    data_root: &Path,
+    episode_root: &Path,
+    fingerprint: impl FnOnce() -> AppResult<String>,
+) -> AppResult<Option<EpisodeAnnotation>> {
+    let mut entries = match fs::read_dir(annotations_dir(data_root)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if entries.next().transpose()?.is_none() {
+        return Ok(None);
+    }
+    load_annotation(data_root, episode_root, &fingerprint()?)
+}
+
 pub fn load_annotation(
     data_root: &Path,
     episode_root: &Path,
@@ -1209,6 +1227,33 @@ mod tests {
         "1111111111111111111111111111111111111111111111111111111111111111";
     const FINGERPRINT_TWO: &str =
         "2222222222222222222222222222222222222222222222222222222222222222";
+
+    #[test]
+    fn empty_annotation_store_does_not_read_source_fingerprint() {
+        let root = test_output("annotation-lazy-fingerprint");
+        fs::create_dir_all(&root).unwrap();
+        let source = Path::new("unavailable-source-must-not-be-read");
+        assert!(
+            super::load_annotation_on_demand(&root, source, || panic!("no saved annotation"))
+                .unwrap()
+                .is_none()
+        );
+        fs::create_dir(root.join("annotations")).unwrap();
+        assert!(
+            super::load_annotation_on_demand(&root, source, || panic!("empty revision store"))
+                .unwrap()
+                .is_none()
+        );
+        fs::create_dir(root.join("annotations/saved")).unwrap();
+        let error = super::load_annotation_on_demand(&root, source, || {
+            Err(crate::error::AppError::Message(
+                "source fingerprint failed".into(),
+            ))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("source fingerprint failed"));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn assigned_task_reuses_builtin_when_code_prefix_is_occupied() {

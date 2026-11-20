@@ -227,6 +227,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.12.7": "加快目录进入与未标注数据载入；修复本地／NAS播放重复等待和解码恢复，优化连续读取及切换响应。",
   "1.12.6": "修正暂停时切换高速浏览或倍速后进度显示回跳；包含独立异常／无效原因管理和常用项删除。",
   "1.12.5": "新增可选高速浏览与异常／无效独立原因管理，支持常用原因删除、排序；保留七路原画质与暂停逐帧。",
   "1.12.4": "修复高倍速短暂解码等待导致七路反复启停的卡顿；保留原画质、连续分段和同步缓冲，通过软件内版本与更新下载。",

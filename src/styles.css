@@ -1568,7 +1568,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .review-main-grid .skeleton-heading > span { font-size: 10.08px; }
 .review-main-grid .frame-render-progress { min-height: 22px; margin-top: 4px; padding: 3px 6px; }
 .review-main-grid .quality-inspector { display: flex; flex-direction: column; gap: 7px; min-height: 0; }
-.review-main-grid .quality-inspector .machine-segment-list { flex: 0 1 auto; width: 100%; height: auto; max-height: clamp(120px, calc(100vh - 740px - var(--manager-navigation-height, 0px)), 360px); min-height: 100px; overflow-y: scroll; overscroll-behavior: contain; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); scrollbar-gutter: stable; scrollbar-color: #89969b #edf0f1; }
+/* Reserve the additional playback-controls row before growing the segment list. */
+.review-main-grid .quality-inspector .machine-segment-list { flex: 0 1 auto; width: 100%; height: auto; max-height: clamp(120px, calc(100vh - 780px - var(--manager-navigation-height, 0px)), 360px); min-height: 100px; overflow-y: scroll; overscroll-behavior: contain; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); scrollbar-gutter: stable; scrollbar-color: #89969b #edf0f1; }
 .review-main-grid .machine-segment-list::-webkit-scrollbar { width: 10px; }
 .review-main-grid .machine-segment-list::-webkit-scrollbar-track { background: #edf0f1; }
 .review-main-grid .machine-segment-list::-webkit-scrollbar-thumb { background: #89969b; border: 2px solid #edf0f1; border-radius: 5px; }

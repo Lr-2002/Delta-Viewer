@@ -4276,5 +4276,6 @@
   "修复高倍速短暂解码等待导致七路反复启停的卡顿；保留原画质、连续分段和同步缓冲，通过软件内版本与更新下载。": "Fix repeated seven-camera pauses caused by brief decode gaps at high speeds; preserve original quality, continuous segments and synchronized buffering. Download in Version & Updates.",
   "修复高倍速已有视频缓冲时，短暂解码等待被放大为七路反复暂停、降速和恢复的卡顿。": "Fix brief decode gaps repeatedly pausing, slowing down and restarting all seven cameras at high playback speeds even when media is buffered.",
   "忽略已经恢复的迟到等待事件；持续缺数据仍同步缓冲，暂停、拖动、改速和切换录制及时取消旧等待。": "Ignore delayed waiting events after recovery. Sustained stalls still buffer together; pause, seek, speed changes and recording switches cancel old waits.",
-  "保留七路原画质、连续分段、全部倍速、账号快捷键和独立审核结果；新版继续通过软件“版本与更新”下载使用。": "Preserve seven-camera original quality, continuous segments, all speeds, account shortcuts and independent review results. Download updates in Version & Updates."
+  "保留七路原画质、连续分段、全部倍速、账号快捷键和独立审核结果；新版继续通过软件“版本与更新”下载使用。": "Preserve seven-camera original quality, continuous segments, all speeds, account shortcuts and independent review results. Download updates in Version & Updates.",
+  "加快目录进入与未标注数据载入；修复本地／NAS播放重复等待和解码恢复，优化连续读取及切换响应。": "Open folders and unannotated recordings faster; fix repeated local/NAS playback waits and decoder recovery, with more efficient sequential reads and recording changes."
 }

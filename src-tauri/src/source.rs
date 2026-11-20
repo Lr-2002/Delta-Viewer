@@ -113,21 +113,11 @@ pub fn scan_source_catalog(
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<ScanResult> {
-    if !root.exists() {
-        return Err(AppError::MissingPath(root.display().to_string()));
-    }
-    if !root.is_dir() {
-        return Err(AppError::Message(format!(
-            "源路径不是目录: {}",
-            root.display()
-        )));
-    }
-
-    let volume = storage::source_volume_info(root)?;
     let episode_roots = discover_episode_roots(root, cancelled)?;
     if episode_roots.is_empty() {
         return Err(AppError::NoEpisodes(root.display().to_string()));
     }
+    let volume = storage::source_volume_info(root)?;
     let episodes = episode_roots
         .iter()
         .map(|episode_root| catalog_episode_summary(episode_root))
@@ -1598,11 +1588,9 @@ fn inspect_episode_directory(
     root: &Path,
     cancelled: &AtomicBool,
 ) -> AppResult<(bool, Vec<PathBuf>)> {
-    if is_regular_file(&root.join("manifest.json"))
-        || is_regular_file(&root.join(".session_meta/manifest.json"))
-    {
-        return Ok((true, Vec::new()));
-    }
+    // Directory entries already carry file types. Avoid two extra SMB metadata
+    // round trips for every recording before doing this same directory read.
+    let mut session_meta = false;
     let mut child_directories = Vec::new();
     for entry in fs::read_dir(root)? {
         check_cancelled(cancelled)?;
@@ -1610,6 +1598,9 @@ fn inspect_episode_directory(
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             let name = entry.file_name();
+            if name == OsStr::new(".session_meta") {
+                session_meta = true;
+            }
             if name.to_str().is_some_and(|value| value.starts_with('.'))
                 || name == OsStr::new("System Volume Information")
                 || matches!(
@@ -1630,13 +1621,17 @@ fn inspect_episode_directory(
             child_directories.push(entry.path());
         } else if file_type.is_file() {
             let name = entry.file_name();
-            if name == OsStr::new("states.jsonl")
+            if name == OsStr::new("manifest.json")
+                || name == OsStr::new("states.jsonl")
                 || name == OsStr::new("session.json")
                 || segment_bin::segment_number_from_name(&name).is_some()
             {
                 return Ok((true, Vec::new()));
             }
         }
+    }
+    if session_meta && is_regular_file(&root.join(".session_meta/manifest.json")) {
+        return Ok((true, Vec::new()));
     }
     Ok((false, child_directories))
 }
@@ -2349,6 +2344,10 @@ mod tests {
         assert_eq!(catalog.episodes[0].total_files, 0);
         assert_eq!(catalog.episodes[0].state_count, 0);
         assert_eq!(catalog.episodes[0].streams.len(), 5);
+        assert!(
+            !catalog.volume.capacity_known,
+            "read-only discovery never needs capacity"
+        );
 
         let preview = load_episode_preview(&episode, None, &cancelled).unwrap();
         assert!(!preview.summary.indexed);

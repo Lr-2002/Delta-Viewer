@@ -1829,11 +1829,12 @@ async fn load_episode_annotation(
     let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<Option<EpisodeAnnotation>> {
         let root = std::fs::canonicalize(Path::new(&source_path))?;
-        let fingerprint = match cache.fingerprint_for(&root)? {
-            Some(fingerprint) => fingerprint,
-            None => source::episode_fingerprint(&root, &AtomicBool::new(false))?,
-        };
-        annotations::load_annotation(&data_root, &root, &fingerprint)
+        annotations::load_annotation_on_demand(&data_root, &root, || {
+            match cache.fingerprint_for(&root)? {
+                Some(fingerprint) => Ok(fingerprint),
+                None => source::episode_fingerprint(&root, &AtomicBool::new(false)),
+            }
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -2511,8 +2512,6 @@ async fn scan_source(
     operation_id: u64,
 ) -> Result<ScanResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
-    emit_task_start(&app, operation_id, "scan", "检查源目录响应", &path);
-    ensure_source_directory_responsive(&path).await?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
     let index_cache = index_cache.inner().clone();
