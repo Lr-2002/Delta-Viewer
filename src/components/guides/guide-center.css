@@ -103,3 +103,10 @@
 }
 
 .guide-center .button-secondary, .guide-tip .button-secondary, .guide-entry.button-secondary { width: auto; padding: 5px 10px; font-size: 13px; }
+
+.is-data-workspace .topbar-actions .guide-entry.button-secondary { flex: 0 0 32px; width: 32px; height: 32px; min-height: 32px; padding: 0; }
+.is-data-workspace .topbar-actions .guide-entry span { display: none; }
+
+@media (min-width: 1101px) {
+  .is-data-workspace .topbar { column-gap: 12px; }
+}
