@@ -323,6 +323,11 @@ lesson("edit", "manage-special-tags", "修改标签、管理常用项与删除�
   c("#episode-special-tags button:has(svg.lucide-trash-2)", "删除标签", "Delete tag"),
   observe("#episode-special-tags", "常用标签管理", "Favorite tag management", ["进入添加标签窗口后点「管理」，可移除常用项。", "Open Add tag and select Manage to remove favorites."]),
 ], { needs: ["打开已添加特殊标签的练习录制。", "Open a practice recording with a special tag."], writes: true });
+lesson("edit", "skeleton-source", "选择骨架标注来源", "Select a skeleton annotation source", [
+  on("骨架片段", "Skeleton segments"),
+  f(".machine-source-picker select", "骨架标注来源", "Skeleton annotation source", ["选择文件名含 skeleton 的 JSON 来源。人工增删改统一保存到 skeleton.description.json，来源文件保持原样。", "Select a JSON source whose filename contains skeleton. Human edits always save to skeleton.description.json; source files stay unchanged."]),
+  observe(".quality-output", "唯一人工输出文件", "Single human output file"),
+], { wiki: "Accounts-and-Annotations", needs: edit });
 lesson("edit", "skeleton-segments", "新增并保存骨架片段", "Add and save a skeleton segment", [
   on("骨架片段", "Skeleton segments"), on("新增片段", "Add segment"),
   field("中文动作描述", "Chinese action description"), observe(".quality-save-state", "骨架描述自动保存状态", "Skeleton description autosave", ["修改后等待「人工结果已保存」或本机待写回提示。", "Wait for the saved or queued writeback status after editing."]),

@@ -26,13 +26,17 @@ pub struct DeferredReview {
 }
 impl DeferredReview {
     pub fn is_action_draft(&self) -> bool {
-        self.request.source_name.as_deref() != Some(crate::machine_annotation::SKELETON_SOURCE)
+        !self
+            .request
+            .source_name
+            .as_deref()
+            .is_some_and(crate::machine_annotation::is_skeleton_source)
             && self.request.status.as_deref().unwrap_or("pending") == "pending"
     }
 }
 // Drafts remain durable/recoverable, but are never eligible for NAS writeback,
 // including pending action entries made by an older client.
-const PUBLISHABLE: &str = "(source_name='skeleton.description.json' OR coalesce(json_extract(payload,'$.request.status'),'pending')!='pending')";
+const PUBLISHABLE: &str = "(instr(lower(source_name),'skeleton')>0 OR coalesce(json_extract(payload,'$.request.status'),'pending')!='pending')";
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingItem {
@@ -159,7 +163,7 @@ pub fn contains_submitted(
     let paths = path_aliases(root, path)?;
     let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
     open(root)?.query_row(
-        &format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND source_name!='skeleton.description.json' AND {PUBLISHABLE})"),
+        &format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND instr(lower(source_name),'skeleton')=0 AND {PUBLISHABLE})"),
         params![service, username, serde_json::to_string(&paths)?], |r|r.get(0),
     ).map_err(failure)
 }
@@ -174,7 +178,7 @@ pub fn pending_batch_rejection(
     let paths = path_aliases(root, path)?;
     let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
     let db = open(root)?;
-    let mut query = db.prepare(&format!("SELECT payload FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND source_name!='skeleton.description.json' AND {PUBLISHABLE} ORDER BY rowid LIMIT 2")).map_err(failure)?;
+    let mut query = db.prepare(&format!("SELECT payload FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND instr(lower(source_name),'skeleton')=0 AND {PUBLISHABLE} ORDER BY rowid LIMIT 2")).map_err(failure)?;
     let rows = query
         .query_map(
             params![service, username, serde_json::to_string(&paths)?],
@@ -201,7 +205,7 @@ pub(crate) fn contains_action_draft(
     let paths = path_aliases(root, path)?;
     let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
     open(root)?.query_row(
-        &format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND source_name!='skeleton.description.json' AND coalesce(json_extract(payload,'$.request.status'),'pending')='pending')"),
+        &format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND instr(lower(source_name),'skeleton')=0 AND coalesce(json_extract(payload,'$.request.status'),'pending')='pending')"),
         params![service, username, serde_json::to_string(&paths)?], |r| r.get(0),
     ).map_err(failure)
 }
@@ -213,19 +217,13 @@ pub fn contains_related(
     source: Option<&str>,
 ) -> AppResult<bool> {
     let paths = path_aliases(root, path)?;
-    let skeleton = source == Some(crate::machine_annotation::SKELETON_SOURCE);
+    let skeleton = source.is_some_and(crate::machine_annotation::is_skeleton_source);
     let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
-    let sql=format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND (source_name=?)=?)");
+    let sql=format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND (instr(lower(source_name),'skeleton')>0)=?)");
     open(root)?
         .query_row(
             &sql,
-            params![
-                service,
-                username,
-                serde_json::to_string(&paths)?,
-                crate::machine_annotation::SKELETON_SOURCE,
-                skeleton
-            ],
+            params![service, username, serde_json::to_string(&paths)?, skeleton],
             |row| row.get(0),
         )
         .map_err(failure)
@@ -241,7 +239,11 @@ pub fn store(
         machine_review::validate_special_tags(tags)?;
     }
     if entry.request.status.as_deref() == Some("approved")
-        || entry.request.source_name.as_deref() == Some(crate::machine_annotation::SKELETON_SOURCE)
+        || entry
+            .request
+            .source_name
+            .as_deref()
+            .is_some_and(crate::machine_annotation::is_skeleton_source)
     {
         machine_review::validate_publish_ranges(&entry.request.segments)?;
     }
@@ -299,7 +301,11 @@ pub fn store(
         entry.request.source_name.as_deref(),
     )?;
     if old.as_ref().is_none_or(|old| old.is_action_draft())
-        && entry.request.source_name.as_deref() != Some(crate::machine_annotation::SKELETON_SOURCE)
+        && !entry
+            .request
+            .source_name
+            .as_deref()
+            .is_some_and(crate::machine_annotation::is_skeleton_source)
         && contains_submitted(root, service, username, &entry.request.source_path)?
     {
         return Err(AppError::Message(
@@ -357,7 +363,7 @@ pub fn receipt_metadata(path: &str, event: &Value, source: Option<&str>, storage
         "submissionId":event["eventId"],
         "identityKey":relative.as_ref().map(|(dataset, relative)|format!("{:x}",Sha256::digest(format!("{dataset}/{relative}").to_lowercase().as_bytes()))),
         "dataset":relative.map(|(dataset, _)|dataset.to_lowercase()),
-        "channel":if source == Some(crate::machine_annotation::SKELETON_SOURCE) {"skeleton"} else {"action"},
+        "channel":if source.is_some_and(crate::machine_annotation::is_skeleton_source) {"skeleton"} else {"action"},
         "originalDurationMs":event["details"]["durationMs"],
         "batch":event["details"]["target"].as_str().is_some_and(|s|s.starts_with("批量不通过"))})
 }
@@ -518,7 +524,12 @@ pub fn local_view(
         qc_content_hash: entry.qc_content_hash.clone(),
         source_write_error: entry.error.clone(),
     });
-    if entry.request.source_name.as_deref() == Some(crate::machine_annotation::SKELETON_SOURCE) {
+    if entry
+        .request
+        .source_name
+        .as_deref()
+        .is_some_and(crate::machine_annotation::is_skeleton_source)
+    {
         view.output_name = crate::machine_annotation::SKELETON_SOURCE.into();
         view.qc_status.clear();
         view.qc_status_error.clear();
@@ -577,7 +588,7 @@ pub fn reopen_action(
     source: Option<&str>,
     expected_event_id: &str,
 ) -> AppResult<ReviewView> {
-    if source == Some(crate::machine_annotation::SKELETON_SOURCE) {
+    if source.is_some_and(crate::machine_annotation::is_skeleton_source) {
         return Err(failure("骨架描述没有审核结论"));
     }
     let _lock = owner_lock(root, service, &user.username)?;
@@ -591,7 +602,7 @@ pub fn reopen_action(
     let aliases = path_aliases(root, path)?;
     let db = open(root)?;
     let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
-    let count:i64=db.query_row(&format!("SELECT count(*) FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND source_name!='skeleton.description.json' AND {PUBLISHABLE}"),params![service,user.username,serde_json::to_string(&aliases)?],|r|r.get(0)).map_err(failure)?;
+    let count:i64=db.query_row(&format!("SELECT count(*) FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND instr(lower(source_name),'skeleton')=0 AND {PUBLISHABLE}"),params![service,user.username,serde_json::to_string(&aliases)?],|r|r.get(0)).map_err(failure)?;
     if count != 1 {
         return Err(failure("本机存在多份结论，请先核对冲突"));
     }
@@ -689,7 +700,7 @@ pub fn status(
     for row in rows {
         let (path, status, error, created_at_ms, source_name) = row.map_err(failure)?;
         items.push(PendingItem {
-            channel: if source_name == crate::machine_annotation::SKELETON_SOURCE {
+            channel: if crate::machine_annotation::is_skeleton_source(&source_name) {
                 "skeleton"
             } else {
                 "action"
@@ -888,7 +899,11 @@ pub(crate) fn submit_action_with_probe(
     entry: DeferredReview,
     probe: &impl Fn(&Path) -> AppResult<()>,
 ) -> AppResult<ReviewView> {
-    if entry.request.source_name.as_deref() == Some(crate::machine_annotation::SKELETON_SOURCE)
+    if entry
+        .request
+        .source_name
+        .as_deref()
+        .is_some_and(crate::machine_annotation::is_skeleton_source)
         || entry.only_pending
     {
         return Err(failure("动作本机草稿入口不接受骨架或批量请求"));

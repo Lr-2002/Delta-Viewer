@@ -130,7 +130,7 @@ pnpm user-center:install
 
 在动作片段旁选择“骨架片段”，点击加号创建整段后按需切割，或在空白处新增；可调整边界、删除和恢复，快捷键与动作编辑一致（X 切割，方向键调整边界，数字键选标签）。该入口没有审核功能，Enter 不提交通过。标签库预置往前走、抬肘、踢腿、蹲下、顶门、关上洗碗机，可保存当前自定义描述、排序和删除；按账号独立保存。
 
-结果保存为当前数据目录的 skeleton.description.json，与 description.json 平级；只恢复已有骨架描述，不从机标导入。技术记录另存 .skeleton.description.review-state.json。保存不改动作结果、session.json 或审核进度，NAS 失败会显示待写回并在恢复后要求确认；不要清理应用数据。
+结果保存为当前数据目录的 skeleton.description.json，与 description.json 平级；默认恢复已有人工骨架描述；也可在“骨架标注来源”选择当前根目录或 `.session_meta` 内文件名包含 `skeleton` 的 JSON，例如 `skeleton.description.tencent-custom.v1.json`。机标来源保留原样，增删改仍统一写入唯一的 `skeleton.description.json`。各来源保留独立本机基线与共享文件冲突保护。技术记录保存在 `.session_meta/.d1-manager/.skeleton.description.review-state.json`。保存不改动作结果、session.json 或审核进度，NAS 失败会显示待写回并在恢复后要求确认；不要清理应用数据。
 
 ## 管理与测试模式（1.3.3）
 

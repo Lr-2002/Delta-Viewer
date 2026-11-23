@@ -228,6 +228,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.14.5": "骨架片段新增标注来源选择，支持读取腾讯纯骨架结果；人工增删改统一保存到 skeleton.description.json，保留来源文件及并发保护。",
   "1.14.2": "减少外发审核 1×、2× 回放的整组停顿，持续停滞时从原进度自动重连一次。",
   "1.14.3": "外发视频缺数据时先补缓冲再恢复，下个分段就绪后直接衔接，减少反复停顿。",
   "1.14.4": "外发视频加载失败时仍可提交异常或无效，缺片提示可直接跳到对应分段。",

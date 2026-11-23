@@ -1,3 +1,7 @@
+export function isSkeletonAnnotationSource(name?: string): boolean {
+  const file = (name ?? "").replace(/^(?:\.session_meta\/|\.\/)/, "");
+  return !file.startsWith(".") && file.endsWith(".json") && file.toLowerCase().includes("skeleton") && !/[\\/:\0]/.test(file);
+}
 import { tr } from "./i18n";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -651,7 +655,7 @@ export async function loadMachineAnnotation(sourcePath: string, sourceName?: str
   demoActor();
   const scenario = new URLSearchParams(window.location.search).get("machineAnnotation");
   if (!scenario || scenario === "missing" || sourceName === "manual" || sourceName === "skeleton.description.json") return {
-    sourceName: sourceName === "skeleton.description.json" ? sourceName : "manual", sourceHash: "demo-manual", episodeId: sourcePath.split("/").at(-1) ?? "demo",
+    sourceName: isSkeletonAnnotationSource(sourceName) ? sourceName : "manual", sourceHash: "demo-manual", episodeId: sourcePath.split("/").at(-1) ?? "demo",
     model: null, completedAt: null, validationStatus: null, frameCount: 196, warnings: [], segments: [],
   };
   if (scenario === "invalid") throw new Error("MACHINE_ANNOTATION_INVALID: 机标 JSON 格式无效");
@@ -744,12 +748,12 @@ export async function loadMachineReview(sourcePath: string, sourceName?: string)
 }
 
 export async function saveMachineReview(sourcePath: string, sourceHash: string, expectedRevision: number, segments: import("../types").ReviewSegment[], sourceName?: string, status: "pending" | "approved" | "rejected" = "pending", rejectionReason?: string, commitEvent?: [string, number], durable?: { base: import("../types").MachineReview; audit: import("./review-audit-types").ReviewAuditEvent }, specialTags?: import("../types").SpecialTag[]): Promise<import("../types").MachineReview> {
-  if ((status === "approved" || sourceName === "skeleton.description.json") && findReviewOverlap(segments)) {
+  if ((status === "approved" || isSkeletonAnnotationSource(sourceName)) && findReviewOverlap(segments)) {
     throw new Error("MACHINE_REVIEW_OVERLAP: 片段范围重叠，请核对边界后再保存；本次未提交审核结论或覆盖人工结果");
   }
   if (isTauriRuntime()) {
     const request = { sourcePath, sourceHash, expectedRevision, segments, sourceName, status, rejectionReason, specialTags };
-    const localEntry = durable && sourceName !== "skeleton.description.json" ? { request, outputHash: durable.base.outputHash ?? null, qcContentHash: durable.base.qcContentHash ?? null, audit: durable.audit, error: "", onlyPending: false } : null;
+    const localEntry = durable && !isSkeletonAnnotationSource(sourceName) ? { request, outputHash: durable.base.outputHash ?? null, qcContentHash: durable.base.qcContentHash ?? null, audit: durable.audit, error: "", onlyPending: false } : null;
     const result = await invoke<import("../types").MachineReview>("save_machine_review", { request, commitEvent, localEntry });
     if (localEntry) window.dispatchEvent(new Event("source-review-pending"));
     return result;
@@ -757,7 +761,7 @@ export async function saveMachineReview(sourcePath: string, sourceHash: string, 
   demoActor();
   const state = await loadMachineReview(sourcePath, sourceName);
   // The latest explicit human snapshot wins, with a new revision of the stored result.
-  const draft = sourceName !== "skeleton.description.json" && status === "pending";
+  const draft = !isSkeletonAnnotationSource(sourceName) && status === "pending";
   const keyForReview = demoReviewKey(sourcePath, sourceName);
   const retained = segments.filter((segment) => !segment.deleted);
   const reason = status === "rejected" ? rejectionReason?.trim() ?? "" : "";
@@ -788,11 +792,11 @@ export async function saveMachineReview(sourcePath: string, sourceHash: string, 
     const original = await loadMachineAnnotation(sourcePath, sourceName);
     segments = committed?.segments ?? original!.segments.map((s, sourceIndex) => ({ sourceIndex, startFrame: s.startFrame, endFrame: s.endFrame, description: s.description, deleted: false, decision: "pending" as const }));
   }
-  const next = { ...state, specialTags: specialTags ?? state.specialTags ?? [], workflowVersion: 4, status, qcStatus: sourceName === "skeleton.description.json" ? state.qcStatus : status, qcRejectionReason: reason, qcStatusError: "", versionId, previousVersionId: state.versionId ?? "", revision: draft ? state.revision : state.revision + 1,
+  const next = { ...state, specialTags: specialTags ?? state.specialTags ?? [], workflowVersion: 4, status, qcStatus: isSkeletonAnnotationSource(sourceName) ? state.qcStatus : status, qcRejectionReason: reason, qcStatusError: "", versionId, previousVersionId: state.versionId ?? "", revision: draft ? state.revision : state.revision + 1,
     rejectionReason: reason, changeSummary, revisionLabel: `${versionId} · ${changeSummary}`, appVersion: APP_VERSION,
     segments: segments.map((item) => ({ ...item, decision: item.deleted ? "pending" as const : status })), localDraft: draft, pendingSourceWrite: false, published: !draft, updatedAtMs: Date.now(), reviewer: "demo" };
   const user = demoActor();
-  if (sourceName === "skeleton.description.json") { demoMachineReviews.set(keyForReview, next); return structuredClone(next); }
+  if (isSkeletonAnnotationSource(sourceName)) { demoMachineReviews.set(keyForReview, next); return structuredClone(next); }
   const key = `dohc.demo.account-reviews:${user.username}`;
   const records = JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, import("../types").AccountReview>;
   if (status !== "pending" || records[sourcePath]) {

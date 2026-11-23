@@ -1894,7 +1894,10 @@ async fn load_machine_review(
             machine_review::view_for_source(Path::new(&source_path), source_name.as_deref(), state)
         })?;
         if let Some((user, service)) = owner {
-            if source_name.as_deref() != Some(machine_annotation::SKELETON_SOURCE) {
+            if !source_name
+                .as_deref()
+                .is_some_and(machine_annotation::is_skeleton_source)
+            {
                 if let Some(entry) = source_review_queue::pending_batch_rejection(
                     &data_root,
                     &service,
@@ -1982,7 +1985,11 @@ async fn save_machine_review(
     cloud_qc::require_editable(&data_root, auth.inner(), Path::new(&request.source_path))
         .await
         .map_err(|e| e.to_string())?;
-    if request.source_name.as_deref() != Some(machine_annotation::SKELETON_SOURCE) {
+    if !request
+        .source_name
+        .as_deref()
+        .is_some_and(machine_annotation::is_skeleton_source)
+    {
         let mut entry = local_entry.ok_or_else(|| {
             "ACTION_DRAFT_REQUIRED: 动作修改必须先保存本机草稿，请使用新版客户端".to_string()
         })?;

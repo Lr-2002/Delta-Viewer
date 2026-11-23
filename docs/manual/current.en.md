@@ -73,3 +73,10 @@ Search and preview the original term, target and scope before applying changes. 
 Open Versions and updates inside the app, choose automatic, company LAN or GitHub and check for updates. Inspect stable or candidate source, notes and current status. After download and verification, save work and explicitly choose whether to restart and install.
 
 Manual installer download is separate from the updater. Choose an available platform and destination, then locate and run the completed installer yourself. Previews can offer only platforms already built. Version history provides past installers and rollback instructions. Download availability does not imply a stable release or a guarantee that all performance issues are resolved.
+
+
+### Skeleton annotation sources
+
+In Skeleton segments, use Skeleton annotation source to select the human result or a skeleton model export. Eligible JSON filenames contain `skeleton`; files are discovered in the recording root and `.session_meta`, with paths distinguishing duplicate names. Tencent skeleton-only output is `skeleton.description.tencent-custom.v1.json`. The selected source supplies segments for adding, deleting, editing and adjusting boundaries.
+
+Human edits always save to the recording-root `skeleton.description.json`. Source files remain unchanged. Skeleton saves do not submit action review decisions or change QC. The human result opens by default; selecting another model loads its own segments rather than applying edits from a different source. Pending saves, failed saves and shared-file changes retain the existing conflict protection.

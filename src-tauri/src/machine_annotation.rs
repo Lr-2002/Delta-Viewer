@@ -16,6 +16,19 @@ pub const FLASH_SOURCE: &str = "bailian_annotation.qwen3.8-flash.json";
 pub const MANUAL_SOURCE: &str = "manual";
 pub const SKELETON_SOURCE: &str = "skeleton.description.json";
 
+// Only explicit, visible JSON filenames in the existing allowed directories.
+// The filename is the channel discriminator; payload text cannot choose a writer.
+pub(crate) fn is_skeleton_source(name: &str) -> bool {
+    let file = name
+        .strip_prefix(".session_meta/")
+        .or_else(|| name.strip_prefix("./"))
+        .unwrap_or(name);
+    !file.starts_with('.')
+        && file.ends_with(".json")
+        && file.to_ascii_lowercase().contains("skeleton")
+        && !file.contains(['/', '\\', ':', '\0'])
+}
+
 // A read-only template lets human-only reviews use the same persistence contract.
 pub fn load_for_review(
     root: &Path,
@@ -66,7 +79,8 @@ pub(crate) fn validate_source_name(name: &str) -> AppResult<()> {
         .or_else(|| name.strip_prefix("./"))
         .unwrap_or(name);
     let valid = (matches!(file, "description.json" | "desorption.json")
-        || (file.starts_with("bailian") && file.ends_with(".json")))
+        || (file.starts_with("bailian") && file.ends_with(".json"))
+        || is_skeleton_source(name))
         && !file.contains(['/', '\\', ':', '\0']);
     if !valid {
         return Err(invalid("不支持的机标文件名"));
@@ -92,7 +106,8 @@ pub fn list_sources(root: &Path) -> AppResult<Vec<String>> {
             let name = entry.file_name().to_string_lossy().into_owned();
             if entry.file_type()?.is_file()
                 && (matches!(name.as_str(), "description.json" | "desorption.json")
-                    || (name.starts_with("bailian") && name.ends_with(".json")))
+                    || (name.starts_with("bailian") && name.ends_with(".json"))
+                    || is_skeleton_source(&name))
             {
                 validate_source_name(&name)?;
                 // Preserve distinct root and metadata files with the same name.
@@ -141,6 +156,7 @@ struct Media {
 #[derive(Deserialize)]
 struct Annotation {
     segment_id: Option<String>,
+    #[serde(default)]
     label_code: String,
     start_frame: u64,
     end_frame: Option<u64>,
@@ -290,7 +306,11 @@ pub fn load_selected(
     }
     // Discover other Bailian exports and human results only when the preferred
     // conventional files could not be loaded; don't add directory IO to the hot path.
-    for name in list_sources(&root)?.into_iter().take(64) {
+    for name in list_sources(&root)?
+        .into_iter()
+        .filter(|name| !is_skeleton_source(name))
+        .take(64)
+    {
         match load_named(&root, &name) {
             Ok(Some(mut annotation)) => {
                 if first_error.is_some() {
@@ -677,6 +697,46 @@ mod tests {
                 parse(&serde_json::to_vec(&document).unwrap(), "sample").is_err(),
                 "{case}"
             );
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit read-only private skeleton annotation smoke"]
+    fn real_skeleton_model_source_is_discovered_and_loaded_without_writes() {
+        let root =
+            std::path::PathBuf::from(std::env::var("DOHC_SKELETON_EPISODE").expect("episode path"));
+        let name = "./skeleton.description.tencent-custom.v1.json";
+        let before = fs::read(root.join(&name[2..])).unwrap();
+        let human = fs::read(root.join(SKELETON_SOURCE)).unwrap();
+        assert!(list_sources(&root).unwrap().contains(&name.into()));
+        let loaded = load_for_review(&root, Some(name)).unwrap().unwrap();
+        assert!(!loaded.segments.is_empty());
+        assert_eq!(loaded.source_json.as_bytes(), before);
+        assert_eq!(loaded.source_name, name);
+        assert_eq!(fs::read(root.join(&name[2..])).unwrap(), before);
+        assert_eq!(fs::read(root.join(SKELETON_SOURCE)).unwrap(), human);
+    }
+
+    #[test]
+    fn skeleton_source_names_require_safe_explicit_json_files() {
+        for name in [
+            "skeleton.description.json",
+            "./skeleton.description.tencent-custom.v1.json",
+            ".session_meta/model_skeleton.v2.json",
+        ] {
+            assert!(is_skeleton_source(name));
+            assert!(validate_source_name(name).is_ok());
+        }
+        for name in [
+            "../skeleton.json",
+            "./../skeleton.json",
+            ".skeleton.description.review-state.json",
+            "skeleton.json:stream",
+            ".session_meta/../skeleton.json",
+            "skeleton.npz",
+        ] {
+            assert!(!is_skeleton_source(name));
+            assert!(validate_source_name(name).is_err());
         }
     }
 

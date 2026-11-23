@@ -3,7 +3,7 @@ import { useShortcuts } from "../lib/use-shortcuts";
 import { DEFAULT_SHORTCUTS, formatShortcut, labelShortcutCandidates, matchShortcut, shortcutChord } from "../lib/shortcuts";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Code, LoaderCircle, Plus, RefreshCw, Scissors, Tag, Trash2, Undo2, X } from "lucide-react";
-import { reopenMachineReview, deferMachineReview, isTauriRuntime, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
+import { isSkeletonAnnotationSource, reopenMachineReview, deferMachineReview, isTauriRuntime, listMachineAnnotationSources, loadMachineAnnotation, loadMachineReview, saveMachineReview, videoSource } from "../lib/backend";
 import { createDeferredReviewEvent, enqueueCommittedReviewEvent, reviewReceiptValue, persistPendingReviewAudit, requireReviewAuditSession, recordReviewInteraction, reviewAuditRecorder } from "../lib/review-audit";
 import { findReviewOverlap, findDeletedReviewOverlap, createReviewBoundaryEditor, addReviewSegment, recoverReviewSegments, reviewVideoIntersection, deleteReviewSegment, restoreReviewSegments, machineTimelineMapping, splitReviewSegment } from "../lib/machine-annotation";
 import { ReviewRangeNotice, RestoreReviewDialog } from "./ReviewRangeNotice";
@@ -56,13 +56,14 @@ function labelLibraryKey(username: string) {
 export function MachineAnnotationPanel(props: Props) {
   useLanguage();
   const [sourceName, setSourceName] = useState("");
+  const [skeletonSource, setSkeletonSource] = useState(SKELETON_SOURCE);
   const [channel, setChannel] = useState<"action" | "skeleton">("action");
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
   const [sourceBusy, setSourceBusy] = useState(false);
   const [sourceError, setSourceError] = useState("");
   useEffect(() => {
     let active = true;
-    setSourceName(""); setSourceOptions([]); setSourceError("");
+    setSourceName(""); setSkeletonSource(SKELETON_SOURCE); setSourceOptions([]); setSourceError("");
     void listMachineAnnotationSources(props.data.summary.root).then((options) => { if (active) setSourceOptions(options); }).catch((error) => { if (active) setSourceError(String(error)); });
     return () => { active = false; };
   }, [props.data.summary.root]);
@@ -70,10 +71,15 @@ export function MachineAnnotationPanel(props: Props) {
   return <div className={`quality-workspace${props.playback ? " quality-embedded" : ""}`}>
     {channel === "action" && <label className="machine-source-picker">{t("机标来源")}<select aria-label={t("机标来源")} value={sourceName} disabled={props.busy || sourceBusy}
       onChange={(event) => { props.playback?.onPause(); setSourceName(event.currentTarget.value); recordReviewInteraction("source", { sourceName: event.currentTarget.value || "auto" }); }}>
-      <option value="">{t("自动（优先 Flash）")}</option>{sourceOptions.map((name) => <option key={name} value={name}>{tr(label(name))}</option>)}
+      <option value="">{t("自动（优先 Flash）")}</option>{sourceOptions.filter(name => !isSkeletonAnnotationSource(name)).map((name) => <option key={name} value={name}>{tr(label(name))}</option>)}
     </select></label>}
-    {tr(channel === "action" && sourceError && <p role="alert">{tr(sourceError)}</p>)}
-    <MachineAnnotationEditor {...props} key={`${props.username}:${props.data.summary.root}:${channel}:${sourceName}`} sourceName={channel === "skeleton" ? SKELETON_SOURCE : sourceName || undefined} onSourceBusy={setSourceBusy} channel={channel} onChannelChange={setChannel} />
+    {channel === "skeleton" && <label className="machine-source-picker">{t("骨架标注来源")}<select aria-label={t("骨架标注来源")} value={skeletonSource} disabled={props.busy || sourceBusy}
+      onChange={(event) => { props.playback?.onPause(); setSkeletonSource(event.currentTarget.value); recordReviewInteraction("source", { sourceName: event.currentTarget.value }); }}>
+      <option value={SKELETON_SOURCE}>{t("人工结果（skeleton.description.json）")}</option>
+      {sourceOptions.filter(name => isSkeletonAnnotationSource(name) && !/^(?:\.\/)?skeleton\.description\.json$/.test(name)).map(name => <option key={name} value={name}>{name}</option>)}
+    </select></label>}
+    {tr(sourceError && <p role="alert">{tr(sourceError)}</p>)}
+    <MachineAnnotationEditor {...props} key={`${props.username}:${props.data.summary.root}:${channel}:${channel === "skeleton" ? skeletonSource : sourceName}`} sourceName={channel === "skeleton" ? skeletonSource : sourceName || undefined} onSourceBusy={setSourceBusy} channel={channel} onChannelChange={setChannel} />
   </div>;
 }
 

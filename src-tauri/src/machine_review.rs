@@ -135,7 +135,7 @@ pub struct ReviewView {
 }
 
 pub fn view_for_source(root: &Path, source: Option<&str>, review: ReviewState) -> ReviewView {
-    if source == Some(machine_annotation::SKELETON_SOURCE) {
+    if source.is_some_and(machine_annotation::is_skeleton_source) {
         return ReviewView {
             pending_event_id: None,
             local_draft: false,
@@ -336,7 +336,7 @@ fn human_source(annotation: &MachineAnnotation) -> bool {
 }
 
 fn output_name(annotation: &MachineAnnotation, root: &Path) -> &'static str {
-    if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+    if machine_annotation::is_skeleton_source(&annotation.source_name) {
         return machine_annotation::SKELETON_SOURCE;
     }
     if annotation.source_name.rsplit('/').next() == Some("desorption.json")
@@ -426,18 +426,18 @@ fn load_inner(
     match load_inner_checked(data_root, root, annotation) {
         Ok(mut state) => {
             if human_source(annotation)
-                || annotation.source_name == machine_annotation::SKELETON_SOURCE
+                || machine_annotation::is_skeleton_source(&annotation.source_name)
             {
                 state.source_hash = annotation.source_hash.clone();
             }
             if state.output_hash.is_none() {
                 state.published = false;
-            } else if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+            } else if machine_annotation::is_skeleton_source(&annotation.source_name) {
                 state.published = true;
             }
             Ok(state)
         }
-        Err(error) if annotation.source_name == machine_annotation::SKELETON_SOURCE => Err(error),
+        Err(error) if machine_annotation::is_skeleton_source(&annotation.source_name) => Err(error),
         Err(error)
             if matches!(&error, AppError::Json(_))
                 || matches!(&error, AppError::Message(message) if message.starts_with("MACHINE_ANNOTATION_INVALID:")) =>
@@ -502,7 +502,7 @@ fn load_inner_checked_mode(
     let local_revision = draft.as_ref().map_or(0, |state| state.revision);
     let output = match machine_annotation::read_bytes(&root.join(output_name(annotation, root)))? {
         Some(bytes) => Some(bytes),
-        None if annotation.source_name == machine_annotation::SKELETON_SOURCE => None,
+        None if machine_annotation::is_skeleton_source(&annotation.source_name) => None,
         None => machine_annotation::read_bytes(&root.join(
             if annotation.source_name == machine_annotation::FLASH_SOURCE {
                 LEGACY_FLASH_OUTPUT
@@ -541,6 +541,25 @@ fn load_inner_checked_mode(
             retained.output_hash = None;
             retained.published = false;
             return recover_loaded_state(data_root, root, annotation, retained);
+        }
+    }
+    if machine_annotation::is_skeleton_source(&annotation.source_name)
+        && annotation.source_name != machine_annotation::SKELETON_SOURCE
+    {
+        let technical = technical_review(
+            &root.join(machine_annotation::SKELETON_SOURCE),
+            output_hash.as_deref().unwrap_or_default(),
+        )?;
+        if technical
+            .as_ref()
+            .is_none_or(|state| state.source_hash != annotation.source_hash)
+        {
+            let mut state = initial(annotation);
+            state.output_hash = output_hash;
+            state.revision = technical
+                .as_ref()
+                .map_or(local_revision, |state| state.revision.max(local_revision));
+            return Ok(state);
         }
     }
     if let Some(bytes) = output {
@@ -756,7 +775,7 @@ pub fn load_selected(
     let annotation = machine_annotation::load_for_review(&root, source_name)?
         .ok_or_else(|| failure("未找到机标文件"))?;
     let state = load_inner(data_root, &root, &annotation)?;
-    if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+    if machine_annotation::is_skeleton_source(&annotation.source_name) {
         // Remember the exact shared baseline read by this editor even on a new
         // host or after sidecar loss; a later external edit must not be overwritten.
         let draft = selected_draft_path(data_root, &root, &annotation);
@@ -1469,7 +1488,10 @@ pub fn save_with_event_for_user(
     username: &str,
     event: Option<(String, u64)>,
 ) -> AppResult<ReviewState> {
-    if request.source_name.as_deref() != Some(machine_annotation::SKELETON_SOURCE)
+    if !request
+        .source_name
+        .as_deref()
+        .is_some_and(machine_annotation::is_skeleton_source)
         && request.status.as_deref().unwrap_or("pending") == "pending"
     {
         return Err(failure(
@@ -1732,7 +1754,10 @@ pub fn publish_deferred_for_user(
     username: &str,
     deferred: (String, u64),
 ) -> AppResult<ReviewState> {
-    if request.source_name.as_deref() != Some(machine_annotation::SKELETON_SOURCE)
+    if !request
+        .source_name
+        .as_deref()
+        .is_some_and(machine_annotation::is_skeleton_source)
         && request.status.as_deref().unwrap_or("pending") == "pending"
     {
         return Err(failure("动作草稿未审核通过，不能写入共享目录"));
@@ -1786,7 +1811,10 @@ pub fn publish_deferred_for_user(
             request.source_name.as_deref(),
             current.clone(),
         );
-        if request.source_name.as_deref() == Some(machine_annotation::SKELETON_SOURCE)
+        if request
+            .source_name
+            .as_deref()
+            .is_some_and(machine_annotation::is_skeleton_source)
             || qc.qc_status == current.status
         {
             return Ok(current);
@@ -1852,7 +1880,7 @@ fn save_for_user_mode(
     let _output_lock = lock_file(&lock_path)?;
     let current = load_inner(data_root, &root, &annotation)?;
     if let Some(snapshot) = pending_snapshot.as_ref().filter(|snapshot| {
-        !snapshot.only_pending && annotation.source_name != machine_annotation::SKELETON_SOURCE
+        !snapshot.only_pending && !machine_annotation::is_skeleton_source(&annotation.source_name)
     }) {
         let current_qc = machine_annotation::read_bytes(&write_root.join("session.json"))?
             .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
@@ -1917,7 +1945,7 @@ fn save_for_user_mode(
                 .as_ref()
                 .is_some_and(|saved| saved.output_hash != current.output_hash),
         };
-    if (guarded || annotation.source_name == machine_annotation::SKELETON_SOURCE) && rebased {
+    if (guarded || machine_annotation::is_skeleton_source(&annotation.source_name)) && rebased {
         return Err(failure(if only_pending {
             "审核内容已改变，请刷新后重试，未批量覆盖"
         } else {
@@ -1936,7 +1964,7 @@ fn save_for_user_mode(
         }
     }
     if request.status.as_deref() == Some("rejected")
-        && annotation.source_name != machine_annotation::SKELETON_SOURCE
+        && !machine_annotation::is_skeleton_source(&annotation.source_name)
     {
         // Only approval publishes edits. A rejection changes metadata/QC while
         // preserving the last shared annotations (or the original machine result).
@@ -1964,7 +1992,7 @@ fn save_for_user_mode(
     if request.status.as_deref() != Some("rejected") {
         validate(&annotation, &request.segments)?;
         if request.status.as_deref() == Some("approved")
-            || annotation.source_name == machine_annotation::SKELETON_SOURCE
+            || machine_annotation::is_skeleton_source(&annotation.source_name)
         {
             validate_publish_ranges(&request.segments)?;
         }
@@ -1975,7 +2003,7 @@ fn save_for_user_mode(
         .unwrap_or_else(|| current.special_tags.clone());
     validate_special_tags(&special_tags)?;
     let status = request.status.unwrap_or_else(pending_status);
-    if annotation.source_name == machine_annotation::SKELETON_SOURCE && status != "pending" {
+    if machine_annotation::is_skeleton_source(&annotation.source_name) && status != "pending" {
         return Err(failure("骨架片段仅支持描述，不设置审核结论"));
     }
     if !["pending", "approved", "rejected"].contains(&status.as_str()) {
@@ -2041,7 +2069,8 @@ fn save_for_user_mode(
     if state.published {
         let output = output_name(&annotation, &write_root);
         let session_path = write_root.join("session.json");
-        let mut session: Value = if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+        let mut session: Value = if machine_annotation::is_skeleton_source(&annotation.source_name)
+        {
             json!({})
         } else {
             machine_annotation::read_bytes(&session_path)?
@@ -2092,7 +2121,7 @@ fn save_for_user_mode(
                 reviewed_document(&annotation, &state)?
             };
             patch_special_tags(&mut document, &state)?;
-            if annotation.source_name == machine_annotation::SKELETON_SOURCE {
+            if machine_annotation::is_skeleton_source(&annotation.source_name) {
                 if let Some(fields) = document.as_object_mut() {
                     fields.remove("_human_review");
                 }
@@ -2125,7 +2154,7 @@ fn save_for_user_mode(
                 .clone()
                 .ok_or_else(|| failure("缺少人工结果指纹"))?;
         }
-        if annotation.source_name != machine_annotation::SKELETON_SOURCE {
+        if !machine_annotation::is_skeleton_source(&annotation.source_name) {
             let qc = match state.status.as_str() {
                 "approved" => "通过",
                 "rejected" => "不通过",
@@ -2619,6 +2648,91 @@ mod tests {
             assert!(!f.root.join(OUTPUT).exists());
             assert!(!f.root.join("session.json").exists());
         }
+    }
+
+    #[test]
+    fn selected_skeleton_model_edits_share_one_human_output_and_preserve_inputs() {
+        let f = Fixture::new(0, true);
+        fs::write(f.root.join("session.json"), r#"{"qc":"通过"}"#).unwrap();
+        fs::create_dir_all(f.root.join(".session_meta")).unwrap();
+        fs::create_dir_all(f.root.join("cam0")).unwrap();
+        fs::write(f.root.join("cam0/part.mp4"), b"unchanged media").unwrap();
+        fs::write(f.root.join(".session_meta/manifest.json"), serde_json::to_vec(&json!({
+            "storage_format":"h264-split-mp4-v1", "segment_seconds":300,
+            "streams":{"cam0":{"fps":30,"frame_count":30,"width":320,"height":180,"segments":[{"path":"cam0/part.mp4"}]}}
+        })).unwrap()).unwrap();
+        let session = fs::read(f.root.join("session.json")).unwrap();
+        let action = fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap();
+        let make_model = |text: &str| {
+            json!({"schema_version":4,"annotation_source":"skeleton-model","episode_results":[{
+            "episode_id":"sample","media":{"frame_count":30,"frame_index_base":0,"interval_convention":"[start,end)"},
+            "annotations":[{"start_frame":0,"end_frame":10,"attributes_zh":{"动作描述":text}},
+            {"start_frame":10,"end_frame":30,"attributes_zh":{"动作描述":"左臂保持屈肘"}}]}]})
+        };
+        let a = "./skeleton.description.tencent-custom.v1.json";
+        let b = "./skeleton.description.other.json";
+        let bytes_a = serde_json::to_vec(&make_model("右臂抬起")).unwrap();
+        let bytes_b = serde_json::to_vec(&make_model("左臂抬起")).unwrap();
+        fs::write(f.root.join(&a[2..]), &bytes_a).unwrap();
+        fs::write(f.root.join(&b[2..]), &bytes_b).unwrap();
+        let names = machine_annotation::list_sources(&f.root).unwrap();
+        assert!(names.contains(&a.into()) && names.contains(&b.into()));
+        let mut state = load_selected(&f.local, &f.root, Some(a)).unwrap();
+        assert_eq!(state.segments[0].description, "右臂抬起");
+        state.segments[0].description = "右臂抬起并屈肘".into();
+        state.segments[1].deleted = true;
+        state.segments.push(ReviewSegment {
+            source_index: 2,
+            start_frame: 10,
+            end_frame: 29,
+            description: "左臂保持在胸前".into(),
+            deleted: false,
+            decision: "pending".into(),
+        });
+        let request = |state: &ReviewState, name: &str| SaveReviewRequest {
+            special_tags: None,
+            source_path: f.root.to_string_lossy().into(),
+            source_name: Some(name.into()),
+            source_hash: state.source_hash.clone(),
+            expected_revision: state.revision,
+            segments: state.segments.clone(),
+            status: Some("pending".into()),
+            rejection_reason: None,
+        };
+        let saved = save_for_user(&f.local, request(&state, a), "Human", "alice").unwrap();
+        let output = f.root.join(machine_annotation::SKELETON_SOURCE);
+        let document: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        assert_eq!(document["annotation_source"], "skeleton-human");
+        assert!(document.get("_human_review").is_none());
+        assert_eq!(
+            document["episode_results"][0]["annotations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let reopened = load_selected(&f.temp.join("new-host"), &f.root, Some(a)).unwrap();
+        assert_eq!(reopened.segments, saved.segments);
+        let selected_b = load_selected(&f.local, &f.root, Some(b)).unwrap();
+        assert_eq!(selected_b.segments[0].description, "左臂抬起");
+        // A stale editor from another source cannot replace a newer shared result.
+        let saved_b = save_for_user(&f.local, request(&selected_b, b), "Human", "alice").unwrap();
+        assert!(save_for_user(&f.local, request(&saved, a), "Human", "alice").is_err());
+        assert!(saved_b.revision > saved.revision);
+        let human =
+            load_selected(&f.local, &f.root, Some(machine_annotation::SKELETON_SOURCE)).unwrap();
+        assert_eq!(human.segments[0].description, "左臂抬起");
+        assert_eq!(fs::read(f.root.join(&a[2..])).unwrap(), bytes_a);
+        assert_eq!(fs::read(f.root.join(&b[2..])).unwrap(), bytes_b);
+        assert_eq!(fs::read(f.root.join("session.json")).unwrap(), session);
+        assert_eq!(
+            fs::read(f.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap(),
+            action
+        );
+        assert_eq!(
+            view_for_source(&f.root, Some(b), saved_b).output_name,
+            machine_annotation::SKELETON_SOURCE
+        );
     }
 
     #[test]
