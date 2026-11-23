@@ -482,6 +482,11 @@ lesson("outbound", "outbound-list", "查看、刷新、领取和释放外发批�
   on("领取并打开", "Claim and open"), observe(".outbound-progress", "已审、有效、无效、异常和合格率", "Reviewed, valid, invalid, anomalous and pass rate"),
   on("释放批次", "Release batch", finishNote),
 ], { needs: ["用测试账号打开尚未领取且媒体可读的外发测试批次。", "Use a test account with an unclaimed outbound test batch and readable media."], writes: true });
+lesson("outbound", "outbound-pending", "查看总进度并筛选未审核录制", "Check overall progress and filter unreviewed recordings", [
+  outboundTab, observe(".outbound-queue-progress", "审核进度和已审有效率", "Review progress and valid rate", ["同一原始录制只计一次，已审有效率为有效条数除以已审条数。", "Each original recording counts once. The rate divides valid by reviewed recordings."]),
+  c(".outbound-queue-overview .outbound-pending-filter[aria-pressed=false]", "未审核", "Unreviewed"),
+  c(".outbound-queue-overview .outbound-pending-filter[aria-pressed=true]", "恢复完整列表", "Restore the full list"),
+], { needs: outbound });
 lesson("outbound", "outbound-play", "切换录制和分段、同步播放并返回任务", "Switch recordings and parts, play in sync and return", [
   c(".outbound-recordings button:not(:disabled)", "选择测试录制", "Select a test recording"),
   observe(".outbound-time", "连续录制时间轴", "Continuous recording timeline", ["各 MP4 分段已合成一条时间轴，播放会自动衔接；拖动可跨段定位，时长未读完时先等待确认。", "MP4 parts share one timeline and advance automatically. Seek across parts after the total duration is available."]),

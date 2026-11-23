@@ -22,7 +22,7 @@ test('slow source reads explain the wait, retain cancel and clear on progress', 
  await page.clock.install();await page.goto(server.resolvedUrls.local[0]+'__loading');
  await page.getByRole('button',{name:'取消任务'}).waitFor();
  await page.clock.runFor(7000);assert.equal(await page.getByRole('alert').count(),0);
- await page.clock.runFor(2000);await page.getByRole('alert').getByText(/NAS 磁盘负载/).waitFor();
+ await page.clock.runFor(2000);await page.getByRole('alert').getByText(/读取尚未完成，可继续等待或取消后重试/).waitFor();
  await mkdir('artifacts/loading-progress',{recursive:true});
  for(const [width,height] of [[1440,920],[960,680],[390,844]]){
   await page.setViewportSize({width,height});
@@ -38,7 +38,7 @@ test('slow source reads explain the wait, retain cancel and clear on progress', 
  await page.evaluate(()=>window.change({operationId:2,task:'export',phase:'正在导出'}));
  await page.clock.runFor(9000);assert.equal(await page.getByRole('alert').count(),0);
  await page.evaluate(()=>window.change({operationId:3,task:'playback-cache',phase:'缓存当前录制的视频'}));
- await page.clock.runFor(9000);await page.getByRole('alert').getByText(/NAS 磁盘负载/).waitFor();
+ await page.clock.runFor(9000);await page.getByRole('alert').getByText(/读取尚未完成，可继续等待或取消后重试/).waitFor();
  await page.evaluate(()=>window.change({bytesDone:1048576,totalBytes:8388608}));await page.getByRole('alert').waitFor({state:'detached'});
  assert.deepEqual(errors,[]);
 });

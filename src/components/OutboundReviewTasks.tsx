@@ -1,17 +1,17 @@
 import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import {memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState,type CSSProperties,type VideoHTMLAttributes} from "react";
-import {ArrowLeft,AlertTriangle,CheckCircle2,ChevronRight,Expand,Film,LoaderCircle,Minimize,Pause,Play,RefreshCw,Video,Volume2,VolumeX,XCircle} from "lucide-react";
+import {ArrowLeft,AlertTriangle,CheckCircle2,ChevronRight,Expand,Film,ListFilter,LoaderCircle,Minimize,Pause,Play,RefreshCw,Video,Volume2,VolumeX,XCircle} from "lucide-react";
 import type {UserIdentity} from "../types";
 import {changeOutboundBatch,fetchOutboundVideo,releaseOutboundVideos,outboundMediaFailure,listOutboundBatches,OUTBOUND_INVALID_REASONS,OUTBOUND_ANOMALOUS_REASONS,outboundError,outboundResultUncertain,outboundVideoParts,outboundTimeline,fetchOutboundMetadata,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording,type OutboundProtocol,type OutboundDecisionValue} from "../lib/outbound-review";
 import {OutboundVideoLoader} from "../lib/outbound-video-loader";
 import {OutboundPlayback} from "../lib/outbound-playback";
-import {fetchOutboundFrameStep} from "../lib/outbound-review";
+import {fetchOutboundFrameStep,type OutboundProgress,type OutboundReviewSelection} from "../lib/outbound-review";
 import {useShortcuts} from "../lib/use-shortcuts";
 import {matchShortcut,shortcutBlocked} from "../lib/shortcuts";
 import {OutboundReasonDialog} from "./OutboundReasonDialog";
 import "./outbound-review.css";
 
-interface Props {reasonPreferenceOwner?:string;currentUser:UserIdentity;workspaceBusy?:boolean;view?:"tasks"|"workspace";initialBatch?:OutboundBatch;onOpenReview?:(batch:OutboundBatch,isCurrent?:()=>boolean)=>Promise<void>;onReturnToTasks?:()=>void;suspended?:boolean}
+interface Props {reasonPreferenceOwner?:string;currentUser:UserIdentity;workspaceBusy?:boolean;view?:"tasks"|"workspace";initialBatch?:OutboundReviewSelection;onOpenReview?:(batch:OutboundReviewSelection,isCurrent?:()=>boolean)=>Promise<void>;onReturnToTasks?:()=>void;suspended?:boolean}
 type TaskAction="claim"|"release"|"open"|"verify";
 type TaskFeedback={error:boolean;message:string};
 type TimelineState={recordingId:string;source?:OutboundRecording["videos"];durations:Record<number,number>;failed:Record<number,string>;probeFailed:Record<number,string>};
@@ -24,6 +24,23 @@ function isComplete(batch: OutboundBatch) {
 
 function BatchComplete() {
   return <span className="outbound-batch-complete"><CheckCircle2 size={17} aria-hidden="true" />{t("审核完成")}</span>;
+}
+
+function QueueProgress({progress}: {progress:OutboundProgress}) {
+  const {total,reviewed,valid,invalid,anomalous}=progress;
+  const counts=[["valid",t("有效"),valid],["invalid",t("无效"),invalid],["anomalous",t("异常"),anomalous],["pending",t("未审核"),total-reviewed]] as const;
+  const rate=reviewed ? (valid/reviewed).toLocaleString(localeTag(),{style:"percent",maximumFractionDigits:1}) : "—";
+  return <div className="outbound-queue-progress">
+    <div className="outbound-queue-counts"><strong>{t("审核进度")} {reviewed} / {total}</strong><span>{t("已审有效率")} {rate}</span></div>
+    <div className="outbound-queue-bar" role="progressbar" aria-label={t("审核进度")} aria-valuemax={total||1} aria-valuenow={reviewed} aria-valuetext={`${reviewed} / ${total}`}>
+      {counts.map(([key,,count])=>count>0&&<span key={key} className={key} style={{flexGrow:count}}/>)}
+    </div>
+    <div className="outbound-queue-legend">{counts.map(([key,label,count])=><span key={key}><i className={key} aria-hidden="true"/>{label} {count}</span>)}</div>
+  </div>;
+}
+
+function PendingFilter({enabled,onToggle,disabled}: {enabled:boolean;onToggle:()=>void;disabled?:boolean}) {
+  return <button type="button" className="button button-secondary outbound-pending-filter" aria-pressed={enabled} onClick={onToggle} disabled={disabled}><ListFilter size={15} aria-hidden="true"/>{t("未审核")}</button>;
 }
 
 // Playback publishes its clock frequently. The recording queue only changes
@@ -79,10 +96,18 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   const frameSteps=useRef(new Map<string,number|null>());
   const framePending=useRef(false);
   const [batches,setBatches]=useState<OutboundBatch[]>(initialBatch?[initialBatch]:[]);
+  const [progress,setProgress]=useState<OutboundProgress>();
+  const [pendingOnly,setPendingOnly]=useState(Boolean(initialBatch?.pendingOnly));
   const [anomalousReasonOptions,setAnomalousReasonOptions]=useState<string[]>(initialBatch?.anomalousReasonOptions??[]);
   const [reasonOptions,setReasonOptions]=useState<string[]>(initialBatch?.reasonOptions??[]);
   const [batchId,setBatchId]=useState(initialBatch?.id??"");
-  const [recordingId,setRecordingId]=useState(initialBatch?.recordings.find(item=>!item.decision)?.id??initialBatch?.recordings[0]?.id??"");
+  const [recordingId,setRecordingId]=useState(initialBatch?.recordings.find(item=>!item.decision&&!initialBatch.reviewedElsewhere?.includes(item.id))?.id??initialBatch?.recordings[0]?.id??"");
+  useEffect(()=>{
+    if(!initialBatch)return;
+    setBatches([initialBatch]);
+    setPendingOnly(Boolean(initialBatch.pendingOnly));
+    if(initialBatch.pendingOnly)setRecordingId(initialBatch.recordings.find(item=>!item.decision&&!initialBatch.reviewedElsewhere?.includes(item.id))?.id??"");
+  },[initialBatch]);
   const [videoState,setVideoState]=useState<VideoState|null>(null);
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState(false);
@@ -135,7 +160,9 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     for(const url of retired)mediaUrls.current.delete(url);
   },[ticketLoader]);
   const batch=batches.find(value=>value.id===batchId)??null;
-  const recording=batch?.recordings.find(value=>value.id===recordingId)??batch?.recordings[0]??null;
+  const reviewedElsewhere=view==="workspace" ? initialBatch?.reviewedElsewhere : undefined;
+  const visibleRecordings=useMemo(()=>pendingOnly ? batch?.recordings.filter(item=>!item.decision&&!reviewedElsewhere?.includes(item.id))??[] : batch?.recordings??[],[batch,pendingOnly,reviewedElsewhere]);
+  const recording=visibleRecordings.find(value=>value.id===recordingId)??visibleRecordings[0]??null;
   const isOwner=batch?.claim===currentUser.username;
   const grouped=useMemo(()=>outboundVideoParts(recording?.videos??[]),[recording?.videos]);
   const partVideos=grouped.parts[partIndex]??[];
@@ -188,6 +215,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
       const value=await listOutboundBatches(view==="workspace"?batchId:undefined,protocol);
       if(generation!==listGeneration.current)return;
       setBatches(value.batches);
+      if(view==="tasks")setProgress(value.progress);
       setReasonOptions(value.reasonOptions??[]);
       setAnomalousReasonOptions(value.anomalousReasonOptions??[]);
       setUnconfirmed(previous=>Object.fromEntries(Object.entries(previous).filter(([id])=>!value.batches.some(item=>item.id===id))));
@@ -250,7 +278,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
 
 
   function updateBatch(next:OutboundBatch){
-    setBatches(previous=>previous.map(value=>value.id===next.id?next:value));
+    setBatches(previous=>previous.map(value=>value.id===next.id?{...next,reviewedElsewhere:value.reviewedElsewhere}:value));
   }
   function chooseReason(value:"invalid"|"anomalous"){
     const options=value==="anomalous"?[...OUTBOUND_ANOMALOUS_REASONS,...anomalousReasonOptions]:[...OUTBOUND_INVALID_REASONS,...reasonOptions];
@@ -272,7 +300,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
       if(action==="decide"){
         const revising=Boolean(recording?.decision);
         setReasonDialog(null);setSelectedReason("");setNotice(!revising && isComplete(result.batch) ? "本批次已全部审核完成。" : revising ? "审核结论修改已保存。" : "审核结论已保存。");
-        const next=result.batch.recordings.find(item=>!item.decision);
+        const next=result.batch.recordings.find(item=>!item.decision&&(!pendingOnly||!reviewedElsewhere?.includes(item.id)));
         if(next&&!recording?.decision)setRecordingId(next.id);
       }
     }catch(cause){
@@ -287,7 +315,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
           const saved=fresh.recordings.find(item=>item.id===recording?.id)?.decision;
           if(action==="decide"&&saved&&saved.value===value&&saved.actor===currentUser.username&&(value==="valid"||saved.reason===reason)){
             setReasonDialog(null);setSelectedReason("");setNotice(!recording?.decision && isComplete(fresh) ? "本批次已全部审核完成。" : "已核对：审核结论已保存。");
-            const next=fresh.recordings.find(item=>!item.decision);
+            const next=fresh.recordings.find(item=>!item.decision&&(!pendingOnly||!reviewedElsewhere?.includes(item.id)));
             if(next&&!recording?.decision)setRecordingId(next.id);
             return;
           }
@@ -451,7 +479,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
       event.preventDefault();
       if(event.repeat&&!["previousFrame","nextFrame"].includes(action))return;
       if(action==="previousRecording"||action==="nextRecording"){
-        const index=batch.recordings.findIndex(item=>item.id===recording.id),next=batch.recordings[index+(action==="nextRecording"?1:-1)];
+        const index=visibleRecordings.findIndex(item=>item.id===recording.id),next=visibleRecordings[index+(action==="nextRecording"?1:-1)];
         if(next)setRecordingId(next.id);
       }else if(action==="previousSegment"||action==="nextSegment"){
         const next=partIndex+(action==="nextSegment"?1:-1);
@@ -502,7 +530,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     const current=()=>epoch===taskEpoch.current;
     const feedback=(message:string,error=false)=>{if(current())setTaskFeedback(previous=>({...previous,[item.id]:{message,error}}));};
     const canOpen=()=>current()&&intent===openIntent.current;
-    const open=async(detail:OutboundBatch)=>{if(canOpen())await onOpenReview?.({...detail,reasonOptions,anomalousReasonOptions},canOpen);};
+    const open=async(detail:OutboundBatch)=>{if(canOpen())await onOpenReview?.({...detail,reasonOptions,anomalousReasonOptions,reviewedElsewhere:item.reviewedElsewhere,pendingOnly},canOpen);};
     pendingTaskIds.current.add(item.id);++listGeneration.current;setLoading(false);
     setPendingTasks(previous=>({...previous,[item.id]:action}));
     setTaskFeedback(previous=>{const next={...previous};delete next[item.id];return next;});
@@ -548,13 +576,19 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     }finally{busyRef.current=false;setBusy(false);}
   }
 
-  const recordingList=batch?<RecordingList recordings={batch.recordings} selectedId={recording?.id??""} disabled={busy||workspaceBusy} onSelect={setRecordingId}/>:null;
+  const recordingList=batch?<RecordingList recordings={visibleRecordings} selectedId={recording?.id??""} disabled={busy||workspaceBusy} onSelect={setRecordingId}/>:null;
+  const visibleBatches=pendingOnly ? batches.filter(item=>item.total>item.reviewed+(item.reviewedElsewhere?.length??0)) : batches;
   if(view==="tasks")return <section className="outbound-review" aria-label={t("外发审核任务")}>
     <div className="outbound-toolbar"><strong>{t("外发审核")}</strong><span>{lastUpdated ? t("自动同步 · {0}", [tr(new Date(lastUpdated).toLocaleTimeString(localeTag(),{hour12:false}))]) : t("按交付批次领取任务")}</span><button className="button button-secondary" type="button" aria-label={t("刷新外发批次")} disabled={loading||Object.keys(pendingTasks).length>0||workspaceBusy} onClick={()=>void load()}><RefreshCw size={16}/></button></div>
+    <div className="outbound-queue-overview">
+      {progress ? <QueueProgress progress={progress}/> : <span className="outbound-progress-status">{lastUpdated||error ? t("总进度暂不可用") : t("正在读取交付批次…")}</span>}
+      <PendingFilter enabled={pendingOnly} onToggle={()=>setPendingOnly(value=>!value)}/>
+    </div>
     {tr(error&&<div className="outbound-error" role="alert">{tr(error)}</div>)}
     {tr(notice&&<div className="outbound-notice" role="status">{tr(notice)}</div>)}
     {loading&&!batches.length ? <div className="outbound-empty">{t("正在读取交付批次…")}</div> : !batches.length ? <div className="outbound-empty">{error ? t("批次读取失败，将自动重试，也可点击刷新。") : t("暂无可审核的星矩公司批次")}</div> :
-      <div className="outbound-task-list">{batches.map(item => {
+      !visibleBatches.length ? <div className="outbound-empty">{t("没有未审核录制")}</div> :
+      <div className="outbound-task-list">{visibleBatches.map(item => {
         const pending = pendingTasks[item.id];
         const disabled = Boolean(pending) || workspaceBusy;
         const complete = !unconfirmed[item.id] && isComplete(item);
@@ -563,7 +597,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
           <div>
             <div className="outbound-task-title"><strong>{item.name}</strong>{complete && <BatchComplete />}</div>
             <p>{t("已审") + " "}{item.reviewed}/{item.total}{" " + t("· 有效") + " "}{item.valid}{" " + t("· 无效") + " "}{item.invalid}{" · " + t("异常") + " "}{item.anomalous??0}{item.rate===null ? "" : t(" · 合格率 {0}%", [Math.round(item.rate*100)])}</p>
-            <small>{item.claim ? t("由 {0} 领取", [item.claim]) : t("未领取")}</small>
+            <small>{item.claim ? t("由 {0} 领取", [item.claim]) : t("未领取")}{pendingOnly && ` · ${t("未审核 {0} 条",[item.total-item.reviewed-(item.reviewedElsewhere?.length??0)])}`}</small>
             {feedback && <p className={feedback.error ? "outbound-task-error" : "outbound-task-feedback"} role={feedback.error ? "alert" : "status"}>{tr(feedback.message)}</p>}
           </div>
           <div className="outbound-task-actions">
@@ -580,12 +614,12 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     <div className="outbound-toolbar"><strong><Film size={17}/>{t("外发审核")}</strong><div className="outbound-progress"><span>{t("已审") + " "}<b>{batch?.reviewed ?? 0}</b> / {batch?.total ?? 0}</span><progress aria-label={t("批次审核进度")} max={batch?.total||1} value={batch?.reviewed??0}/><span>{t("有效") + " "}{batch?.valid ?? 0}{" " + t("· 无效") + " "}{batch?.invalid ?? 0}{" · " + t("异常") + " "}{batch?.anomalous??0}</span></div><button className="button button-secondary" type="button" aria-label={t("刷新外发批次")} title={t("刷新外发批次")} disabled={loading||busy||workspaceBusy} onClick={()=>void load()}>{loading ? <LoaderCircle size={16} className="spin"/> : <RefreshCw size={16}/>}</button></div>
     {tr(error&&<div className="outbound-error outbound-error-summary" role="alert">{tr(error)}</div>)}{tr(notice&&<div className="outbound-notice" role="status">{tr(notice)}</div>)}
     {loading&&!batches.length ? <div className="outbound-empty"><LoaderCircle size={18} className="spin"/>{t("正在读取交付批次…")}</div> : !batches.length ? <div className="outbound-empty">{error ? t("批次读取失败，将自动重试，也可点击刷新。") : t("暂无可审核的星矩公司批次")}</div> : <div className="outbound-layout">
-      <aside className="outbound-recording-sidebar"><header><strong>{t("录制列表")}</strong><span>{batch?.total ?? 0}{" " + t("条")}</span></header>{recordingList}<button className="button button-secondary" disabled={busy||workspaceBusy} onClick={onReturnToTasks}><ArrowLeft size={15}/>{t("返回任务中心")}</button></aside>
+      <aside className="outbound-recording-sidebar"><header><strong>{t("录制列表")}</strong><span>{visibleRecordings.length}{" " + t("条")}</span></header><PendingFilter enabled={pendingOnly} disabled={busy||workspaceBusy} onToggle={()=>setPendingOnly(value=>!value)}/>{recordingList}<button className="button button-secondary" disabled={busy||workspaceBusy} onClick={onReturnToTasks}><ArrowLeft size={15}/>{t("返回任务中心")}</button></aside>
       {batch&&<div className="outbound-detail">
         <header><div><div className="outbound-task-title"><h3>{batch.name}</h3>{!workspaceUnconfirmed && isComplete(batch) && <BatchComplete />}</div><p>{t("合格率") + " "}{batch.rate===null ? t("待统计") : t("{0}%", [Math.round(batch.rate*100)])} · {batch.reviewed}/{batch.total}{" " + t("条")}</p></div>
           {isOwner ? <button className="button button-secondary" type="button" disabled={busy||workspaceBusy||workspaceUnconfirmed} onClick={()=>void act("release")} title={t("释放后其他审核员可领取")}>{t("释放批次")}</button> : (!batch.claim || !isComplete(batch) || workspaceUnconfirmed) && <button className="button button-primary" type="button" disabled={busy||workspaceBusy||workspaceUnconfirmed||Boolean(batch.claim)} onClick={()=>void act("claim")}>{busy ? <LoaderCircle size={16} className="spin"/> : null}{batch.claim ? t("审核员处理中") : t("领取批次")}</button>}
         </header>
-        {batch.recordings.length>0 ? <>
+        {pendingOnly&&!visibleRecordings.length ? <div className="outbound-empty">{t("当前批次没有未审核数据")}</div> : batch.recordings.length>0 ? <>
 
           {recording&&<section className="outbound-player" aria-label={t("原始视频审核")}>
             <div className="outbound-player-heading"><div><strong>{recording.name}</strong><span>{t("{0}/{1} 路源视频", [partVideos.length, grouped.cameraCount])}{grouped.parts.length>1 ? t(" · 第 {0} 段，共 {1} 段", [partIndex+1, grouped.parts.length]) : ""}</span></div>

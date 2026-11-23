@@ -9,7 +9,10 @@ export interface OutboundBatch {
   anomalousReasonOptions?: string[];
   id: string; name: string; version: number; claim: string | null; total: number; reviewed: number;
   valid: number; invalid: number; anomalous?: number; decisionValues?: OutboundDecisionValue[]; rate: number | null; recordings: OutboundRecording[];
+  reviewedElsewhere?: string[];
 }
+export type OutboundReviewSelection = OutboundBatch & {pendingOnly?: boolean};
+export type OutboundProgress = {total: number; reviewed: number; valid: number; invalid: number; anomalous: number};
 export const OUTBOUND_INVALID_REASONS = ["无实际意义动作", "测试数据", "设备没有正确佩戴", "数据缺失", "视频损坏"] as const;
 
 export const OUTBOUND_ANOMALOUS_REASONS = ["部分动作无效", "部分画面遮挡", "部分时段设备佩戴异常", "部分数据缺失", "部分视频损坏"] as const;
@@ -62,7 +65,7 @@ export const fetchOutboundMetadata = (url:string) => outboundCall<{duration:numb
 export const fetchOutboundFrameStep = (url:string) => outboundCall<{frameStep:number|null}>({action:"media-frame-step",url});
 
 const outboundCall = <T,>(input: Record<string, unknown>) => invoke<T>("outbound_review_call", { input });
-type BatchList = { batches: OutboundBatch[]; reasonOptions: string[]; anomalousReasonOptions?:string[] };
+type BatchList = { batches: OutboundBatch[]; reasonOptions: string[]; anomalousReasonOptions?:string[]; progress?:OutboundProgress };
 export type OutboundProtocol = {legacyList?:boolean;legacyMutation?:boolean};
 export async function listOutboundBatches(datasetId?: string, protocol?:OutboundProtocol): Promise<BatchList> {
   const legacy=async()=>{const result=await outboundCall<BatchList>({action:"list"});return datasetId?{...result,batches:result.batches.filter(batch=>batch.id===datasetId)}:result;};

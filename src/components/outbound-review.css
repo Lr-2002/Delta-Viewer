@@ -222,6 +222,27 @@
 .outbound-anomalous-button {color:#805b16 !important;border-color:#dfca9a !important;}
 .outbound-recordings button strong.anomalous {color:#805b16;}
 
+.outbound-queue-overview { display: flex; align-items: center; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+.outbound-queue-progress, .outbound-progress-status { flex: 1; min-width: 0; }
+.outbound-progress-status { color: var(--muted); font-size: 12px; }
+.outbound-queue-counts, .outbound-queue-legend { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; font-size: 12px; }
+.outbound-queue-counts > span, .outbound-queue-legend { color: var(--muted); }
+.outbound-queue-bar { display: flex; height: 6px; margin: 6px 0; border-radius: 4px; background: #e5e7eb; overflow: hidden; }
+.outbound-queue-bar span { flex-basis: 0; }
+.outbound-queue-legend span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.outbound-queue-legend i { width: 7px; height: 7px; border-radius: 2px; }
+.outbound-queue-progress .valid { background: #39855e; }
+.outbound-queue-progress .invalid { background: #b64e4e; }
+.outbound-queue-progress .anomalous { background: #b98225; }
+.outbound-queue-progress .pending { background: #d9dce2; }
+.outbound-review .outbound-pending-filter { flex: 0 0 auto; min-height: 32px; white-space: nowrap; }
+.outbound-review .outbound-pending-filter[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+@media (max-width: 460px) {
+  .outbound-queue-overview { gap: 8px; padding-inline: 12px; }
+  .outbound-queue-counts, .outbound-queue-legend { column-gap: 8px; }
+  .outbound-recording-sidebar .outbound-pending-filter { padding-inline: 6px; }
+}
+
 .outbound-video-item.is-missing,.outbound-video-item.is-failed { border-color:#b96852; }
 .outbound-video-loading { padding:14px; text-align:center; overflow:auto; overflow-wrap:anywhere; }
 .outbound-camera-issue { position:absolute; bottom:0; left:0; right:0; padding:6px; color:#ffdfb5; background:#583314e8; font-size:11px; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
