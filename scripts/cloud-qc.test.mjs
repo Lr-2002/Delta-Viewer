@@ -93,7 +93,7 @@ test('cloud QC distinguishes reviewer claims, admin policy and full review; fail
     await page.getByRole('button',{name:'打开审核',exact:true}).click();
     await page.waitForFunction(()=>window.opened.length===2);
     assert.equal(await page.evaluate(()=>window.calls.filter(([c])=>c==='cloud_qc_fetch').length),fetchCount,'already loaded tasks reopen without another download');
-    await page.getByRole('button',{name:/^(账号菜单|工作区菜单)/}).click();
+    await page.locator('.cloud-qc-row-more summary').getByText('更多',{exact:true}).click();
     await page.getByRole('button',{name:'同步已保存的结论'}).click();
     await page.getByRole('status').filter({hasText:'已同步 Viewer 保存的真实审核结论'}).waitFor();
     await page.evaluate(()=>window.show('admin'));

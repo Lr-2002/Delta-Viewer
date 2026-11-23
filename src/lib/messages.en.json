@@ -2408,6 +2408,7 @@
   "NAS 写回": "NAS writeback",
   "审核完成": "Review complete",
   "本批次已全部审核完成。": "All recordings in this batch have been reviewed.",
+  "外发批次显示审核完成并保留改审入口，整理账号菜单和管理页面。": "Outbound batches show completion and can be reopened by their reviewers. Account menus and management views are easier to find.",
   "更多，有 {0} 条操作错误": "More, {0} operation errors",
   "更改目录": "Change directory",
   "更新下载线路": "Update download source",

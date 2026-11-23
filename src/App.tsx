@@ -228,6 +228,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.14.1": "外发批次显示审核完成并保留改审入口，整理账号菜单和管理页面。",
   "1.14.0": "外发视频长时间没有进展时暂停，可从当前位置重连并继续播放。",
   "1.13.9": "外发视频长时间没有进展时暂停，可从当前位置重连并继续播放。",
   "1.13.8": "精简数据工作区顶栏，突出任务中心，将快捷键、文档、历史与账号操作归入「更多」，并减少外发视频连续切段的等待。",
