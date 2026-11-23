@@ -7,9 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-// A longer sequential response avoids repeatedly reopening seven files on an
-// HDD/NAS. copy_media_range still retains only its single 1 MiB buffer.
-const MAX_MEDIA_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
+// Open ranges stream to EOF while copy_media_range retains one 1 MiB buffer.
+// Response length is independent of memory and must not interrupt decoding.
 
 #[derive(Clone)]
 pub struct MediaStreamServer {
@@ -271,7 +270,7 @@ fn serve_connection(
         Err(_) => return write_empty_response(&mut stream, "404 Not Found", &[]),
     };
     let total = file.metadata()?.len();
-    let (start, mut end, mut partial) = match parse_range(request.range.as_deref(), total) {
+    let (start, end, partial) = match parse_range(request.range.as_deref(), total) {
         Ok(range) => range,
         Err(()) => {
             return write_empty_response(
@@ -281,22 +280,6 @@ fn serve_connection(
             )
         }
     };
-    if request.method == "GET"
-        && mime_type == "video/mp4"
-        && request.range.as_deref().is_some_and(|value| {
-            value.strip_prefix("bytes=").is_some_and(|value| {
-                value
-                    .split_once('-')
-                    .is_some_and(|(start, end)| !start.is_empty() && end.is_empty())
-            })
-        })
-        && end.saturating_sub(start).saturating_add(1) > MAX_MEDIA_RESPONSE_BYTES
-    {
-        end = start
-            .saturating_add(MAX_MEDIA_RESPONSE_BYTES - 1)
-            .min(total - 1);
-        partial = true;
-    }
     let length = end.saturating_sub(start).saturating_add(1);
     let status = if partial {
         "206 Partial Content"
@@ -477,7 +460,8 @@ fn write_headers(
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_media_range, parse_range, MediaStreamServer, MAX_MEDIA_RESPONSE_BYTES};
+    use super::{copy_media_range, parse_range, MediaStreamServer};
+    const PAST_OLD_BOUNDARY: u64 = 32 * 1024 * 1024;
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpStream;
@@ -680,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn caps_large_get_responses_and_returns_the_exact_following_range() {
+    fn streams_past_the_old_boundary_and_preserves_exact_range_and_head_responses() {
         let root = std::env::temp_dir().join(format!(
             "dohc-media-range-cap-{}",
             SystemTime::now()
@@ -690,7 +674,7 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("preview.mp4");
-        let bytes = vec![17_u8; (MAX_MEDIA_RESPONSE_BYTES + 1024) as usize];
+        let bytes = vec![17_u8; (PAST_OLD_BOUNDARY + 1024) as usize];
         fs::write(&path, &bytes).unwrap();
         let server = MediaStreamServer::start().unwrap();
         let url = server.register(&path, "cam0").unwrap();
@@ -718,17 +702,11 @@ mod tests {
             .unwrap();
         let headers = String::from_utf8_lossy(&response[..separator]);
         assert!(headers.contains("206 Partial Content"));
-        assert!(headers.contains(&format!(
-            "Content-Range: bytes 0-{}/",
-            MAX_MEDIA_RESPONSE_BYTES - 1
-        )));
-        assert_eq!(
-            response.len() - separator - 4,
-            MAX_MEDIA_RESPONSE_BYTES as usize
-        );
+        assert!(headers.contains(&format!("Content-Range: bytes 0-{}/", bytes.len() - 1)));
+        assert_eq!(response.len() - separator - 4, bytes.len());
         assert!(response[separator + 4..].iter().all(|byte| *byte == 17));
 
-        let response = request("GET", Some(&format!("bytes={}-", MAX_MEDIA_RESPONSE_BYTES)));
+        let response = request("GET", Some(&format!("bytes={}-", PAST_OLD_BOUNDARY)));
         let separator = response
             .windows(4)
             .position(|value| value == b"\r\n\r\n")
@@ -736,14 +714,14 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&response[..separator]).contains(&format!(
                 "Content-Range: bytes {}-{}/",
-                MAX_MEDIA_RESPONSE_BYTES,
-                MAX_MEDIA_RESPONSE_BYTES + 1023
+                PAST_OLD_BOUNDARY,
+                PAST_OLD_BOUNDARY + 1023
             ))
         );
         assert_eq!(response.len() - separator - 4, 1024);
         assert_eq!(
             &response[separator + 4..],
-            &bytes[MAX_MEDIA_RESPONSE_BYTES as usize..]
+            &bytes[PAST_OLD_BOUNDARY as usize..]
         );
 
         let response = request("GET", None);

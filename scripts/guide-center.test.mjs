@@ -116,8 +116,13 @@ test('documentation works offline in both languages, preserves work, and guides 
     await page.getByRole('button',{name:'Close documentation',exact:true}).click();
     await page.getByRole('button',{name:'Data workspace',exact:true}).click();
     await page.waitForFunction(()=>document.querySelectorAll('.frame-image').length===5&&[...document.querySelectorAll('.frame-image')].every(v=>v.naturalWidth>0));
+    const more=page.getByRole('button',{name:/^More/});
+    await more.click();
     await page.locator('.guide-entry').click();await select('Customize shortcuts for your account');
     await page.getByRole('button',{name:'Start interactive guide',exact:true}).click();
+    await page.getByRole('heading',{name:'Open More.',exact:true}).waitFor();
+    await more.click();
+    await page.getByRole('heading',{name:'Activate “Keyboard shortcuts”.',exact:true}).waitFor();
     await page.getByRole('button',{name:'Keyboard shortcuts',exact:true}).click();
     await page.locator('.shortcut-search input').fill('play');await page.locator('.shortcut-search input').press('Tab');
     await page.locator('.guide-tip-actions').getByRole('button',{name:'Continue',exact:true}).click();

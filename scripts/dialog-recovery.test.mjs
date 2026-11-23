@@ -405,6 +405,7 @@ if (!browserExecutable && requireBrowser) {
       assert.equal(await page.locator(".alert-error").count(), 0);
       assert.equal(await page.evaluate(() => window.__dialogRecoveryMock.records.length), 3);
 
+      await page.getByRole("button", { name: /更多，有 3 条操作错误/ }).click();
       await page.getByLabel("操作错误历史").click();
       await page.waitForFunction(() => document.querySelectorAll(".operation-history-row").length === 3);
       const historyText = await page.locator(".operation-history").innerText();

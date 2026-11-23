@@ -456,9 +456,14 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.getByRole('button',{name:'有效数据'}).isDisabled(),true,'missing camera blocks approval');
     assert.ok(!(await page.locator('video[src]').evaluateAll(v=>v.map(x=>parseInt(x.getAttribute('src').slice(-64),16)-1))).includes(49),'next camera part must not shift into the missing first segment');
     await page.waitForFunction(()=>!document.querySelector('input[aria-label="视频播放位置"]').disabled).catch(async error=>{console.error(JSON.stringify(await page.evaluate(()=>({calls:window.fixtureCalls.reduce((a,x)=>(a[x.action]=(a[x.action]||0)+1,a),{}),heading:document.querySelector('.outbound-player-heading')?.textContent,alerts:[...document.querySelectorAll('[role=alert]')].map(x=>x.textContent),videos:[...document.querySelectorAll('video')].map(v=>({src:v.getAttribute('src'),ready:v.readyState,duration:v.duration})),status:document.querySelector('.outbound-playback-status')?.textContent}))));throw error;});
+    const secondPart = [1,9,17,25,33,41,49];
+    await page.waitForFunction(segments=>segments.every(segment=>window.fixtureCalls.some(call=>call.action==='video-url'&&call.segment===segment)),secondPart);
     await slider.click({position:{x:(await slider.boundingBox()).width*.15,y:10}});
-    await page.waitForFunction(()=>document.querySelectorAll('video').length===7);
-    assert.deepEqual(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='video-url').slice(-7).map(x=>x.segment)),[1,9,17,25,33,41,49]);
+    await page.waitForFunction(segments=>{
+      const active=[...document.querySelectorAll('video[src]')].map(video=>parseInt(video.getAttribute('src').slice(-64),16)-1);
+      return active.length===segments.length&&segments.every((segment,index)=>segment===active[index]);
+    },secondPart);
+    assert.deepEqual(await page.evaluate(segments=>window.fixtureCalls.filter(call=>call.action==='video-url'&&segments.includes(call.segment)).map(call=>call.segment),secondPart),secondPart,'switching parts reuses the prefetched addresses');
     // Camera count comes from the recording; every slot must remain usable
     // at both desktop and narrow widths, including even camera counts.
     for(const width of [1440,960,390]){

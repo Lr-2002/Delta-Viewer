@@ -10,6 +10,46 @@ class Decoder extends EventTarget {
   get buffered(){return {length:1,start:()=>0,end:()=>this.currentTime+this.ahead};}
   play(){this.paused=false;return Promise.resolve();}pause(){this.paused=true;}
 }
+test('a stationary group pauses once, and a new play attempt survives a late recovery event', async t=>{
+ let now=0;
+ t.mock.method(performance,'now',()=>now);
+ t.mock.timers.enable({apis:['setInterval','setTimeout']});
+ const players=Array.from({length:7},()=>Object.assign(new Decoder(),{ahead:60}));
+ const states=[];
+ let stalls=0;
+ const playback=new OutboundPlayback(state=>states.push(state),()=>assert.fail('play failed'),()=>assert.fail('unexpected end'),()=>stalls++);
+ try {
+  players.forEach((player,index)=>playback.attach(index,player));
+  playback.setSpeed(3);
+  playback.play();
+  await flush();
+  now=11900;
+  players.forEach(player=>{player.currentTime=30;});
+  t.mock.timers.tick(160);
+  const camera=players[3];
+  camera.readyState=2;
+  camera.ahead=0;
+  camera.dispatchEvent(new Event('waiting'));
+  now=12900;
+  t.mock.timers.tick(160);
+  assert.equal(stalls,0,'recent playback progress keeps a short buffer wait alive');
+  now=23900;
+  t.mock.timers.tick(160);
+  assert.equal(stalls,1);
+  assert.deepEqual(states.at(-1),{playing:false,buffering:false,position:30,duration:300});
+  assert.ok(players.every(player=>player.paused));
+  camera.readyState=4;
+  camera.ahead=60;
+  camera.dispatchEvent(new Event('canplay'));
+  now=26000;
+  t.mock.timers.tick(160);
+  assert.equal(stalls,1);
+  assert.ok(players.every(player=>player.paused),'late readiness cannot resume the timed-out attempt');
+  playback.play();
+  await flush();
+  assert.ok(players.every(player=>!player.paused&&player.currentTime===30));
+ } finally {playback.dispose();}
+});
 test('entering browsing while paused reports the current video position after ordinary playback',t=>{
  t.mock.timers.enable({apis:['setInterval']});
  const states=[],players=Array.from({length:7},()=>new Decoder());
@@ -128,7 +168,7 @@ test('ordinary 3x buffering recovers a paused peer that also loses decoded readi
  const playback=new OutboundPlayback(s=>states.push(s),()=>assert.fail('play failed'));
  try{
   players.forEach((p,i)=>playback.attach(i,p));playback.setSpeed(3);playback.play();await flush();
-  const hungry=players[0],peer=players[2];hungry.readyState=2;hungry.dispatchEvent(new Event('waiting'));
+  const hungry=players[0],peer=players[2];hungry.ahead=.1;hungry.readyState=2;hungry.dispatchEvent(new Event('waiting'));
   assert.equal(states.at(-1).buffering,true);assert.equal(hungry.paused,false);
   assert.equal(hungry.playbackRate,2,'recovery should not consume decoded runway at the stalled 3x rate');
   assert.ok(players.slice(1).every(p=>p.paused));
@@ -142,5 +182,24 @@ test('ordinary 3x buffering recovers a paused peer that also loses decoded readi
   hungry.readyState=2;hungry.dispatchEvent(new Event('waiting'));playback.pause();
   hungry.readyState=4;hungry.dispatchEvent(new Event('canplay'));t.mock.timers.tick(160);await flush();
   assert.ok(players.every(p=>p.paused&&p.playbackRate===3),'late recovery cannot undo user pause');
+ }finally{playback.dispose();}
+});
+
+test('3x coalesces a short decoded-frame gap but immediately holds when bytes are missing',async t=>{
+ t.mock.timers.enable({apis:['setInterval','setTimeout']});
+ const states=[],players=Array.from({length:7},()=>Object.assign(new Decoder(),{ahead:60}));
+ const playback=new OutboundPlayback(s=>states.push(s),()=>assert.fail('play failed'));
+ try{
+  players.forEach((p,i)=>playback.attach(i,p));playback.setSpeed(3);playback.play();await flush();
+  const camera=players[5];camera.readyState=2;camera.dispatchEvent(new Event('waiting'));
+  assert.equal(states.at(-1).buffering,false,'a pending frame with ample compressed media does not flush six healthy decoders');
+  t.mock.timers.tick(20);camera.readyState=4;camera.dispatchEvent(new Event('canplay'));t.mock.timers.tick(40);await flush();
+  assert.ok(players.every(p=>!p.paused&&p.playbackRate===3));
+  camera.readyState=2;camera.dispatchEvent(new Event('waiting'));t.mock.timers.tick(30);await flush();
+  assert.equal(states.at(-1).buffering,true,'a sustained decoder stall is still bounded');
+  camera.readyState=4;camera.dispatchEvent(new Event('canplay'));await flush();
+  camera.ahead=.1;camera.readyState=2;camera.dispatchEvent(new Event('waiting'));
+  assert.equal(states.at(-1).buffering,true,'network starvation never gets a decode grace period');
+  playback.pause();t.mock.timers.tick(100);assert.equal(states.at(-1).playing,false);
  }finally{playback.dispose();}
 });

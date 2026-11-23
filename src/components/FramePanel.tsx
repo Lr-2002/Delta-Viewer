@@ -296,6 +296,8 @@ export const FramePanel = memo(function FramePanel({
     let active = true;
     let runwayDeadline = 0;
     let recovering = false;
+    let decodeGap: number | null = null;
+    const clearDecodeGap = () => { if (decodeGap !== null) window.clearTimeout(decodeGap); decodeGap = null; };
     const pauseForBuffering = () => {
       // Presentation callbacks can lag behind a running decoder. Freeze the
       // shared clock at the primary's actual position before pausing it.
@@ -304,6 +306,8 @@ export const FramePanel = memo(function FramePanel({
     };
     const resume = () => {
       if (!active || video.seeking || video.ended) return;
+      if (video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) clearDecodeGap();
+      else if (decodeGap !== null) return;
       if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
         runwayDeadline = performance.now() + 250;
         recovering = true;
@@ -359,7 +363,7 @@ export const FramePanel = memo(function FramePanel({
       video.playbackRate = nominalRateRef.current;
       if (video.paused) void video.play().catch(() => { if (active) setVideoStatus("ready"); });
     };
-    const waitForRunway = () => {
+    const beginWaiting = () => {
       // waiting is queued: by delivery the camera may already have recovered,
       // or a user seek may be in progress. Neither should stop the group.
       if (!active || video.ended || video.seeking || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
@@ -369,6 +373,17 @@ export const FramePanel = memo(function FramePanel({
       video.playbackRate = Math.min(nominalRateRef.current, 2);
       setVideoStatus("buffering");
       onBufferingChange?.(stream.name, true);
+    };
+    const waitForRunway = () => {
+      if (!active || video.ended || video.seeking || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
+      const rate = nominalRateRef.current;
+      const hasBytes = Array.from({length:video.buffered.length},(_,i)=>i)
+        .some(i=>video.buffered.start(i)<=video.currentTime+.02&&video.buffered.end(i)-video.currentTime>=rate*.25);
+      if (rate >= 3 && !playbackHeldRef.current && hasBytes) {
+        if (decodeGap === null) decodeGap = window.setTimeout(() => { decodeGap = null; beginWaiting(); }, Math.min(30,120/rate));
+        return;
+      }
+      clearDecodeGap();beginWaiting();
     };
     // Browser buffers stay in memory. A paused decoder starts only after a
     // short runway; a running decoder waits for an actual buffering event.
@@ -384,6 +399,7 @@ export const FramePanel = memo(function FramePanel({
     resume();
     return () => {
       active = false;
+      clearDecodeGap();
       reconcilePlaybackRef.current = null;
       window.clearInterval(timer);
       video.removeEventListener("waiting", waitForRunway);

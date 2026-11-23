@@ -44,6 +44,15 @@ test('one compact sync notice, native history modality and both outboxes recover
  assert.equal(await page.locator('.audit-sync-detail').isVisible(),false);
  assert.ok((await notice.boundingBox()).height<105,'compact desktop status does not consume editor');
  await mkdir('artifacts/audit-layout',{recursive:true});
+ const more=page.getByRole('button',{name:/^更多/});
+ const toolbar=page.locator('.data-workspace-toolbar');
+ await more.focus();await page.keyboard.press('Enter');await page.keyboard.press('Tab');
+ assert.equal(await page.getByRole('button',{name:'快捷键设置',exact:true}).evaluate(el=>el===document.activeElement),true);
+ await page.keyboard.press('Escape');assert.equal(await more.getAttribute('aria-expanded'),'false');
+ assert.equal(await more.evaluate(el=>el===document.activeElement),true);
+ await more.click();
+ await notice.click({position:{x:10,y:10}});
+ assert.equal(await more.getAttribute('aria-expanded'),'false');
  for(const [width,height]of [[1976,1280],[1440,920],[960,680],[390,844]]){
   await page.setViewportSize({width,height});
   assert.ok((await notice.boundingBox()).height<(width<600?210:145));
@@ -52,6 +61,16 @@ test('one compact sync notice, native history modality and both outboxes recover
    assert.ok(await button.evaluate(el=>parseFloat(getComputedStyle(el).fontSize)>=12));
   }
   await page.screenshot({path:`artifacts/audit-layout/compact-${width}.png`});
+  for(const [locale, names] of [['en',['Task center','Choose data directory','Review overview','Version and updates','More']],['zh',['任务中心','选择数据目录','审核总览','版本与更新','更多']]]){
+   await toolbar.getByRole('button',{name:locale==='en'?'Switch to English':'切换为中文'}).click();
+   for(const name of names){
+    const box=await toolbar.getByRole('button',{name,exact:true}).boundingBox();
+    assert.ok(box&&box.x>=0&&box.x+box.width<=width+1, name+' fits the toolbar');
+   }
+  }
+  await more.click();
+  const menu=await page.locator('.data-more-panel').boundingBox();
+  assert.ok(menu&&menu.x>=0&&menu.x+menu.width<=width+1,'More stays inside the window');
   await page.getByRole('button',{name:'查看历史版本',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'历史版本',exact:true});await dialog.waitFor();
   assert.equal(await dialog.evaluate(el=>el.matches(':modal')),true);
@@ -61,7 +80,7 @@ test('one compact sync notice, native history modality and both outboxes recover
   for(let n=0;n<3;n++){await page.keyboard.press('Tab');assert.equal(await dialog.evaluate(el=>el.contains(document.activeElement)),true);}
   await page.screenshot({path:`artifacts/audit-layout/history-${width}.png`});
   await page.keyboard.press('Escape');await dialog.waitFor({state:'detached'});
-  assert.equal(await page.getByRole('button',{name:'查看历史版本',exact:true}).evaluate(el=>el===document.activeElement),true);
+  assert.equal(await more.evaluate(el=>el===document.activeElement),true);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  }
  await page.setViewportSize({width:960,height:680});
@@ -70,6 +89,7 @@ test('one compact sync notice, native history modality and both outboxes recover
  assert.match(await notice.locator('.audit-sync-facts').innerText(),/2026/);
  assert.match(await notice.locator('.audit-sync-detail').innerText(),/另有标注操作记录/);
  await notice.getByRole('button',{name:'收起详情',exact:true}).click();
+ await more.click();
  await page.getByRole('button',{name:'管理模式',exact:true}).click();
  assert.equal(await notice.count(),1,'one notice also visible in management mode');
  await page.getByRole('button',{name:'测试模式',exact:true}).click();

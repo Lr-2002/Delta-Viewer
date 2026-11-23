@@ -6,7 +6,9 @@ This manual is bundled for offline use. Illustrated lessons and interactive guid
 
 Use Offline mode for local work or sign in with your configured user center. Save before signing out. Recover temporary connection failures as prompted rather than creating duplicate accounts. Switching language preserves inputs and current work.
 
-Open Keyboard shortcuts in the top bar to search, change, clear or restore bindings. Settings are stored on this computer per workspace mode, user center and account, not synchronized across computers. PageUp/PageDown navigate recordings without submitting decisions. Space plays or pauses; arrows step frames or parts, Home/End seek to boundaries and Minus/Equal change speed. Resolve conflicts before saving. Workspace actions are suppressed while typing, using dialogs or during blocked operations.
+From the data workspace toolbar, open Task Center, choose a data folder, view the review overview or check for updates. More contains keyboard shortcuts, documentation, version history, operation errors and account actions.
+
+Open More → Keyboard shortcuts to search, change, clear or restore bindings. Settings are stored on this computer per workspace mode, user center and account, not synchronized across computers. PageUp/PageDown navigate recordings without submitting decisions. Space plays or pauses; arrows step frames or parts, Home/End seek to boundaries and Minus/Equal change speed. Resolve conflicts before saving. Workspace actions are suppressed while typing, using dialogs or during blocked operations.
 
 ## Device connection and setup
 

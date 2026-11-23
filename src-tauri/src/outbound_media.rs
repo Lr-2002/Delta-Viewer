@@ -22,10 +22,10 @@ use tokio::{
 };
 const PREFIX: &str = "/outbound-media/";
 const PART: u64 = 1024 * 1024;
-// One browser range spans several decode buffers. Per-route read plans keep
-// at most 4 MiB resident, independent of response length; no media is retained
-// after the response. The seven local origins share their original 16 slots.
-const WINDOW: u64 = 16 * PART;
+// A browser's open range streams to the object's end. Artificial response
+// boundaries can exhaust its decode buffer before it requests the next range.
+// The read plans independently bound in-flight memory; response length never
+// determines an allocation. Local origins continue sharing their 16 slots.
 const LIFETIME: Duration = Duration::from_secs(3600);
 type Session = (UserIdentity, String);
 #[derive(Clone)]
@@ -42,18 +42,24 @@ struct ReadPlan {
 impl ReadPlan {
     fn for_lane(lane: usize) -> Self {
         if lane == 0 {
-            // Smaller blocks keep the high-bitrate primary pipeline moving
-            // across uneven request latency, within the same 4 MiB budget.
+            // A 4 MiB ordered window underfills high-rate cold reads: a slow
+            // earlier block holds completed later blocks and their slots.
+            // Reserve more of the bounded seven-camera budget for cam0.
             Self {
-                bytes: PART / 4,
-                parallel: 16,
+                bytes: PART / 2,
+                parallel: 32,
+            }
+        } else if lane >= 5 {
+            // The 1080p extension cameras need more overlap than low-rate
+            // peers. Smaller blocks also release their first bytes sooner.
+            Self {
+                bytes: PART / 2,
+                parallel: 6,
             }
         } else {
-            // Low-bitrate peers need fewer upstream requests and leave more
-            // bandwidth for cam0. All seven continue reading concurrently.
             Self {
-                bytes: PART,
-                parallel: 2,
+                bytes: PART / 2,
+                parallel: 3,
             }
         }
     }
@@ -423,12 +429,25 @@ impl OutboundMediaServer {
                         } else {
                             8
                         };
-                        return movie_clock(
+                        let duration = movie_clock(
                             bytes
                                 .get(header..size.min(bytes.len() as u64) as usize)
                                 .ok_or(())?,
                         )
-                        .ok_or_else(|| route.fail("OUTBOUND_MEDIA_DURATION_INVALID"));
+                        .ok_or_else(|| route.fail("OUTBOUND_MEDIA_DURATION_INVALID"))?;
+                        // A parsed movie header also proves the container has
+                        // an index. Reuse that check for playback on this route.
+                        let mut inspected = route.inspected.lock().await;
+                        let mut verified = route.verified.lock().map_err(|_| ())?;
+                        if inspected.is_none()
+                            && verified
+                                .as_ref()
+                                .is_none_or(|prior| prior.0 == total && prior.1 == first.etag)
+                        {
+                            *verified = Some((total, first.etag.clone()));
+                            *inspected = Some(true);
+                        }
+                        return Ok(duration);
                     }
                     offset += size;
                 }
@@ -500,7 +519,7 @@ impl OutboundMediaServer {
         tokio::select! {
             _ = work => {},
             _ = reader.read(&mut unexpected) => {},
-            _ = tokio::time::sleep(Duration::from_secs(120)) => { route.fail("OUTBOUND_MEDIA_TIMEOUT"); },
+
             _ = async { loop { tokio::time::sleep(Duration::from_millis(100)).await; if !route.valid() { break } } } => {},
         }
         Ok(())
@@ -529,7 +548,7 @@ impl OutboundMediaServer {
                             .await
                             .map_err(|_| ());
                     }
-                    let end = start.saturating_add(WINDOW - 1).min(total - 1);
+                    let end = total - 1;
                     // Dispatch the full bounded pipeline, including the first.
                     // A separate first-block barrier wastes high-rate capacity.
                     let chunks = (start..=end)
@@ -546,14 +565,14 @@ impl OutboundMediaServer {
                     let mut chunks = stream::iter(chunks).buffered(route.plan.parallel);
                     let first = chunks.next().await.ok_or(())??;
                     headers(writer, 206, end - start + 1, Some((start, end, total))).await?;
-                    writer.write_all(&first.body).await.map_err(|_| ())?;
+                    write_body(writer, &first.body, route).await?;
                     drop(first);
                     while let Some(chunk) = chunks.next().await {
                         let chunk = chunk?;
                         if !route.valid() {
                             return Err(());
                         }
-                        writer.write_all(&chunk.body).await.map_err(|_| ())?;
+                        write_body(writer, &chunk.body, route).await?;
                     }
                     return writer.shutdown().await.map_err(|_| ());
                 }
@@ -566,7 +585,7 @@ impl OutboundMediaServer {
                     )
                     .await?;
                 let total = first.total;
-                let end = start.saturating_add(WINDOW - 1).min(total - 1);
+                let end = total - 1;
                 let etag = first.etag.clone();
                 {
                     let mut verified = route.verified.lock().map_err(|_| ())?;
@@ -577,7 +596,7 @@ impl OutboundMediaServer {
                     *verified = Some(actual);
                 }
                 headers(writer, 206, end - start + 1, Some((start, end, total))).await?;
-                writer.write_all(&first.body).await.map_err(|_| ())?;
+                write_body(writer, &first.body, route).await?;
                 let next = first.end + 1;
                 drop(first);
                 let rest = (next..=end)
@@ -597,7 +616,7 @@ impl OutboundMediaServer {
                     if !route.valid() {
                         return Err(());
                     }
-                    writer.write_all(&part.body).await.map_err(|_| ())?;
+                    write_body(writer, &part.body, route).await?;
                 }
                 writer.shutdown().await.map_err(|_| ())?;
                 return Ok(());
@@ -663,7 +682,7 @@ impl OutboundMediaServer {
             if count > length || !route.valid() {
                 return Err(());
             }
-            writer.write_all(&bytes).await.map_err(|_| ())?;
+            write_body(writer, &bytes, route).await?;
         }
         if count != length {
             return Err(());
@@ -957,6 +976,18 @@ struct Part {
     etag: Option<String>,
     body: Vec<u8>,
 }
+async fn write_body(writer: &mut OwnedWriteHalf, body: &[u8], route: &Route) -> Result<(), ()> {
+    if !route.valid() {
+        return Err(());
+    }
+    // Limit an idle browser write, not a healthy stream's overall lifetime.
+    // A long video at 1x can legitimately take more than 120 seconds.
+    tokio::time::timeout(Duration::from_secs(120), writer.write_all(body))
+        .await
+        .map_err(|_| route.fail("OUTBOUND_MEDIA_TIMEOUT"))?
+        .map_err(|_| ())
+}
+
 fn content_range(response: &Response) -> Option<(u64, u64, u64)> {
     parse_content_range(response.headers().get("content-range")?.to_str().ok()?)
 }
@@ -1058,6 +1089,7 @@ async fn headers(
 
 #[cfg(test)]
 mod tests {
+    const RESPONSE_BYTES: u64 = 64 * super::PART;
     use super::*;
     use crate::model::WorkspaceMode;
     use std::net::Ipv4Addr;
@@ -1238,7 +1270,7 @@ mod tests {
         test_runtime(async {
             let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let origin = fixture.local_addr().unwrap();
-            let mut data = vec![0x5a; (WINDOW + 123) as usize];
+            let mut data = vec![0x5a; (RESPONSE_BYTES + 123) as usize];
             data[..16].copy_from_slice(b"\0\0\0\x08ftyp\0\0\0\x08moov");
             let data = Arc::new(data);
             let expected = data.clone();
@@ -1282,9 +1314,9 @@ mod tests {
             // request deadline. Source bytes remain fast and available.
             tokio::time::sleep(Duration::from_millis(1500)).await;
             let bytes = response.bytes().await.unwrap();
-            assert_eq!(bytes.len(), WINDOW as usize);
+            assert_eq!(bytes.len(), (RESPONSE_BYTES + 123) as usize);
             assert!(
-                bytes.as_ref() == &expected[..WINDOW as usize],
+                bytes.as_ref() == expected.as_slice(),
                 "resumed stream must remain exact and ordered"
             );
             assert_eq!(server.status(&auth, &url).unwrap(), None);
@@ -1416,6 +1448,22 @@ mod tests {
                     bytes.load(Ordering::SeqCst) < 66000,
                     "skip the 512 MiB mdat with bounded headers"
                 );
+                if mode_value < 2 {
+                    bytes.store(0, Ordering::SeqCst);
+                    let response = Client::new()
+                        .get(&url)
+                        .header("Range", "bytes=0-0")
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), 206);
+                    assert_eq!(response.bytes().await.unwrap().as_ref(), &[0]);
+                    assert_eq!(
+                        bytes.load(Ordering::SeqCst),
+                        1,
+                        "playback on the probed route only reads the requested bytes"
+                    );
+                }
                 bytes.store(0, Ordering::SeqCst);
                 let step = server.frame_step(&identity, &url).await.unwrap();
                 if mode_value < 2 {
@@ -1568,7 +1616,7 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         test_runtime(async {
             for (lane, expected_parallel, expected_bytes) in
-                [(0, 16, PART / 4), (1, 2, PART), (6, 2, PART)]
+                [(0, 32, PART / 2), (1, 3, PART / 2), (6, 6, PART / 2)]
             {
                 let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
                 let origin = listener.local_addr().unwrap();
@@ -1580,7 +1628,8 @@ mod tests {
                         tokio::spawn(async move {
                             let request = read_request(&mut socket).await.unwrap();
                             let (start, end) =
-                                requested_range(request.range.as_deref().unwrap(), WINDOW).unwrap();
+                                requested_range(request.range.as_deref().unwrap(), RESPONSE_BYTES)
+                                    .unwrap();
                             assert_eq!(
                                 end - start + 1,
                                 expected_bytes,
@@ -1593,7 +1642,7 @@ mod tests {
                             while began.load(Ordering::SeqCst) < expected_parallel {
                                 tokio::time::sleep(Duration::from_millis(2)).await;
                             }
-                            let header = format!("HTTP/1.1 206 OK\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{WINDOW}\r\nETag: \"fixture\"\r\nConnection: close\r\n\r\n", end-start+1);
+                            let header = format!("HTTP/1.1 206 OK\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{RESPONSE_BYTES}\r\nETag: \"fixture\"\r\nConnection: close\r\n\r\n", end-start+1);
                             socket.write_all(header.as_bytes()).await.unwrap();
                             socket
                                 .write_all(&vec![0x5a; expected_bytes as usize])
@@ -1616,7 +1665,8 @@ mod tests {
                     let route = Arc::get_mut(routes.values_mut().next().unwrap()).unwrap();
                     route.plan = ReadPlan::for_lane(lane);
                     *route.inspected.get_mut() = Some(true);
-                    *route.verified.get_mut().unwrap() = Some((WINDOW, Some("\"fixture\"".into())));
+                    *route.verified.get_mut().unwrap() =
+                        Some((RESPONSE_BYTES, Some("\"fixture\"".into())));
                 }
                 let response = client
                     .get(url)
@@ -1625,11 +1675,11 @@ mod tests {
                     .await
                     .unwrap();
                 let body = response.bytes().await.unwrap();
-                assert_eq!(body.len(), WINDOW as usize);
+                assert_eq!(body.len(), RESPONSE_BYTES as usize);
                 assert!(body.iter().all(|b| *b == 0x5a));
                 assert_eq!(
                     starts.load(Ordering::SeqCst),
-                    (WINDOW / expected_bytes) as usize
+                    (RESPONSE_BYTES / expected_bytes) as usize
                 );
                 upstream.abort();
             }
@@ -1722,13 +1772,15 @@ mod tests {
                 assert_eq!(response.status(), 206);
                 assert_eq!(
                     response.headers()["content-range"],
-                    format!("bytes 0-{}/{}", WINDOW - 1, 17 * PART + 17)
+                    format!("bytes 0-{}/{}", 17 * PART + 16, 17 * PART + 17)
                 );
                 response.bytes().await.unwrap()
             }))
             .await;
             for bytes in bodies {
-                assert_eq!(bytes.len(), WINDOW as usize);
+                // A single response must continue past the previous 16 MiB
+                // boundary and include the final partial block.
+                assert_eq!(bytes.len(), (17 * PART + 17) as usize);
                 assert!(
                     bytes
                         .iter()
@@ -1776,10 +1828,13 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(parallel.bytes().await.unwrap().len(), WINDOW as usize);
+            assert_eq!(
+                parallel.bytes().await.unwrap().len(),
+                (17 * PART + 17) as usize
+            );
             assert_eq!(
                 starts.load(Ordering::SeqCst),
-                16,
+                18,
                 "all four verified block requests dispatch before any body is available"
             );
             for bad in [1, 2, 3] {

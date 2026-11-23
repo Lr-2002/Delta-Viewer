@@ -543,6 +543,7 @@ if (!browserExecutable) {
       await page.getByRole("button", {name:"新增片段",exact:true}).click();
       await page.waitForFunction(() => document.querySelector('select[aria-label="机标来源"]')?.disabled === false);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await page.getByRole("button", {name:/^更多/}).click();
       await page.getByRole("button", {name:"切换工作模式",exact:true}).click();
       await page.getByRole("button", {name:"登录工作区"}).waitFor();
       await page.getByRole("button", {name:"登录工作区"}).click();

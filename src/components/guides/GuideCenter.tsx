@@ -63,7 +63,12 @@ function findTarget(step: Step, layer: HTMLElement) {
   const exact = targets.find(node => controlName(node).some(name => expected.includes(name)));
   const prefix = targets.find(node => controlName(node).some(name => expected.some(label => label.length >= 4 && name.startsWith(label))));
   const generic = ["button", "label", "summary", "input,select,textarea", "input[type=checkbox]"].includes(step.target);
-  return exact ?? prefix ?? (generic ? undefined : targets[0]);
+  const target = exact ?? prefix ?? (generic ? undefined : targets[0]);
+  if (target) return target;
+  const panel = layer.querySelector<HTMLElement>(".data-more-panel[hidden]");
+  const trigger = panel?.previousElementSibling;
+  if (panel && trigger instanceof HTMLElement && visible(trigger) && [...panel.querySelectorAll<HTMLElement>(step.target)]
+    .some(node => !generic || controlName(node).some(name => expected.includes(name)))) return trigger;
 }
 
 function getBox(target: HTMLElement, layer: HTMLElement): Box | null {
@@ -94,9 +99,10 @@ function useGuideLayer() {
   useEffect(() => {
     function sync() {
       setHost(activeLayer());
-      setToolbar([...document.querySelectorAll<HTMLElement>(
+      const topbar = [...document.querySelectorAll<HTMLElement>(
         ".review-supervision-header,.app-shell:not([hidden]) .topbar-actions,.auth-brand,.topbar-actions",
-      )].find(node => node.getClientRects().length > 0 && !node.closest("[hidden],[inert]")) ?? null);
+      )].find(node => node.getClientRects().length > 0 && !node.closest("[hidden],[inert]"));
+      setToolbar(topbar?.querySelector<HTMLElement>(".data-guide-slot") ?? topbar ?? null);
     }
     const observer = new MutationObserver(sync);
     observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["hidden", "open"] });
@@ -123,6 +129,7 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
   const en = language === "en";
   const [box, setBox] = useState<Box | null>(null);
   const [status, setStatus] = useState<"search" | "ready" | "disabled" | "waiting">("search");
+  const [showingMore, setShowingMore] = useState(false);
   const anchorRef = useRef<HTMLElement | null>(null);
   const refresh = useRef<() => void>(() => undefined);
   const card = useRef<HTMLElement | null>(null);
@@ -173,6 +180,7 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
       const element = step.target.startsWith("frame:") && !frameLocated ? null : findTarget(step, layer) ?? null;
       const previous = anchorRef.current;
       anchorRef.current = element;
+      setShowingMore(element?.classList.contains("data-more-trigger") ?? false);
       if (!element) {
         if (!pending) setStatus("search");
         setBox(null);
@@ -196,6 +204,7 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
       const anchor = anchorRef.current;
       const source = event.target;
       if (!anchor || !(source instanceof Node) || !anchor.contains(source) || anchor.matches(":disabled,[aria-disabled=true]")) return;
+      if (anchor.classList.contains("data-more-trigger")) return;
       if (step.action === "drag" && event instanceof PointerEvent && event.type === "pointerdown") {
         dragStart = { x: event.clientX, y: event.clientY, value: anchor instanceof HTMLInputElement ? anchor.value : undefined };
         return;
@@ -312,8 +321,8 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
         </header>
         <div className="guide-progress" role="progressbar" aria-valuemin={0} aria-valuemax={count} aria-valuenow={running.index}><i style={{ width: (running.index / count * 100) + "%" }} /></div>
         <div className="guide-tip-content" aria-live="polite">
-          <h3>{textFor(step, language)}</h3>
-          {step.detail && <p>{step.detail[en ? 1 : 0]}</p>}
+          <h3>{showingMore ? en ? "Open More." : "打开「更多」。" : textFor(step, language)}</h3>
+          {!showingMore && step.detail && <p>{step.detail[en ? 1 : 0]}</p>}
           {status === "waiting" ? <p className="guide-condition">{common.waiting}</p> :
             status !== "ready" ? <p className="guide-condition">{status === "disabled" ? common.disabled : common.missing} {needs?.[en ? 1 : 0]}</p> :
             step.action === "change" && anchorRef.current?.matches("input:not([type=range]),textarea") ? <p>{common.confirmInput}</p> : null}
@@ -321,7 +330,7 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
         <div className="guide-tip-actions">
           <button type="button" className="text-button" onClick={onExit}>{common.exit}</button>
           {status !== "ready" && <button type="button" className="button button-secondary" onClick={() => refresh.current()}><Focus size={15} />{common.retry}</button>}
-          {status === "ready" && step.action === "read" && <button type="button" className="button button-primary" onClick={onAdvance}>{common.next}<ArrowRight size={15} /></button>}
+          {status === "ready" && !showingMore && step.action === "read" && <button type="button" className="button button-primary" onClick={onAdvance}>{common.next}<ArrowRight size={15} /></button>}
         </div>
       </section>
     </div>, host,
@@ -398,7 +407,9 @@ export function GuideCenter() {
     centerRef.current?.close();
     setVisibleCenter(false);
     setCompleted(null);
-    triggerRef.current?.focus();
+    const trigger = triggerRef.current;
+    if (trigger && !visible(trigger)) trigger.closest(".data-workspace-more")?.querySelector<HTMLElement>(".data-more-trigger")?.focus();
+    else trigger?.focus();
   }
 
   function launch(lesson: Lesson, reset: boolean) {

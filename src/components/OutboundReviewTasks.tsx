@@ -15,7 +15,7 @@ interface Props {reasonPreferenceOwner?:string;currentUser:UserIdentity;workspac
 type TaskAction="claim"|"release"|"open"|"verify";
 type TaskFeedback={error:boolean;message:string};
 type TimelineState={recordingId:string;source?:OutboundRecording["videos"];durations:Record<number,number>;failed:Record<number,string>};
-type TicketResult={url:string;duration?:number};
+type TicketResult={url:string;duration?:number;requestedAt?:number};
 type VideoState={recordingId:string;part:number;urls:Record<number,string>;ready:number[];failed:Record<number,string>};
 
 // Playback publishes its clock frequently. The recording queue only changes
@@ -83,6 +83,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   const [speed,setSpeed]=useState(1);
   const [highSpeedBrowsing,setHighSpeedBrowsing]=useState(false);
   const [buffering,setBuffering]=useState(false);
+  const [playbackStalled,setPlaybackStalled]=useState(false);
   const [muted,setMuted]=useState(true);
   const [primaryFilled,setPrimaryFilled]=useState(true);
   const [fullscreenCamera,setFullscreenCamera]=useState<string|null>(null);
@@ -98,7 +99,14 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   const requestGeneration=useRef(0);
   const ticketLoader=useMemo(()=>new OutboundVideoLoader<(typeof partVideos)[number],TicketResult>(result=>{void releaseOutboundVideos([result.url]);}),[]);
   const mediaUrls=useRef(new Set<string>());
-  const releaseVideos=useCallback(()=>{ticketLoader.cancel();void releaseOutboundVideos([...mediaUrls.current]);mediaUrls.current.clear();},[ticketLoader]);
+  const nextPartTickets=useRef(new Map<number,{url:string;requestedAt:number}>());
+  const releaseVideos=useCallback((keep:ReadonlySet<string>=new Set())=>{
+    ticketLoader.cancel();
+    nextPartTickets.current.clear();
+    const retired=[...mediaUrls.current].filter(url=>!keep.has(url));
+    void releaseOutboundVideos(retired);
+    for(const url of retired)mediaUrls.current.delete(url);
+  },[ticketLoader]);
   const batch=batches.find(value=>value.id===batchId)??null;
   const recording=batch?.recordings.find(value=>value.id===recordingId)??batch?.recordings[0]??null;
   const isOwner=batch?.claim===currentUser.username;
@@ -131,7 +139,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   useEffect(()=>{
     const transport=new OutboundPlayback(state=>{
       setPlaying(state.playing);setBuffering(state.buffering);setPosition(state.position);
-    },()=>setError("视频播放失败，请重新打开。"),()=>ended.current());
+    },()=>setError("视频播放失败，请重新打开。"),()=>ended.current(),()=>setPlaybackStalled(true));
     playback.current=transport;
     for(const [id,player] of players.current)transport.attach(id,player);
     return()=>{transport.dispose();playback.current=null;};
@@ -172,7 +180,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     setRecordingId(previous=>batch.recordings.some(item=>item.id===previous)?previous:batch.recordings[0]?.id??"");
     requestGeneration.current++;setVideoState(null);setOpening(false);setPartIndex(0);setReasonDialog(null);
   },[batch?.id]);
-  useEffect(()=>{requestGeneration.current++;setVideoState(null);setOpening(false);setPartIndex(0);pendingStart.current=null;setTransitionIntent(false);setTimelineState({recordingId,source:recording?.videos,durations:{},failed:{}});setReasonDialog(null);setError("");},[recordingId,recording?.videos]);
+  useEffect(()=>{requestGeneration.current++;setVideoState(null);setOpening(false);setPartIndex(0);pendingStart.current=null;setTransitionIntent(false);setPlaybackStalled(false);setTimelineState({recordingId,source:recording?.videos,durations:{},failed:{}});setReasonDialog(null);setError("");},[recordingId,recording?.videos]);
 
   useEffect(()=>{
     if(view==="workspace"&&recording&&isOwner&&!suspended)void openVideos(0);
@@ -248,34 +256,55 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   }
   async function openVideos(nextPart=partIndex,target=0,resume=false){
     if(!batch||!recording||!isOwner)return;
+    setPlaybackStalled(false);
     const generation=++requestGeneration.current;retryPositions.current.clear();
     const files=grouped.parts[nextPart]??[];
+    const prepared:Record<number,string>={};
+    for(const video of files){
+      const ticket=nextPartTickets.current.get(video.segment);
+      // Native routes live for one hour. Leave room for playback to start.
+      if(ticket&&performance.now()-ticket.requestedAt<45*60_000)prepared[video.segment]=ticket.url;
+    }
+    const pending=files.filter(video=>!prepared[video.segment]);
     playback.current?.pause();setPosition(target);
     pendingStart.current={part:nextPart,position:target,resume};setTransitionIntent(resume);
-    setPartIndex(nextPart);setVideoState({recordingId:recording.id,part:nextPart,urls:{},ready:[],failed:{}});setOpening(Boolean(files.length));setError("");setNotice("");
-    releaseVideos();
-    const active=new Set(files.map(file=>file.segment));let remaining=files.length;
+    setPartIndex(nextPart);setVideoState({recordingId:recording.id,part:nextPart,urls:prepared,ready:[],failed:{}});setOpening(Boolean(pending.length));setError("");setNotice("");
+    releaseVideos(new Set(Object.values(prepared)));
+    const active=new Set(files.map(file=>file.segment));let remaining=pending.length;
+    const upcoming=grouped.parts[nextPart+1]??[];
+    const upcomingIds=new Set(upcoming.map(file=>file.segment));
     // Current cameras get tickets first. Other parts only read their MP4 clock,
     // in the same four-request budget, with no hidden video/decoder per file.
-    const probes=grouped.parts.flat().filter(file=>!active.has(file.segment)&&(!measured[file.segment]||sourceFailures[file.segment]));
+    const probes=[...upcoming,...grouped.parts.flat().filter(file=>!active.has(file.segment)&&!upcomingIds.has(file.segment)&&(!measured[file.segment]||sourceFailures[file.segment]))];
     const settled=(file:typeof files[number])=>{if(active.has(file.segment)&&--remaining===0)setOpening(false);};
-    ticketLoader.replace([...files,...probes],async video=>{
+    ticketLoader.replace([...pending,...probes],async video=>{
+      const requestedAt=performance.now();
       const url=await fetchOutboundVideo(batch,recording,video.segment,video.camera);
       if(generation!==requestGeneration.current){void releaseOutboundVideos([url]);throw new Error("OUTBOUND_CANCELLED");}
       mediaUrls.current.add(url);
       if(active.has(video.segment))return {url};
-      try{return {url,duration:(await fetchOutboundMetadata(url)).duration};}
+      try{return {url,duration:(await fetchOutboundMetadata(url)).duration,requestedAt};}
       catch(error){mediaUrls.current.delete(url);void releaseOutboundVideos([url]);throw error;}
     },(video,result)=>{
       if(active.has(video.segment)){
         mediaUrls.current.add(result.url);
         setVideoState(previous=>previous?{...previous,urls:{...previous.urls,[video.segment]:result.url}}:previous);
-      }else{rememberDuration(video.segment,result.duration!);mediaUrls.current.delete(result.url);void releaseOutboundVideos([result.url]);}
+      }else{
+        rememberDuration(video.segment,result.duration!);
+        if(upcomingIds.has(video.segment)&&result.requestedAt!==undefined){
+          nextPartTickets.current.set(video.segment,{url:result.url,requestedAt:result.requestedAt});
+        }else{
+          mediaUrls.current.delete(result.url);
+          void releaseOutboundVideos([result.url]);
+        }
+      }
       settled(video);
     },(video,cause)=>{
       const message=outboundError(cause);
       if(active.has(video.segment))setVideoState(previous=>previous?{...previous,failed:{...previous.failed,[video.segment]:message}}:previous);
-      setTimelineState(previous=>({...previous,recordingId:recording.id,source:recording.videos,failed:{...previous.failed,[video.segment]:message}}));
+      if(active.has(video.segment)||!measured[video.segment]||sourceFailures[video.segment]){
+        setTimelineState(previous=>({...previous,recordingId:recording.id,source:recording.videos,failed:{...previous.failed,[video.segment]:message}}));
+      }
       settled(video);
     },()=>{if(generation===requestGeneration.current)setOpening(false);});
   }
@@ -295,12 +324,14 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     });
   }
   async function retryFailedVideos(){
+    setPlaybackStalled(false);
     if(!batch||!recording||!videoState||opening||!isOwner)return;
     const generation=++requestGeneration.current;
     const failed=new Set(Object.keys(videoState.failed).map(Number));
     const target=players.current.get(partVideos.find(video=>video.camera===grouped.primaryCamera)?.segment??-1)?.currentTime??position;
     pendingStart.current=null;setTransitionIntent(false);playback.current?.pause();setOpening(true);
     ticketLoader.cancel();
+    nextPartTickets.current.clear();
     const live=new Set(Object.values(videoState.urls));
     const retired=[...mediaUrls.current].filter(url=>!live.has(url));
     for(const url of retired)mediaUrls.current.delete(url);
@@ -339,6 +370,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   }
   function togglePlayback(){
     if(playing||transitionIntent){if(pendingStart.current)pendingStart.current.resume=false;setTransitionIntent(false);playback.current?.pause();}
+    else if(playbackStalled)void openVideos(partIndex,position,true);
     else if(fullDuration>0&&fullPosition>=fullDuration-.05)void openVideos(0,0,true);
     else playback.current?.play();
   }
@@ -477,8 +509,10 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
 
           {recording&&<section className="outbound-player" aria-label={t("原始视频审核")}>
             <div className="outbound-player-heading"><div><strong>{recording.name}</strong><span>{grouped.cameraCount}{" " + t("路原始视频")}{grouped.parts.length>1 ? t(" · 共 {0} 段", [grouped.parts.length]) : ""}</span></div>
+              {playbackStalled&&isOwner&&<button className="button button-secondary" type="button" disabled={opening||busy||workspaceBusy||suspended} onClick={()=>void openVideos(partIndex,position,true)}><RefreshCw size={16}/>{t("重连视频")}</button>}
               {isOwner&&(!videoState||hasVideoFailures)&&<button className="button button-secondary" type="button" disabled={opening||workspaceBusy||!recording.videos.length} onClick={()=>void (videoState&&hasVideoFailures?retryFailedVideos():openVideos(partIndex,position))}>{opening ? <LoaderCircle size={16} className="spin"/> : <Play size={16}/>}{videoState&&hasVideoFailures ? t("重试失败视频") : t("打开原始视频")}</button>}
             </div>
+            {playbackStalled&&<p className="outbound-error" role="status">{t("视频缓冲超时，播放已暂停。")}</p>}
             {missingSource&&<p className="outbound-error" role="alert">{t("录制存在缺失相机或分段，可查看已有视频，并填写原因提交异常或无效。")}{missingSequence&&t("分段序号不连续，缺失区间的时长未知。")}</p>}
             {Object.keys(sourceFailures).length>0&&<div className="outbound-source-issues" role="alert">{t("以下视频读取失败，请重试或查看对应位置：")}{grouped.parts.map((files,index)=>files.some(file=>sourceFailures[file.segment])&&<button type="button" key={index} disabled={opening||busy||workspaceBusy} onClick={()=>void openVideos(index)}>{t("查看第 {0} 段",[grouped.partNumbers[index]+1])}</button>)}</div>}
             <div className={`outbound-video-grid cameras-${grouped.cameraCount}`} style={{"--outbound-camera-columns":`minmax(0,3.2fr) repeat(${Math.ceil((grouped.cameraCount-1)/2)},minmax(0,1fr))`} as CSSProperties}>{grouped.cameras.map((camera,cameraIndex)=>{

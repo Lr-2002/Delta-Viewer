@@ -42,6 +42,7 @@ import {
 import { ManagerWorkspace } from "./components/ManagerWorkspace";
 import { deviceSections, type ManagerSection } from "./lib/d1";
 import { AppUpdates } from "./components/AppUpdates";
+import { DataWorkspaceMore } from "./components/DataWorkspaceMore";
 import { ShortcutSettings } from "./components/ShortcutSettings";
 import { ShortcutProvider, useShortcutPreferences } from "./lib/use-shortcuts";
 import { matchShortcut, shortcutBlocked } from "./lib/shortcuts";
@@ -227,8 +228,13 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.13.9": "外发视频长时间没有进展时暂停，可从当前位置重连并继续播放。",
+  "1.13.8": "精简数据工作区顶栏，突出任务中心，将快捷键、文档、历史与账号操作归入「更多」，并减少外发视频连续切段的等待。",
+  "1.13.7": "本地与外发视频改为持续读取，减少分批断开后的周期性缓冲；3×已有视频数据时合并极短解码等待，保留七路原画质和精确同步。",
+  "1.13.6": "延长外发连续读取并平衡七路相机的并行供给，减少反复缓冲；保留原画质、独立审核原因与软件内安装包下载，并整合中英文文档中心。",
   "1.13.5": "修正文档中心入口导致校对顶栏换行的问题，保留图表与审核按钮的可见区域。",
-  "1.13.3": "新增中英文文档中心与互动教程，支持搜索、续学和重新学习；补齐连续回放、审核修改、快捷键、高速浏览及安装包下载说明。",
+  "1.13.4": "优化外发高码率主相机的有界并行读取，保留七路原画质、独立异常／无效原因管理及软件内安装包下载。",
+  "1.13.3": "扩大外发主相机的有界并行读取额度，改善冷读供给不足；保留七路原画质、独立审核原因及软件内安装包下载。",
   "1.13.2": "修复软件内安装包下载入口：已准备好的 Windows 安装包可直接下载，无需等待三平台或 GitHub 正式发布。",
   "1.13.1": "优化外发高码率主相机的分块读取，保留副路读取能力；继续支持七路原画质、连续播放及本地恢复等待修正。",
   "1.13.0": "修复七路视频恢复后仍长时间共同等待的问题；恢复等待设为有界并识别浏览器暂停加载，保留外发主路读取优化、七路同步和原画质。",
@@ -2251,36 +2257,52 @@ function App() {
           <button type="button" aria-current={managerSection!=="data"?"page":undefined} disabled={busy} onClick={()=>void navigateManager(lastDeviceSection.current)}>{t("设备管理区")}</button>
           <button type="button" aria-current={managerSection==="data"?"page":undefined} disabled={busy} onClick={()=>void navigateManager("data")}>{t("数据工作区")}</button>
         </nav>
-        {managerSection === "data" && <div className="source-display">
-          <HardDrive size={16} />
-          <span title={outboundBatch?.name ?? sourcePath}>{outboundBatch ? t("外发审核 · {0}", [outboundBatch.name]) : sourcePath ? shortPath(sourcePath, 58) : isManagedWorkspace && currentUser?.role === "operator" ? t("首次使用请配置本机 NAS 目录") : t("未选择 SD 卡")}</span>
-          {sourcePath ? <span className="source-dot" /> : null}
+        {managerSection === "data" && <div className="data-workspace-source">
+            <div className="source-display">
+              <HardDrive size={16} />
+              <span title={outboundBatch?.name ?? sourcePath}>{outboundBatch ? t("外发审核 · {0}", [outboundBatch.name]) : sourcePath ? shortPath(sourcePath, 58) : isManagedWorkspace && currentUser?.role === "operator" ? t("首次使用请配置本机 NAS 目录") : t("未选择 SD 卡")}</span>
+            </div>
+            {!outboundBatch && status !== "idle" && <StatusBadge status={status} />}
+            {isOfflineWorkspace && <span className="workspace-mode-indicator" title={t("本地回放、编辑、审核与导出可用；不连接用户中心，不参与公司统计")}>{t("离线模式 · 仅本机")}</span>}
         </div>}
-        <div className="topbar-actions">
-          {shortcutButton}
-          <button className="icon-button version-history-trigger" type="button" onClick={() => setReleaseHistoryOpen(true)} title={t("查看历史版本")} aria-label={t("查看历史版本")}><BookOpenText size={16}/></button>
-          {managerSection === "data" && canManage && <button className="button button-secondary management-mode-button" disabled={busy || reviewHasUnsaved} onClick={openManagement}>{t("管理模式")}</button>}
-          {managerSection === "data" && !outboundBatch && <StatusBadge status={status} />}
+        <div className={`topbar-actions${managerSection === "data" ? " data-workspace-toolbar" : ""}`}>
+          {managerSection === "data" ? <div className="data-workspace-actions">
+              {isManagedWorkspace && currentUser?.role === "operator" && <button className="button button-primary personal-task-trigger" type="button" onClick={() => setPersonalTaskOpen(open => !open)} aria-expanded={personalTaskOpen}>
+                <ListChecks size={16} />{t("任务中心")}
+              </button>}
+              {currentUser?.role !== "admin" && <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy}>
+                <FolderOpen size={16} />{isManagedWorkspace && currentUser?.role === "operator" ? t("选择数据目录") : t("选择 SD 卡")}
+              </button>}
+              {isManagedWorkspace && currentUser && <button className="button button-secondary workbench-trigger" type="button" onClick={() => void openCaptureWorkbench().catch(reason => setNotice(`审核总览打开失败：${toMessage(reason)}`))} title={t("打开审核总览")}>
+                <Activity size={16} />{t("审核总览")}
+              </button>}
+          </div> : <>
+            {shortcutButton}
+            <button className="icon-button version-history-trigger" type="button" onClick={() => setReleaseHistoryOpen(true)} title={t("查看历史版本")} aria-label={t("查看历史版本")}><BookOpenText size={16}/></button>
+          </>}
           {isManagedWorkspace && currentUser && !showManagement ? updateControls(busy) : null}
-          {managerSection === "data" && currentUser?.role !== "admin" && <button className="button button-secondary" type="button" onClick={() => void chooseSource()} disabled={busy} aria-label={isManagedWorkspace && currentUser?.role === "operator" ? t("选择数据目录") : t("选择 SD 卡")}>
-            <FolderOpen size={16} />
-            {isManagedWorkspace && currentUser?.role === "operator" ? t("选择数据目录") : t("选择 SD 卡")}
-          </button>}
-          {managerSection === "data" && isManagedWorkspace && currentUser ? (
-            <button className="button button-secondary workbench-trigger" type="button" onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`审核总览打开失败：${toMessage(reason)}`))} title={t("打开审核总览")}>
-              <Activity size={16} />{t("审核总览")}</button>
-          ) : null}
-          {managerSection === "data" && <button
-            className="icon-button history-trigger"
-            type="button"
-            onClick={() => setHistoryOpen((current) => !current)}
-            title={t("操作错误历史")}
-            aria-label={t("操作错误历史")}
-            aria-expanded={historyOpen}
-          >
-            <History size={16} />
-            {operationErrors.length ? <span>{Math.min(operationErrors.length, 99)}</span> : null}
-          </button>}
+          {managerSection === "data" ? <DataWorkspaceMore errors={operationErrors.length}>
+                {isManagedWorkspace && currentUser && <div className="data-more-account" title={currentUser.displayName}>
+                  <UserRound size={17} /><span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
+                </div>}
+                <div className="data-more-group">
+                  <button type="button" onClick={() => setShortcutsOpen(true)}><Keyboard size={17} />{t("快捷键设置")}</button>
+                  <div className="data-guide-slot" />
+                  <button type="button" onClick={() => setReleaseHistoryOpen(true)} aria-label={t("查看历史版本")}><BookOpenText size={17} />{t("历史版本")}</button>
+                  <button type="button" onClick={() => setHistoryOpen(current => !current)} aria-label={t("操作错误历史")} aria-expanded={historyOpen}>
+                    <History size={17} />{t("操作错误历史")}
+                    {operationErrors.length > 0 && <span className="data-error-count" aria-hidden="true">{operationErrors.length > 99 ? "99+" : operationErrors.length}</span>}
+                  </button>
+                </div>
+                <div className="data-more-group">
+                  {canManage && <button type="button" disabled={busy || reviewHasUnsaved} onClick={openManagement}><ShieldCheck size={17} />{t("管理模式")}</button>}
+                  {isManagedWorkspace && currentUser?.role === "operator" && <button className="account-summary-button" type="button" onClick={() => setProfileEditorOpen(true)}>
+                    <Pencil size={17} />{t("修改当前显示名称")}
+                  </button>}
+                  <button type="button" onClick={() => void chooseWorkspaceMode()} disabled={busy}><Workflow size={17} />{t("切换工作模式")}</button>
+                  {isManagedWorkspace && currentUser && <button type="button" onClick={() => void logout()} disabled={busy}><LogOut size={17} />{t("退出登录")}</button>}
+                </div>
+          </DataWorkspaceMore> : <>
           {isOfflineWorkspace ? <span className="workspace-mode-indicator" title={t("本地回放、编辑、审核与导出可用；不连接用户中心，不参与公司统计")}>{t("离线模式 · 仅本机")}</span> : null}
           {isManagedWorkspace && currentUser ? (
             <>
@@ -2302,10 +2324,6 @@ function App() {
                   <span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
                 </div>
               )}
-              {managerSection === "data" && currentUser.role === "operator" ? (
-                <button className="button button-secondary personal-task-trigger" type="button" onClick={() => setPersonalTaskOpen((open) => !open)} title={t("任务中心")} aria-label={t("任务中心")} aria-expanded={personalTaskOpen}>
-                  <ListChecks size={16} />{t("任务中心")}</button>
-              ) : null}
               <button className="icon-button" type="button" onClick={() => void logout()} disabled={busy} title={t("退出登录")} aria-label={t("退出登录")}>
                 <LogOut size={16} />
               </button>
@@ -2314,6 +2332,7 @@ function App() {
           <button className="icon-button" type="button" onClick={() => void chooseWorkspaceMode()} disabled={busy} title={t("切换工作模式")} aria-label={t("切换工作模式")}>
             <Workflow size={16} />
           </button>
+          </>}
         </div>
       </header>
       {managerSection!=="data" && <nav className="manager-navigation" aria-label={t("设备功能")}>

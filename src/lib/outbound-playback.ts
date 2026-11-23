@@ -5,6 +5,8 @@ export interface OutboundPlaybackState {
   duration: number;
 }
 
+const STALL_TIMEOUT_MS = 12_000;
+
 /** One transport owns all cameras. Media events never become new seek commands. */
 export class OutboundPlayback {
   private players = new Map<number, HTMLVideoElement>();
@@ -16,6 +18,8 @@ export class OutboundPlayback {
   private priming = false;
   private primingUntil = 0;
   private recoveryUntil = 0;
+  private progressAt = 0;
+  private progressPosition = 0;
   private generation = 0;
   private speed = 1;
   private browsing = false;
@@ -25,7 +29,7 @@ export class OutboundPlayback {
   private masterId: number | null = null;
   private timer: ReturnType<typeof setInterval>;
 
-  constructor(private report: (state: OutboundPlaybackState) => void, private failed: () => void, private finished: () => void = () => {}) {
+  constructor(private report: (state: OutboundPlaybackState) => void, private failed: () => void, private finished: () => void = () => {}, private stalled: () => void = () => {}) {
     this.timer = setInterval(() => this.tick(), 160);
   }
 
@@ -43,8 +47,8 @@ export class OutboundPlayback {
         if (this.sampled()) return;
         // WebView2 may deliver an old waiting event after decoding recovered.
         // Treating it as a fresh stall flushes all seven healthy decoders.
-        if (!this.intent || player.ended || player.seeking || player.readyState >= 3) return;
-        if (this.speed <= 3 || this.held || !this.hasBuffer(player, this.speed * .25)) {
+        if (!this.intent || this.held || player.ended || player.seeking || player.readyState >= 3) return;
+        if (this.speed < 3 || !this.hasBuffer(player, this.speed * .25)) {
           this.hold();
           return;
         }
@@ -52,7 +56,7 @@ export class OutboundPlayback {
         const generation = this.generation;
         // Coalesce sub-frame decode gaps only when compressed media is ahead.
         // A sustained stall still holds peers within .12 media seconds; no
-        // grace applies to network starvation, ordinary rates or active seeks.
+        // grace applies to network starvation, lower rates or active seeks.
         this.decodeGaps.set(id, setTimeout(() => {
           this.decodeGaps.delete(id);
           if (generation === this.generation && this.intent && this.players.get(id) === player
@@ -61,7 +65,7 @@ export class OutboundPlayback {
       };
       const canplay = () => {
         if (player.readyState >= 3) this.clearDecodeGap(id);
-        this.tick();
+        if (!this.intent || this.held || this.sampled()) this.tick();
       };
       const ended = () => this.tick();
       player.addEventListener("waiting", waiting);
@@ -160,6 +164,8 @@ export class OutboundPlayback {
     this.prime();
     this.generation++;
     const master = this.master()!;
+    this.progressAt = performance.now();
+    this.progressPosition = master.currentTime;
     if (this.sampled()) {
       this.browsePosition = master.currentTime;
       this.browseTarget = null;
@@ -200,6 +206,8 @@ export class OutboundPlayback {
     this.browsePosition = time;
     this.browseTarget = null;
     this.browseAt = performance.now();
+    this.progressAt = this.browseAt;
+    this.progressPosition = time;
     for (const player of this.players.values()) {
       player.pause();
       if (player.readyState >= 1)
@@ -265,8 +273,19 @@ export class OutboundPlayback {
   private tick() {
     const master = this.master();
     if (this.intent && master) {
-      if (this.sampled()) { this.browseTick(); this.publish(); return; }
-      if (master.ended) { this.pause(); this.finished(); return; }
+      const sampled = this.sampled();
+      if (!sampled && master.ended) { this.pause(); this.finished(); return; }
+      const position = sampled ? this.browsePosition ?? master.currentTime : master.currentTime;
+      const now = performance.now();
+      if (Math.abs(position - this.progressPosition) >= .05 || globalThis.document?.hidden) {
+        this.progressPosition = position;
+        this.progressAt = now;
+      } else if (now - this.progressAt >= STALL_TIMEOUT_MS) {
+        this.pause();
+        this.stalled();
+        return;
+      }
+      if (sampled) { this.browseTick(); this.publish(); return; }
       if (this.held) {
         // A decoded first frame may represent only .25 seconds of high-rate
         // video. Reserve a rate-scaled lead at start/seek/rate increase.
