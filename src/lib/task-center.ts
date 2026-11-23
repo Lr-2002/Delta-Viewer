@@ -6,6 +6,7 @@ export interface TaskNode {
   approved: number; rejected: number; errors: number; incomplete: boolean; scanning: boolean; children: TaskNode[];
   childrenLoaded?: boolean; claimable?: boolean; batchRoot?: string;
 }
+export interface TaskCatalogHint { selected: string; siblings: string[] }
 export interface TaskIndexStatus {
   completedAtMs?: number; updatedAtMs?: number; generation?: string;
   running: boolean; startedAtMs: number; heartbeatAtMs: number; sessions: number; error: string; schedule: string;

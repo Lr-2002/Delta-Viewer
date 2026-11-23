@@ -1022,8 +1022,8 @@ export async function exportReviewedSessions(scanId: string, destinationParent: 
   return invoke("export_reviewed_sessions", { scanId, destinationParent, operationId });
 }
 
-export async function scanSource(path: string, operationId: number): Promise<ScanResult> {
-  if (isTauriRuntime()) return invoke<ScanResult>("scan_source", { path, operationId });
+export async function scanSource(path: string, operationId: number, catalogHint?: import("./task-center").TaskCatalogHint): Promise<ScanResult> {
+  if (isTauriRuntime()) return invoke<ScanResult>("scan_source", { path, operationId, catalogHint });
   if (isSessionActivationDemoScenario()) {
     sessionActivationRetryAttempts = 0;
     return buildSessionActivationDemoScan(await loadDemoFixture());

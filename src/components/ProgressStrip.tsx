@@ -24,6 +24,7 @@ export function ProgressStrip({ progress, onCancel }: ProgressStripProps) {
       ? progress.current / progress.total
       : 0;
   const percent = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+  const scanningDirectories = progress.task === "scan" && progress.phase === "正在扫描记录目录";
   return (
     <div className="progress-strip" role="status" aria-live="polite">
       <div className="progress-copy">
@@ -34,7 +35,7 @@ export function ProgressStrip({ progress, onCancel }: ProgressStripProps) {
         <span style={{ width: `${percent}%` }} />
       </div>
       <div className="progress-stats">
-        <span>{percent}%</span>
+        <span>{scanningDirectories ? t("已扫描 {0} 个目录", [progress.current]) : `${percent}%`}</span>
         {progress.totalBytes ? (
           <span>
             {tr(formatBytes(progress.bytesDone))} / {tr(formatBytes(progress.totalBytes))}
@@ -47,7 +48,7 @@ export function ProgressStrip({ progress, onCancel }: ProgressStripProps) {
       </button>
       {waitingSeconds >= 8 && <div className="progress-read-wait" role="alert">
         <AlertTriangle size={15} />
-        <span>{t("当前读取阶段已等待") + " "}{waitingSeconds}{" " + t("秒。数据目录可能响应缓慢；若为共享目录，请检查 NAS 磁盘负载、剩余空间及共享连接。可取消后重试。")}</span>
+        <span>{t("当前读取阶段已等待") + " "}{waitingSeconds}{" " + t("秒。读取尚未完成，可继续等待或取消后重试。")}</span>
       </div>}
     </div>
   );

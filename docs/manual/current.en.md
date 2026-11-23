@@ -46,7 +46,7 @@ Checks distinguish errors, warnings and passes and can locate issues or export a
 
 ## Local tasks and writeback
 
-Task Center reads task summaries and directories, with claim, open and resume actions according to permission. Background synchronization retains the visible list. Locally pending NAS writeback differs from server-confirmed progress. Reconnect and verify the result before treating it as saved to the shared source.
+Task Center reads task summaries and directories, with claim, open and resume actions according to permission. Background synchronization retains the visible list. When opening a NAS batch, the progress display shows how many folders have been scanned. Locally pending NAS writeback differs from server-confirmed progress. Reconnect and verify the result before treating it as saved to the shared source.
 
 ## Cloud QC
 

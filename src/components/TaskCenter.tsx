@@ -2,7 +2,7 @@ import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw, Database, UserCheck, UserMinus, ListFilter, X } from "lucide-react";
 import { chooseDirectory, confirmAction, readTaskIndex, rebuildTaskIndex, refreshTaskIndex } from "../lib/backend";
-import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskNode, type TaskIndexStatus, isTaskBatch, taskBatches, findTaskNode } from "../lib/task-center";
+import { cacheTaskCatalog, getCachedTaskCatalog, getTaskCenterRoot, mergeIndexedNode, setTaskCenterRoot, lookupClaims, mutateClaim, type BatchClaim, type TaskCatalog, type TaskCatalogHint, type TaskNode, type TaskIndexStatus, isTaskBatch, taskBatches, findTaskNode } from "../lib/task-center";
 import type { UserIdentity } from "../types";
 import { emptyTaskFilters, matchesTaskBatch } from "../lib/task-center-filter";
 import "./task-center.css";
@@ -15,7 +15,7 @@ interface Props {
   currentUser: UserIdentity;
   sourceRoot?: string | null;
   onSourceChange?: (root: string) => void;
-  onOpen?: (root: string, episodeRoot?: string, batchRoot?: string) => Promise<void>;
+  onOpen?: (root: string, episodeRoot?: string, batchRoot?: string, catalogHint?: TaskCatalogHint) => Promise<void>;
   onClose?: () => void;
   cloudCurrentUser?: UserIdentity;
   onOpenCloudReview?: (root: string) => Promise<void>;
@@ -314,9 +314,12 @@ export function TaskCenter({ currentUser, sourceRoot, onSourceChange, onOpen, on
       const base = catalog?.sourceRoot ?? root;
       const nodePath = node.relativePath ? `${base}/${node.relativePath}` : base;
       const batch = node.relativePath.split("/")[0];
-      // Keep the first argument as the selected node path for existing integrations;
-      // the batch root is explicit so the reviewer can scan the batch and focus that node.
-      await onOpen(nodePath, node.session ? nodePath : undefined, node.session ? node.batchRoot ?? (batch ? `${base}/${batch}` : undefined) : undefined);
+      const slash = node.relativePath.lastIndexOf("/");
+      const parent = slash >= 0 && catalog ? findTaskNode(catalog.tree, node.relativePath.slice(0, slash)) : undefined;
+      const hint = node.session && parent?.childrenLoaded !== false && parent?.children.length && parent.children.every(child => child.session)
+        ? { selected: node.relativePath.slice(slash + 1), siblings: parent.children.map(child => child.relativePath.slice(slash + 1)) }
+        : undefined;
+      await onOpen(nodePath, node.session ? nodePath : undefined, node.session ? node.batchRoot ?? (batch ? `${base}/${batch}` : undefined) : undefined, hint);
       if (alive.current && rootRef.current === selectedRoot) onClose?.();
     } catch (reason) {
       if (alive.current && rootRef.current === selectedRoot) setOpenError(`数据加载失败：${String(reason)}`);

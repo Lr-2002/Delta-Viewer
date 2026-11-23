@@ -229,6 +229,8 @@ const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
   "1.14.5": "骨架片段新增标注来源选择，支持读取腾讯纯骨架结果；人工增删改统一保存到 skeleton.description.json，保留来源文件及并发保护。",
+  "1.14.6": "加快任务中心打开 NAS 大批次，显示已扫描的记录目录数量。",
+  "1.14.7": "外发后段时长未确认时仍可拖动当前视频，任务中心加快打开 NAS 录制。",
   "1.14.2": "减少外发审核 1×、2× 回放的整组停顿，持续停滞时从原进度自动重连一次。",
   "1.14.3": "外发视频缺数据时先补缓冲再恢复，下个分段就绪后直接衔接，减少反复停顿。",
   "1.14.4": "外发视频加载失败时仍可提交异常或无效，缺片提示可直接跳到对应分段。",
@@ -962,7 +964,7 @@ function App() {
     return () => window.cancelAnimationFrame(animationFrame);
   }, [availableStreams, data, playbackFps, playing, primaryPlaybackEndFrame, primarySourceFps, primaryStreamName, sampledPlayback, speed]);
 
-  async function openSource(path: string, autoLoad = false, assignment = assignedTasks, propagateFailure = false, preferredEpisodeRoot?: string) {
+  async function openSource(path: string, autoLoad = false, assignment = assignedTasks, propagateFailure = false, preferredEpisodeRoot?: string, catalogHint?: import("./lib/task-center").TaskCatalogHint) {
     if (reviewUnsaved.current) {
       if (propagateFailure) throw new Error("正在保存当前修改，请稍候。");
       setNotice("正在保存当前修改，请稍候。"); return;
@@ -983,7 +985,7 @@ function App() {
       path = await resolveSourcePath(path);
       if (preferredEpisodeRoot) preferredEpisodeRoot = await resolveSourcePath(preferredEpisodeRoot);
       ensureOperationActive(owner);
-      const result = await scanSource(path, owner.id);
+      const result = await scanSource(path, owner.id, catalogHint);
       ensureOperationActive(owner);
       if (propagateFailure && autoLoad && !result.episodes.length) throw new Error("该目录未发现可加载的数据，请检查批次目录是否完整。");
       const assignmentView = assignmentFilterForSource(
@@ -1006,7 +1008,7 @@ function App() {
         visibleResult.episodes.map((episode) => [episode.root, "available" as const]),
       ));
       const username = authStatus?.currentUser?.role === "operator" ? reviewStorageUsername : "";
-      const resume = username ? readReviewResume(username) : null;
+      const resume = username && !preferredEpisodeRoot ? readReviewResume(username) : null;
       if (resume) {
         // A missing old resume must not block opening a different, valid batch.
         const resolvedBatch = await resolveSourcePath(resume.episodeRoot, true).catch(() => "");
@@ -2347,9 +2349,9 @@ function App() {
           currentUser={currentUser}
           initialView={outboundBatch?"outbound":"local"}
           onOpenOutboundReview={openOutboundReview}
-          onOpen={async (root, episodeRoot, batchRoot) => {
+          onOpen={async (root, episodeRoot, batchRoot, catalogHint) => {
             if (reviewUnsaved.current || busy) throw new Error("当前操作尚未完成，请稍后打开任务");
-            await openSource(batchRoot ?? root, true, [], true, episodeRoot);
+            await openSource(batchRoot ?? root, true, [], true, episodeRoot, catalogHint);
           }}
           workspaceBusy={busy || reviewHasUnsaved}
           beginCloudOperation={beginCloudOperation}

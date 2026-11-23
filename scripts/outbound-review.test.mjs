@@ -436,6 +436,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByText('7/7 路源视频 · 第 1 段，共 8 段', { exact:true }).waitFor();
     await page.waitForFunction(()=>!document.querySelector('input[aria-label="视频播放位置"]').disabled).catch(async error=>{console.error(JSON.stringify(await page.evaluate(()=>({calls:window.fixtureCalls.reduce((a,x)=>(a[x.action]=(a[x.action]||0)+1,a),{}),heading:document.querySelector('.outbound-player-heading')?.textContent,alerts:[...document.querySelectorAll('[role=alert]')].map(x=>x.textContent),videos:[...document.querySelectorAll('video')].map(v=>({src:v.getAttribute('src'),ready:v.readyState,duration:v.duration})),status:document.querySelector('.outbound-playback-status')?.textContent}))));throw error;});
     assert.equal(await page.locator('video[src]').count(),7,'only seven decoder sources, including for 56 files');
+    await page.waitForFunction(()=>Number(document.querySelector('input[aria-label="视频播放位置"]').max)===64);
     assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='media-metadata').length),49,'remaining parts read movie clocks without creating decoders');
     assert.equal(Number(await slider.getAttribute('max')),64,'one timeline covers all eight parts');
     assert.equal(await page.getByRole('navigation',{name:'视频分段'}).count(),0,'no separate segment tabs');
@@ -482,11 +483,16 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.evaluate(()=>window.fixtureMetadataFail=49);
     await page.getByRole('button',{name:'刷新外发批次',exact:true}).click();
     await page.getByRole('button',{name:/录制 001/}).click();
-    await page.getByRole('alert').filter({hasText:'以下视频读取失败'}).waitFor();
-    await page.locator('[data-outbound-camera=extension_right]').getByText('读取失败分段：2',{exact:true}).waitFor();
-    assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).isDisabled(),true,'a broken later segment cannot silently disappear or permit approval');
+    await page.getByRole('button',{name:'第 2 段缺少播放索引：扩展相机 · 右',exact:true}).waitFor();
+    assert.equal(await page.getByRole('alert').filter({hasText:'以下视频读取失败'}).count(),0,'a duration probe is not a video playback verdict');
+    await page.waitForFunction(()=>!document.querySelector('input[aria-label="视频播放位置"]').disabled);
+    assert.equal(Number(await slider.getAttribute('max')),8,'a failed later probe leaves the current part seekable');
+    await slider.click({position:{x:(await slider.boundingBox()).width*.5,y:10}});
+    await page.waitForFunction(()=>[...document.querySelectorAll('video')].every(v=>Math.abs(v.currentTime-4)<.4));
+    await page.getByRole('button',{name:'无效数据',exact:true}).click({trial:true});
+    assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).isDisabled(),true,'unverified media do not permit approval');
     await page.evaluate(()=>window.fixtureMetadataFail=null);
-    await page.getByRole('button',{name:'重试失败视频',exact:true}).click();
+    await page.getByRole('button',{name:'重试读取时长',exact:true}).click();
     await page.waitForFunction(()=>!document.querySelector('.outbound-valid-button').disabled);
     assert.equal(await page.locator('video').count(),7);
     await page.evaluate(()=>{
@@ -504,6 +510,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.waitForFunction(()=>!document.querySelector('input[aria-label="视频播放位置"]').disabled).catch(async error=>{console.error(JSON.stringify(await page.evaluate(()=>({calls:window.fixtureCalls.reduce((a,x)=>(a[x.action]=(a[x.action]||0)+1,a),{}),heading:document.querySelector('.outbound-player-heading')?.textContent,alerts:[...document.querySelectorAll('[role=alert]')].map(x=>x.textContent),videos:[...document.querySelectorAll('video')].map(v=>({src:v.getAttribute('src'),ready:v.readyState,duration:v.duration})),status:document.querySelector('.outbound-playback-status')?.textContent}))));throw error;});
     const secondPart = [1,9,17,25,33,41,49];
     await page.waitForFunction(segments=>segments.every(segment=>window.fixtureCalls.some(call=>call.action==='video-url'&&call.segment===segment)),secondPart);
+    await page.waitForFunction(()=>Number(document.querySelector('input[aria-label="视频播放位置"]').max)===64);
     await slider.click({position:{x:(await slider.boundingBox()).width*.15,y:10}});
     await page.waitForFunction(segments=>{
       const active=[...document.querySelectorAll('video[src]')].map(video=>parseInt(video.getAttribute('src').slice(-64),16)-1);

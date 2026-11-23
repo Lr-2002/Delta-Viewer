@@ -2518,6 +2518,7 @@ async fn scan_source(
     index_cache: State<'_, SourceIndexCache>,
     path: String,
     operation_id: u64,
+    catalog_hint: Option<source::CatalogHint>,
 ) -> Result<ScanResult, String> {
     auth.require_user().map_err(|error| error.to_string())?;
     let task = control.start(operation_id)?;
@@ -2527,7 +2528,13 @@ async fn scan_source(
     tauri::async_runtime::spawn_blocking(move || -> error::AppResult<ScanResult> {
         let _task = task;
         let _progress = source::enter_operation_progress(operation_id);
-        let result = source::scan_source_catalog(Path::new(&path), Some(&app), &cancelled)?;
+        let root = Path::new(&path);
+        let result = match catalog_hint.as_ref() {
+            Some(hint) => {
+                source::scan_source_catalog_with_hint(root, Some(&app), &cancelled, Some(hint))?
+            }
+            None => source::scan_source_catalog(root, Some(&app), &cancelled)?,
+        };
         index_cache.clear()?;
         Ok(result)
     })

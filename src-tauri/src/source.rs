@@ -7,6 +7,7 @@ use crate::segment_bin::{self, SegmentEpisodeIndex};
 use crate::storage;
 use blake3::Hasher;
 use image::ImageReader;
+use rayon::prelude::*;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -16,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
 
@@ -113,7 +115,35 @@ pub fn scan_source_catalog(
     app: Option<&AppHandle>,
     cancelled: &AtomicBool,
 ) -> AppResult<ScanResult> {
-    let episode_roots = discover_episode_roots(root, cancelled)?;
+    scan_source_catalog_with_hint(root, app, cancelled, None)
+}
+
+#[derive(serde::Deserialize)]
+pub struct CatalogHint {
+    selected: String,
+    siblings: Vec<String>,
+}
+
+pub fn scan_source_catalog_with_hint(
+    root: &Path,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+    hint: Option<&CatalogHint>,
+) -> AppResult<ScanResult> {
+    let remote = storage::network_source_filter()(root);
+    let indexed = match hint.filter(|_| remote) {
+        Some(hint) => indexed_episode_roots(root, hint, cancelled)?,
+        None => None,
+    };
+    let episode_roots = if let Some(roots) = indexed {
+        roots
+    } else {
+        let pool = remote
+            .then(|| rayon::ThreadPoolBuilder::new().num_threads(8).build())
+            .transpose()
+            .map_err(|error| AppError::Message(error.to_string()))?;
+        discover_episode_roots(root, cancelled, pool.as_ref(), app)?
+    };
     if episode_roots.is_empty() {
         return Err(AppError::NoEpisodes(root.display().to_string()));
     }
@@ -142,6 +172,45 @@ pub fn scan_source_catalog(
         total_bytes: 0,
         volume,
     })
+}
+
+fn indexed_episode_roots(
+    root: &Path,
+    hint: &CatalogHint,
+    cancelled: &AtomicBool,
+) -> AppResult<Option<Vec<PathBuf>>> {
+    if !(1..=100_000).contains(&hint.siblings.len()) {
+        return Ok(None);
+    }
+    let mut expected = BTreeSet::new();
+    for name in &hint.siblings {
+        check_cancelled(cancelled)?;
+        let mut components = Path::new(name).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(part)) if part == OsStr::new(name))
+            || components.next().is_some()
+            || name.contains(['/', '\\'])
+            || !expected.insert(OsStr::new(name))
+        {
+            return Ok(None);
+        }
+    }
+    if !expected.contains(OsStr::new(&hint.selected)) {
+        return Ok(None);
+    }
+    // One directory listing checks for missing/new entries. Verify the selected
+    // recording live; siblings remain unindexed until explicitly opened.
+    let (is_recording, mut children) = inspect_episode_directory(root, cancelled)?;
+    if is_recording
+        || children.len() != expected.len()
+        || !children
+            .iter()
+            .all(|path| path.file_name().is_some_and(|name| expected.contains(name)))
+        || !inspect_episode_directory(&root.join(&hint.selected), cancelled)?.0
+    {
+        return Ok(None);
+    }
+    children.sort();
+    Ok(Some(children))
 }
 
 pub fn load_episode(
@@ -1561,23 +1630,62 @@ fn fingerprint_indexed_files(files: &[IndexedFile]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-fn discover_episode_roots(root: &Path, cancelled: &AtomicBool) -> AppResult<Vec<PathBuf>> {
+fn discover_episode_roots(
+    root: &Path,
+    cancelled: &AtomicBool,
+    pool: Option<&rayon::ThreadPool>,
+    app: Option<&AppHandle>,
+) -> AppResult<Vec<PathBuf>> {
+    const MAX_DIRS: usize = 100_000;
     let mut roots = Vec::new();
     let mut pending = vec![(root.to_path_buf(), 0)];
     let mut visited = 0;
-    while let Some((path, depth)) = pending.pop() {
+    let started = Instant::now();
+    let mut last_progress = started;
+    while !pending.is_empty() {
         check_cancelled(cancelled)?;
-        visited += 1;
-        if depth > 32 || visited > 100_000 {
+        let count = pending.len().min(if pool.is_some() { 32 } else { 1 });
+        let group = pending.split_off(pending.len() - count);
+        if visited + count > MAX_DIRS || group.iter().any(|(_, depth)| *depth > 32) {
             return Err(AppError::Message(
                 "源目录超过扫描上限，请选择具体批次".into(),
             ));
         }
-        let (episode, children) = inspect_episode_directory(&path, cancelled)?;
-        if episode {
-            roots.push(path);
+        let inspect = |(path, _): &(PathBuf, usize)| inspect_episode_directory(path, cancelled);
+        let results: Vec<_> = if let Some(pool) = pool.filter(|_| group.len() > 1) {
+            // A network directory lookup costs a round trip even when it is
+            // healthy. Overlap independent reads without scanning media files.
+            pool.install(|| group.par_iter().map(inspect).collect())
         } else {
-            pending.extend(children.into_iter().map(|p| (p, depth + 1)));
+            group.iter().map(inspect).collect()
+        };
+        for ((path, depth), result) in group.into_iter().zip(results) {
+            check_cancelled(cancelled)?;
+            let (episode, children) = result?;
+            if episode {
+                roots.push(path);
+            } else {
+                pending.extend(children.into_iter().map(|p| (p, depth + 1)));
+            }
+        }
+        visited += count;
+        let now = Instant::now();
+        if pool.is_some() && (visited == 1 || now.duration_since(last_progress).as_millis() >= 300)
+        {
+            emit_progress(
+                app,
+                ProgressPayload {
+                    task: "scan".into(),
+                    phase: "正在扫描记录目录".into(),
+                    current: visited as u64,
+                    total: 0,
+                    bytes_done: 0,
+                    total_bytes: 0,
+                    current_path: root.display().to_string(),
+                    elapsed_ms: now.duration_since(started).as_millis(),
+                },
+            );
+            last_progress = now;
         }
     }
     roots.sort();
@@ -2000,6 +2108,58 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn indexed_catalog_checks_directory_membership_and_selected_recording() {
+        let root = test_output("indexed-catalog");
+        fs::create_dir_all(root.join("reviewed/cam0")).unwrap();
+        fs::create_dir_all(root.join("selected/cam0")).unwrap();
+        let cancel = AtomicBool::new(false);
+        let hint = super::CatalogHint {
+            selected: "selected".into(),
+            siblings: vec!["selected".into(), "reviewed".into()],
+        };
+        assert_eq!(
+            super::indexed_episode_roots(&root, &hint, &cancel).unwrap(),
+            Some(vec![root.join("reviewed"), root.join("selected")])
+        );
+        fs::create_dir(root.join("new")).unwrap();
+        assert!(super::indexed_episode_roots(&root, &hint, &cancel)
+            .unwrap()
+            .is_none());
+        fs::remove_dir(root.join("new")).unwrap();
+        fs::remove_dir(root.join("selected/cam0")).unwrap();
+        assert!(super::indexed_episode_roots(&root, &hint, &cancel)
+            .unwrap()
+            .is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn network_catalog_keeps_nested_recordings_and_skips_media_subtrees() {
+        let root = test_output("network-catalog");
+        for i in 0..40 {
+            let recording = root.join(format!("batch/recording-{i:02}"));
+            fs::create_dir_all(recording.join("cam0")).unwrap();
+            fs::write(recording.join("cam0/session.json"), "").unwrap();
+        }
+        fs::create_dir_all(root.join(".ignored/cam0")).unwrap();
+        let cancel = AtomicBool::new(false);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(8)
+            .build()
+            .unwrap();
+        let sequential = super::discover_episode_roots(&root, &cancel, None, None).unwrap();
+        let parallel = super::discover_episode_roots(&root, &cancel, Some(&pool), None).unwrap();
+        assert_eq!(parallel.len(), 40);
+        assert_eq!(parallel, sequential);
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(
+            super::discover_episode_roots(&root, &cancel, Some(&pool), None),
+            Err(crate::error::AppError::Cancelled)
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn long_recording_preview_is_bounded_but_full_load_preserves_middle_errors() {
