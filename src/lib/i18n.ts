@@ -7,7 +7,6 @@ const listeners = new Set<() => void>();
 const messages: Record<string, string> = english;
 let language: Language = "zh";
 try { if (localStorage.getItem(preferenceKey) === "en") language = "en"; } catch { /* Session preference remains available. */ }
-export const presentationMessages = () => messages;
 export const getLanguage = () => language;
 export const localeTag = () => language === "en" ? "en-US" : "zh-CN";
 function subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; }

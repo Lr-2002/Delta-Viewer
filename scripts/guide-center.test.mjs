@@ -16,12 +16,12 @@ test('documentation works offline in both languages, preserves work, and guides 
       import {DevicePageView} from '/src/components/DevicePageView.tsx';
       import {lessons,areas} from '/src/components/guides/catalog.ts';
       import '/src/styles.css';window.guideCatalog={lessons,areas};
-      const page={address:'192.168.4.1',title:'Fixture',status:null,html:'<form method="post" action="/configure"><label>Wi-Fi<input name="ssid"></label><label>Password<input type="password" name="password"></label><button type="submit">Save</button></form>'};
+      const page={address:'192.168.4.1',observedAtMs:1};
       function Fixture(){const [opens,setOpens]=React.useState(0);return React.createElement(React.Fragment,null,
         React.createElement('header',{className:'topbar'},React.createElement('div',{className:'topbar-actions'},React.createElement('button',{className:'button',onClick:()=>setOpens(n=>n+1)},React.createElement(FolderOpen),'选择 SD 卡 / 选择数据目录'))),
         React.createElement('nav',{className:'workspace-navigation'},React.createElement('button',null,'设备管理区'),React.createElement('button',null,'数据工作区')),
         React.createElement('span',{'data-opens':opens},opens),React.createElement('input',{id:'preserved',defaultValue:'unsaved draft'}),
-        React.createElement(DevicePageView,{page,busy:false,showConnectionMode:false,connectionModeLabel:'AP',onBack:()=>{},onRefresh:()=>{},onRequest:async()=>{throw Error('Fixture forbids device writes')},onVerifyAddress:async()=>page}),
+        React.createElement(DevicePageView,{page,busy:false,showConnectionMode:false,connectionModeLabel:'AP',onBack:()=>{},onRefresh:()=>{}}),
         React.createElement(GuideCenter),React.createElement(LanguageToggle));}
       createRoot(document.getElementById('root')).render(React.createElement(Fixture));
       </script></body></html>`));
@@ -34,6 +34,7 @@ test('documentation works offline in both languages, preserves work, and guides 
     const page=await browser.newPage({viewport:{width:1440,height:920}}),errors=[],failed=[];
     page.on('pageerror',e=>errors.push(e.message));page.on('requestfailed',r=>failed.push(r.url()));
     await page.route('**/*',async route=>{const url=new URL(route.request().url());if(!['127.0.0.1','localhost','data:'].includes(url.hostname)&&url.protocol!=='data:')throw Error('Unexpected external documentation request');await route.continue();});
+    await page.route('http://192.168.4.1/',route=>route.fulfill({contentType:'text/html',body:'<label>Wi-Fi<input name="ssid"></label>'}));
     const origin=`http://127.0.0.1:${server.httpServer.address().port}`;
     await page.goto(origin+'/__guide');await page.locator('.guide-entry').waitFor();
     const counts=await page.evaluate(()=>{
@@ -71,13 +72,14 @@ test('documentation works offline in both languages, preserves work, and guides 
     await page.getByRole('button',{name:'重新学习',exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('.guide-tip header')?.textContent.includes('1 /'));
     await page.keyboard.press('Escape');
-    // Real sandbox messages can locate fixed controls and accept trusted input.
+    // The guide offers the next step after manual interaction with the device origin.
     await select('提交配网、核验新 IP 与失败重试');
     await page.getByRole('button',{name:'开始互动引导',exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('.guide-overlay')?.dataset.guideState==='ready');
-    await page.evaluate(()=>window.postMessage({type:'d1-page-guide-action',token:'wrong',selector:'wifi-name',action:'change'},'*'));
     assert.match(await page.locator('.guide-tip h3').textContent(),/Wi-Fi 名称/);
     const frame=page.frameLocator('iframe');await frame.locator('[name=ssid]').fill('Fixture network');await frame.locator('[name=ssid]').press('Tab');
+    assert.match(await page.locator('.guide-tip h3').textContent(),/Wi-Fi 名称/);
+    await page.locator('.guide-tip').getByRole('button',{name:'继续',exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('.guide-tip h3')?.textContent.includes('Wi-Fi 密码'));
     await page.keyboard.press('Escape');
     // Both locales render and search new features without remounting the business form.

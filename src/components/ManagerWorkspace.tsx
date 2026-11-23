@@ -1,8 +1,8 @@
 import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import {useEffect, useMemo, useRef, useState} from "react";
 import {AlertCircle, ArrowRight, Cable, CheckCircle2, CircleDashed, ClipboardList, Download, FileArchive, KeyRound, LoaderCircle, MinusCircle, RefreshCw, Settings2, Info, ShieldCheck, Wifi, X, XCircle} from "lucide-react";
-import {cancelTask, chooseDirectory, confirmDevicePageOperation, exportDeviceBundle, getDeviceAvailability, isTauriRuntime, getWifiInventory, connectDeviceWifi, readDevicePage, requestDevicePageApi, requestDevicePageBatch, previewDeviceBundle, revealOutput, runDeviceDiagnostics, renewUsbDeviceAddress} from "../lib/backend";
-import {deviceResultLabels, deviceTaskLabels, type DevicePage, type DevicePageRequest, type DevicePageApiRequest, type DevicePageApiResponse, type WifiSnapshot, type DeviceConnectionMode, type DeviceCheck, type DeviceResultStatus, type DeviceAvailability, type DeviceBundlePreview, type DeviceRun, type HealthSnapshot, type ManagerSection} from "../lib/d1";
+import {cancelTask, chooseDirectory, exportDeviceBundle, getDeviceAvailability, isTauriRuntime, getWifiInventory, connectDeviceWifi, readDevicePage, requestDevicePageApi, previewDeviceBundle, revealOutput, runDeviceDiagnostics, renewUsbDeviceAddress} from "../lib/backend";
+import {deviceResultLabels, deviceTaskLabels, type DevicePage, type DevicePageRequest, type WifiSnapshot, type DeviceConnectionMode, type DeviceCheck, type DeviceResultStatus, type DeviceAvailability, type DeviceBundlePreview, type DeviceRun, type HealthSnapshot, type ManagerSection} from "../lib/d1";
 import {linkSummary} from "./DeviceLinkPanel";
 import {cameraLabel, checkLabel, checkObservation, deviceStateLabel, deviceText, resultOrder} from "../lib/d1-presentation";
 import "./manager-workspace.css";
@@ -101,9 +101,6 @@ export function ManagerWorkspace({section,navigationRevision=0,busy,beginOperati
   const [working,setWorking]=useState<"diagnostics"|"preview"|"export"|"wifi"|"page"|"usb"|null>(null);
   const [cancelling,setCancelling]=useState(false);
   const operation=useRef<Operation|null>(null);
-  const pageApiQueue=useRef(Promise.resolve());
-  const pendingReads=useRef<{api:DevicePageApiRequest;resolve:(response:DevicePageApiResponse)=>void}[]>([]);
-  const batchTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
   const beginPageOperation=useRef(beginOperation);beginPageOperation.current=beginOperation;
   const wifiRefreshInFlight=useRef(false);
   const requestGeneration=useRef(0);
@@ -179,7 +176,7 @@ export function ManagerWorkspace({section,navigationRevision=0,busy,beginOperati
     setWifiLoading(true);void update(true);window.addEventListener("focus",focus);
     return()=>{active=false;if(timer)clearTimeout(timer);window.removeEventListener("focus",focus);};
   },[connectionMode,section,pageView,working]);
-  useEffect(()=>()=>{requestGeneration.current++;clearTimeout(batchTimer.current);pendingReads.current.splice(0).forEach(item=>item.resolve({status:409,contentType:"application/json",body:'{"message":"设备连接已结束"}'}));if(operation.current)void cancelTask(operation.current.id);},[]);
+  useEffect(()=>()=>{requestGeneration.current++;if(operation.current)void cancelTask(operation.current.id);},[]);
   function selectInterface(value:string){requestGeneration.current++;setInterfaceId(value||undefined);setAvailability(null);setRun(null);setPreview(null);setOutput("");setError("");setRuntimePage(null);setRuntimeError("");setPageRequest(null);setConfirmedPage(null);}
   async function detect(){
     if(disabled||!target||apConfiguration)return;
@@ -231,38 +228,6 @@ export function ManagerWorkspace({section,navigationRevision=0,busy,beginOperati
     if(disabled||wifiLoading||wifiRefreshInFlight.current)return;wifiRefreshInFlight.current=true;setWifiLoading(true);setWifiError("");
     try{const value=await getWifiInventory(true);setWifi(value);setWifiSelection(previous=>value.networks.some(n=>`${n.interfaceId}:${n.ssid}`===previous)?previous:(()=>{const n=value.networks.find(n=>n.recommended);return n?`${n.interfaceId}:${n.ssid}`:"";})());}catch(cause){setWifi(null);setWifiError(errorText(cause));}finally{wifiRefreshInFlight.current=false;setWifiLoading(false);}
   }
-  function enqueuePageOperation(apis:DevicePageApiRequest[]):Promise<DevicePageApiResponse[]> {
-    const request=pageRequest,generation=requestGeneration.current;
-    const failed=(message:string,status=409)=>apis.map(()=>({status,contentType:"application/json",body:JSON.stringify({message})}));
-    const run=pageApiQueue.current.then(async()=>{
-      if(!request||generation!==requestGeneration.current)return failed("设备连接已结束，请重新连接。");
-      if(apis[0].method!=="GET"&&!await confirmDevicePageOperation(apis[0].path))return failed("操作已取消");
-      const owner=beginPageOperation.current();
-      if(!owner)return failed("当前有其他任务正在运行，请稍后重试。");
-      operation.current=owner;
-      try{return apis.every(api=>api.method==="GET")?await requestDevicePageBatch(request,apis,owner.id):[await requestDevicePageApi(request,apis[0],owner.id)];}
-      catch(cause){return failed(errorText(cause),502);}
-      finally{operation.current=null;owner.finish();}
-    });
-    pageApiQueue.current=run.then(()=>undefined,()=>undefined);
-    return run;
-  }
-  function requestPageApi(api:DevicePageApiRequest):Promise<DevicePageApiResponse>{
-    if(api.method!=="GET")return enqueuePageOperation([api]).then(replies=>replies[0]);
-    if(pendingReads.current.length>=20)return Promise.resolve({status:429,contentType:"application/json",body:JSON.stringify({message:"设备查询繁忙，请稍后重试。"})});
-    return new Promise(resolve=>{
-      pendingReads.current.push({api,resolve});
-      if(batchTimer.current)return;
-      batchTimer.current=setTimeout(()=>{
-        batchTimer.current=undefined;
-        const reads=pendingReads.current.splice(0);
-        for(let offset=0;offset<reads.length;offset+=5){
-          const batch=reads.slice(offset,offset+5);
-          void enqueuePageOperation(batch.map(item=>item.api)).then(replies=>batch.forEach((item,index)=>item.resolve(replies[index])));
-        }
-      },20);
-    });
-  }
   const selectedWifi=wifi?.networks.find(n=>`${n.interfaceId}:${n.ssid}`===wifiSelection&&n.recommended);
   async function connectWifi() {
     if(disabled||!selectedWifi)return;
@@ -279,25 +244,17 @@ export function ManagerWorkspace({section,navigationRevision=0,busy,beginOperati
       const result=await readDevicePage(request,owner.id);if(generation!==requestGeneration.current)return;setRuntimeError("");setConfirmedPage(result);setPageRequest(request);setRuntimePage(result.status?result:null);
     }catch(cause){setError(errorText(cause));}finally{setWifiPassword("");operation.current=null;owner.finish();setWorking(null);}
   }
-  async function verifyProvisionedAddress(address:string):Promise<DevicePage> {
-    const owner=beginPageOperation.current();if(!owner)throw new Error("请稍后重试。");
-    try{
-      const request={interfaceId:"",connectionMode:"lan" as const,apAddress:address};
-      const result=await readDevicePage(request,owner.id);
-      if(!result.status)throw new Error("尚未取得设备联网报告。");
-      const previousId=(runtimePage?.status?.device as Record<string,unknown>|undefined)?.device_id;
-      const nextId=(result.status.device as Record<string,unknown>|undefined)?.device_id;
-      if(previousId&&nextId!==previousId)throw new Error("设备标识不一致。");
-      setConnectionMode("lan");setApAddress(address);setAddressInput(address);setPageRequest(request);setRuntimePage(result);setPageView(result);
-      return result;
-    }finally{owner.finish();}
-  }
   useEffect(()=>{
     if(!pageRequest||pageView||section==="data"||working||apConfiguration)return;
+    const request=pageRequest;
     let active=true,timer:ReturnType<typeof setTimeout>|undefined;
     async function refresh(){
       try{
-        const reply=await requestPageApi({path:"/status",method:"GET"});
+        const owner=beginPageOperation.current();
+        if(!owner)return;
+        let reply;
+        try {reply=await requestDevicePageApi(request,{path:"/status",method:"GET"},owner.id);}
+        finally {owner.finish();}
         if(!active)return;
         if(reply.status!==200&&reply.status!==503)throw new Error("设备状态读取失败，请检查设备连接。");
         const status=JSON.parse(reply.body);
@@ -309,7 +266,7 @@ export function ManagerWorkspace({section,navigationRevision=0,busy,beginOperati
     void refresh();return()=>{active=false;clearTimeout(timer);};
   },[pageRequest,pageView,section,working,runtimeRevision,apConfiguration]);
   if(section==="data")return null;
-  if(pageView&&(section==="home"||section==="device"))return <><DevicePageView page={pageView} busy={working!==null} showConnectionMode={section==="device"||apConfiguration} connectionModeLabel={apConfiguration?"热点配置模式 · 配网与应用升级":connectionMode==="ap"?"设备热点（AP）":connectionMode==="type_c"?"Type-C 连接":"局域网 IP"} onBack={()=>{requestGeneration.current++;setPageView(null);onNavigate(apConfiguration?"home":"device");}} onRefresh={()=>{if(pageRequest)void openPage(pageRequest);}} onRequest={requestPageApi} onVerifyAddress={verifyProvisionedAddress} otaPanel={<DeviceOtaPanel request={pageRequest} connected={true} busy={disabled} beginOperation={beginOperation} onError={setError}/>}/>{tr(error&&<ManagerErrorToast message={tr(error)} onDismiss={()=>setError("")}/>)}</>;
+  if(pageView&&(section==="home"||section==="device"))return <><DevicePageView page={pageView} busy={working!==null} showConnectionMode={section==="device"||apConfiguration} connectionModeLabel={apConfiguration?"热点配置模式 · 配网与应用升级":connectionMode==="ap"?"设备热点（AP）":connectionMode==="type_c"?"Type-C 连接":"局域网 IP"} onBack={()=>{requestGeneration.current++;setPageView(null);onNavigate(apConfiguration?"home":"device");}} onRefresh={()=>{if(pageRequest)void openPage(pageRequest);}} otaPanel={<DeviceOtaPanel request={pageRequest} connected={true} busy={disabled} beginOperation={beginOperation} onError={setError}/>}/>{tr(error&&<ManagerErrorToast message={tr(error)} onDismiss={()=>setError("")}/>)}</>;
   const limited=observation?.cameraPortLimited??false;
   const counts=Object.fromEntries(resultOrder.map(status=>[status,run?.checks.filter(check=>check.status===status).length??0]));
   const connectionHelp=connectionMode==="ap"?"长按录制键，听到进入 AP 的语音后，连接设备标签对应的热点。":connectionMode==="lan"?"输入设备联网后语音播报的 IP，电脑需与设备处于同一网段。":"通过 Type-C 数据线连接已开机的 D1。";

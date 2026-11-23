@@ -417,13 +417,45 @@ test("Type-C diagnostic port limitation remains explicit",async()=>{
 async function nativePageFixture(context,htmlOverride){
   await desktopPhysicalContractFixture(context);
   await context.addInitScript(()=>{window.nativePageCalls=[];window.wifiConnectCalls=[];window.pageApiCalls=[];window.pageFixtureMode="success";window.wifiFixtureConnected=false;});
-  const pageHtml=[
-    '<!doctype html><html><head><style>body{background:#f5f5f7;color:#222;font-family:sans-serif}h1{font-size:24px}</style></head><body>',
-    '<h1>DOHC 设备状态</h1><p id="deviceId">-</p><div id="cameraRows"></div><span id="cameraSummary">-</span>',
-    '<button id="changeName">更改设备名称</button><input type="password" value="fixture-secret">',
-    '<script>window.fixtureScriptRan=true;document.addEventListener("click",event=>{if(event.target?.id==="changeName"){window.fixtureClicked=true;void fetch("/api/v1/device-name",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({name:"D1 Lab"})}).then(response=>response.text()).then(text=>window.fixtureReply=text)}});void fetch("http://example.invalid/blocked");try{parent.hacked=true}catch{}</script>',
-    '<img src="http://example.invalid/pixel" onerror="parent.hacked=true"><iframe src="http://example.invalid/iframe"></iframe><a href="javascript:parent.hacked=true">链接</a><form action="http://example.invalid/post"><input name="secret" value="fixture-only"></form><svg onload="parent.hacked=true"></svg></body></html>',
-  ].join("");
+  const pageHtml=htmlOverride??`<!doctype html><html><head><script src="/assets/device.js" defer></script></head>
+    <body><h1>DOHC 设备状态</h1><p id="deviceId"></p><p id="cameraRows"></p>
+    <button id="language">English</button><output id="language-result"></output></body></html>`;
+  const provisioning=`<!doctype html><html><body><h1>设备维护</h1>
+    <form method="post" action="/configure"><label>Wi-Fi 名称<input name="ssid" required></label>
+    <label>Wi-Fi 密码<input type="password" name="password" required></label><button>连接网络</button></form>
+    <button id="ota-relay">在线下载并升级</button><input id="ota-file" type="file"><button id="ota-submit">上传并升级</button>
+    </body></html>`;
+  await context.route(/^http:\/\/(?:10\.1\.30\.114|192\.168\.4\.1|192\.168\.1\.100)\//,async route=>{
+    const url=new URL(route.request().url());
+    if(url.pathname==="/favicon.ico")return route.fulfill({status:204});
+    if(url.pathname==="/maintenance")return route.fulfill({contentType:"text/html",body:"<main>Device maintenance</main>"});
+    if(url.pathname==="/"){
+      const mode=await context.pages()[0].evaluate(()=>window.pageFixtureMode);
+      const body = mode==="provisioning"?provisioning:
+        mode==="updated-firmware"?pageHtml.replace(">English<",">Language (firmware update)<"):pageHtml;
+      return route.fulfill({contentType:"text/html; charset=utf-8",body});
+    }
+    if(url.pathname==="/assets/device.js")return route.fulfill({contentType:"application/javascript",body:`
+      try { parent.hacked=true; } catch {}
+      document.querySelector("#language").onclick=async()=>{
+        const reply=await fetch("/api/v1/new-language?switch=en");
+        document.querySelector("#language-result").textContent=await reply.text();
+      };
+      const status=async()=>{
+        const value=await (await fetch("/status")).json();
+        document.querySelector("#deviceId").textContent=value.device_id;
+        document.querySelector("#cameraRows").textContent=value.camera;
+      };
+      status();setInterval(status,250);
+    `});
+    if(url.pathname==="/api/v1/new-language" && url.search==="?switch=en")return route.fulfill({body:"Language updated"});
+    if(url.pathname==="/configure" && route.request().method()==="POST")return route.fulfill({status:202,contentType:"text/html; charset=utf-8",body:"<h1>设备正在连接所选 Wi-Fi</h1>"});
+    if(url.pathname==="/status"){
+      const camera=await context.pages()[0].evaluate(()=>window.fixtureCamera??"STREAMING");
+      return route.fulfill({json:{device_id:"native-fixture-device",camera}});
+    }
+    return route.fulfill({status:404,body:"Missing fixture route"});
+  });
   const runtime=`
     export * from "/src/lib/backend.ts";
     export const isTauriRuntime=()=>true;
@@ -487,20 +519,26 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       await page.getByRole("alert").filter({hasText:"请输入设备的 IPv4 地址"}).waitFor();assert.equal(await page.evaluate(()=>window.nativePageCalls.length),0);
       await page.getByLabel("设备 IP",{exact:true}).fill("10.1.30.114");await page.getByRole("button",{name:"连接设备",exact:true}).click();await openManagement(page);
       const frame=page.frameLocator('iframe[title="D1 设备页面"]');await frame.getByRole("heading",{name:"DOHC 设备状态"}).waitFor();
-      await frame.getByText("native-fixture-device",{exact:true}).waitFor();await frame.getByText("STREAMING",{exact:true}).waitFor();assert.equal(await page.locator('iframe[title="D1 设备页面"]').getAttribute("sandbox"),"allow-scripts allow-forms allow-modals");
-      assert.equal(await frame.locator("img,iframe,svg,script[src]").count(),0);
-      assert.equal(await frame.locator("script").count(),2,"only inline device behavior and the local bridge are retained");
-      assert.equal(await frame.locator('input[type="password"]').getAttribute("value"),null);
+      await frame.getByText("native-fixture-device",{exact:true}).waitFor();
+      await frame.getByText("STREAMING",{exact:true}).waitFor();
+      const iframe=page.locator('iframe[title="D1 设备页面"]');
+      assert.equal(await iframe.getAttribute("src"),"http://10.1.30.114/");
+      assert.equal(await iframe.getAttribute("srcdoc"),null);
+      assert.equal(await iframe.getAttribute("sandbox"),"allow-scripts allow-same-origin allow-forms allow-modals allow-downloads");
       assert.equal(await page.evaluate(()=>window.hacked),undefined);
-      await frame.locator("body").evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
-      let confirmation="";page.once("dialog",async dialog=>{confirmation=dialog.message();await dialog.accept();});
-      await frame.getByRole("button",{name:"更改设备名称"}).click();
-      await page.waitForFunction(()=>window.pageApiCalls.some(api=>api.method==="PUT"&&api.path==="/api/v1/device-name"));
-      assert.match(confirmation,/修改设备配置/);
-      const apiCall=await page.evaluate(()=>window.pageApiCalls.find(api=>api.method==="PUT"&&api.path==="/api/v1/device-name"));
-      assert.equal(apiCall.path,"/api/v1/device-name");assert.equal(apiCall.method,"PUT");assert.equal(apiCall.body,'{"name":"D1 Lab"}');
+      assert.equal(await page.evaluate(()=>document.querySelector("iframe[title='D1 设备页面']").contentDocument),null);
+      await frame.getByRole("button",{name:"English",exact:true}).click();
+      await frame.getByText("Language updated",{exact:true}).waitFor();
+      await page.evaluate(()=>window.fixtureCamera="RECONNECTING");
+      await frame.getByText("RECONNECTING",{exact:true}).waitFor();
+      assert.equal(await page.evaluate(()=>window.pageApiCalls.some(api=>api.path.includes("language"))),false);
+      assert.equal(await frame.locator("body").evaluate(()=>Boolean(window.__TAURI_INTERNALS__)),false);
       await noOverflow(page);await page.screenshot({path:resolve(reportRoot,`native-lan-${viewport.width}.png`),fullPage:true});
-      await page.getByRole("button",{name:"刷新页面",exact:true}).click();assert.equal(await page.evaluate(()=>window.nativePageCalls.length),2);
+      await page.evaluate(()=>window.pageFixtureMode="updated-firmware");
+      await page.getByRole("button",{name:"刷新页面",exact:true}).click();
+      await frame.getByRole("button",{name:"Language (firmware update)",exact:true}).waitFor();
+      assert.equal(await page.evaluate(()=>window.nativePageCalls.length),2);
+      await page.evaluate(()=>window.pageFixtureMode="success");
       await page.getByRole("button",{name:"返回设备管理",exact:true}).click();
       await navigate(page,"首页");
       await page.getByRole("button",{name:"连接设备",exact:true}).click();await openManagement(page);await frame.getByRole("heading",{name:"DOHC 设备状态"}).waitFor();
@@ -530,73 +568,47 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       await page.getByText("设备页面 · 192.168.4.1",{exact:true}).waitFor();
       await page.getByRole("button",{name:"返回设备管理",exact:true}).click();await navigate(page,"首页");assert.equal(await page.getByLabel("热点密码",{exact:true}).inputValue(),"");
       assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
-      evidence.push({viewport,status:"passed",nativePage:true,confirmedConfigurationRequest:true,wifiRecommendation:true,passwordCleared:true,opaqueSandbox:true,guidesAlwaysVisible:true,routedLan:true,externalRequests:0});
+      evidence.push({viewport,status:"passed",nativePage:true,directLanguageRequest:true,wifiRecommendation:true,passwordCleared:true,deviceOriginIsolation:true,guidesAlwaysVisible:true,routedLan:true,externalRequests:0});
     }finally{await context.close();}
   }
 });
 
-test("AP configuration keeps Wi-Fi interactive and opens the native OTA panel",async()=>{
-  const {page,context,errors,external}=await session({width:1440,height:920},false,async context=>{
-    await nativePageFixture(context);
-    await context.addInitScript(()=>{
-      window.fixtureBridgeMessages=[];
-      window.addEventListener("message",event=>{
-        if(event.data?.type?.startsWith("d1-page"))window.fixtureBridgeMessages.push({type:event.data.type,token:event.data.token,at:performance.now(),blocked:!window.fixtureBridgeReady});
-        if(!window.fixtureBridgeReady&&["d1-page-ready","d1-page-open-ota"].includes(event.data?.type))event.stopImmediatePropagation();
-        if(event.data?.type==="d1-page-open-ota"&&window.fixtureDropOpen){window.fixtureDropOpen=false;window.fixtureDroppedOpen=true;event.stopImmediatePropagation();}
-      },true);
-      document.addEventListener("click",event=>window.fixtureBridgeMessages.push({click:event.target?.id,at:performance.now()}),true);
-    });
-  });
+test("AP retains the original configuration page and the separate Manager OTA tab",async()=>{
+  const {page,context,errors,external}=await session({width:1440,height:920},false,nativePageFixture);
   try{
-    await navigate(page,"首页");await page.getByRole("button",{name:"设备热点（AP）",exact:true}).click();
-    await page.getByRole("button",{name:"手动输入密码",exact:true}).click();await page.getByLabel("热点密码",{exact:true}).fill("fixture-hotspot-password");
+    await page.getByRole("button",{name:"设备热点（AP）",exact:true}).click();
     await page.evaluate(()=>window.pageFixtureMode="provisioning");
-    await page.getByRole("button",{name:"连接热点",exact:true}).click();await openManagement(page);
-    const frame=page.frameLocator('iframe[title="D1 设备页面"]');await frame.getByRole("heading",{name:"设备维护"}).waitFor();
-    assert.equal(await frame.getByRole("button",{name:"打开应用升级"}).isEnabled(),true);
-    assert.equal(await frame.getByRole("button",{name:"上传并升级"}).count(),0);
-    await frame.getByRole("button",{name:"打开应用升级"}).click();
-    await page.evaluate(()=>window.fixtureBridgeReady=true);
-    await page.getByRole("region",{name:"DOHC 应用升级"}).waitFor();
-    await page.getByRole("navigation",{name:"设备页面功能"}).getByRole("button",{name:"设备页面",exact:true}).click();
-    await page.evaluate(()=>window.fixtureDropOpen=true);
-    await frame.getByRole("button",{name:"打开应用升级"}).click();
-    await page.getByRole("region",{name:"DOHC 应用升级"}).waitFor();
-    assert.equal(await page.evaluate(()=>window.fixtureDroppedOpen),true,"first navigation message was deliberately lost");
-    await frame.locator("body").evaluate(()=>new Promise(resolve=>setTimeout(resolve,220)));
-    const acknowledgedCount=await page.evaluate(()=>window.fixtureBridgeMessages.filter(message=>message.type==="d1-page-open-ota").length);
-    await page.waitForTimeout(250);
-    assert.equal(await page.evaluate(()=>window.fixtureBridgeMessages.filter(message=>message.type==="d1-page-open-ota").length),acknowledgedCount,"navigation resend stops after the matching host acknowledgment");
-    assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0,"opening OTA must not submit an upgrade");
+    await page.getByRole("button",{name:"连接热点",exact:true}).click();
+    await openManagement(page);
+    const iframe=page.locator('iframe[title="D1 设备页面"]');
+    const frame=iframe.contentFrame();
+    await frame.getByRole("heading",{name:"设备维护"}).waitFor();
+    await frame.getByRole("button",{name:"在线下载并升级"}).waitFor();
+    await frame.getByRole("button",{name:"上传并升级"}).waitFor();
+    const tabs=page.getByRole("navigation",{name:"设备页面功能"});
+    await tabs.getByRole("button",{name:"应用升级",exact:true}).click();
     for(const viewport of [{width:1440,height:920},{width:960,height:680},{width:390,height:844}]){
       await page.setViewportSize(viewport);
-      assert.equal(await page.locator('iframe[title="D1 设备页面"]').isVisible(),false,"device page and upgrade use separate panels");
-      const ota=page.getByRole("region",{name:"DOHC 应用升级"});await ota.scrollIntoViewIfNeeded();
-      const bounds=await ota.boundingBox();assert.ok(bounds.y<viewport.height&&bounds.y+bounds.height>0,"OTA panel is reachable in the device page scroll area");
+      assert.equal(await iframe.isVisible(),false);
+      const ota=page.getByRole("region",{name:"DOHC 应用升级"});
+      await ota.scrollIntoViewIfNeeded();
+      const bounds=await ota.boundingBox();
+      assert.ok(bounds.y<viewport.height&&bounds.y+bounds.height>0);
       await noOverflow(page);
-      await page.screenshot({path:resolve(reportRoot,`native-ota-${viewport.width}.png`),fullPage:true});
     }
-    await page.setViewportSize({width:1440,height:920});
-    await page.getByRole("navigation",{name:"设备页面功能"}).getByRole("button",{name:"设备页面",exact:true}).click();
-    await frame.getByLabel("Wi-Fi 名称",{exact:true}).fill("Office fixture");await frame.getByLabel("Wi-Fi 密码",{exact:true}).fill("fixture-network-password");
-    page.once("dialog",dialog=>dialog.dismiss());await frame.getByRole("button",{name:"连接网络",exact:true}).click();
-    await page.getByText("设备页面未能打开，请检查连接后重试。",{exact:true}).waitFor();
-    assert.equal(await page.evaluate(()=>window.pageApiCalls.length),0);
+    await tabs.getByRole("button",{name:"设备页面",exact:true}).click();
+    await frame.getByLabel("Wi-Fi 名称",{exact:true}).fill("Office fixture");
     await frame.getByLabel("Wi-Fi 密码",{exact:true}).fill("fixture-network-password");
-    let confirmation="";page.once("dialog",async dialog=>{confirmation=dialog.message();await dialog.accept();});
-    await frame.getByRole("button",{name:"连接网络",exact:true}).click();
-    await page.getByRole("heading",{name:"设备正在配网",exact:true}).waitFor();
-    if(!(await page.getByRole("heading",{name:"设备正在配网",exact:true}).count()))throw new Error(JSON.stringify({confirmation,apiCalls:await page.evaluate(()=>window.pageApiCalls),frameText:await frame.locator("body").innerText(),pageErrors:errors}));
-    await page.getByRole("progressbar",{name:"等待设备配网结果"}).waitFor();
-    assert.match(confirmation,/热点会断开/);
-    const apiCall=await page.evaluate(()=>window.pageApiCalls[0]);assert.equal(apiCall.path,"/configure");assert.equal(apiCall.method,"POST");
-    assert.deepEqual(JSON.parse(apiCall.body),{ssid:"Office fixture",password:"fixture-network-password"});
-    await page.evaluate(()=>window.pageFixtureMode="provision-failed");
-    await page.getByRole("heading",{name:"配网失败",exact:true}).waitFor();
-    assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
-    evidence.push({status:"passed",apProvisioningForm:true,confirmationRequired:true,nativeOtaEntry:true,provisioningFailureFromDevice:true,externalRequests:0});
-  }catch(cause){console.error("AP_BRIDGE_TRACE",JSON.stringify(await Promise.all(page.frames().map(async frame=>({url:frame.url(),state:await frame.evaluate(()=>({ready:window.fixtureBridgeReady,messages:window.fixtureBridgeMessages,button:document.getElementById("ota-relay")?.outerHTML})).catch(String)})))));throw cause;}finally{await context.close();}
+    const [submit]=await Promise.all([
+      page.waitForRequest(request=>request.url()==="http://192.168.4.1/configure"&&request.method()==="POST"),
+      frame.getByRole("button",{name:"连接网络",exact:true}).click(),
+    ]);
+    assert.equal(new URLSearchParams(submit.postData()).get("ssid"),"Office fixture");
+    await frame.getByRole("heading",{name:"设备正在连接所选 Wi-Fi"}).waitFor();
+    assert.equal(await page.evaluate(()=>window.pageApiCalls.some(api=>api.method!=="GET")),false);
+    assert.deepEqual(errors,[]);
+    assert.deepEqual(external,[]);
+  }finally{await context.close();}
 });
 
 async function actualNativeMarkupFixture(context){
@@ -613,10 +625,22 @@ async function actualNativeMarkupFixture(context){
       if(api.path==='/api/v1/runtime-config')return {status:200,contentType:'application/json',body:JSON.stringify({sha256:'a'.repeat(64),categories:[{id:'camera',label:'相机'},{id:'storage',label:'存储方法'}],fields:[{key:'DOHC_T265_CAPTURE_MODE',type:'select',label:'T265 采集内容',category:'camera',value:'images-and-pose',choices:[{label:'图像 + 位姿',value:'images-and-pose'},{label:'仅位姿',value:'pose-only'}]},{key:'DOHC_RECORDING_QUEUE_SIZE',type:'integer',label:'采集队列容量',category:'storage',value:'256',minimum:16,maximum:4096}]})};
       if(api.path==='/api/v1/camera-config')return {status:200,contentType:'application/json',body:JSON.stringify({sha256:'b'.repeat(64),manifest:{version:1,cameras:{main:{enabled:true,required:true,profile:'USB',recording_fps:30}}}})};
       return {status:200,contentType:'application/json',body:JSON.stringify(api.path.endsWith('device-name')?{name:'测试人员',choices:['测试人员']}:{task:'fixture-task',choices:[{value:'fixture-task',label:'测试任务'}]})};}
-    export async function requestDevicePageBatch(request,apis){window.readBatchSizes??=[];window.readBatchSizes.push(apis.length);return Promise.all(apis.map(api=>requestDevicePageApi(request,api)));}
   `.replaceAll('ROOT',JSON.stringify(native)).replaceAll('CONFIG',JSON.stringify(config));
   await context.route('**/__d1-native-base',route=>route.fulfill({contentType:'application/javascript',body:`export * from '/src/lib/backend.ts';export const isTauriRuntime=()=>true;export async function getDeviceAvailability(){return {connection:'not_connected',observation:null,identity:null,configuration:{deviceOta:{enabled:false}},linkDiscovery:{candidates:[]}}};export async function getWifiInventory(){return {supported:true,observedAtMs:Date.now(),networks:[{interfaceId:'22',ssid:'Delta-D1-test001',signal:92,connected:false,recommended:true,connectable:true}]}};export async function connectDeviceWifi(request){window.wifiConnectCalls.push({passwordLength:request.password.length});return {interfaceId:'22',ssid:request.ssid,connected:true}};`}));
   await context.route('**/__d1-component-runtime',route=>route.fulfill({contentType:'application/javascript',body:runtime}));
+  await context.route(/^http:\/\/(?:10\.1\.50\.81|10\.1\.30\.114|192\.168\.4\.1)\//, async route=>{
+    const path=new URL(route.request().url()).pathname;
+    const main=context.pages()[0];
+    const invoke=api=>main.evaluate(async api=>{
+      const runtime=await import('/__d1-component-runtime');
+      return runtime.requestDevicePageApi({},api);
+    },api);
+    if(path==="/favicon.ico")return route.fulfill({status:204});
+    if(path==="/")return route.fulfill({contentType:"text/html; charset=utf-8",body:native});
+    if(path==="/config")return route.fulfill({contentType:"text/html",body:config});
+    const reply=await invoke({path,method:route.request().method()});
+    return route.fulfill({status:reply.status,contentType:reply.contentType,body:reply.body});
+  });
 }
 
 test('actual device HTML loads all startup APIs, navigates configuration repeatedly and exposes Chinese runtime evidence',async()=>{
@@ -629,10 +653,10 @@ test('actual device HTML loads all startup APIs, navigates configuration repeate
     await frame.locator('#cameraConfigRows input').first().waitFor();
     await frame.locator('#deviceName').getByRole('option',{name:'测试人员'}).waitFor({state:'attached'});
     await frame.locator('#deviceTask').getByRole('option',{name:'测试任务'}).waitFor({state:'attached'});
-    assert.equal(await page.evaluate(()=>Math.max(...window.readBatchSizes)),4);
+    assert.ok(await page.evaluate(()=>window.pageApiCalls.some(api=>api.path==="/api/v1/camera-config")));
     for(let i=0;i<3;i++){
       await frame.getByRole('link',{name:'运行配置',exact:true}).click();
-      await frame.locator('#fields input').waitFor();
+      await frame.locator('#category:not(:disabled)').waitFor();
       await frame.locator('#category').selectOption('camera');await frame.locator('#fields select').waitFor();
       await frame.locator('#category').selectOption('storage');await frame.locator('#fields input').fill('512');
       assert.equal(await frame.locator('#fields input').getAttribute('data-key'),'DOHC_RECORDING_QUEUE_SIZE');
@@ -663,7 +687,7 @@ test('actual device HTML loads all startup APIs, navigates configuration repeate
     await page.locator('.manager-runtime .check-indeterminate').first().waitFor();await page.locator('.overview-health.tone-info').waitFor();
     assert.equal(await page.locator('.overview-voltage.tone-info').evaluate(card=>getComputedStyle(card).backgroundColor),'rgb(238, 245, 251)','a stale warning must not color stale telemetry as current');
     assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
-    evidence.push({status:'passed',actualDeviceMarkup:true,viewport,startupBatch:4,repeatedNavigation:3,chineseRuntime:true,statusCardTones:['normal','attention','warning','info'],staleUnknown:true,realDeviceOperations:false});
+    evidence.push({status:'passed',actualDeviceMarkup:true,viewport,startupRequests:"device-origin",repeatedNavigation:3,chineseRuntime:true,statusCardTones:['normal','attention','warning','info'],staleUnknown:true,realDeviceOperations:false});
   }finally{await context.close();}
   }
 });
@@ -744,9 +768,7 @@ test('Tabbed device status and upgrade have one scroll area and retain configura
       await page.getByRole('button',{name:'连接设备',exact:true}).click();await openManagement(page);
       const frame=page.frameLocator('iframe[title="D1 设备页面"]');await frame.getByRole('heading',{name:'DOHC 设备状态'}).waitFor();
       await frame.getByPlaceholder('新增用户名字').fill('保留未提交内容');
-      const layout=await frame.locator('main').evaluate(main=>({width:main.clientWidth,scrollable:main.scrollHeight>main.clientHeight,firstId:main.querySelector('#viewHome')?.firstElementChild?.className,bodyScroll:document.body.scrollHeight>document.body.clientHeight}));
-      assert.ok(layout.width<=1240);assert.equal(layout.bodyScroll,false);assert.equal(layout.firstId,'summary');
-      if(viewport.width>=1440)assert.ok(layout.width>=1100,'desktop uses the available working width');
+      assert.deepEqual(await frame.locator("body").evaluate(()=>({origin:location.origin,tabBar:getComputedStyle(document.querySelector(".tabs")).order})),{origin:"http://192.168.1.100",tabBar:"0"});
       await page.screenshot({path:resolve(reportRoot,`native-layout-${viewport.width}.png`),fullPage:true});
       const tabs=page.getByRole('navigation',{name:'设备页面功能'});
       await tabs.getByRole('button',{name:'应用升级',exact:true}).click();
@@ -758,6 +780,9 @@ test('Tabbed device status and upgrade have one scroll area and retain configura
       await tabs.getByRole('button',{name:'设备页面',exact:true}).click();
       assert.equal(await frame.getByPlaceholder('新增用户名字').inputValue(),'保留未提交内容');
       await frame.getByText('设备信息',{exact:true}).click();await frame.getByRole('heading',{name:'设备与运行'}).waitFor();
+      await frame.getByText('设备维护',{exact:true}).click();
+      await frame.frameLocator('iframe').getByText('Device maintenance').waitFor();
+      await frame.getByText('设备信息',{exact:true}).click();
       assert.equal(await frame.getByRole('heading',{name:'用户名字'}).isVisible(),false);
       assert.equal(await page.evaluate(()=>window.pageApiCalls.filter(api=>api.method!=='GET').length),0,'layout navigation never saves configuration or starts installation');
       assert.deepEqual(errors,[]);assert.deepEqual(external,[]);

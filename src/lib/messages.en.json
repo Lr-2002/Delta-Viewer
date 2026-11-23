@@ -1,4 +1,6 @@
 {
+  "正在打开设备页面…": "Opening the device page…",
+  "设备管理直接载入设备 IP 原页，实时显示固件提供的语言切换、配置和运行状态。": "Device Management loads the device IP page directly, including firmware-provided language controls, configuration and live status.",
   "骨架片段新增标注来源选择，支持读取腾讯纯骨架结果；人工增删改统一保存到 skeleton.description.json，保留来源文件及并发保护。": "Skeleton segments can select annotation sources, including Tencent skeleton-only results. Human edits save to skeleton.description.json while preserving source files and conflict protection.",
   "修正暂停时切换高速浏览或倍速后进度显示回跳；包含独立异常／无效原因管理和常用项删除。": "Fixed stale timeline positions when changing browsing mode or speed while paused; includes separate anomalous/invalid reason management and removal of saved reasons.",
   "新增可选高速浏览与异常／无效独立原因管理，支持常用原因删除、排序；保留七路原画质与暂停逐帧。": "Added optional fast browsing and separate anomalous/invalid reason dialogs with removal and ordering of saved reasons; preserves seven original-quality cameras and precise paused inspection.",

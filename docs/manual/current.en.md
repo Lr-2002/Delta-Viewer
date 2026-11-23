@@ -14,6 +14,8 @@ Open the account menu → Keyboard shortcuts to search, change, clear or restore
 
 Choose Type-C, the device AP hotspot or a LAN IP. After connection succeeds, use Device management, Device information or Diagnostics below the connection controls. Yellow notices explain the required user actions.
 
+Device Management opens the current D1 web page in the Device Page tab. Use the language button on the device page. The page refreshes its own status. Select Refresh page to reopen the device home page. Application Upgrade opens the Manager update workflow. For guided steps within the device page, use the device controls and then select Continue.
+
 AP runtime information depends on whether the installed firmware exposes a valid report. Configuration-only firmware shows its limitations. Submitting Wi-Fi settings can disconnect the hotspot. Follow device prerequisites before configuration or updates.
 
 ## Diagnostics, logs and updates

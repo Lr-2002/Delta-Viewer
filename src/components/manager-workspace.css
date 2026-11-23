@@ -166,6 +166,7 @@
 .manager-device-page>header {display:flex;align-items:center;gap:14px;padding:12px 24px;background:#fff;border-bottom:1px solid #e2e2e7;}
 .manager-device-page>header>div {display:flex;align-items:baseline;flex:1;flex-wrap:wrap;gap:12px;font-size:15px;}
 .manager-device-page>header span {font-size:13px;color:#6e6e73;}
+.manager-device-page-loading {display:flex;align-items:center;gap:8px;padding:8px 24px;margin:0;color:#687687;}
 .manager-device-page-connection {padding:8px 20px;background:#f7f8fa;border-bottom:1px solid #e2e2e7;}
 .manager-device-page iframe {flex:1;min-height:0;width:100%;border:0;background:#f5f5f7;}
 .manager-device-page.has-ota-panel {overflow:hidden;background:#f5f7fa;}
@@ -210,17 +211,7 @@
 .manager-device-card>.manager-device-heading {flex-wrap:wrap;}
 .manager-current-status {background:#eef6fb;border-color:#d0e2ee;}
 .manager-runtime-alerts article {padding:14px 18px;border:1px solid #e7c980;border-radius:12px;background:#fffbef;}.manager-runtime-alerts p {margin:6px 0;}.manager-runtime-alerts pre {white-space:pre-wrap;overflow-wrap:anywhere;}
-.manager-provisioning {flex:1;overflow:auto;display:flex;align-items:center;flex-direction:column;gap:16px;padding:48px 24px;background:#f5f5f7;text-align:center;}
-.manager-provisioning-symbol {width:76px;height:76px;display:grid;place-items:center;color:#2674ce;background:#e7effa;border-radius:50%;}
-.manager-provisioning.is-failed .manager-provisioning-symbol {color:#b42318;background:#fff0ee;}
-.manager-provisioning h1 {font-size:27px;margin:0;}.manager-provisioning p {margin:0;max-width:600px;line-height:1.7;}
-.manager-provisioning small {max-width:560px;color:#6e6e73;line-height:1.7;}.manager-provisioning ol {display:flex;flex-direction:column;gap:12px;list-style:none;padding:18px 24px;background:white;border:1px solid #e5e5ea;border-radius:14px;text-align:left;}
-.manager-provisioning li {display:flex;align-items:center;gap:8px;}.manager-provisioning li:first-child {color:#18794e;}
-.manager-provisioning form {display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:center;}.manager-provisioning input {border:1px solid #c8c8ce;background:white;border-radius:9px;padding:11px 13px;max-width:100%;font:inherit;}
-.manager-progress-indeterminate {width:min(360px,85%);height:5px;overflow:hidden;background:#dfe5ed;border-radius:4px;}.manager-progress-indeterminate::after {content:"";display:block;height:100%;width:35%;background:#2674ce;border-radius:4px;animation:d1-wait 1.6s ease-in-out infinite;}
-@keyframes d1-wait {from {transform:translateX(-110%)}to {transform:translateX(390%)}}
-@media(prefers-reduced-motion:reduce) {.manager-progress-indeterminate::after {animation:none;width:100%}.manager-provisioning .spin{animation:none}}
-@media(max-width:760px) {.manager-runtime-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.manager-summary-grid{grid-template-columns:1fr}.manager-summary-lines{grid-template-columns:1fr}.manager-provisioning{padding:28px 16px}}
+@media(max-width:760px) {.manager-runtime-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.manager-summary-grid{grid-template-columns:1fr}.manager-summary-lines{grid-template-columns:1fr}}
 @media(max-width:760px) {.manager-wifi-recommend{display:none}.manager-wifi-form input{flex:1}.manager-device-page>header{padding:10px 14px;flex-wrap:wrap;gap:8px}.manager-device-page>header>div{order:-1;flex-basis:100%}.manager-connection-guide{padding:10px 12px;}}
 
 /* Application OTA relay and diagnostic log upload (D1 Manager). */

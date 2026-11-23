@@ -147,11 +147,13 @@ lesson("device", "provision", "提交配网、核验新 IP 与失败重试", "Pr
 
   f("frame:wifi-name", "Wi-Fi 名称", "Wi-Fi network name"),
   f("frame:wifi-password", "Wi-Fi 密码", "Wi-Fi password"),
-  c("frame:wifi-submit", "提交配网", "Submit Wi-Fi configuration", ["确认后等待设备连接。", "Confirm and wait for the device to connect."]),
+  c("frame:wifi-submit", "提交配网", "Submit Wi-Fi configuration", ["按设备网页提示提交，等待设备连接。", "Follow the device page instructions, then wait for it to connect."]),
 
-  observe(".manager-provisioning", "配网进度和等待时间", "Provisioning progress and elapsed time"),
-  f("#d1-configured-address", "设备联网后的 IP", "Connected device IP"),
-  c(".manager-provisioning button[type=submit]", "读取联网状态", "Read network status"),
+  r("frame:wifi-result", "设备网页或语音给出的配网结果", "The provisioning result on the device page or voice prompt", ["热点断开后请以设备的联网语音为准。", "If the hotspot disconnects, listen to the device for the network result."]),
+  c(".manager-device-page header button:first-child", "返回设备管理", "Back to device management"),
+  on("局域网 IP", "LAN IP"),
+  f("#d1-lan-ip", "设备 IP", "Device IP", ["填写设备联网后播报的新 IP。", "Enter the new IP announced by the device."]),
+  c(".manager-ap-form button[type=submit]", "连接设备", "Connect device"),
 ], { wiki: "Device-Management", needs: device, writes: true });
 lesson("device", "configuration", "选择并保存设备名字与任务", "Choose and save a device name and task", [
   f("frame:display-name", "设备名字", "Device name"), c("frame:save-name", "保存设备名字", "Save device name"),

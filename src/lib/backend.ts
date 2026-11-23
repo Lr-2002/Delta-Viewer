@@ -101,14 +101,6 @@ export async function requestDevicePageApi(request:DevicePageRequest,api:DeviceP
   if(!isTauriRuntime())throw new Error("请在桌面客户端连接设备。");
   return invoke("d1_device_page_request",{request:{...request,apAddress:request.apAddress??null},api,operationId});
 }
-export async function requestDevicePageBatch(request:DevicePageRequest,apis:DevicePageApiRequest[],operationId:number):Promise<DevicePageApiResponse[]> {
-  if(!isTauriRuntime())throw new Error("请在桌面客户端连接设备。");
-  return invoke("d1_device_page_read_batch",{request:{...request,apAddress:request.apAddress??null},apis,operationId});
-}
-export async function confirmDevicePageOperation(path:string):Promise<boolean> {
-  const message=path==="/configure"?"设备将连接所填 Wi-Fi，当前热点会断开。是否继续？":path==="/api/v1/camera-config"||path==="/api/v1/runtime-config"?"保存配置会重启相关设备服务。请先停止采集、自检和压力测试，是否继续？":"此操作会修改设备配置。是否继续？";
-  return isTauriRuntime()?confirm(tr(message),{title:tr("确认设备配置"),kind:"warning",okLabel:tr("确认"),cancelLabel:tr("取消")}):window.confirm(tr(message));
-}
 import { REJECTION_REASONS } from "./rejection-reasons";
 import { findReviewOverlap } from "./machine-annotation";
 import type { TaskIndexResult } from "./task-center";

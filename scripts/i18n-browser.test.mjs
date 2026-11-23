@@ -46,8 +46,8 @@ test('language switches preserve auth fields, modal state, device forms and pref
         import {LanguageToggle} from '/src/components/LanguageToggle.tsx';
         import {DevicePageView} from '/src/components/DevicePageView.tsx';
         import {t,tr,useLanguage} from '/src/lib/i18n.ts';import '/src/styles.css';
-        const page={address:'192.168.4.1',observedAtMs:Date.now(),status:null,html:'<h1>DOHC 设备状态</h1><form><label>用户名字<input name="deviceName" value="任务中心"></label><label>Wi-Fi 密码<input type="password" name="password"></label><select name="task"><option>测试数据</option><option>设备没有正确佩戴</option></select><button type="button">保存</button></form><p id="deviceId">任务中心</p><p>当前任务：任务中心</p><p>更新于 17:32</p><button type="button" id="eventButton">刷新状态</button><script>document.getElementById("eventButton").addEventListener("click",()=>document.getElementById("eventButton").textContent="读取中");<\\/script>'};
-        function Harness(){useLanguage();return React.createElement(React.Fragment,null,React.createElement(LanguageToggle),React.createElement(AuthScreen,{workspaceMode:'managed',userCenter:{configured:true},allowDemoRegistration:false,onChooseMode:async()=>{},onWorkspaceModeSelected:async()=>{},onAuthenticated:()=>{},onUserCenterConfigured:()=>{}}),React.createElement('button',{id:'modal-open',onClick:()=>document.querySelector('dialog').showModal()},t('修改')),React.createElement('dialog',null,React.createElement('h2',null,t('修改显示名称')),React.createElement('input',{defaultValue:'任务中心'}),React.createElement('button',{onClick:()=>document.querySelector('dialog').close()},t('关闭'))),React.createElement(DevicePageView,{page,busy:false,showConnectionMode:false,connectionModeLabel:'',onBack:()=>{},onRefresh:()=>{},onRequest:async()=>{throw Error('No device operations allowed')},onVerifyAddress:async()=>page}));}
+        const page={address:'192.168.4.1',observedAtMs:Date.now()};
+        function Harness(){useLanguage();return React.createElement(React.Fragment,null,React.createElement(LanguageToggle),React.createElement(AuthScreen,{workspaceMode:'managed',userCenter:{configured:true},allowDemoRegistration:false,onChooseMode:async()=>{},onWorkspaceModeSelected:async()=>{},onAuthenticated:()=>{},onUserCenterConfigured:()=>{}}),React.createElement('button',{id:'modal-open',onClick:()=>document.querySelector('dialog').showModal()},t('修改')),React.createElement('dialog',null,React.createElement('h2',null,t('修改显示名称')),React.createElement('input',{defaultValue:'任务中心'}),React.createElement('button',{onClick:()=>document.querySelector('dialog').close()},t('关闭'))),React.createElement(DevicePageView,{page,busy:false,showConnectionMode:false,connectionModeLabel:'',onBack:()=>{},onRefresh:()=>{}}));}
         createRoot(document.getElementById('root')).render(React.createElement(Harness));
       </script></body></html>`));
     });}
@@ -59,6 +59,15 @@ test('language switches preserve auth fields, modal state, device forms and pref
     browser=await chromium.launch({executablePath,headless:true});
     const page=await browser.newPage({viewport:{width:1440,height:920}}), errors=[],failed=[];
     page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text())});page.on('requestfailed',r=>failed.push(r.url()));
+    await page.route('http://192.168.4.1/', route=>route.fulfill({
+      contentType:'text/html; charset=utf-8',
+      body:`<!doctype html><h1>DOHC 设备状态</h1><form>
+        <label>用户名字<input name="deviceName" value="任务中心"></label>
+        <label>Wi-Fi 密码<input type="password" name="password"></label>
+        <select name="task"><option>测试数据</option><option>设备没有正确佩戴</option></select></form>
+        <p id="deviceId">任务中心</p><p>当前任务：任务中心</p><p>更新于 17:32</p>
+        <button id="eventButton" onclick="this.textContent='读取中'">刷新状态</button>`,
+    }));
     const url=`http://127.0.0.1:${server.httpServer.address().port}/__language`;
     await page.goto(url);
     await page.getByLabel('账号',{exact:true}).fill('reviewer_1');
@@ -75,20 +84,19 @@ test('language switches preserve auth fields, modal state, device forms and pref
     assert.equal(await page.locator('#auth-password').inputValue(),'Local-test-password');
     assert.equal(await page.locator('#auth-password').getAttribute('type'),'text');
     assert.equal(await page.evaluate(()=>window.authField===document.querySelector('#auth-password')&&window.deviceFrame===document.querySelector('iframe')),true);
-    await frame.getByRole('heading',{name:'DOHC device status'}).waitFor();
+    await frame.getByRole('heading',{name:'DOHC 设备状态'}).waitFor();
     assert.equal(await frame.locator('input[name="deviceName"]').inputValue(),'任务中心');
     assert.equal(await frame.locator('input[name="password"]').inputValue(),'Private-fixture-password');
     assert.equal(await frame.locator('select').inputValue(),'设备没有正确佩戴');
     assert.equal(await frame.locator('#deviceId').textContent(),'任务中心');
-    await frame.getByText('Current task: 任务中心',{exact:true}).waitFor();
-    await frame.getByText('Updated at 17:32',{exact:true}).waitFor();
+    await frame.getByText('当前任务：任务中心',{exact:true}).waitFor();
+    await frame.getByText('更新于 17:32',{exact:true}).waitFor();
     const deviceStatus = frame.locator('#eventButton');
-    assert.equal(await deviceStatus.textContent(), 'Refresh status');
-    // This fixture exercises translation of firmware text mutations in the sandbox.
+    assert.equal(await deviceStatus.textContent(), '刷新状态');
     await deviceStatus.evaluate(button => button.click());
     const deviceDocument = await (await page.locator('iframe').elementHandle()).contentFrame();
     assert.ok(deviceDocument);
-    await deviceDocument.waitForFunction(() => document.querySelector('#eventButton')?.textContent === 'Reading', null, { timeout: 5000 });
+    await deviceDocument.waitForFunction(() => document.querySelector('#eventButton')?.textContent === '读取中', null, { timeout: 5000 });
     await page.locator('#modal-open').click();await page.locator('dialog[open]').waitFor();
     await page.getByRole('button',{name:'切换为中文',exact:true}).click();
     assert.equal(await page.getByRole('dialog').isVisible(),true);

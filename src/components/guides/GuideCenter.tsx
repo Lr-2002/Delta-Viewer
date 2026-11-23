@@ -152,7 +152,6 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
     let pending: null | { node: HTMLElement | null; html: string } = null;
     let dragStart: { x: number; y: number; value?: string } | null = null;
     let scrollAttempted = false;
-    let frameLocated = false;
 
     function done() {
       if (finished) return;
@@ -177,7 +176,7 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
         setStatus("waiting");
       }
       const layer = activeLayer();
-      const element = step.target.startsWith("frame:") && !frameLocated ? null : findTarget(step, layer) ?? null;
+      const element = findTarget(step, layer) ?? null;
       const previous = anchorRef.current;
       anchorRef.current = element;
       setShowingMore(element?.classList.contains("data-more-trigger") ?? false);
@@ -241,14 +240,6 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
       exit.current();
     }
 
-    function frameReport(event: Event) {
-      const report = (event as CustomEvent<{ selector: string; action: string }>).detail;
-      if (!step.target.startsWith("frame:") || report?.selector !== step.target.slice(6)) return;
-      if (report.action === "located" || report.action === "missing") { frameLocated = report.action === "located"; update(); }
-      else if (report.action === "exit") exit.current();
-      else if (frameLocated && report.action === step.action) done();
-    }
-
     setStatus("search");
     refresh.current = () => { pending = null; scrollAttempted = false; update(); };
     document.addEventListener("click", accept, true);
@@ -258,13 +249,11 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
     document.addEventListener("pointerdown", accept, true);
     document.addEventListener("pointerup", endDrag, true);
     window.addEventListener("keydown", keyboard, true);
-    window.addEventListener("d1-guide-frame-action", frameReport);
     if (outcomeEvent) window.addEventListener(outcomeEvent, confirmOutcome);
     document.addEventListener("scroll", update, true);
     window.addEventListener("resize", update);
     const timer = window.setInterval(update, 120);
     update();
-    if (step.target.startsWith("frame:")) window.dispatchEvent(new CustomEvent("d1-guide-frame-target", { detail: step.target.slice(6) }));
     return () => {
       finished = true;
       clearInterval(timer);
@@ -275,11 +264,9 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
       document.removeEventListener("pointerdown", accept, true);
       document.removeEventListener("pointerup", endDrag, true);
       window.removeEventListener("keydown", keyboard, true);
-      window.removeEventListener("d1-guide-frame-action", frameReport);
       if (outcomeEvent) window.removeEventListener(outcomeEvent, confirmOutcome);
       document.removeEventListener("scroll", update, true);
       window.removeEventListener("resize", update);
-      if (step.target.startsWith("frame:")) window.dispatchEvent(new CustomEvent("d1-guide-frame-target", { detail: "" }));
     };
   }, [running.id, running.index, step]);
 
@@ -325,12 +312,13 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
           {!showingMore && step.detail && <p>{step.detail[en ? 1 : 0]}</p>}
           {status === "waiting" ? <p className="guide-condition">{common.waiting}</p> :
             status !== "ready" ? <p className="guide-condition">{status === "disabled" ? common.disabled : common.missing} {needs?.[en ? 1 : 0]}</p> :
+            isFrame ? <p>{en ? "Use the control on the device page, then select Continue." : "在设备网页完成这一步后，点击「继续」。"}</p> :
             step.action === "change" && anchorRef.current?.matches("input:not([type=range]),textarea") ? <p>{common.confirmInput}</p> : null}
         </div>
         <div className="guide-tip-actions">
           <button type="button" className="text-button" onClick={onExit}>{common.exit}</button>
           {status !== "ready" && <button type="button" className="button button-secondary" onClick={() => refresh.current()}><Focus size={15} />{common.retry}</button>}
-          {status === "ready" && !showingMore && step.action === "read" && <button type="button" className="button button-primary" onClick={onAdvance}>{common.next}<ArrowRight size={15} /></button>}
+          {status === "ready" && !showingMore && (isFrame || step.action === "read") && <button type="button" className="button button-primary" onClick={onAdvance}>{common.next}<ArrowRight size={15} /></button>}
         </div>
       </section>
     </div>, host,
