@@ -14,7 +14,7 @@ export class OutboundPlayback {
   private decodeGaps = new Map<number, ReturnType<typeof setTimeout>>();
   private intent = false;
   private held = false;
-  private starting: number | null = null;
+  private starting: object | null = null;
   private priming = false;
   private primingUntil = 0;
   private recoveryUntil = 0;
@@ -29,7 +29,7 @@ export class OutboundPlayback {
   private masterId: number | null = null;
   private timer: ReturnType<typeof setInterval>;
 
-  constructor(private report: (state: OutboundPlaybackState) => void, private failed: () => void, private finished: () => void = () => {}, private stalled: () => void = () => {}) {
+  constructor(private report: (state: OutboundPlaybackState) => void, private failed: () => void, private finished: () => void = () => {}, private stalled: (position: number) => void = () => {}) {
     this.timer = setInterval(() => this.tick(), 160);
   }
 
@@ -48,20 +48,20 @@ export class OutboundPlayback {
         // WebView2 may deliver an old waiting event after decoding recovered.
         // Treating it as a fresh stall flushes all seven healthy decoders.
         if (!this.intent || this.held || player.ended || player.seeking || player.readyState >= 3) return;
-        if (this.speed < 3 || !this.hasBuffer(player, this.speed * .25)) {
-          this.hold();
+        if (!this.hasBuffer(player, this.speed * .25)) {
+          this.hold(true);
           return;
         }
         if (this.decodeGaps.has(id)) return;
         const generation = this.generation;
         // Coalesce sub-frame decode gaps only when compressed media is ahead.
         // A sustained stall still holds peers within .12 media seconds; no
-        // grace applies to network starvation, lower rates or active seeks.
+        // grace applies to missing data or active seeks.
         this.decodeGaps.set(id, setTimeout(() => {
           this.decodeGaps.delete(id);
           if (generation === this.generation && this.intent && this.players.get(id) === player
             && !player.ended && !player.seeking && player.readyState < 3) this.hold();
-        }, Math.min(30, 120 / this.speed)));
+        }, Math.min(this.speed < 3 ? 60 : 30, 120 / this.speed)));
       };
       const canplay = () => {
         if (player.readyState >= 3) this.clearDecodeGap(id);
@@ -140,15 +140,20 @@ export class OutboundPlayback {
     }
   }
 
-  private hold() {
+  private hold(bytesStarved = false) {
     this.clearDecodeGaps();
-    if (!this.held) this.recoveryUntil = performance.now() + (this.speed > 3 ? 2500 : 0);
+    if (!this.held) this.recoveryUntil = performance.now() + (this.speed > 3 ? 2500 : bytesStarved ? 1800 : 0);
+    // Pausing peers supersedes their outstanding play promises. A WebView
+    // promise that never settles must not block the next coordinated start.
+    this.starting = null;
     this.held = true;
     // Keep the starved decoder trying to play. Pausing it at HAVE_CURRENT_DATA
     // can leave WebView2 waiting for canplay even after network bytes arrive.
     // Healthy peers wait here; canplay resumes them without a polling delay.
     for (const player of this.players.values()) {
-      if (player.readyState >= 3) player.pause();
+      if (player.readyState >= 3) {
+        if (!player.paused) player.pause();
+      }
       // A decoder with data can recover at a modest rate while its peers wait.
       // The requested rate is restored before the group resumes; this is not
       // a hidden change to the user's playback speed or source quality.
@@ -162,6 +167,7 @@ export class OutboundPlayback {
     this.clearDecodeGaps();
     this.intent = true;
     this.prime();
+    this.starting = null;
     this.generation++;
     const master = this.master()!;
     this.progressAt = performance.now();
@@ -190,6 +196,7 @@ export class OutboundPlayback {
     this.intent = false;
     this.held = false;
     this.priming = false;
+    this.starting = null;
     this.generation++;
     this.browsePosition = this.browseTarget ?? this.browsePosition;
     this.browseTarget = null;
@@ -202,6 +209,7 @@ export class OutboundPlayback {
 
   seek(time: number) {
     this.clearDecodeGaps();
+    this.starting = null;
     this.generation++;
     this.browsePosition = time;
     this.browseTarget = null;
@@ -210,8 +218,10 @@ export class OutboundPlayback {
     this.progressPosition = time;
     for (const player of this.players.values()) {
       player.pause();
-      if (player.readyState >= 1)
-        player.currentTime = Math.max(0, Math.min(time, Number.isFinite(player.duration) ? player.duration : time));
+      if (player.readyState >= 1) {
+        const target = Math.max(0, Math.min(time, Number.isFinite(player.duration) ? player.duration : time));
+        if (player.seeking || Math.abs(target - player.currentTime) > .001) player.currentTime = target;
+      }
     }
     this.held = this.intent;
     if (this.intent) this.prime();
@@ -248,7 +258,11 @@ export class OutboundPlayback {
   }
 
   private hasStartupBuffer(player: HTMLVideoElement, recovery = false) {
-    const needed = Math.min((this.speed > 3 ? recovery ? 1.5 : 3 : 1.25) * this.speed, Math.max(0, player.duration - player.currentTime - .04));
+    if (recovery && this.speed <= 3 && player.networkState !== 2) return true;
+    // At ordinary rates, refill only after an actual shortage. Resuming on
+    // the first decoded frame can consume a burst before more bytes arrive.
+    const seconds = this.speed > 3 ? recovery ? 1.5 : 3 : recovery ? 1.25 : this.speed >= 2 ? 2 : 1.25;
+    const needed = Math.min(seconds * this.speed, Math.max(0, player.duration - player.currentTime - .04));
     return this.hasBuffer(player, needed);
   }
 
@@ -282,7 +296,7 @@ export class OutboundPlayback {
         this.progressAt = now;
       } else if (now - this.progressAt >= STALL_TIMEOUT_MS) {
         this.pause();
-        this.stalled();
+        this.stalled(position);
         return;
       }
       if (sampled) { this.browseTick(); this.publish(); return; }
@@ -290,27 +304,29 @@ export class OutboundPlayback {
         // A decoded first frame may represent only .25 seconds of high-rate
         // video. Reserve a rate-scaled lead at start/seek/rate increase.
         // Recovery has a separate bounded wait and keeps hungry decoders active.
-        if (this.starting !== this.generation && [...this.players.values()].every(v => v.ended || v.readyState >= 3 && !v.seeking
+        if (!this.starting && [...this.players.values()].every(v => v.ended || v.readyState >= 3 && !v.seeking
           && (!this.priming || performance.now() >= this.primingUntil || this.hasStartupBuffer(v))
           && (this.priming || performance.now() >= this.recoveryUntil || this.hasStartupBuffer(v, true)))) {
-          const generation = this.generation;
+          const attempt = {};
           this.held = false;
           this.priming = false;
           for (const player of this.players.values()) player.playbackRate = this.speed;
-          this.starting = generation;
+          this.starting = attempt;
           void Promise.all([...this.players.values()].filter(player=>!player.ended).map(player => player.play())).catch(error => {
             // Our pause/seek can abort an in-flight play promise.
-            if (generation === this.generation && this.intent && !this.held && error?.name !== "AbortError") {
+            if (this.starting === attempt && this.intent && !this.held && error?.name !== "AbortError") {
               this.pause(); this.failed();
             }
-          }).finally(() => { if (this.starting === generation) this.starting = null; });
+          }).finally(() => { if (this.starting === attempt) this.starting = null; });
         } else {
           // Once a hungry decoder has a frame again, stop it alongside its
           // peers while the reserve refills. Continuing at 2x here consumes
           // the new bytes and lets its clock run ahead during the group hold.
           for (const player of this.players.values()) {
             if (player.ended || player.seeking) continue;
-            if (player.readyState >= 3) player.pause();
+            if (player.readyState >= 3) {
+              if (!player.paused) player.pause();
+            }
             else {
               player.playbackRate = Math.min(this.speed, 2);
               // A previously paused peer can lose readiness while held. It

@@ -10,14 +10,14 @@ class Decoder extends EventTarget {
   get buffered(){return {length:1,start:()=>0,end:()=>this.currentTime+this.ahead};}
   play(){this.paused=false;return Promise.resolve();}pause(){this.paused=true;}
 }
-test('a stationary group pauses once, and a new play attempt survives a late recovery event', async t=>{
+test('a stationary group reports its exact position once and cannot restart from late readiness', async t=>{
  let now=0;
  t.mock.method(performance,'now',()=>now);
  t.mock.timers.enable({apis:['setInterval','setTimeout']});
  const players=Array.from({length:7},()=>Object.assign(new Decoder(),{ahead:60}));
  const states=[];
  let stalls=0;
- const playback=new OutboundPlayback(state=>states.push(state),()=>assert.fail('play failed'),()=>assert.fail('unexpected end'),()=>stalls++);
+ const playback=new OutboundPlayback(state=>states.push(state),()=>assert.fail('play failed'),()=>assert.fail('unexpected end'),position=>{assert.equal(position,30);stalls++;});
  try {
   players.forEach((player,index)=>playback.attach(index,player));
   playback.setSpeed(3);
@@ -48,6 +48,70 @@ test('a stationary group pauses once, and a new play attempt survives a late rec
   playback.play();
   await flush();
   assert.ok(players.every(player=>!player.paused&&player.currentTime===30));
+ } finally {playback.dispose();}
+});
+
+test('1x and 2x absorb brief decode gaps; sustained shortages pause and refill together',async t=>{
+ let now=0;
+ t.mock.method(performance,'now',()=>now);
+ t.mock.timers.enable({apis:['setInterval','setTimeout']});
+ const states=[],players=Array.from({length:7},()=>Object.assign(new Decoder(),{networkState:2}));
+ const playback=new OutboundPlayback(state=>states.push(state),()=>assert.fail('play failed'));
+ try {
+  players.forEach((player,index)=>playback.attach(index,player));
+  for(const speed of [1,2]){
+   const camera=players[4];
+   playback.setSpeed(speed);playback.play();await flush();
+   camera.readyState=2;camera.dispatchEvent(new Event('waiting'));
+   assert.ok(players.every(p=>!p.paused),'the other cameras stay running during a short decode gap');
+   t.mock.timers.tick(20);camera.readyState=4;camera.dispatchEvent(new Event('canplay'));
+   t.mock.timers.tick(60);assert.equal(states.at(-1).buffering,false);
+   camera.ahead=.05;camera.readyState=2;camera.dispatchEvent(new Event('waiting'));
+   assert.equal(states.at(-1).buffering,true);
+   camera.readyState=3;camera.dispatchEvent(new Event('canplay'));await flush();
+   assert.ok(players.every(p=>p.paused),'one frame does not immediately restart and drain an active transfer');
+   now+=300;camera.ahead=speed;camera.dispatchEvent(new Event('canplay'));await flush();
+   assert.ok(players.every(p=>p.paused),'a brief delivery burst leaves too little runway to resume safely');
+   camera.ahead=1.3*speed;camera.dispatchEvent(new Event('canplay'));await flush();
+   assert.ok(players.every(p=>!p.paused&&p.currentTime===10&&p.playbackRate===speed));
+   playback.pause();camera.ahead=4;
+  }
+ } finally {playback.dispose();}
+});
+
+test('opening a new part keeps its already-decoded first frames',t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const playback=new OutboundPlayback(()=>{},()=>assert.fail('play failed'));
+ const times=[];
+ try{
+  for(let i=0;i<7;i++){
+   const player=new Decoder();let at=0;
+   Object.defineProperty(player,'currentTime',{get:()=>at,set:value=>{times.push(value);at=value;}});
+   playback.attach(i,player);
+  }
+  playback.seek(0);
+  assert.deepEqual(times,[],'the new MP4 is already at zero; do not flush its prepared frames');
+  playback.seek(42);
+  assert.deepEqual(times,Array(7).fill(42),'reconnecting mid-part still restores the saved position');
+ }finally{playback.dispose();}
+});
+
+test('a superseded play promise cannot block a ready group or fail a later attempt',async t=>{
+ t.mock.timers.enable({apis:['setInterval','setTimeout']});
+ const states=[],players=Array.from({length:7},()=>new Decoder());
+ const playback=new OutboundPlayback(state=>states.push(state),()=>assert.fail('superseded play failed'));
+ let rejectOld;
+ const nativePlay=players[2].play.bind(players[2]);
+ players[2].play=()=>{players[2].play=nativePlay;players[2].paused=false;return new Promise((_,reject)=>{rejectOld=reject;});};
+ try{
+  players.forEach((player,index)=>playback.attach(index,player));
+  playback.play();await flush();
+  const hungry=players[1];hungry.ahead=0;hungry.readyState=2;hungry.dispatchEvent(new Event('waiting'));
+  assert.equal(states.at(-1).buffering,true);
+  hungry.ahead=4;hungry.readyState=4;hungry.dispatchEvent(new Event('canplay'));await flush();
+  assert.ok(players.every(p=>!p.paused),'all seven resume before the first promise settles');
+  rejectOld(new Error('old decoder failed'));await flush();
+  assert.equal(states.at(-1).playing,true);
  } finally {playback.dispose();}
 });
 test('entering browsing while paused reports the current video position after ordinary playback',t=>{

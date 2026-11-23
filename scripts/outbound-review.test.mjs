@@ -108,7 +108,8 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
         if (input.action === 'video-url') {
           if(input.segment===window.fixtureSlowSegment)await new Promise(resolve=>window.fixtureReleaseSlow=resolve);
           if(window.fixtureHoldVideo) await new Promise(resolve => { (window.fixtureVideoResolvers ||= []).push(resolve); });
-          return { url: 'https://outbound.fixture/api/platform/manager-outbound/media/' + (input.segment+1).toString(16).padStart(64,'0') };
+          const token=(input.segment+1).toString(16).padStart(64,'0');
+          return {url:'https://outbound.fixture/api/platform/manager-outbound/media/'+(window.fixtureFreshTicket?'a'+token.slice(1):token)};
         }
         if (input.action === 'save-reason-option') {
           if(window.fixtureReasonFailure)throw Error('OUTBOUND_USER_CENTER_TIMEOUT');
@@ -234,20 +235,62 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     });
     assert.equal(stablePlayback.seeks,0,'continuous clock correction must not repeatedly discard decoded frames');
     assert.ok(stablePlayback.advance>.7,'all-buffered playback continues at wall-clock speed');
-    await page.evaluate(()=>{const follower=document.querySelectorAll('video')[1];Object.defineProperty(follower,'readyState',{configurable:true,get:()=>2});follower.dispatchEvent(new Event('waiting'));});
+    await page.evaluate(()=>{
+      const follower=document.querySelectorAll('video')[1];
+      Object.defineProperty(follower,'readyState',{configurable:true,get:()=>2});
+      Object.defineProperty(follower,'buffered',{configurable:true,value:{length:0}});
+      follower.dispatchEvent(new Event('waiting'));
+    });
     await page.waitForFunction(()=>[...document.querySelectorAll('video')].every((v,i)=>i===1?!v.paused:v.paused));
     await page.getByText('正在缓冲',{exact:true}).waitFor();
     const starvedBefore=await page.locator('video').nth(1).evaluate(v=>v.currentTime);
     await page.waitForTimeout(250);
     assert.ok(await page.locator('video').nth(1).evaluate((v,before)=>v.currentTime>before+.1,starvedBefore),
       'a starved decoder keeps its playback intent while healthy peers wait');
-    await page.evaluate(()=>{delete document.querySelectorAll('video')[1].readyState;});
+    await page.evaluate(()=>{const follower=document.querySelectorAll('video')[1];delete follower.readyState;delete follower.buffered;});
+    await page.waitForFunction(()=>[...document.querySelectorAll('video')].every(v=>!v.paused));
+    const stallAt = async () => {
+      await page.evaluate(()=>{
+        const follower=document.querySelectorAll('video')[1];
+        Object.defineProperty(follower,'readyState',{configurable:true,value:2});
+        Object.defineProperty(follower,'buffered',{configurable:true,value:{length:0}});
+        follower.dispatchEvent(new Event('waiting'));
+      });
+      await page.waitForTimeout(220); // capture the stationary position before advancing the watchdog clock
+      return page.evaluate(()=>{
+        const videos=[...document.querySelectorAll('video')];
+        const at=videos[0].currentTime;
+        const time=performance.now.bind(performance);
+        Object.defineProperty(performance,'now',{configurable:true,value:()=>time()+13_000});
+        return at;
+      });
+    };
+    const videoRequests=await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='video-url').length);
+    await page.evaluate(()=>window.fixtureFreshTicket=true);
+    const stalledAt=await stallAt();
+    await page.waitForFunction(count=>window.fixtureCalls.filter(x=>x.action==='video-url').length>=count+7,videoRequests);
+    await page.evaluate(()=>{
+      delete performance.now;
+      const follower=document.querySelectorAll('video')[1];delete follower.readyState;delete follower.buffered;
+      if(follower.readyState>=3)follower.dispatchEvent(new Event('canplay'));
+    });
+    await page.waitForFunction(at=>[...document.querySelectorAll('video')].every(v=>!v.paused&&v.currentTime>=at-.07&&v.currentTime<at+1),stalledAt);
+    await stallAt();
+    await page.getByRole('button',{name:'重连视频',exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='video-url').length),videoRequests+7,'same-position stalls do not refetch indefinitely');
+    await page.evaluate(()=>{
+      delete performance.now;window.fixtureFreshTicket=false;
+      const follower=document.querySelectorAll('video')[1];delete follower.readyState;delete follower.buffered;
+      if(follower.readyState>=3)follower.dispatchEvent(new Event('canplay'));
+    });
+    await page.getByRole('button',{name:'重连视频',exact:true}).click();
     await page.waitForFunction(()=>[...document.querySelectorAll('video')].every(v=>!v.paused));
     const slider=page.getByRole('slider',{name:'视频播放位置'});const sliderBox=await slider.boundingBox();
     await slider.click({position:{x:sliderBox.width*.55,y:sliderBox.height/2}});
     await page.waitForFunction(()=>{const videos=[...document.querySelectorAll('video')];return videos.every(v=>!v.paused&&!v.seeking&&v.currentTime>4)&&Math.max(...videos.map(v=>v.currentTime))-Math.min(...videos.map(v=>v.currentTime))<.15;});
     await page.getByRole('button',{name:'暂停',exact:true}).click();
     const healthyBefore=await page.locator('video').evaluateAll(videos=>videos.map(v=>({src:v.currentSrc,time:v.currentTime})));
+    const beforeSingleRetry=await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='video-url').length);
     await page.evaluate(()=>{window.fixtureMediaCode='OUTBOUND_MEDIA_INDEX_MISSING';const v=document.querySelectorAll('video')[4];Object.defineProperty(v,'error',{configurable:true,value:{code:2}});v.dispatchEvent(new Event('error'));});
     await page.getByText('读取失败',{exact:true}).waitFor();
     await page.getByRole('alert').filter({hasText:'源视频缺少播放索引'}).waitFor();
@@ -267,7 +310,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.evaluate(()=>{delete document.querySelectorAll('video')[4].error;});
     await page.getByRole('button',{name:'重试失败视频',exact:true}).click();
     await page.waitForFunction(()=>!document.querySelector('.outbound-valid-button').disabled);
-    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='video-url').length),8,'only the failed camera requests a new ticket');
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='video-url').length),beforeSingleRetry+1,'only the failed camera requests a new ticket');
     const afterRetry=await page.locator('video').evaluateAll(videos=>videos.map(v=>({src:v.currentSrc,time:v.currentTime})));
     assert.deepEqual(afterRetry.slice(0,4),healthyBefore.slice(0,4),'healthy camera sources and positions survive recovery');
     assert.ok(Math.abs(afterRetry[4].time-healthyBefore[0].time)<.2,'retried camera resumes at the master position');
@@ -277,7 +320,9 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.waitForFunction(() => document.querySelectorAll('video').length === 7);
     assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='decide').length),1,'confirmed lost receipt advances without replaying the conclusion');
     assert.equal(await page.evaluate(()=>window.retiredReviewPlayers.every(v=>!v.isConnected&&!v.hasAttribute('src')&&v.networkState===HTMLMediaElement.NETWORK_EMPTY)),true,'switching recordings releases retired media sources, downloads and decoders immediately');
-    assert.equal(await page.getByRole('button', { name: '无效数据' }).isDisabled(), true, 'invalid decisions wait for every camera');
+    assert.equal(await page.getByRole('button', { name: '有效数据' }).isDisabled(), true, 'valid decisions wait for every camera');
+    await page.getByRole('button', { name: '无效数据' }).click();
+    await page.getByRole('dialog',{name:'选择无效原因',exact:true}).waitFor();
     await page.evaluate(() => { window.fixtureMediaAllowed = true; });
     await page.waitForFunction(() => [...document.querySelectorAll('video')].length === 7
       && [...document.querySelectorAll('video')].every(video => video.readyState >= 3));
@@ -285,7 +330,6 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(cameraSizes.filter(item=>item.primary).length,1);
     assert.ok(cameraSizes[0].width>cameraSizes[1].width*2,'main camera uses the original replay width ratio');
     assert.ok(cameraSizes[0].height>cameraSizes[1].height*1.8,'main camera spans both peer rows');
-    await page.getByRole('button', { name: '无效数据' }).click();
     await page.getByRole('button',{name:'添加常用原因',exact:true}).click();
     await page.getByLabel('新增常用无效原因').fill('画面遮挡');
     await page.getByRole('button',{name:'Switch to English',exact:true}).click();
@@ -300,7 +344,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByText('本批次已全部审核完成。', { exact: true }).waitFor();
     await page.getByText('审核完成', { exact: true }).waitFor();
     await page.getByText('合格率 50%', { exact: false }).waitFor();
-    assert.equal(await page.evaluate(() => window.fixtureCalls.filter(input => input.action === 'video-url').length), 15);
+    assert.equal(await page.evaluate(() => window.fixtureCalls.filter(input => input.action === 'video-url').length), beforeSingleRetry+1+7,'advancing opens only the seven cameras of the next recording');
     assert.equal(await page.evaluate(() => window.fixtureCalls.filter(input => input.action === 'decide').length), 2);
     assert.deepEqual(await page.evaluate(() => window.fixtureBatch.recordings.map(row => row.decision.value)), ['valid', 'invalid']);
     assert.equal(await page.evaluate(() => window.fixtureBatch.recordings[1].decision.reason), '画面遮挡');
@@ -389,7 +433,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByRole('button', { name: '刷新外发批次' }).click();
     await page.getByRole('button', { name: /录制 001/ }).click();
     await page.waitForFunction(() => document.querySelectorAll('video').length === 7);
-    await page.getByText('7 路原始视频 · 共 8 段', { exact:true }).waitFor();
+    await page.getByText('7/7 路源视频 · 第 1 段，共 8 段', { exact:true }).waitFor();
     await page.waitForFunction(()=>!document.querySelector('input[aria-label="视频播放位置"]').disabled).catch(async error=>{console.error(JSON.stringify(await page.evaluate(()=>({calls:window.fixtureCalls.reduce((a,x)=>(a[x.action]=(a[x.action]||0)+1,a),{}),heading:document.querySelector('.outbound-player-heading')?.textContent,alerts:[...document.querySelectorAll('[role=alert]')].map(x=>x.textContent),videos:[...document.querySelectorAll('video')].map(v=>({src:v.getAttribute('src'),ready:v.readyState,duration:v.duration})),status:document.querySelector('.outbound-playback-status')?.textContent}))));throw error;});
     assert.equal(await page.locator('video[src]').count(),7,'only seven decoder sources, including for 56 files');
     assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='media-metadata').length),49,'remaining parts read movie clocks without creating decoders');
@@ -439,7 +483,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByRole('button',{name:'刷新外发批次',exact:true}).click();
     await page.getByRole('button',{name:/录制 001/}).click();
     await page.getByRole('alert').filter({hasText:'以下视频读取失败'}).waitFor();
-    await page.locator('[data-outbound-camera=extension_right]').getByText('其他分段缺失或读取失败',{exact:true}).waitFor();
+    await page.locator('[data-outbound-camera=extension_right]').getByText('读取失败分段：2',{exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).isDisabled(),true,'a broken later segment cannot silently disappear or permit approval');
     await page.evaluate(()=>window.fixtureMetadataFail=null);
     await page.getByRole('button',{name:'重试失败视频',exact:true}).click();
@@ -488,6 +532,28 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
         if(count===7&&process.env.OUTBOUND_SCREENSHOT_DIR)await page.screenshot({path:path.join(process.env.OUTBOUND_SCREENSHOT_DIR,`seven-cameras-${width}.png`)});
       }
     }
+    // The first eight parts can be intact while just the final two files
+    // are absent. Keep the rejection controls reachable on a short window.
+    await page.setViewportSize({width:960,height:680});
+    await page.evaluate(()=>{
+      const cameras=['cam0','cam1','cam2','t265_left','t265_right','extension_left','extension_right'];
+      window.fixtureBatch.recordings[0].videos=cameras.flatMap((camera,i)=>Array.from({length:i<5?9:8},(_,part)=>({
+        segment:i*9+part,label:`${camera}/video-${String(part).padStart(5,'0')}.mp4`,size:1024,sha256:null
+      })));
+    });
+    await page.getByRole('button',{name:'刷新外发批次'}).click();
+    await page.getByRole('button',{name:/录制 001/}).click();
+    const missingTail=page.getByRole('button',{name:'第 9 段缺少：扩展相机 · 左、扩展相机 · 右',exact:true});
+    await missingTail.waitFor();
+    await page.waitForFunction(()=>document.querySelectorAll('video[src]').length===7);
+    await missingTail.click();
+    await page.waitForFunction(()=>document.querySelectorAll('video[src]').length===5);
+    assert.equal(await page.getByText('此相机没有本段源文件',{exact:true}).count(),2);
+    assert.equal(await page.getByRole('alert').filter({hasText:'以下视频读取失败'}).count(),0);
+    assert.match(await page.locator('.outbound-player-heading').innerText(),/5\/7 路源视频.*第 9 段，共 9 段/s);
+    await page.getByRole('button',{name:'无效数据',exact:true}).click({trial:true});
+    await page.getByRole('button',{name:'异常数据',exact:true}).click({trial:true});
+    assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).isDisabled(),true);
     // The server may commit a claim and lose its response. Read authority,
     // never send the claim twice; preserve an explicit unknown state if reads fail.
     // A diagnosed source failure can be reviewed with a reason, while valid
