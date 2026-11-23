@@ -6,9 +6,9 @@ This manual is bundled for offline use. Illustrated lessons and interactive guid
 
 Use Offline mode for local work or sign in with your configured user center. Save before signing out. Recover temporary connection failures as prompted rather than creating duplicate accounts. Switching language preserves inputs and current work.
 
-From the data workspace toolbar, open Task Center, choose a data folder, view the review overview or check for updates. More contains keyboard shortcuts, documentation, version history, operation errors and account actions.
+From the data workspace toolbar, open Task Center, choose a data folder, view the review overview or check for updates. Open the avatar, name and username menu for shortcuts, documentation, version history and account actions. Accounts allowed to change their display name have an Edit button beside it. Offline mode has a workspace menu. Find operation errors under the diagnostics icon near the source path or in an error notice.
 
-Open More → Keyboard shortcuts to search, change, clear or restore bindings. Settings are stored on this computer per workspace mode, user center and account, not synchronized across computers. PageUp/PageDown navigate recordings without submitting decisions. Space plays or pauses; arrows step frames or parts, Home/End seek to boundaries and Minus/Equal change speed. Resolve conflicts before saving. Workspace actions are suppressed while typing, using dialogs or during blocked operations.
+Open the account menu → Keyboard shortcuts to search, change, clear or restore bindings. Settings are stored on this computer per workspace mode, user center and account, not synchronized across computers. PageUp/PageDown navigate recordings without submitting decisions. Space plays or pauses; arrows step frames or parts, Home/End seek to boundaries and Minus/Equal change speed. Resolve conflicts before saving. Workspace actions are suppressed while typing, using dialogs or during blocked operations.
 
 ## Device connection and setup
 
@@ -58,11 +58,11 @@ The queue follows the configured Xingju company identity on the delivery platfor
 
 Valid requires every video ready. Confirmed missing, damaged or failed sources can be marked anomalous or invalid with an accurate reason; loading alone does not prove damage. Anomalous and invalid have separate common-reason libraries with add, reorder and remove actions. Removing a common reason preserves historical decisions. Follow the notice if a service does not support anomalous decisions.
 
-A successful first decision advances to the next pending item. Revising a saved decision or reason updates counts and stays on the current item. Uncertain acknowledgements are checked read-only: do not repeatedly submit. Temporary outages retain the queue and recover; expired permission, missing sources and connection failures have distinct messages.
+A successful first decision advances to the next pending item. Once the final decision is confirmed, the workspace and task list show a green Review complete badge, regardless of the pass rate. The batch stays claimed and its reviewer can reopen it. Revising a saved decision or reason updates counts and stays on the current item. Uncertain acknowledgements are checked read-only: do not repeatedly submit. Temporary outages retain the queue and recover; expired permission, missing sources and connection failures have distinct messages.
 
 ## Supervision and account management
 
-Only authorized management accounts can change account state, assign tasks, inspect supervision or send update reminders. Verify the target and scope because these actions affect real accounts or shared data. Do not practice on production decisions.
+Management opens on Review accounts for users with management permission. NAS writeback has a separate view for requests and receipts. The account menu opens the external review workbench and documentation, or returns to Test mode when permitted. Confirm the target and scope before changing account state, sending reminders or requesting writeback.
 
 ## Text corrections
 

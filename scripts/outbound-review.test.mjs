@@ -297,6 +297,8 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByRole('button', { name: '保存常用项' }).click();
     await page.getByRole('button', { name: '画面遮挡' }).click();
     await page.getByRole('button', { name: '确认无效' }).click();
+    await page.getByText('本批次已全部审核完成。', { exact: true }).waitFor();
+    await page.getByText('审核完成', { exact: true }).waitFor();
     await page.getByText('合格率 50%', { exact: false }).waitFor();
     assert.equal(await page.evaluate(() => window.fixtureCalls.filter(input => input.action === 'video-url').length), 15);
     assert.equal(await page.evaluate(() => window.fixtureCalls.filter(input => input.action === 'decide').length), 2);

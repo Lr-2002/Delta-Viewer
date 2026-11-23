@@ -2,10 +2,12 @@ import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
+  BookOpenText,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Download,
+  Keyboard,
   LoaderCircle,
   LogOut,
   Pause,
@@ -13,6 +15,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Trash2,
+  FlaskConical,
   UserPlus,
   XCircle,
   X,
@@ -44,17 +47,19 @@ import {
 import type { UserIdentity, ClientVersions } from "../types";
 import "./review-supervision.css";
 import { SourceWritebackAdmin } from "./SourceWritebackAdmin";
+import { DataWorkspaceMore } from "./DataWorkspaceMore";
 import { TaskCenter } from "./TaskCenter";
 import { currentClientVersion } from "../lib/client-versions";
 
-type View = "overview" | "events" | "sessions" | "accounts" | "corrections" | "tasks";
+type View = "overview" | "events" | "sessions" | "accounts" | "writeback" | "corrections" | "tasks";
 const tabs: [View, string][] = [
+  ["accounts", "审核账号"],
   ["overview", "审核总览"],
   ["events", "实时行为"],
   ["sessions", "审核记录"],
-  ["accounts", "审核账号"],
-  ["corrections", "文字勘误"],
   ["tasks", "任务中心"],
+  ["writeback", "NAS 写回"],
+  ["corrections", "文字勘误"],
 ];
 const time = (value: number | null) =>
   value ? new Date(value).toLocaleString(localeTag(), { hour12: false }) : "--";
@@ -94,6 +99,9 @@ export function SupervisionDashboard({
   updateBusy = false,
   onTestMode,
   onManagerHome,
+  onEditProfile,
+  onOpenShortcuts,
+  onOpenReleaseHistory,
   syncNotice,
   onOpenCloudReview,
   onOpenOutboundReview,
@@ -106,6 +114,9 @@ export function SupervisionDashboard({
   updateBusy?: boolean;
   onTestMode?: () => void;
   onManagerHome?: () => void;
+  onEditProfile?: () => void;
+  onOpenShortcuts?: () => void;
+  onOpenReleaseHistory?: () => void;
   syncNotice?: ReactNode;
   onOpenCloudReview?: (root: string) => Promise<void>;
   onOpenOutboundReview?: (batch: import("../lib/outbound-review").OutboundBatch) => Promise<void>;
@@ -113,6 +124,8 @@ export function SupervisionDashboard({
 }) {
   useLanguage();
   const [view, setView] = useState<View>(currentUser.canManage ? "accounts" : "overview");
+  const needsVersions = view === "accounts" || view === "writeback";
+  const isAuditView = view === "overview" || view === "events" || view === "sessions";
   const [refreshId, setRefreshId] = useState(0);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versions, setVersions] = useState<ClientVersions | null>(null);
@@ -132,7 +145,7 @@ export function SupervisionDashboard({
     return () => { node?.close(); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
   }, [versionLogAccount]);
   useEffect(() => {
-    if (view !== "accounts") return;
+    if (!needsVersions) return;
     let active = true, inFlight = false;
     async function refreshVersions() {
       if (inFlight) return;
@@ -144,7 +157,7 @@ export function SupervisionDashboard({
     void refreshVersions();
     const timer=window.setInterval(()=>void refreshVersions(),15_000);
     return()=>{active=false;window.clearInterval(timer);};
-  },[view,refreshId]);
+  },[needsVersions,refreshId]);
   const [data, setData] = useState<ReviewDashboardData | null>(null);
   const [username, setUsername] = useState("");
   const [includeDeleted, setIncludeDeleted] = useState(false);
@@ -206,7 +219,7 @@ export function SupervisionDashboard({
   );
   const requestGeneration = useRef(0);
   useEffect(() => {
-    if (view === "accounts" || view === "tasks" || view === "corrections") return;
+    if (!isAuditView) return;
     const generation = ++requestGeneration.current;
     let active = true,
       inFlight = false;
@@ -238,7 +251,7 @@ export function SupervisionDashboard({
       active = false;
       clearInterval(timer);
     };
-  }, [query, live, refreshId, before, view]);
+  }, [query, live, refreshId, before, view, isAuditView]);
   useEffect(() => {
     setBefore("");
     setPrevious([]);
@@ -452,6 +465,7 @@ export function SupervisionDashboard({
   const accountUsers=(versions?.users ?? []).filter(user=>!username || user.username===username);
   const eligibleAccounts=accountUsers.filter(user=>user.accountStatus==="active" && user.username!==currentUser.username);
   const checkedEligible=checkedAccounts.filter(name=>eligibleAccounts.some(user=>user.username===name));
+  const navigationBusy = Boolean(busy) || Boolean(catalogOperation.current);
   return (
     <main className="review-supervision">
       <header className="review-supervision-header">
@@ -459,37 +473,31 @@ export function SupervisionDashboard({
           <ShieldCheck size={25} />
           <h1>{t("审核监管")}</h1>
         </div>
-        <div>
-          <span>
-            {currentUser.displayName} · @{currentUser.username}
-          </span>
-          {onManagerHome && <button className="button button-secondary" type="button" disabled={Boolean(busy) || Boolean(catalogOperation.current) || updateBusy} onClick={onManagerHome}>{t("D1 Manager 首页")}</button>}
-          {onTestMode && <button className="button button-secondary" type="button" disabled={Boolean(busy) || Boolean(catalogOperation.current)} onClick={onTestMode}>{t("测试模式")}</button>}
+        <div className="review-supervision-actions">
+          {onManagerHome && <button className="button button-secondary" type="button" disabled={navigationBusy} onClick={onManagerHome}>{t("D1 Manager 首页")}</button>}
           {tr(updateControls?.(Boolean(busy)))}
-          <button
-            className="icon-button"
-            title={t("退出登录")}
-            aria-label={t("退出登录")}
-            onClick={() => void onLogout()}
-          >
-            <LogOut size={18} />
-          </button>
-          <button
-            className="button button-secondary"
-            type="button"
-            title={t("打开审核总览")}
-            onClick={() => void openCaptureWorkbench().catch((reason) => setNotice(`审核总览打开失败：${String(reason)}`))}
-          >
-            {t("审核总览")}</button>
+          <DataWorkspaceMore account={currentUser} onEdit={onEditProfile}>
+            <div className="data-more-group">
+              {onOpenShortcuts && <button type="button" onClick={onOpenShortcuts}><Keyboard size={17} />{t("快捷键设置")}</button>}
+              <div className="data-guide-slot" />
+              {onOpenReleaseHistory && <button type="button" onClick={onOpenReleaseHistory} aria-label={t("查看历史版本")}><BookOpenText size={17} />{t("历史版本")}</button>}
+              <button className="supervision-workbench-trigger" type="button" onClick={() => void openCaptureWorkbench().catch(reason => setNotice(`审核总览打开失败：${String(reason)}`))}><Activity size={17} />{t("打开审核工作台")}</button>
+            </div>
+            <div className="data-more-group">
+              {onTestMode && <button type="button" disabled={navigationBusy} onClick={onTestMode}><FlaskConical size={17} />{t("测试模式")}</button>}
+              <button type="button" disabled={navigationBusy} onClick={() => void onLogout()}><LogOut size={17} />{t("退出登录")}</button>
+            </div>
+          </DataWorkspaceMore>
         </div>
       </header>
       <div id="app-update-notices" />
       {tr(syncNotice)}
-      <nav aria-label={t("审核监管视图")}>
-        {tabs.map(([id, label]) => (
+      <nav className="review-supervision-nav" aria-label={t("审核监管视图")}>
+        {tabs.filter(([id]) => id !== "writeback" || writebackOwner).map(([id, label]) => (
           <button
             key={id}
             className={view === id ? "active" : ""}
+            aria-current={view === id ? "page" : undefined}
             disabled={correctionsBusy || Boolean(actionBusy)} onClick={() => setView(id)}
           >
             {tr(label)}
@@ -497,7 +505,7 @@ export function SupervisionDashboard({
         ))}
       </nav>
       {view === "tasks" && <TaskCenter workspaceBusy={updateBusy} beginCloudOperation={beginCloudOperation} currentUser={{...currentUser, role:"admin"}} cloudCurrentUser={currentUser} onOpenCloudReview={onOpenCloudReview} onOpenOutboundReview={onOpenOutboundReview} />}
-      <div className="review-supervision-filters" hidden={view === "tasks" || view === "corrections" || view === "accounts"}>
+      <div className="review-supervision-filters" hidden={!isAuditView}>
         <label>
           {t("审核账号")}<select
             aria-label={t("审核账号筛选")}
@@ -593,7 +601,7 @@ export function SupervisionDashboard({
           )}
           {t("导出审核事件")}</button>
       </div>
-      {tr(view !== "accounts" && error && (
+      {tr(isAuditView && error && (
         <p role="alert" className="review-audit-error">
           {data ? t("统计刷新失败，下面保留上次结果；") : t("统计尚未获取，数字暂不显示；")}{tr(error)}
         </p>
@@ -851,10 +859,10 @@ export function SupervisionDashboard({
           </button>
         </footer>
       )}
+      {view === "writeback" && writebackOwner && <SourceWritebackAdmin owner={writebackOwner} accounts={versions?.users ?? []} disabled={Boolean(busy)}/>}
       {view === "accounts" && (
         <>
           <h2>{t("审核账号")}</h2>
-          {writebackOwner && <SourceWritebackAdmin owner={writebackOwner} accounts={versions?.users ?? []} disabled={Boolean(busy)}/>}
           <div className="version-push-toolbar">
             <label>{t("账号筛选")}<select aria-label={t("账号筛选")} value={username} onChange={event=>setUsername(event.target.value)}><option value="">{t("全部账号")}</option>{versions?.users.map(user=><option key={user.username} value={user.username}>{user.displayName} (@{user.username})</option>)}</select></label>
             <button className="button button-secondary" disabled={versionsLoading} onClick={()=>setRefreshId(value=>value+1)}>{versionsLoading ? t("刷新中…") : t("刷新账号与版本")}</button>

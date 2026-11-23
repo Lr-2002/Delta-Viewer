@@ -18,6 +18,14 @@ type TimelineState={recordingId:string;source?:OutboundRecording["videos"];durat
 type TicketResult={url:string;duration?:number;requestedAt?:number};
 type VideoState={recordingId:string;part:number;urls:Record<number,string>;ready:number[];failed:Record<number,string>};
 
+function isComplete(batch: OutboundBatch) {
+  return batch.total > 0 && batch.reviewed === batch.total;
+}
+
+function BatchComplete() {
+  return <span className="outbound-batch-complete"><CheckCircle2 size={17} aria-hidden="true" />{t("审核完成")}</span>;
+}
+
 // Playback publishes its clock frequently. The recording queue only changes
 // when selection, authority or a saved decision changes.
 const RecordingList=memo(function RecordingList({recordings,selectedId,disabled,onSelect}:{recordings:OutboundRecording[];selectedId:string;disabled:boolean;onSelect:(id:string)=>void}){
@@ -227,7 +235,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
       if(action==="release"){setNotice("已释放批次。");if(view==="workspace")onReturnToTasks?.();}
       if(action==="decide"){
         const revising=Boolean(recording?.decision);
-        setReasonDialog(null);setSelectedReason("");setNotice(revising?"审核结论修改已保存。":"审核结论已保存。");
+        setReasonDialog(null);setSelectedReason("");setNotice(!revising && isComplete(result.batch) ? "本批次已全部审核完成。" : revising ? "审核结论修改已保存。" : "审核结论已保存。");
         const next=result.batch.recordings.find(item=>!item.decision);
         if(next&&!recording?.decision)setRecordingId(next.id);
       }
@@ -242,7 +250,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
           setWorkspaceUnconfirmed(false);
           const saved=fresh.recordings.find(item=>item.id===recording?.id)?.decision;
           if(action==="decide"&&saved&&saved.value===value&&saved.actor===currentUser.username&&(value==="valid"||saved.reason===reason)){
-            setReasonDialog(null);setSelectedReason("");setNotice("已核对：审核结论已保存。");
+            setReasonDialog(null);setSelectedReason("");setNotice(!recording?.decision && isComplete(fresh) ? "本批次已全部审核完成。" : "已核对：审核结论已保存。");
             const next=fresh.recordings.find(item=>!item.decision);
             if(next&&!recording?.decision)setRecordingId(next.id);
             return;
@@ -494,7 +502,28 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     <div className="outbound-toolbar"><strong>{t("外发审核")}</strong><span>{lastUpdated ? t("自动同步 · {0}", [tr(new Date(lastUpdated).toLocaleTimeString(localeTag(),{hour12:false}))]) : t("按交付批次领取任务")}</span><button className="button button-secondary" type="button" aria-label={t("刷新外发批次")} disabled={loading||Object.keys(pendingTasks).length>0||workspaceBusy} onClick={()=>void load()}><RefreshCw size={16}/></button></div>
     {tr(error&&<div className="outbound-error" role="alert">{tr(error)}</div>)}
     {tr(notice&&<div className="outbound-notice" role="status">{tr(notice)}</div>)}
-    {loading&&!batches.length ? <div className="outbound-empty">{t("正在读取交付批次…")}</div> : !batches.length ? <div className="outbound-empty">{error ? t("批次读取失败，将自动重试，也可点击刷新。") : t("暂无可审核的星矩公司批次")}</div> : <div className="outbound-task-list">{batches.map(item=><article key={item.id} aria-busy={Boolean(pendingTasks[item.id])}><div><strong>{item.name}</strong><p>{t("已审") + " "}{item.reviewed}/{item.total}{" " + t("· 有效") + " "}{item.valid}{" " + t("· 无效") + " "}{item.invalid}{" · " + t("异常") + " "}{item.anomalous??0}{item.rate===null ? "" : t(" · 合格率 {0}%", [Math.round(item.rate*100)])}</p><small>{item.claim ? t("由 {0} 领取", [item.claim]) : t("未领取")}</small>{taskFeedback[item.id]&&<p className={taskFeedback[item.id].error?"outbound-task-error":"outbound-task-feedback"} role={taskFeedback[item.id].error?"alert":"status"}>{tr(taskFeedback[item.id].message)}</p>}</div><div className="outbound-task-actions">{unconfirmed[item.id] ? <button className="button button-secondary" disabled={Boolean(pendingTasks[item.id])||workspaceBusy} onClick={()=>void taskAction(item,"verify")}>{pendingTasks[item.id]==="verify" ? <LoaderCircle size={16} className="spin"/> : null}{t("核对结果")}</button> : item.claim===currentUser.username ? <><button className="button button-secondary" disabled={Boolean(pendingTasks[item.id])||workspaceBusy} onClick={()=>void taskAction(item,"release")}>{pendingTasks[item.id]==="release" ? <LoaderCircle size={16} className="spin"/> : null}{t("释放批次")}</button><button className="button button-primary" disabled={Boolean(pendingTasks[item.id])||workspaceBusy||!onOpenReview||!item.total} onClick={()=>void taskAction(item,"open")}>{pendingTasks[item.id]==="open" ? <LoaderCircle size={16} className="spin"/> : null}{t("打开审核")}</button></> : <button className="button button-primary" disabled={Boolean(pendingTasks[item.id])||workspaceBusy||Boolean(item.claim)||!onOpenReview||!item.total} onClick={()=>void taskAction(item,"claim")}>{pendingTasks[item.id]==="claim" ? <LoaderCircle size={16} className="spin"/> : null}{item.claim ? t("审核员处理中") : t("领取并打开")}</button>}</div></article>)}</div>}
+    {loading&&!batches.length ? <div className="outbound-empty">{t("正在读取交付批次…")}</div> : !batches.length ? <div className="outbound-empty">{error ? t("批次读取失败，将自动重试，也可点击刷新。") : t("暂无可审核的星矩公司批次")}</div> :
+      <div className="outbound-task-list">{batches.map(item => {
+        const pending = pendingTasks[item.id];
+        const disabled = Boolean(pending) || workspaceBusy;
+        const complete = !unconfirmed[item.id] && isComplete(item);
+        const feedback = taskFeedback[item.id];
+        return <article key={item.id} aria-busy={Boolean(pending)}>
+          <div>
+            <div className="outbound-task-title"><strong>{item.name}</strong>{complete && <BatchComplete />}</div>
+            <p>{t("已审") + " "}{item.reviewed}/{item.total}{" " + t("· 有效") + " "}{item.valid}{" " + t("· 无效") + " "}{item.invalid}{" · " + t("异常") + " "}{item.anomalous??0}{item.rate===null ? "" : t(" · 合格率 {0}%", [Math.round(item.rate*100)])}</p>
+            <small>{item.claim ? t("由 {0} 领取", [item.claim]) : t("未领取")}</small>
+            {feedback && <p className={feedback.error ? "outbound-task-error" : "outbound-task-feedback"} role={feedback.error ? "alert" : "status"}>{tr(feedback.message)}</p>}
+          </div>
+          <div className="outbound-task-actions">
+            {unconfirmed[item.id] ? <button className="button button-secondary" disabled={disabled} onClick={()=>void taskAction(item,"verify")}>{pending==="verify" && <LoaderCircle size={16} className="spin"/>}{t("核对结果")}</button> :
+              item.claim===currentUser.username ? <>
+                <button className="button button-secondary" disabled={disabled} onClick={()=>void taskAction(item,"release")}>{pending==="release" && <LoaderCircle size={16} className="spin"/>}{t("释放批次")}</button>
+                <button className="button button-primary" disabled={disabled||!onOpenReview||!item.total} onClick={()=>void taskAction(item,"open")}>{pending==="open" && <LoaderCircle size={16} className="spin"/>}{t("打开审核")}</button>
+              </> : (!item.claim || !complete) && <button className="button button-primary" disabled={disabled||Boolean(item.claim)||!onOpenReview||!item.total} onClick={()=>void taskAction(item,"claim")}>{pending==="claim" && <LoaderCircle size={16} className="spin"/>}{item.claim ? t("审核员处理中") : t("领取并打开")}</button>}
+          </div>
+        </article>;
+      })}</div>}
   </section>;
   return <section className="outbound-review is-workspace" aria-label={t("外发审核工作区")}>
     <div className="outbound-toolbar"><strong><Film size={17}/>{t("外发审核")}</strong><div className="outbound-progress"><span>{t("已审") + " "}<b>{batch?.reviewed ?? 0}</b> / {batch?.total ?? 0}</span><progress aria-label={t("批次审核进度")} max={batch?.total||1} value={batch?.reviewed??0}/><span>{t("有效") + " "}{batch?.valid ?? 0}{" " + t("· 无效") + " "}{batch?.invalid ?? 0}{" · " + t("异常") + " "}{batch?.anomalous??0}</span></div><button className="button button-secondary" type="button" aria-label={t("刷新外发批次")} title={t("刷新外发批次")} disabled={loading||busy||workspaceBusy} onClick={()=>void load()}>{loading ? <LoaderCircle size={16} className="spin"/> : <RefreshCw size={16}/>}</button></div>
@@ -502,8 +531,8 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     {loading&&!batches.length ? <div className="outbound-empty"><LoaderCircle size={18} className="spin"/>{t("正在读取交付批次…")}</div> : !batches.length ? <div className="outbound-empty">{error ? t("批次读取失败，将自动重试，也可点击刷新。") : t("暂无可审核的星矩公司批次")}</div> : <div className="outbound-layout">
       <aside className="outbound-recording-sidebar"><header><strong>{t("录制列表")}</strong><span>{batch?.total ?? 0}{" " + t("条")}</span></header>{recordingList}<button className="button button-secondary" disabled={busy||workspaceBusy} onClick={onReturnToTasks}><ArrowLeft size={15}/>{t("返回任务中心")}</button></aside>
       {batch&&<div className="outbound-detail">
-        <header><div><h3>{batch.name}</h3><p>{t("合格率") + " "}{batch.rate===null ? t("待统计") : t("{0}%", [Math.round(batch.rate*100)])} · {batch.reviewed}/{batch.total}{" " + t("条")}</p></div>
-          {isOwner ? <button className="button button-secondary" type="button" disabled={busy||workspaceBusy||workspaceUnconfirmed} onClick={()=>void act("release")} title={t("释放后其他审核员可领取")}>{t("释放批次")}</button> : <button className="button button-primary" type="button" disabled={busy||workspaceBusy||Boolean(batch.claim)} onClick={()=>void act("claim")}>{busy ? <LoaderCircle size={16} className="spin"/> : null}{batch.claim ? t("审核员处理中") : t("领取批次")}</button>}
+        <header><div><div className="outbound-task-title"><h3>{batch.name}</h3>{!workspaceUnconfirmed && isComplete(batch) && <BatchComplete />}</div><p>{t("合格率") + " "}{batch.rate===null ? t("待统计") : t("{0}%", [Math.round(batch.rate*100)])} · {batch.reviewed}/{batch.total}{" " + t("条")}</p></div>
+          {isOwner ? <button className="button button-secondary" type="button" disabled={busy||workspaceBusy||workspaceUnconfirmed} onClick={()=>void act("release")} title={t("释放后其他审核员可领取")}>{t("释放批次")}</button> : (!batch.claim || !isComplete(batch) || workspaceUnconfirmed) && <button className="button button-primary" type="button" disabled={busy||workspaceBusy||workspaceUnconfirmed||Boolean(batch.claim)} onClick={()=>void act("claim")}>{busy ? <LoaderCircle size={16} className="spin"/> : null}{batch.claim ? t("审核员处理中") : t("领取批次")}</button>}
         </header>
         {batch.recordings.length>0 ? <>
 

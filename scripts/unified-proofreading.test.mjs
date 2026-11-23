@@ -45,7 +45,7 @@ test("audit disk failure blocks completion; retry preserves the saved conclusion
     const before = await saved();
     // The preflight must not write a conclusion when even operations cannot persist.
     await page.evaluate(() => { window.failAllAudit = true; });
-    await page.getByRole("button", { name: /^更多/ }).click();
+    await page.getByRole("button", { name: /^(账号菜单|工作区菜单)/ }).click();
     await page.getByRole("button", { name: "退出登录", exact: true }).click();
     const syncNotice = page.getByLabel("操作记录同步状态", { exact: true });
     await syncNotice.getByText("操作记录未保存到本机，有丢失风险", { exact: true }).waitFor();
@@ -388,7 +388,7 @@ test("account review tags survive logout and restart, isolate other users and re
     assert.equal(record[0].rejectionReason, "镜头遮挡");
     await page.getByRole("button", { name: "跳过 2026-07-13_07-34-12", exact: true }).click();
     assert.equal(await page.getByLabel("已审核", { exact: true }).count(), 1);
-    await page.getByRole("button", { name: /^更多/ }).click();
+    await page.getByRole("button", { name: /^(账号菜单|工作区菜单)/ }).click();
     await page.getByRole("button", { name: "退出登录", exact: true }).click();
     await page.getByRole("button", { name: "返回登录", exact: true }).click();
     await page.locator('input[autocomplete="username"]').fill("alice");
@@ -482,7 +482,7 @@ test("history offers three LAN installers, records the chosen old version and ne
   });
   try{
     await open(page,"machineAnnotation=present");
-    await page.getByRole("button", { name: /^更多/ }).click();
+    await page.getByRole("button", { name: /^(账号菜单|工作区菜单)/ }).click();
     await page.getByRole("button",{name:"查看历史版本",exact:true}).click();
     const dialog=page.getByRole("dialog",{name:"历史版本",exact:true});
     const release=dialog.locator('.version-history-entry').filter({has:page.getByText('v1.9.1',{exact:true})});
@@ -853,7 +853,7 @@ test("history shows the installed patch and its Chinese summary", async () => {
   const page = await browser.newPage();
   try {
     await open(page, "machineAnnotation=present");
-    await page.getByRole("button", { name: /^更多/ }).click();
+    await page.getByRole("button", { name: /^(账号菜单|工作区菜单)/ }).click();
     await page.getByRole("button", { name: "查看历史版本", exact: true }).click();
     await page.getByRole("dialog", { name: "历史版本" }).waitFor();
     assert.equal(await page.locator(".version-history-entry").first().locator("strong").textContent(), `v${version}`);

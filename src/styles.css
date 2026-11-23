@@ -1823,35 +1823,44 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .data-workspace-source { min-width: 0; display: flex; align-items: center; gap: 8px; }
 .data-workspace-source .source-display { display: flex; }
+.data-workspace-source .data-diagnostics-trigger {
+  flex: none; width: 26px; height: 26px; min-height: 0; padding: 0;
+  border: 0; background: transparent; color: var(--muted);
+}
+.data-diagnostics-trigger:hover, .data-diagnostics-trigger[aria-expanded="true"] { background: var(--surface-alt); color: var(--ink); }
 .data-workspace-source svg, .data-workspace-source .top-status { flex-shrink: 0; }
 .data-workspace-source .top-status { display: inline-flex; }
 .data-workspace-toolbar { flex-wrap: nowrap; gap: 6px; }
 .data-workspace-actions { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .data-workspace-actions .button, .data-more-trigger { white-space: nowrap; }
-.data-workspace-toolbar .app-update-entry:not(.has-update), .data-workspace-toolbar .data-more-trigger {
+.data-workspace-toolbar .app-update-entry:not(.has-update) {
   border-color: transparent;
   background: transparent;
   color: var(--muted);
 }
-.data-workspace-toolbar .app-update-entry:not(.has-update):hover, .data-workspace-toolbar .data-more-trigger:hover,
-.data-workspace-toolbar .data-more-trigger[aria-expanded="true"] { background: var(--surface-alt); color: var(--ink); }
+.data-workspace-toolbar .app-update-entry:not(.has-update):hover,
+.data-more-trigger:hover, .data-more-trigger[aria-expanded="true"] { background: var(--surface-alt); color: var(--ink); }
 .data-workspace-more { position: relative; flex-shrink: 0; }
-.data-error-count {
-  padding: 1px 5px; border-radius: 9px; background: #fbe9e7; color: #922d24;
-  font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+.data-workspace-more .data-more-trigger { min-height: 34px; padding: 2px 7px; gap: 7px; }
+.data-account-avatar {
+  display: grid; place-items: center; flex: 0 0 25px; width: 25px; height: 25px;
+  border-radius: 50%; background: var(--surface-alt); color: var(--ink);
 }
+.data-account-identity { min-width: 0; text-align: left; line-height: 1.15; }
+.data-more-trigger .data-account-identity { max-width: 104px; }
+.data-account-identity strong, .data-account-identity small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data-account-identity strong { font-size: 13px; }
+.data-account-identity small { margin: 1px 0 0; color: var(--muted); font-size: 11px; }
+.data-account-chevron { flex: none; color: var(--muted); }
+.data-more-trigger[aria-expanded="true"] .data-account-chevron { transform: rotate(180deg); }
 .data-more-panel {
   position: absolute; z-index: 2; top: calc(100% + 6px); right: 0;
-  width: min(238px, calc(100vw - 24px)); max-height: min(400px, calc(100dvh - 140px));
+  width: min(252px, calc(100vw - 24px)); max-height: min(420px, calc(100dvh - 140px));
   overflow: auto; overscroll-behavior: contain; padding: 5px;
   border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface);
   box-shadow: 0 8px 24px #19191924;
 }
 .data-more-account { display: flex; align-items: center; gap: 9px; padding: 8px 10px; }
-.data-more-account > span { min-width: 0; }
-.data-more-account strong, .data-more-account small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.data-more-account strong { font-size: 13px; }
-.data-more-account small { color: var(--muted); font-size: 11px; }
 .data-more-group + .data-more-group, .data-more-account + .data-more-group {
   border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px;
 }
@@ -1863,7 +1872,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .data-more-panel button:hover:not(:disabled), .data-more-panel button:focus-visible { background: var(--surface-alt); }
 .data-more-panel button:disabled { opacity: .5; cursor: not-allowed; }
 .data-more-panel svg { flex-shrink: 0; }
-.data-more-panel .data-error-count { margin-left: auto; }
+.data-more-panel .data-account-edit { flex: none; width: auto; min-height: 27px; gap: 4px; padding: 3px 6px; color: var(--muted); font-size: 12px; }
 .data-more-panel .guide-entry > span { display: inline; }
 
 @media (max-width: 1230px) {

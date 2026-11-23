@@ -44,10 +44,13 @@ test('one compact sync notice, native history modality and both outboxes recover
  assert.equal(await page.locator('.audit-sync-detail').isVisible(),false);
  assert.ok((await notice.boundingBox()).height<105,'compact desktop status does not consume editor');
  await mkdir('artifacts/audit-layout',{recursive:true});
- const more=page.getByRole('button',{name:/^更多/});
+ const more=page.getByRole('button',{name:/^(账号菜单|工作区菜单)/});
  const toolbar=page.locator('.data-workspace-toolbar');
  await more.focus();await page.keyboard.press('Enter');await page.keyboard.press('Tab');
- assert.equal(await page.getByRole('button',{name:'快捷键设置',exact:true}).evaluate(el=>el===document.activeElement),true);
+ const edit=page.getByRole('button',{name:'修改当前显示名称',exact:true});
+ assert.equal(await edit.evaluate(el=>el===document.activeElement),true);
+ assert.equal(await more.getByText('@admin',{exact:true}).isVisible(),true);
+ assert.equal(await page.locator('.data-more-panel').getByRole('button',{name:'操作错误历史',exact:true}).count(),0);
  await page.keyboard.press('Escape');assert.equal(await more.getAttribute('aria-expanded'),'false');
  assert.equal(await more.evaluate(el=>el===document.activeElement),true);
  await more.click();
@@ -61,7 +64,7 @@ test('one compact sync notice, native history modality and both outboxes recover
    assert.ok(await button.evaluate(el=>parseFloat(getComputedStyle(el).fontSize)>=12));
   }
   await page.screenshot({path:`artifacts/audit-layout/compact-${width}.png`});
-  for(const [locale, names] of [['en',['Task center','Choose data directory','Review overview','Version and updates','More']],['zh',['任务中心','选择数据目录','审核总览','版本与更新','更多']]]){
+  for(const [locale, names] of [['en',['Task center','Choose data directory','Review overview','Version and updates','Account menu: 内测账号 (@admin)']],['zh',['任务中心','选择数据目录','审核总览','版本与更新','账号菜单：内测账号 (@admin)']]]){
    await toolbar.getByRole('button',{name:locale==='en'?'Switch to English':'切换为中文'}).click();
    for(const name of names){
     const box=await toolbar.getByRole('button',{name,exact:true}).boundingBox();
@@ -92,6 +95,7 @@ test('one compact sync notice, native history modality and both outboxes recover
  await more.click();
  await page.getByRole('button',{name:'管理模式',exact:true}).click();
  assert.equal(await notice.count(),1,'one notice also visible in management mode');
+ await page.locator('.review-supervision-actions .data-more-trigger').click();
  await page.getByRole('button',{name:'测试模式',exact:true}).click();
  await notice.getByRole('button',{name:'重新登录并补传',exact:true}).click();
  await notice.getByLabel('当前账号密码').fill('fixture-password');

@@ -321,7 +321,7 @@ function Spotlight({ step, host, running, count, needs, onAdvance, onExit }: {
         </header>
         <div className="guide-progress" role="progressbar" aria-valuemin={0} aria-valuemax={count} aria-valuenow={running.index}><i style={{ width: (running.index / count * 100) + "%" }} /></div>
         <div className="guide-tip-content" aria-live="polite">
-          <h3>{showingMore ? en ? "Open More." : "打开「更多」。" : textFor(step, language)}</h3>
+          <h3>{showingMore ? en ? "Open the account or workspace menu." : "打开账号或工作区菜单。" : textFor(step, language)}</h3>
           {!showingMore && step.detail && <p>{step.detail[en ? 1 : 0]}</p>}
           {status === "waiting" ? <p className="guide-condition">{common.waiting}</p> :
             status !== "ready" ? <p className="guide-condition">{status === "disabled" ? common.disabled : common.missing} {needs?.[en ? 1 : 0]}</p> :

@@ -532,7 +532,7 @@ lesson("admin", "admin-history", "逐条审核记录、已删除账号和导出�
   on("导出审核事件", "Export review events", nativePicker),
 ], { needs: manager });
 lesson("admin", "external-overview", "打开外部审核总览", "Open the external review overview", [
-  c("button[title='打开审核总览'],button[title='Open review overview']", "打开审核总览", "Open review overview", ["外部工作台另开窗口，使用其日期与审核员筛选、刷新和 CSV 导出。", "The workbench opens separately and provides its own date and reviewer filters, refresh and CSV export." ]),
+  c(".supervision-workbench-trigger", "打开审核工作台", "Open review workbench", ["外部工作台另开窗口，使用其日期与审核员筛选、刷新和 CSV 导出。", "The workbench opens separately and provides its own date and reviewer filters, refresh and CSV export." ]),
 ], { wiki: "Task-Center", needs: managed });
 lesson("admin", "admin-create", "创建审核账号", "Create a reviewer account", [
   adminTab("审核账号", "Review accounts"), field("账号", "Username"), field("显示名称", "Display name"), field("初始密码", "Initial password"),
@@ -555,6 +555,7 @@ lesson("admin", "admin-remind", "选择目标并推送更新提醒", "Select use
   c("button", "推送选中（", "Notify selected ("), observe(".review-supervision", "推送结果与客户端确认", "Notification result and client acknowledgement"),
 ], { needs: manager, writes: true });
 lesson("admin", "admin-writeback", "下发统一写回并查看回执", "Request NAS writeback and inspect receipts", [
+  adminTab("NAS 写回", "NAS writeback"),
   on("刷新回执", "Refresh receipts"), c(".writeback-actions button:first-child", "全部账号写回", "Request writeback for all eligible accounts"),
   observe("dialog[open],.writeback-dialog", "核对测试账号和执行条件", "Verify test accounts and execution conditions"),
   c("button", "确认下发写回", "Confirm writeback request"), on("执行详情", "Execution details"),

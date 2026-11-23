@@ -228,6 +228,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.14.0": "外发视频长时间没有进展时暂停，可从当前位置重连并继续播放。",
   "1.13.9": "外发视频长时间没有进展时暂停，可从当前位置重连并继续播放。",
   "1.13.8": "精简数据工作区顶栏，突出任务中心，将快捷键、文档、历史与账号操作归入「更多」，并减少外发视频连续切段的等待。",
   "1.13.7": "本地与外发视频改为持续读取，减少分批断开后的周期性缓冲；3×已有视频数据时合并极短解码等待，保留七路原画质和精确同步。",
@@ -2120,7 +2121,7 @@ function App() {
 
   const currentUser = authStatus.currentUser;
   const shortcutButton = <button className="icon-button" type="button" title={t("快捷键设置")} aria-label={t("快捷键设置")} onClick={() => setShortcutsOpen(true)}><Keyboard size={17}/></button>;
-  const updateControls = (taskBusy: boolean) => <>{showManagement ? shortcutButton : null}{!IS_DEVELOPMENT_EDITION ? <AppUpdates version={APP_VERSION}
+  const updateControls = (taskBusy: boolean) => <>{!IS_DEVELOPMENT_EDITION ? <AppUpdates version={APP_VERSION}
     currentSummary={tr(RELEASE_SUMMARIES_ZH[APP_VERSION]) ?? t("查看本次版本的改进与修复。")}
     currentNotes={releaseHistory.find(item => item.version === APP_VERSION)?.notes ?? []} busy={taskBusy}
     onDownload={downloadAvailableUpdate} onInstall={installAvailableUpdate} onViewHistory={() => setReleaseHistoryOpen(true)} /> : null}</>;
@@ -2229,7 +2230,9 @@ function App() {
       {shortcutsOpen && <ShortcutSettings key={shortcutOwner} bindings={shortcutPreferences.bindings} onSave={shortcutPreferences.save} onClose={() => setShortcutsOpen(false)}/>}
       {isManagedWorkspace && currentUser && <ClientPresence key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={`${authStatus.userCenter.serviceId}:${currentUser.username}`} />}
       {isManagedWorkspace && currentUser?.role === "operator" && <SourceWritebackClient key={`writeback:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || playing} onBusy={setSourcePublishing} onWritten={()=>setBatchReviewRevision(value=>value+1)}/>}
-      {showManagement && currentUser && <SupervisionDashboard writebackOwner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} currentUser={currentUser} onLogout={logout} onManagerHome={() => {setManagerSection("home");setManagerAdminHome(true);setManagementMode(false);}} updateBusy={busy} updateControls={updateControls}
+      {showManagement && currentUser && <SupervisionDashboard writebackOwner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} currentUser={currentUser} onLogout={logout} onManagerHome={() => {setManagerSection("home");setManagerAdminHome(true);setManagementMode(false);}} updateBusy={busy} updateControls={updateControls} onOpenShortcuts={() => setShortcutsOpen(true)}
+        onEditProfile={currentUser.role === "operator" ? () => setProfileEditorOpen(true) : undefined}
+        onOpenReleaseHistory={() => setReleaseHistoryOpen(true)}
         onTestMode={currentUser.role === "operator" ? () => {setManagerSection("data");setManagementMode(false);} : undefined} syncNotice={syncNotice} beginCloudOperation={beginCloudOperation} onOpenOutboundReview={openOutboundReview} onOpenCloudReview={async root => {
           if (busy || reviewUnsaved.current) throw new Error("当前保存尚未完成");
           await openSource(root, true, [], true); setManagementMode(false); setPersonalTaskOpen(false);
@@ -2264,6 +2267,7 @@ function App() {
             </div>
             {!outboundBatch && status !== "idle" && <StatusBadge status={status} />}
             {isOfflineWorkspace && <span className="workspace-mode-indicator" title={t("本地回放、编辑、审核与导出可用；不连接用户中心，不参与公司统计")}>{t("离线模式 · 仅本机")}</span>}
+            <button className="icon-button data-diagnostics-trigger" type="button" onClick={() => setHistoryOpen(current => !current)} title={t("诊断：操作错误历史")} aria-label={t("操作错误历史")} aria-expanded={historyOpen}><History size={15} /></button>
         </div>}
         <div className={`topbar-actions${managerSection === "data" ? " data-workspace-toolbar" : ""}`}>
           {managerSection === "data" ? <div className="data-workspace-actions">
@@ -2281,24 +2285,15 @@ function App() {
             <button className="icon-button version-history-trigger" type="button" onClick={() => setReleaseHistoryOpen(true)} title={t("查看历史版本")} aria-label={t("查看历史版本")}><BookOpenText size={16}/></button>
           </>}
           {isManagedWorkspace && currentUser && !showManagement ? updateControls(busy) : null}
-          {managerSection === "data" ? <DataWorkspaceMore errors={operationErrors.length}>
-                {isManagedWorkspace && currentUser && <div className="data-more-account" title={currentUser.displayName}>
-                  <UserRound size={17} /><span><strong>{currentUser.displayName}</strong><small>@{currentUser.username}</small></span>
-                </div>}
+          {managerSection === "data" ? <DataWorkspaceMore account={isManagedWorkspace ? currentUser : null}
+                onEdit={isManagedWorkspace && currentUser?.role === "operator" ? () => setProfileEditorOpen(true) : undefined}>
                 <div className="data-more-group">
                   <button type="button" onClick={() => setShortcutsOpen(true)}><Keyboard size={17} />{t("快捷键设置")}</button>
                   <div className="data-guide-slot" />
                   <button type="button" onClick={() => setReleaseHistoryOpen(true)} aria-label={t("查看历史版本")}><BookOpenText size={17} />{t("历史版本")}</button>
-                  <button type="button" onClick={() => setHistoryOpen(current => !current)} aria-label={t("操作错误历史")} aria-expanded={historyOpen}>
-                    <History size={17} />{t("操作错误历史")}
-                    {operationErrors.length > 0 && <span className="data-error-count" aria-hidden="true">{operationErrors.length > 99 ? "99+" : operationErrors.length}</span>}
-                  </button>
                 </div>
                 <div className="data-more-group">
                   {canManage && <button type="button" disabled={busy || reviewHasUnsaved} onClick={openManagement}><ShieldCheck size={17} />{t("管理模式")}</button>}
-                  {isManagedWorkspace && currentUser?.role === "operator" && <button className="account-summary-button" type="button" onClick={() => setProfileEditorOpen(true)}>
-                    <Pencil size={17} />{t("修改当前显示名称")}
-                  </button>}
                   <button type="button" onClick={() => void chooseWorkspaceMode()} disabled={busy}><Workflow size={17} />{t("切换工作模式")}</button>
                   {isManagedWorkspace && currentUser && <button type="button" onClick={() => void logout()} disabled={busy}><LogOut size={17} />{t("退出登录")}</button>}
                 </div>

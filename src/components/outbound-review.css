@@ -63,6 +63,12 @@
 .outbound-task-list article { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .outbound-task-list article > div:first-child { min-width: 0; }
 .outbound-task-list strong { overflow-wrap: anywhere; }
+.outbound-task-title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; overflow-wrap: anywhere; }
+.outbound-batch-complete {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px;
+  border: 1px solid #a8d3b9; border-radius: 5px; background: #e5f5eb; color: #195634;
+  font-size: 13px; font-weight: 700; white-space: nowrap;
+}
 .outbound-task-list p { margin: 6px 0; color: var(--muted); font-size: 12px; }
 .outbound-task-list small { color: var(--muted); }
 .outbound-task-actions { display: flex; flex: 0 0 auto; gap: 8px; }

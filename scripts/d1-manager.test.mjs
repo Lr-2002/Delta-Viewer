@@ -105,9 +105,7 @@ test("Manager navigation retains the Viewer workspace at desktop/minimum/narrow 
       assert.equal(await page.getByRole("button",{name:"运行设备检测"}).count(),0);
       await navigate(page,"数据工作区");
       assert.equal(await page.getByRole("navigation",{name:"设备功能"}).count(),0);
-      await page.getByRole("button",{name:/^更多/}).click();
       assert.equal(await page.getByRole("button",{name:"操作错误历史",exact:true}).count(),1);
-      await page.keyboard.press("Escape");
       assert.equal(await page.getByRole("button",{name:"选择 SD 卡",exact:true}).count(),1);
       assert.equal(await page.locator(".source-display").count(),1);
       assert.equal(await page.locator(".loaded-label").textContent(),loaded);assert.equal(await page.getByRole("button",{name:"校对",exact:true}).count(),1);

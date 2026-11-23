@@ -46,8 +46,16 @@ test('admin switches modes in one session, account versions stay truthful, singl
  },{version});
  await page.goto(server.resolvedUrls.local[0]);
  await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'数据工作区',exact:true}).click();
+ const more=page.getByRole('button',{name:/^(账号菜单|工作区菜单)/});
+ await more.click();
  await page.getByRole('button',{name:'管理模式',exact:true}).click();
- await page.getByRole('button',{name:'测试模式',exact:true}).waitFor();
+ const accountMenu=page.locator('.review-supervision-actions .data-more-trigger');
+ await accountMenu.waitFor();
+ assert.equal(await page.getByRole('heading',{name:'统一写回 NAS',exact:true}).count(),0);
+ await page.getByRole('button',{name:'NAS 写回',exact:true}).click();
+ await page.getByRole('heading',{name:'统一写回 NAS',exact:true}).waitFor();
+ assert.equal(await page.getByRole('heading',{name:'审核账号',exact:true}).count(),0);
+ await page.getByRole('button',{name:'审核账号',exact:true}).click();
  assert.equal(await page.locator('.app-shell').isVisible(),false);
  await page.waitForTimeout(2100);
  await page.evaluate(()=>{window.writebackCommand=true;window.dispatchEvent(new Event('online'));});
@@ -86,7 +94,7 @@ test('admin switches modes in one session, account versions stay truthful, singl
  await mkdir('artifacts/client-management',{recursive:true});
  for(const [width,height]of [[1440,920],[960,680],[390,844]]){
   await page.setViewportSize({width,height});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
-  for(const name of ['测试模式','一键推送更新提醒']) {
+  for(const name of ['NAS 写回','一键推送更新提醒']) {
    const button=page.getByRole('button',{name,exact:true}),box=await button.boundingBox();
    assert.ok(box.x>=0&&box.x+box.width<=width);assert.ok(await button.evaluate(e=>parseFloat(getComputedStyle(e).fontSize)>=12),'action labels remain readable');
   }
@@ -96,8 +104,10 @@ test('admin switches modes in one session, account versions stay truthful, singl
   await page.screenshot({path:`artifacts/client-management/version-log-138-${width}.png`});
   await page.keyboard.press('Escape');
  }
+ await accountMenu.click();
  await page.getByRole('button',{name:'测试模式',exact:true}).click();
  assert.equal(await page.locator('.app-shell').isVisible(),true);
+ await more.click();
  assert.equal(await page.getByRole('button',{name:'管理模式',exact:true}).isVisible(),true);
  assert.ok(await page.getByRole('button',{name:'管理模式',exact:true}).evaluate(e=>parseFloat(getComputedStyle(e).fontSize)>=12));
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);

@@ -159,6 +159,7 @@ test('App settings drive local review, preserve multi-digit labels and navigate 
     await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'数据工作区',exact:true}).click();
     await page.getByRole('button',{name:'知道了',exact:true}).evaluateAll(items=>items[0]?.click());
     const editor=page.getByLabel('复核动作描述',{exact:true});await page.waitForFunction(()=>document.querySelector('[aria-label="复核动作描述"]')?.disabled===false);
+    await page.getByRole('button',{name:/^(账号菜单|工作区菜单)/}).click();
     await page.getByRole('button',{name:'快捷键设置',exact:true}).click();await setKey(page,'播放／暂停','k');
     await page.locator('.shortcut-settings summary').click();await setKey(page,'常用标签 1','F2');await page.getByRole('button',{name:'保存快捷键'}).click();
     await bodyKey(page,'F2');await page.waitForFunction(()=>document.querySelector('[aria-label="复核动作描述"]').value==='常用动作描述 1');

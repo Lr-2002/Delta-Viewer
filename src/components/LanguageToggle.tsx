@@ -9,7 +9,7 @@ export function LanguageToggle() {
   useEffect(() => {
     // Native modal dialogs make the rest of the document inert. Put the same
     // control inside the active dialog without moving or remounting its form.
-    const update = () => setTarget([...document.querySelectorAll<HTMLDialogElement>("dialog[open]:not(.guide-center)")].at(-1) ?? document.querySelector<HTMLElement>(".topbar-actions"));
+    const update = () => setTarget([...document.querySelectorAll<HTMLDialogElement>("dialog[open]:not(.guide-center)")].at(-1) ?? document.querySelector<HTMLElement>(".review-supervision-actions") ?? document.querySelector<HTMLElement>(".topbar-actions"));
     const observer = new MutationObserver(update);
     observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["open"] });
     update();

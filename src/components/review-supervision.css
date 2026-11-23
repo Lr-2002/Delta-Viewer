@@ -13,9 +13,11 @@
   justify-content: space-between;
 }
 .review-supervision h1 {
-  font-size: 26.88px;
+  font-size: 23px;
   margin: 0;
 }
+.review-supervision-header > div:first-child { flex-shrink: 0; }
+.review-supervision-header .review-supervision-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .review-supervision h2 {
   font-size: 19.04px;
   margin: 24px 0 12px;
@@ -38,14 +40,14 @@
   color: #66777e;
   margin-top: 4px;
 }
-.review-supervision nav {
+.review-supervision-nav {
   display: flex;
   gap: 24px;
   border-bottom: 1px solid #cad4d9;
-  margin: 24px 0 16px;
+  margin: 14px 0 16px;
   overflow: auto;
 }
-.review-supervision nav button {
+.review-supervision-nav button {
   border: 0;
   border-bottom: 3px solid transparent;
   background: none;
@@ -54,7 +56,7 @@
   font: inherit;
   white-space: nowrap;
 }
-.review-supervision nav button.active {
+.review-supervision-nav button.active {
   color: #087e79;
   border-color: #087e79;
 }
@@ -242,14 +244,13 @@
   .review-supervision {
     padding: 14px;
   }
+  .review-supervision-nav { flex-wrap: wrap; gap: 0 16px; }
   .review-supervision-header {
     align-items: start;
     gap: 12px;
   }
   .review-supervision-header > div:last-child {
     font-size: 13.44px;
-    max-width: 45%;
-    overflow-wrap: anywhere;
   }
   .review-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
