@@ -83,9 +83,11 @@ export async function listOutboundBatches(datasetId?: string, protocol?:Outbound
 }
 export const saveOutboundReasonOption = (reason: string, category:"invalid"|"anomalous", remove=false) =>
   outboundCall<{ reasonOptions: string[] }>({ action: "save-reason-option", reason, category,...(remove?{remove:true}:{}) });
-export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: OutboundDecisionValue, reason?: string, protocol?:OutboundProtocol) {
+export const listOutboundReasonHistory = (category: "invalid" | "anomalous") =>
+  outboundCall<{ reasons: string[] }>({action:"list",reasonHistory:category});
+export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: OutboundDecisionValue, reason?: string, protocol?:OutboundProtocol, reasonSource?:"one-time") {
   const input={action,datasetId:batch.id,version:batch.version,
-    ...(recordingId?{recordingId,value,...(reason?{reason,reasonCategory:value}:{})}:{})};
+    ...(recordingId?{recordingId,value,...(reason?{reason,reasonCategory:value,...(reasonSource?{reasonSource}:{})}:{})}:{})};
   // Keep a full claim response so entering the workspace needs no second read.
   const compact=action!=="claim"&&!protocol?.legacyMutation;
   let result:{batch:OutboundBatch};
@@ -125,6 +127,8 @@ export function outboundError(reason: unknown) {
   if (raw.includes("OUTBOUND_RESPONSE_INTERRUPTED")) return "用户中心响应传输中断，请稍后重试；提交结果需重新核对。";
   if (raw.includes("OUTBOUND_NETWORK_UNAVAILABLE") || /OUTBOUND_HTTP_50[234]/.test(raw)) return "用户中心暂未取得交付服务响应。请稍后重试；若持续出现，请联系管理员检查外发审核服务。";
   if (raw.includes("OUTBOUND_BRIDGE_BUSY")) return "外发审核服务繁忙，请稍后重试。";
+  if (raw.includes("OUTBOUND_WRITE_BUSY")) return "交付平台正在写入其他记录。本次结论未提交，请稍后重试。";
+  if (raw.includes("DATABASE_UNAVAILABLE")) return "交付平台数据库暂未响应，请刷新批次核对审核结果。";
   if (raw.includes("AUTH_REQUIRED") || raw.includes("OUTBOUND_HTTP_401")) return "登录会话已失效，请保存当前工作后重新登录。";
   if (raw.includes("OUTBOUND_ACCOUNT_CHANGED")) return "登录账号或权限已变化，请重新打开任务中心核对。";
   if (raw.includes("OUTBOUND_NOT_CONFIGURED")) return "外发审核服务尚未开通，请联系管理员。";
@@ -132,14 +136,14 @@ export function outboundError(reason: unknown) {
   if (raw.includes("OUTBOUND_VERSION_CONFLICT")) return "批次状态已更新，请刷新后重试。";
   if (raw.includes("OUTBOUND_NOT_OWNER")) return "请先领取此批次。";
   if (raw.includes("OUTBOUND_SOURCE_CHANGED")) return "原始视频来源发生变化，未用于审核。";
-  if (raw.includes("OUTBOUND_REASON_INVALID")) return "请选择有效原因，或先保存自定义原因。";
+  if (raw.includes("OUTBOUND_REASON_INVALID")) return "请选择常用原因，或输入 1–80 字的一次性原因。";
   if (raw.includes("OUTBOUND_REASON_LIMIT")) return "常用原因数量已满，请联系管理员整理。";
   if (raw.includes("OUTBOUND_USER_CENTER_UNAVAILABLE")) return "用户中心请求未完成，请核对网络和服务状态后重试。";
   return `外发审核暂不可用：${raw}`;
 }
 
 export function outboundResultUncertain(reason: unknown) {
-  return /OUTBOUND_(?:USER_CENTER_(?:TIMEOUT|UNAVAILABLE)|RESPONSE_(?:INTERRUPTED|INVALID|TOO_LARGE)|NETWORK_UNAVAILABLE|HTTP_50[0234]|REQUEST_FAILED(?::\s*OUTBOUND_HTTP_50[0234])?$)/.test(String(reason));
+  return /OUTBOUND_(?:USER_CENTER_(?:TIMEOUT|UNAVAILABLE)|RESPONSE_(?:INTERRUPTED|INVALID|TOO_LARGE)|NETWORK_UNAVAILABLE|HTTP_50[0234]|REQUEST_FAILED(?::\s*OUTBOUND_HTTP_50[0234])?$)|\bDATABASE_UNAVAILABLE\b/.test(String(reason));
 }
 
 // Local resource cleanup only. The native side never forwards this action.

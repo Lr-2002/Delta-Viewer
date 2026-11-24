@@ -1672,6 +1672,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .app-update-dialog header { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
 .app-update-dialog h2 { margin: 0; font-size: 23.52px; }
 .app-update-dialog header p { margin: 8px 0 0; }
+.update-versions { display: flex; flex-wrap: wrap; column-gap: 20px; row-gap: 4px; }
+.update-admin-source { margin: 12px 0 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
 .app-update-dialog h3 { font-size: 16.8px; }
 .app-update-notes { max-height: 38dvh; overflow: auto; margin: 20px 0; padding-right: 8px; }
 .app-update-notes pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }
@@ -1718,7 +1720,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .episode-local-pending { display: block; width: fit-content; max-width: 100%; white-space: normal; overflow-wrap: anywhere; color: #854d0e; background: #fff7ed; }
 
-.admin-update-reminder { top:auto; bottom:20px; }
 
 .sidebar-rename-button { margin: 0 18px 10px; width: calc(100% - 36px); justify-content: center; }
 .batch-rename-dialog { width: min(520px, calc(100vw - 24px)); }

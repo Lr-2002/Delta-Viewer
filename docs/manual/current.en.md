@@ -64,6 +64,8 @@ The queue follows company ownership on the delivery platform. Use Supplier above
 
 If playback stops advancing, it tries once to reconnect at the current position. Use Reconnect videos if it still stalls at the same position. Missing files and read failures are shown separately; select a notice to open the affected part. Valid requires every source video present and ready. Anomalous and invalid decisions can be submitted with an accurate reason before video is ready; a buffering timeout alone does not prove damage. Anomalous and invalid have separate common-reason libraries with add, reorder and remove actions. Removing a common reason preserves historical decisions. Follow the notice if a service does not support anomalous decisions.
 
+Expand Common reasons to pick or manage a saved option, or enter a one-time reason and submit it directly. Anomalous and invalid history are separate for each reviewer. Select a recent reason to reuse it. The latest three are visible by default, with up to 100 distinct entries available. If a decision is unconfirmed, use Check saved decision in the dialog to keep your draft while refreshing.
+
 A successful first decision advances to the next pending item. Once the final decision is confirmed, the workspace and task list show a green Review complete badge, regardless of the pass rate. The batch stays claimed and its reviewer can reopen it. Revising a saved decision or reason updates counts and stays on the current item. Uncertain acknowledgements are checked read-only: do not repeatedly submit. Temporary outages retain the queue and recover; expired permission, missing sources and connection failures have distinct messages.
 
 ## Supervision and account management
@@ -76,7 +78,7 @@ Search and preview the original term, target and scope before applying changes. 
 
 ## Versions and updates
 
-Open Versions and updates inside the app, choose automatic, company LAN or GitHub and check for updates. Inspect stable or candidate source, notes and current status. After download and verification, save work and explicitly choose whether to restart and install.
+Open Versions and updates to see the installed version, target version and release notes. Administrator reminders take priority over ordinary update notices and open the same panel. Choose automatic, company LAN or GitHub to check and download. After verification, save your work and confirm the restart when ready.
 
 When the computer is online, open Versions and updates in Offline mode to check GitHub for the latest official release. Update this computer in the app, or choose Windows x64, macOS for Apple silicon, or Ubuntu 22.04+ x64 to download the full installer in your browser.
 

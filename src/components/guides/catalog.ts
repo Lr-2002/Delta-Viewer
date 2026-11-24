@@ -357,6 +357,7 @@ lesson("edit", "reject", "不通过、选择原因并提交", "Reject a recordin
 ], { wiki: "Accounts-and-Annotations", needs: edit, writes: true });
 lesson("edit", "custom-reason", "填写其他原因及维护常用原因", "Enter another reason and manage common reasons", [
   reason, on("其他原因", "Other reason"), field("其他原因内容", "Other reason details"),
+  on("常用原因", "Common reasons"),
   on("添加常用原因", "Add common reason"), field("常用原因名称", "Common reason name"), on("保存常用原因", "Save common reason"),
   on("调整顺序", "Reorder"), observe(".rejection-options", "拖动排序、移除与恢复默认", "Drag to reorder, remove or restore defaults"),
   on("取消", "Cancel"),
@@ -513,7 +514,7 @@ lesson("outbound", "outbound-valid", "判为有效并核对下一条", "Mark val
 for (const [id, zh, en] of [["invalid","无效","Invalid"],["anomalous","异常","Anomalous"]] as const) {
   lesson("outbound", "outbound-" + id, "判为" + zh + "、填写原因并提交", "Mark " + en.toLowerCase() + " and submit a reason", [
     on(zh + "数据", en + " data"),
-    c(".outbound-reason-dialog .rejection-options button:not(.rejection-other)", "选择原因", "Select a reason"),
+    f(".outbound-one-time input", "填写一次性原因", "Enter a one-time reason", ["也可展开「常用原因」直接选择，或点选历史输入。", "You can also expand Common reasons or pick from recent reasons."]),
     c(".outbound-reason-dialog footer .button-primary", "确认提交结论", "Confirm decision"),
     observe(".outbound-progress,.outbound-recordings", "回执、统计和下一条", "Acknowledgement, counts and next recording", finishNote),
   ], { needs: id === "invalid" ? outbound : ["使用支持异常结论的测试交付服务，并打开各路媒体就绪的测试录制。", "Use a test delivery service that supports anomalous decisions and a recording with ready media."], writes: true });
@@ -602,7 +603,7 @@ lesson("text", "correction-history", "查看、撤销历史修正并导出清单
 lesson("updates", "app-update", "检查软件更新并选择下载线路", "Check for app updates and choose a download source", [
   on("版本与更新", "Versions and updates"),
   field("更新下载线路", "Update download source", ["自动、公司内网和 GitHub；可查看正式或候选渠道。", "Choose automatic, company LAN or GitHub. Read stable and candidate channel information."]),
-  on("检查更新", "Check for updates"), observe("dialog[open]", "当前版本、来源、版本说明和状态", "Installed version, source, release notes and status"),
+  on("检查更新", "Check for updates"), observe("dialog[open]", "当前版本、目标版本和更新说明", "Installed version, target version and release notes"),
 ], { wiki: "Release-Operations", needs: managed });
 lesson("updates", "app-download", "下载并保存，或稍后安装", "Download, save and restart, or postpone", [
   on("下载更新", "Download update"), observe("dialog[open]", "验证状态", "Verification state", ["失败时可重试；下载验证后可选「稍后」或确认重启。", "Retry after failure. After verification, postpone or confirm restart." ]),
@@ -677,6 +678,7 @@ lesson("outbound", "outbound-revise", "修改已审核结论与原因", "Revise 
 for (const [category, zh, en] of [["invalid", "无效", "invalid"], ["anomalous", "异常", "anomalous"]] as const) {
   lesson("outbound", "outbound-manage-" + category, "管理" + zh + "常用原因的添加、排序和删除", "Manage common " + en + " reasons", [
     on(zh + "数据", category === "invalid" ? "Invalid data" : "Anomalous data"),
+    on("常用原因", "Common reasons"),
     on("调整顺序", "Reorder"),
     observe(".outbound-reason-dialog .rejection-options", "拖动或键盘排序", "Drag or reorder with the keyboard", ["拖动原因，或聚焦原因后按 Alt+方向键；可恢复默认。异常与无效的词库和排序分别保存。", "Drag a reason or focus it and press Alt+Arrow. Restore defaults if needed. Anomalous and invalid libraries and ordering are independent."]),
     observe(".outbound-reason-dialog .rejection-sort-tools", "添加及移除常用项", "Add or remove common reasons", ["添加常用原因每类最多30项、每项80字；自定义项可在排序模式移除，移除不改变历史结论。取消关闭窗口，不提交审核。", "Add up to 30 custom reasons per category, each up to 80 characters. Remove custom entries in reorder mode; saved decisions remain intact. Cancel closes without submitting a review."]),

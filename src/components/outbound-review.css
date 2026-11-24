@@ -257,6 +257,24 @@
 .outbound-failure-detail { flex-basis:100%; min-width:0; }
 .outbound-decision button[aria-pressed=true] { box-shadow:inset 0 0 0 2px #91919c; }
 
-.outbound-reason-dialog.rejection-dialog { width: min(640px, calc(100vw - 32px)); padding: 20px; }
+.outbound-reason-dialog.rejection-dialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 20px; }
+.outbound-reason-dialog[open] { display: flex; flex-direction: column; overflow: hidden; }
+.outbound-reason-content { overflow: auto; margin-top: 16px; min-height: 0; }
+.outbound-reason-section { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.outbound-reason-toggle { display: flex; align-items: center; text-align: start; gap: 10px; width: 100%; padding: 4px 0; border: 0; color: inherit; background: transparent; font: inherit; cursor: pointer; }
+.outbound-reason-toggle span { color: var(--muted); font-size: .85em; }
+.outbound-reason-toggle svg { margin-inline-start: auto; }
+.outbound-reason-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.outbound-reason-section .rejection-options { margin: 12px 0 0; }
+.outbound-reason-selection { margin: 8px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.outbound-one-time { display: grid; gap: 8px; }
+.outbound-one-time > label { font-weight: 650; }
+.outbound-reason-dialog .outbound-one-time > input { box-sizing: border-box; width: 100%; height: 40px; }
+.outbound-history-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.outbound-history-options { display: flex; flex-wrap: wrap; gap: 6px; max-height: 160px; overflow: auto; }
+.outbound-history-options .button { white-space: normal; text-align: start; overflow-wrap: anywhere; max-width: 100%; }
+.outbound-history-options .button[aria-pressed="true"] { border-color: #087e79; background: #e3f2ed; color: #123e3c; }
+.outbound-reason-history-status { margin: 0; color: var(--muted); font-size: .85em; }
+.outbound-reason-submit-error { color: #a32828; overflow-wrap: anywhere; }
 .outbound-reason-dialog.rejection-dialog header p { font-size: 12px; color: var(--muted); }
 .outbound-reason-dialog.rejection-dialog footer { border-top: 1px solid var(--line); padding-top: 16px; }

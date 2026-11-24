@@ -121,6 +121,8 @@ test('updates check in background, require download/install consent and retain w
   await page.evaluate(()=>window.fail='');
   await dialog.getByRole('button',{name:'下载更新',exact:true}).click();
   await dialog.getByRole('button',{name:'保存并重启更新',exact:true}).waitFor();
+  await dialog.getByText('当前版本 v1.0.63',{exact:true}).waitFor();
+  await dialog.getByText('目标版本 v1.0.64',{exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>window.installs),0,'download never installs');
   await dialog.getByRole('button',{name:'稍后',exact:true}).click();
   await page.getByText('数据已加载，审核可以继续').waitFor();

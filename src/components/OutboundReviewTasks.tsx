@@ -151,6 +151,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   const [notice,setNotice]=useState("");
   const [unconfirmed,setUnconfirmed]=useState<Record<string,"claim"|"release">>({});
   const [workspaceUnconfirmed,setWorkspaceUnconfirmed]=useState(false);
+  const pendingWorkspaceCheck=useRef<(() => Promise<void>) | null>(null);
   const players=useRef(new Map<number,HTMLVideoElement>());
   const retryPositions=useRef(new Map<number,number>());
   const playback=useRef<OutboundPlayback|null>(null);
@@ -214,6 +215,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
 
   async function load(background=false){
     if(listActive.current||busyRef.current||pendingTaskIds.current.size||background&&(document.hidden||workspaceBusy))return;
+    if(!background&&pendingWorkspaceCheck.current){await checkWorkspaceSubmission();return;}
     listActive.current=true;
     const generation=++listGeneration.current;
     if(!background)setLoading(true);
@@ -251,7 +253,8 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     setRecordingId(previous=>batch.recordings.some(item=>item.id===previous)?previous:batch.recordings[0]?.id??"");
     requestGeneration.current++;setVideoState(null);setOpening(false);setPartIndex(0);setReasonDialog(null);
   },[batch?.id]);
-  useEffect(()=>{requestGeneration.current++;setVideoState(null);setOpening(false);setPartIndex(0);pendingStart.current=null;recovery.current=null;setTransitionIntent(false);setPlaybackStalled(false);setTimelineState({recordingId,source:recording?.videos,durations:{},failed:{},probeFailed:{}});setReasonDialog(null);setError("");},[recordingId,recording?.videos]);
+  useEffect(()=>{requestGeneration.current++;setVideoState(null);setOpening(false);setPartIndex(0);pendingStart.current=null;recovery.current=null;setTransitionIntent(false);setPlaybackStalled(false);setTimelineState({recordingId,source:recording?.videos,durations:{},failed:{},probeFailed:{}});},[recordingId,recording?.videos]);
+  useEffect(()=>{setReasonDialog(null);setError("");},[recordingId]);
 
   useEffect(()=>{
     if(view==="workspace"&&recording&&isOwner&&!suspended)void openVideos(0);
@@ -287,23 +290,34 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   }
 
 
-  function updateBatch(next:OutboundBatch){
-    setBatches(previous=>previous.map(value=>value.id===next.id?{...next,reviewedElsewhere:value.reviewedElsewhere}:value));
+  function updateBatch(next:OutboundBatch,preserveMedia=false){
+    setBatches(previous=>previous.map(value=>{
+      if(value.id!==next.id)return value;
+      const existingVideos=new Map(value.recordings.map(item=>[item.id,item.videos]));
+      const recordings=preserveMedia?next.recordings.map(item=>{
+        const videos=existingVideos.get(item.id);
+        return videos?.length===item.videos.length&&videos.every((file,index)=>{
+          const incoming=item.videos[index];
+          return file.segment===incoming.segment&&file.label===incoming.label&&file.size===incoming.size&&file.sha256===incoming.sha256;
+        })?{...item,videos}:item;
+      }):next.recordings;
+      return {...next,recordings,reviewedElsewhere:value.reviewedElsewhere};
+    }));
   }
   function chooseReason(value:"invalid"|"anomalous"){
-    const options=value==="anomalous"?[...OUTBOUND_ANOMALOUS_REASONS,...anomalousReasonOptions]:[...OUTBOUND_INVALID_REASONS,...reasonOptions];
     const previous=recording?.decision?.value===value?recording.decision.reason??"":"";
-    setSelectedReason(options.includes(previous)?previous:"");
+    setSelectedReason(previous);
+    setError("");
     setReasonDialog(value);
   }
-  async function act(action:"claim"|"release"|"decide",value?:OutboundDecisionValue,reason?:string){
+  async function act(action:"claim"|"release"|"decide",value?:OutboundDecisionValue,reason?:string,reasonSource?:"one-time"){
     if(!batch||busyRef.current||workspaceUnconfirmed)return;
     if(action==="decide"&&(!canDecide||(value==="valid"&&!videosReady)||
       (value==="anomalous"&&!batch.decisionValues?.includes("anomalous"))))return;
     if(action==="decide"&&recording?.decision&&recording.decision.value===value&&(value==="valid"||recording.decision.reason===reason))return;
     busyRef.current=true;setBusy(true);setError("");setNotice("");
     try{
-      const result=await changeOutboundBatch(batch,action,action==="decide"?recording?.id:undefined,value,reason,protocol);
+      const result=await changeOutboundBatch(batch,action,action==="decide"?recording?.id:undefined,value,reason,protocol,reasonSource);
       updateBatch(result.batch);
       if(action==="claim"){setNotice("已领取批次。");if(onOpenReview)await onOpenReview(result.batch);}
       if(action==="release"){setNotice("已释放批次。");if(view==="workspace")onReturnToTasks?.();}
@@ -316,24 +330,39 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     }catch(cause){
       if(outboundResultUncertain(cause)){
         setWorkspaceUnconfirmed(true);
-        setNotice("提交结果尚未确认，正在核对当前批次…");
-        try{
-          const fresh=(await listOutboundBatches(batch.id,protocol)).batches.find(item=>item.id===batch.id);
-          if(!fresh)throw new Error("OUTBOUND_BATCH_NOT_FOUND");
-          updateBatch(fresh);
-          setWorkspaceUnconfirmed(false);
-          const saved=fresh.recordings.find(item=>item.id===recording?.id)?.decision;
-          if(action==="decide"&&saved&&saved.value===value&&saved.actor===currentUser.username&&(value==="valid"||saved.reason===reason)){
-            setReasonDialog(null);setSelectedReason("");setNotice(!recording?.decision && isComplete(fresh) ? "本批次已全部审核完成。" : "已核对：审核结论已保存。");
-            const next=fresh.recordings.find(item=>!item.decision&&(!pendingOnly||!reviewedElsewhere?.includes(item.id)));
-            if(next&&!recording?.decision)setRecordingId(next.id);
-            return;
+        pendingWorkspaceCheck.current=async()=>{
+          setNotice("提交结果尚未确认，正在核对当前批次…");
+          try{
+            const fresh=(await listOutboundBatches(batch.id,protocol)).batches.find(item=>item.id===batch.id);
+            if(!fresh)throw new Error("OUTBOUND_BATCH_NOT_FOUND");
+            updateBatch(fresh,true);
+            pendingWorkspaceCheck.current=null;
+            setWorkspaceUnconfirmed(false);
+            setError("");setNotice("");
+            const saved=fresh.recordings.find(item=>item.id===recording?.id)?.decision;
+            if(action==="decide"){
+              if(saved&&saved.value===value&&saved.actor===currentUser.username&&(value==="valid"||saved.reason===reason)){
+                setReasonDialog(null);setSelectedReason("");
+                setNotice(!recording?.decision && isComplete(fresh) ? "本批次已全部审核完成。" : "已核对：审核结论已保存。");
+                const next=fresh.recordings.find(item=>!item.decision&&(!pendingOnly||!reviewedElsewhere?.includes(item.id)));
+                if(next&&!recording?.decision)setRecordingId(next.id);
+              }else setError("已核对：当前结论尚未保存，可重新提交。");
+            }
+            if(action==="release"&&!fresh.claim){setNotice("已核对：批次已释放。");onReturnToTasks?.();}
+          }catch{
+            setNotice("");
+            setError("提交结果尚未确认，请刷新当前批次核对后再操作。"+outboundError(cause));
           }
-          if(action==="release"&&!fresh.claim){setNotice("已核对：批次已释放。");onReturnToTasks?.();return;}
-        }catch{/* Do not replay a mutation whose result is unknown. */}
-        setNotice("");setError("提交结果尚未确认，请刷新当前批次核对后再操作。"+outboundError(cause));
+        };
+        await pendingWorkspaceCheck.current();
       }else setError(outboundError(cause));
     }
+    finally{busyRef.current=false;setBusy(false);}
+  }
+  async function checkWorkspaceSubmission(){
+    if(!pendingWorkspaceCheck.current||busyRef.current||workspaceBusy||suspended)return;
+    busyRef.current=true;setBusy(true);
+    try{await pendingWorkspaceCheck.current();}
     finally{busyRef.current=false;setBusy(false);}
   }
   async function openVideos(nextPart=partIndex,target=0,resume=false){
@@ -350,7 +379,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     const pending=files.filter(video=>!prepared[video.segment]);
     playback.current?.pause();setPosition(target);
     pendingStart.current={part:nextPart,position:target,resume};setTransitionIntent(resume);
-    setPartIndex(nextPart);setVideoState({recordingId:recording.id,part:nextPart,urls:prepared,ready:[],failed:{}});setOpening(Boolean(pending.length));setError("");setNotice("");
+    setPartIndex(nextPart);setVideoState({recordingId:recording.id,part:nextPart,urls:prepared,ready:[],failed:{}});setOpening(Boolean(pending.length));
     releaseVideos(new Set(Object.values(prepared)));
     const active=new Set(files.map(file=>file.segment));let remaining=pending.length;
     const upcoming=grouped.parts[nextPart+1]??[];
@@ -697,7 +726,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
         </> : <div className="outbound-empty">{t("此批次没有可审核录制")}</div>}
       </div>}
     </div>}
-    {reasonDialog&&<OutboundReasonDialog key={reasonDialog} category={reasonDialog} owner={reasonPreferenceOwner??currentUser.username} options={reasonDialog==="anomalous"?anomalousReasonOptions:reasonOptions} value={selectedReason} onChange={setSelectedReason} disabled={busy||workspaceBusy||suspended} revising={Boolean(recording?.decision)} canSubmit={canDecide&&(reasonDialog==="invalid"||Boolean(batch?.decisionValues?.includes("anomalous")))&&!(recording?.decision?.value===reasonDialog&&recording.decision.reason===selectedReason)} onSave={(reason,remove)=>saveReason(reason,remove,reasonDialog)} onClose={()=>setReasonDialog(null)} onSubmit={()=>void act("decide",reasonDialog,selectedReason)}/>}
+    {reasonDialog&&<OutboundReasonDialog key={reasonDialog} category={reasonDialog} owner={reasonPreferenceOwner??currentUser.username} options={reasonDialog==="anomalous"?anomalousReasonOptions:reasonOptions} value={selectedReason} submissionError={error} onVerify={workspaceUnconfirmed?checkWorkspaceSubmission:undefined} onChange={reason=>{setSelectedReason(reason);setError("");}} disabled={busy||workspaceBusy||suspended} revising={Boolean(recording?.decision)} canSubmit={canDecide&&(reasonDialog==="invalid"||Boolean(batch?.decisionValues?.includes("anomalous")))&&!(recording?.decision?.value===reasonDialog&&recording.decision.reason===selectedReason)} onSave={(reason,remove)=>saveReason(reason,remove,reasonDialog)} onClose={()=>setReasonDialog(null)} onSubmit={reasonSource=>void act("decide",reasonDialog,selectedReason,reasonSource)}/>}
 
   </section>;
 }

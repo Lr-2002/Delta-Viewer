@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { CircleAlert, Download, LoaderCircle, RefreshCw, X } from "lucide-react";
 import { checkForAppUpdate, type AppUpdateSource } from "../lib/backend";
-import type { AppUpdateInfo } from "../types";
+import type { AppUpdateInfo, UpdateReminder } from "../types";
 import { UpdateToast } from "./UpdateToast";
 
 const seenKey = "delta.updates.release-notes.seen";
@@ -22,9 +22,10 @@ function summary(notes: string | null) {
 }
 
 export function AppUpdates({ version, currentSummary, currentNotes, busy, onDownload, onInstall, onViewHistory, githubOnly = false,
-  check = checkForAppUpdate }: {
+  reminder = null, onDismissReminder, check = checkForAppUpdate }: {
   version: string; currentSummary: string; currentNotes: string[]; busy: boolean;
   onDownload: () => Promise<void>; onInstall: () => Promise<void>; onViewHistory: () => void;
+  reminder?: UpdateReminder | null; onDismissReminder?: () => void;
   check?: (source?: AppUpdateSource) => Promise<AppUpdateInfo>;
   githubOnly?: boolean;
 }) {
@@ -37,6 +38,7 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
   const [phase, setPhase] = useState<"idle" | "checking" | "available" | "current" | "downloading" | "ready" | "installing">("idle");
   const [error, setError] = useState("");
   const [panel, setPanel] = useState(false);
+  const [panelReminder, setPanelReminder] = useState<UpdateReminder | null>(null);
   const [notice, setNotice] = useState<"available" | "ready" | "installed" | null>(() => read(seenKey) !== version ? "installed" : null);
   const pending = useRef(false);
   const deferredNotice = useRef<"available" | "ready" | null>(null);
@@ -70,16 +72,23 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
     return () => { mounted.current = false; window.clearInterval(timer); };
   }, []);
 
-  useEffect(() => {
-    const open = () => { setPanel(true); void inspect(); };
-    window.addEventListener("delta-open-update-panel", open);
-    return () => window.removeEventListener("delta-open-update-panel", open);
-  }, []);
-
   function dismissNotice() {
     if (notice === "installed") { write(seenKey, version); installedAcknowledged.current = true; }
     setNotice(notice === "installed" ? deferredNotice.current : null);
     deferredNotice.current = null;
+  }
+  function openPanel(fromReminder: UpdateReminder | null = reminder) {
+    setPanelReminder(fromReminder);
+    setPanel(true);
+    if (fromReminder) {
+      dismissReminder();
+    }
+    if (fromReminder || (githubOnly && !info)) void inspect();
+  }
+  function dismissReminder() {
+    onDismissReminder?.();
+    deferredNotice.current = null;
+    setNotice(current => current === "installed" ? current : null);
   }
   async function download() {
     if (pending.current || busy) return;
@@ -105,7 +114,9 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
   const working = ["checking", "downloading", "installing"].includes(phase);
   const available = Boolean(info?.available);
   const ready = phase === "ready" || phase === "installing";
-  const label = ready ? "更新已准备好" : available ? `新版本 v${info?.latestVersion} 可用` : "版本与更新";
+  const label = ready ? t("更新已准备好")
+    : available ? t("新版本 v{0} 可用", [info?.latestVersion]) : t("版本与更新");
+  const displayedReminder = reminder ?? panelReminder;
   const githubVersion = info?.downloadSource === "github" && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(info.latestVersion)
     ? info.latestVersion : null;
 
@@ -119,22 +130,28 @@ export function AppUpdates({ version, currentSummary, currentNotes, busy, onDown
   }
 
   return <>
-    <button type="button" className={`button button-secondary app-update-entry${available ? " has-update" : ""}`} onClick={() => {
-      setPanel(true);
-      if (githubOnly && !info) void inspect();
-    }} aria-label={t("版本与更新")} title={tr(label)}>
+    <button type="button" className={`button button-secondary app-update-entry${available || reminder ? " has-update" : ""}`} onClick={() => openPanel()} aria-label={t("版本与更新")} title={reminder ? t("管理员更新提醒") : label}>
       {working ? <LoaderCircle size={15} className="spin" /> : error ? <CircleAlert size={15} /> : available ? <Download size={15} /> : <RefreshCw size={15} />}
-      <span>{t("版本与更新")}</span>{available && <span className="update-dot" aria-label={ready ? t("更新已准备好") : t("有新版本")} />}
+      <span>{t("版本与更新")}</span>{(available || reminder) && <span className="update-dot" aria-hidden={!available || undefined} aria-label={available ? ready ? t("更新已准备好") : t("有新版本") : undefined} />}
     </button>
-    {notice && createPortal(<UpdateToast key={`${notice}:${notice === "installed" ? version : info?.latestVersion}`}
+    {!panel && reminder ? createPortal(<UpdateToast key={reminder.id} autoDismiss={false} ariaLabel={t("管理员更新提醒")}
+      title={t("管理员提醒您更新 Delta Viewer")}
+      message={t("@{0} 请您检查最新版本。当前审核内容保留，您可以在合适的时间更新。", [reminder.sender])}
+      primaryLabel={t("查看更新")} secondaryLabel={t("稍后处理")}
+      onPrimary={() => openPanel(reminder)} onDismiss={dismissReminder}/>,
+      document.getElementById("app-update-notices") ?? document.body) : !panel && notice && createPortal(<UpdateToast key={`${notice}:${notice === "installed" ? version : info?.latestVersion}`}
       title={notice === "installed" ? t("已更新至 v{0}", [tr(version)]) : notice === "ready" ? t("更新已准备好") : t("新版本 v{0} 可用", [tr(info?.latestVersion)])}
       message={notice === "installed" ? tr(currentSummary) : notice === "ready" ? t("v{0} 已下载并验证，您可以选择合适的时间安装。", [tr(info?.latestVersion)]) : tr(summary(info?.notes ?? null))}
       primaryLabel={notice === "installed" ? t("查看完整更新记录") : notice === "ready" ? t("查看并安装") : t("查看更新")}
       secondaryLabel={notice === "installed" ? t("知道了") : notice === "ready" ? t("稍后") : t("稍后提醒")}
-      onPrimary={notice === "installed" ? onViewHistory : () => { setNotice(null); setPanel(true); }} onDismiss={dismissNotice}
+      onPrimary={notice === "installed" ? onViewHistory : () => { setNotice(null); openPanel(); }} onDismiss={dismissNotice}
     />, document.getElementById("app-update-notices") ?? document.body)}
     {panel && <dialog className="app-update-dialog" aria-label={t("版本与更新详情")} ref={node => { if (node && !node.open) node.showModal(); }} onCancel={() => setPanel(false)}>
-      <header><div><h2>{tr(label)}</h2><p>{t("当前版本 v")}{tr(version)}</p></div><button className="icon-button" type="button" aria-label={t("关闭版本与更新")} onClick={() => setPanel(false)}><X size={18} /></button></header>
+      <header><div><h2>{label}</h2><p className="update-versions">
+        <span>{t("当前版本 v")}{version}</span>
+        {available && <span><strong>{t("目标版本 v{0}", [info?.latestVersion])}</strong></span>}
+      </p></div><button className="icon-button" type="button" aria-label={t("关闭版本与更新")} onClick={() => setPanel(false)}><X size={18} /></button></header>
+      {displayedReminder && <p className="update-admin-source">{t("管理员 @{0} 提醒更新", [displayedReminder.sender])}</p>}
       {!githubOnly && <label className="update-source-choice">{t("下载线路")}<select aria-label={t("更新下载线路")} value={downloadSource} disabled={working || ready} onChange={event => {
           const source = event.target.value as AppUpdateSource;
           write(sourceKey, source); setDownloadSource(source); setInfo(null); void inspect(source);

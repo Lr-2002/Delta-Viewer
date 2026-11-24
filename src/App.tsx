@@ -65,7 +65,7 @@ import { OutboundReviewTasks } from "./components/OutboundReviewTasks";
 import type { OutboundBatch } from "./lib/outbound-review";
 import { SkeletonViewer } from "./components/SkeletonViewer";
 import { SourceWritebackClient } from "./components/SourceWritebackClient";
-import { ClientPresence } from "./components/ClientPresence";
+import { useClientUpdateReminder } from "./components/ClientPresence";
 import { SupervisionDashboard } from "./components/SupervisionDashboard";
 import { beginReviewAudit, getReviewSyncStatus, configureReviewAudit, endReviewAudit, observeReviewInteractions, pauseAndPersistReviewAudit, recordReviewInteraction, recordReviewSeek, retryReviewAudit, updateReviewFrame } from "./lib/review-audit";
 import { TelemetryChart } from "./components/TelemetryChart";
@@ -228,6 +228,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.15.5": "普通更新和管理员推送共用更新窗口，显示当前版本与目标版本。",
   "1.15.4": "离线模式支持手动检查 GitHub 最新正式版，更新窗口提供三种系统的安装包。",
   "1.15.3": "外发审核支持星矩、石家庄和源初，领取列表可按供应商筛选。",
   "1.14.5": "骨架片段新增标注来源选择，支持读取腾讯纯骨架结果；人工增删改统一保存到 skeleton.description.json，保留来源文件及并发保护。",
@@ -2094,6 +2095,10 @@ function App() {
     return () => window.removeEventListener("review-audit-status", listener);
   }, []);
 
+  const updateOwner = isManagedWorkspace && authStatus?.currentUser
+    ? `${authStatus.userCenter.serviceId}:${authStatus.currentUser.username}` : null;
+  const {reminder: updateReminder, dismiss: dismissUpdateReminder} = useClientUpdateReminder(updateOwner);
+
   if (!authStatus) {
     return (
       <main className="auth-shell auth-loading">
@@ -2132,7 +2137,8 @@ function App() {
 
   const currentUser = authStatus.currentUser;
   const shortcutButton = <button className="icon-button" type="button" title={t("快捷键设置")} aria-label={t("快捷键设置")} onClick={() => setShortcutsOpen(true)}><Keyboard size={17}/></button>;
-  const updateControls = (taskBusy: boolean) => <>{!IS_DEVELOPMENT_EDITION ? <AppUpdates key={workspaceMode} version={APP_VERSION} githubOnly={isOfflineWorkspace}
+  const updateControls = (taskBusy: boolean) => <>{!IS_DEVELOPMENT_EDITION ? <AppUpdates key={updateOwner ?? workspaceMode} version={APP_VERSION} githubOnly={isOfflineWorkspace}
+    reminder={updateReminder} onDismissReminder={dismissUpdateReminder}
     currentSummary={tr(RELEASE_SUMMARIES_ZH[APP_VERSION]) ?? t("查看本次版本的改进与修复。")}
     currentNotes={releaseHistory.find(item => item.version === APP_VERSION)?.notes ?? []} busy={taskBusy}
     onDownload={downloadAvailableUpdate} onInstall={installAvailableUpdate} onViewHistory={() => setReleaseHistoryOpen(true)} /> : null}</>;
@@ -2239,7 +2245,6 @@ function App() {
   return (
     <ShortcutProvider bindings={shortcutPreferences.bindings}>
       {shortcutsOpen && <ShortcutSettings key={shortcutOwner} bindings={shortcutPreferences.bindings} onSave={shortcutPreferences.save} onClose={() => setShortcutsOpen(false)}/>}
-      {isManagedWorkspace && currentUser && <ClientPresence key={`${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={`${authStatus.userCenter.serviceId}:${currentUser.username}`} />}
       {isManagedWorkspace && currentUser?.role === "operator" && <SourceWritebackClient key={`writeback:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || playing} onBusy={setSourcePublishing} onWritten={()=>setBatchReviewRevision(value=>value+1)}/>}
       {showManagement && currentUser && <SupervisionDashboard writebackOwner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} currentUser={currentUser} onLogout={logout} onManagerHome={() => {setManagerSection("home");setManagerAdminHome(true);setManagementMode(false);}} updateBusy={busy} updateControls={updateControls} onOpenShortcuts={() => setShortcutsOpen(true)}
         onEditProfile={currentUser.role === "operator" ? () => setProfileEditorOpen(true) : undefined}

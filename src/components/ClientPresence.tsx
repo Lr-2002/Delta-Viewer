@@ -1,27 +1,30 @@
-import { t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import { APP_VERSION, pollClientVersions } from "../lib/backend";
 import type { ClientPoll, UpdateReminder } from "../types";
-import { UpdateToast } from "./UpdateToast";
 import { clientInstallationId } from "../lib/client-versions";
 
 function installationId() {
   try { return clientInstallationId(localStorage, APP_VERSION); }
   catch { return crypto.randomUUID(); }
 }
-export function ClientPresence({ owner, poll = pollClientVersions }: {
-  owner: string; poll?: (id: string, ack: string[]) => Promise<ClientPoll>;
-}) {
-  useLanguage();
-  const [reminder,setReminder]=useState<UpdateReminder|null>(null);
+function savedAcknowledgements(owner: string) {
+  try {
+    const data = JSON.parse(localStorage.getItem(`delta.reminder-acks:${owner}`) ?? "[]");
+    return new Set<string>(Array.isArray(data) ? data.filter((id): id is string => typeof id === "string").slice(-20) : []);
+  } catch { return new Set<string>(); }
+}
+
+export function useClientUpdateReminder(owner: string | null, poll: (id: string, ack: string[]) => Promise<ClientPoll> = pollClientVersions) {
+  const [received, setReceived] = useState<{owner: string; reminder: UpdateReminder} | null>(null);
   const [id]=useState(installationId);
-  const [ack]=useState(()=>{
-    try {const data=JSON.parse(localStorage.getItem(`delta.reminder-acks:${owner}`)??"[]");
-      return new Set<string>(Array.isArray(data)?data.filter((id):id is string=>typeof id==="string").slice(-20):[]);
-    } catch {return new Set<string>();}
-  });
+  const [acknowledgements] = useState(() => new Map<string, Set<string>>());
+  const reminder = owner && received?.owner === owner ? received.reminder : null;
   useEffect(()=>{
+    setReceived(previous => previous?.owner === owner ? previous : null);
+    if (!owner) return;
+    const currentOwner = owner;
+    const ack = acknowledgements.get(currentOwner) ?? savedAcknowledgements(currentOwner);
+    acknowledgements.set(currentOwner, ack);
     let active=true, inFlight=false;
     async function refresh() {
       if(inFlight)return;
@@ -31,8 +34,10 @@ export function ClientPresence({ owner, poll = pollClientVersions }: {
         const next=await poll(id,sent);
         if(!active)return;
         for(const id of sent)ack.delete(id);
-        try {localStorage.setItem(`delta.reminder-acks:${owner}`,JSON.stringify([...ack]));} catch { /* Retry in this session. */ }
-        setReminder(next.reminder && !ack.has(next.reminder.id)?next.reminder:null);
+        try {localStorage.setItem(`delta.reminder-acks:${currentOwner}`,JSON.stringify([...ack]));} catch { /* Retry in this session. */ }
+        const reminder = next.reminder && !ack.has(next.reminder.id) ? next.reminder : null;
+        setReceived(previous => !reminder ? null
+          : previous?.owner === currentOwner && previous.reminder.id === reminder.id ? previous : {owner: currentOwner, reminder});
       } catch { /* Presence failure must never block reviewing or claim fresh versions. */ }
       finally {inFlight=false;}
     }
@@ -42,16 +47,15 @@ export function ClientPresence({ owner, poll = pollClientVersions }: {
     const visible=()=>{if(document.visibilityState === "visible")void refresh();};
     window.addEventListener("focus",online);document.addEventListener("visibilitychange",visible);
     return()=>{active=false;window.clearInterval(timer);window.removeEventListener("online",online);window.removeEventListener("focus",online);document.removeEventListener("visibilitychange",visible);};
-  },[owner,id,ack,poll]);
+  },[owner,id,acknowledgements,poll]);
   function dismiss() {
-    if(!reminder)return;
+    if(!owner || !reminder)return;
+    const ack = acknowledgements.get(owner) ?? savedAcknowledgements(owner);
+    if (ack.has(reminder.id)) return;
+    acknowledgements.set(owner, ack);
     ack.add(reminder.id);
     try {localStorage.setItem(`delta.reminder-acks:${owner}`,JSON.stringify([...ack]));} catch { /* Memory acknowledgement remains. */ }
-    setReminder(null);
+    setReceived(previous => previous?.owner === owner && previous.reminder.id === reminder.id ? null : previous);
   }
-  return reminder?createPortal(<UpdateToast key={reminder.id} autoDismiss={false} className="admin-update-reminder" ariaLabel={t("管理员更新提醒")}
-    title={t("管理员提醒您更新 Delta Viewer")}
-    message={t("@{0} 请您检查最新版本。当前审核内容保留，您可以在合适的时间更新。", [tr(reminder.sender)])}
-    primaryLabel={t("查看更新")} secondaryLabel={t("稍后处理")}
-    onPrimary={()=>window.dispatchEvent(new Event("delta-open-update-panel"))} onDismiss={dismiss}/>,document.body):null;
+  return {reminder, dismiss};
 }

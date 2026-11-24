@@ -118,15 +118,19 @@ test('admin switches modes in one session, account versions stay truthful, singl
 test('reminder persists until action, survives ack failure/reload, isolates accounts, opens official updater',async t=>{
  const server=await createServer({logLevel:'error',server:{host:'127.0.0.1',port:0},plugins:[{name:'reminder-fixture',configureServer(s){
  s.middlewares.use(async(req,res,next)=>{if(req.url!=='/__reminder')return next();res.setHeader('content-type','text/html');res.end(await s.transformIndexHtml(req.url,`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"></head><body><div id="root"></div><script type="module">
- import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{ClientPresence}from'/src/components/ClientPresence.tsx';import{AppUpdates}from'/src/components/AppUpdates.tsx';import '/src/styles.css';
+ import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{useClientUpdateReminder}from'/src/components/ClientPresence.tsx';import{AppUpdates}from'/src/components/AppUpdates.tsx';import '/src/styles.css';
  window.fail=false;window.owner='service:alice';window.received=[];
  const poll=async(id,ack)=>{window.received.push({owner:window.owner,ack});if(window.fail)throw Error('offline');return{generatedAtMs:Date.now(),reminder:window.owner==='service:alice'&&!ack.length?{id:'aabbccdd-aabb-4abb-8abb-aabbccddeeff',sender:'admin',createdAtMs:1700000000000}:null};};
- function Fixture(){const[owner,setOwner]=useState(window.owner);window.switchUser=owner=>{window.owner=owner;setOwner(owner)};return React.createElement(React.Fragment,{},React.createElement('input',{id:'draft',defaultValue:'本机草稿'}),React.createElement(ClientPresence,{key:owner,owner,poll}),React.createElement(AppUpdates,{version:'${version}',currentSummary:'test',currentNotes:[],busy:false,check:async()=>({currentVersion:'${version}',latestVersion:'${version}',available:false,ready:false}),onDownload:async()=>{},onInstall:async()=>{},onViewHistory:()=>{}}));}
+ window.downloads=0;window.installs=0;
+ const target='9.0.0';
+ function Fixture(){const[owner,setOwner]=useState(window.owner);window.switchUser=owner=>{window.owner=owner;setOwner(owner)};const {reminder,dismiss}=useClientUpdateReminder(owner,poll);return React.createElement(React.Fragment,{},React.createElement('input',{id:'draft',defaultValue:'本机草稿'}),React.createElement(AppUpdates,{key:owner,version:'${version}',currentSummary:'test',currentNotes:[],busy:false,reminder,onDismissReminder:dismiss,check:async()=>({currentVersion:'${version}',latestVersion:target,available:true,ready:false}),onDownload:async()=>{window.downloads++},onInstall:async()=>{window.installs++},onViewHistory:()=>{}}));}
  localStorage.setItem('delta.updates.release-notes.seen','${version}');createRoot(document.getElementById('root')).render(React.createElement(Fixture));
  </script></body></html>`));});}}]});await server.listen();t.after(()=>server.close());
  const browser=await chromium.launch({executablePath:process.env.PLAYWRIGHT_CHROMIUM??chromium.executablePath(),headless:true});t.after(()=>browser.close());
  const page=await browser.newPage({viewport:{width:390,height:844}});const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.clock.install();
  await page.goto(server.resolvedUrls.local[0]+'__reminder');const popup=page.getByLabel('管理员更新提醒',{exact:true});await popup.waitFor();
+ assert.equal(await page.getByRole('dialog').count(),0,'push does not open a modal over work');
+ assert.equal(await page.locator('.update-notice').count(),1,'admin and automatic discoveries use one notice');
  await page.locator('#draft').fill('未提交的修改');
  const firstId=await page.evaluate(()=>window.received.length);
  await page.evaluate(()=>{window.fail=true;window.dispatchEvent(new Event('focus'));});
@@ -138,7 +142,11 @@ test('reminder persists until action, survives ack failure/reload, isolates acco
  for(const button of await popup.getByRole('button').all()){const box=await button.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=390&&box.y>=0&&box.y+box.height<=844);}
  await page.screenshot({path:'artifacts/client-management/reminder-390.png'});
  await page.evaluate(()=>{window.fail=true;});await popup.getByRole('button',{name:'查看更新',exact:true}).click();await page.clock.runFor(200);
- await page.getByRole('dialog').waitFor();assert.equal(await page.locator('#draft').inputValue(),'未提交的修改');
+ const dialog=page.getByRole('dialog');
+ await dialog.getByText('管理员 @admin 提醒更新').waitFor();
+ await dialog.getByText('目标版本 v9.0.0').waitFor();
+ assert.equal(await page.locator('#draft').inputValue(),'未提交的修改');
+ assert.deepEqual(await page.evaluate(()=>[window.downloads,window.installs]),[0,0]);
  await page.clock.runFor(15_100);assert.equal((await page.evaluate(()=>JSON.parse(localStorage.getItem('delta.reminder-acks:service:alice')))).length,1,'ack retained offline');
  await page.reload();await page.getByRole('button',{name:'版本与更新',exact:true}).waitFor();await page.clock.runFor(100);
  assert.equal(await popup.count(),0,'lost acknowledgement retried before showing same popup');

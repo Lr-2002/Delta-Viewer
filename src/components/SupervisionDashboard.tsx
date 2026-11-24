@@ -456,7 +456,7 @@ export function SupervisionDashboard({
     setBusy("reminder");setNotice("");
     try {
       const result=await pushUpdateReminders(usernames,all);
-      setNotice(`已为 ${result.queued.length} 个账号安排更新提醒；在线且支持此功能的客户端将在约 15 秒内收到弹窗，离线账号重新连接后接收。重复待处理提醒会合并。旧版客户端需先手动更新。`);
+      setNotice(`已为 ${result.queued.length} 个账号发送更新提醒。在线客户端约 15 秒内收到，离线时重连后接收。用户可在「版本与更新」查看并确认安装。`);
       setCheckedAccounts([]);
       try {const next=await getClientVersions();versionClock.current={server:next.generatedAtMs,received:performance.now()};setVersions(next);setVersionError("");} catch(reason) {setVersionError(String(reason));}
     } catch(reason) {setNotice(`推送失败：${String(reason)}`);}

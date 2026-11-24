@@ -75,6 +75,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.addInitScript(() => {
       window.fixtureMediaAllowed = location.pathname!=="/__outbound";
       window.fixtureReasonOptions = [];
+      window.fixtureReasonHistory = {invalid:[],anomalous:[]};
       window.fixtureAnomalousReasonOptions = [];
       window.fixtureBatch = { id: 'star-batch', name: '星炬 11.8 幼儿园', customerId:'star', version: 0, claim: null, total: 2,
         reviewed: 0, valid: 0, invalid: 0, anomalous:0, decisionValues:['valid','invalid','anomalous'], rate: null, recordings: [7, 7].map((cameraCount, index) => ({
@@ -91,6 +92,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
         if(input.action==='release-media')return {released:true};
         if(input.action==='media-status')return {code:window.fixtureMediaCode??null};
         if(input.action==='media-metadata'){const segment=parseInt(input.url.slice(-64),16)-1;if(segment===window.fixtureMetadataFail)throw Error('OUTBOUND_MEDIA_INDEX_MISSING');return {duration:8};}
+        if (input.action === 'list' && input.reasonHistory) return {reasons:[...window.fixtureReasonHistory[input.reasonHistory]]};
         if (input.action === 'list') {
           window.fixtureListActive=(window.fixtureListActive||0)+1;
           window.fixtureListPeak=Math.max(window.fixtureListPeak||0,window.fixtureListActive);
@@ -124,10 +126,15 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
           return { reasonOptions: [...options],category:input.category };
         }
         if (input.version !== window.fixtureBatch.version) throw Error('OUTBOUND_VERSION_CONFLICT');
+        if(input.action==='decide'&&window.fixtureDecisionError)throw Error(window.fixtureDecisionError);
         window.fixtureBatch.version++;
         if (input.action === 'claim') window.fixtureBatch.claim = 'reviewer1';
         if (input.action === 'release') window.fixtureBatch.claim = null;
         if (input.action === 'decide') {
+          if(input.reasonSource==='one-time'){
+            const history=window.fixtureReasonHistory[input.value];
+            window.fixtureReasonHistory[input.value]=[input.reason,...history.filter(reason=>reason!==input.reason)];
+          }
           const recording = window.fixtureBatch.recordings.find(row => row.id === input.recordingId);
           recording.decision = { value: input.value, ...(input.reason ? { reason: input.reason } : {}), actor: 'reviewer1', at: new Date().toISOString() };
           const reviewed = window.fixtureBatch.recordings.filter(row => row.decision);
@@ -372,6 +379,8 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(cameraSizes.filter(item=>item.primary).length,1);
     assert.ok(cameraSizes[0].width>cameraSizes[1].width*2,'main camera uses the original replay width ratio');
     assert.ok(cameraSizes[0].height>cameraSizes[1].height*1.8,'main camera spans both peer rows');
+    assert.equal(await page.getByRole('button',{name:'常用原因',exact:true}).getAttribute('aria-expanded'),'false');
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     await page.getByRole('button',{name:'添加常用原因',exact:true}).click();
     await page.getByLabel('新增常用无效原因').fill('画面遮挡');
     await page.getByRole('button',{name:'Switch to English',exact:true}).click();
@@ -411,12 +420,14 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.waitForFunction(()=>!document.querySelector('.outbound-invalid-button').disabled);
     const editsBefore=await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='decide').length);
     await page.getByRole('button',{name:'无效数据',exact:true}).click();
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     await page.getByRole('button',{name:'测试数据',exact:true}).click();
     await page.getByRole('button',{name:'保存修改',exact:true}).click();
     await page.getByRole('button',{name:'录制 001 无效',exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'录制 001 无效',exact:true}).getAttribute('aria-pressed'),'true');
     assert.deepEqual(await page.evaluate(()=>[window.fixtureBatch.valid,window.fixtureBatch.invalid,window.fixtureBatch.anomalous,window.fixtureBatch.reviewed]),[0,2,0,2]);
     await page.getByRole('button',{name:'无效数据',exact:true}).click();
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     assert.equal(await page.getByRole('button',{name:'测试数据',exact:true}).getAttribute('aria-pressed'),'true','saved reason is preselected');
     assert.equal(await page.getByRole('button',{name:'保存修改',exact:true}).isDisabled(),true,'unchanged reason is not resubmitted');
     await page.getByRole('button',{name:'画面遮挡',exact:true}).click();
@@ -425,6 +436,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.evaluate(()=>window.fixtureBatch.recordings[0].decision.reason),'画面遮挡');
     await page.getByRole('button',{name:'异常数据',exact:true}).click();
     const anomalyDialog=page.getByRole('dialog',{name:'选择异常原因',exact:true});
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     assert.equal(await anomalyDialog.getByRole('button',{name:'测试数据',exact:true}).count(),0,'invalid defaults are excluded from anomalous dialog');
     assert.equal(await anomalyDialog.getByRole('button',{name:'画面遮挡',exact:true}).count(),0,'invalid custom reasons are excluded');
     await page.getByRole('button',{name:'添加常用原因',exact:true}).click();
@@ -451,15 +463,18 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.evaluate(()=>JSON.stringify(window.fixtureBatch.recordings.map(x=>x.decision))),decisionsBeforeDelete,'deleting a common reason never alters saved reviews');
     await anomalyDialog.getByRole('button',{name:'取消',exact:true}).click();
     await page.getByRole('button',{name:'异常数据',exact:true}).click();
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     assert.equal((await anomalyDialog.getByRole('group',{name:'异常原因选项'}).locator('button').allTextContents())[0],sortedReasons[0],'reopening retains only this category order');
     await anomalyDialog.getByRole('button',{name:'前半段动作异常',exact:true}).click();
 
     await page.getByRole('button',{name:'保存修改',exact:true}).click();
     await page.getByRole('button',{name:'录制 001 异常',exact:true}).waitFor();
     await page.getByRole('button',{name:'无效数据',exact:true}).click();
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     assert.equal(await page.getByRole('dialog',{name:'选择无效原因',exact:true}).getByRole('button',{name:'前半段动作异常',exact:true}).count(),0);
     await page.getByRole('button',{name:'取消',exact:true}).click();
     await page.getByRole('button',{name:'异常数据',exact:true}).click();
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     assert.equal(await page.getByRole('button',{name:'前半段动作异常',exact:true}).getAttribute('aria-pressed'),'true');
     await page.getByRole('button',{name:'取消',exact:true}).click();
     assert.deepEqual(await page.evaluate(()=>[window.fixtureBatch.valid,window.fixtureBatch.invalid,window.fixtureBatch.anomalous,window.fixtureBatch.reviewed]),[0,1,1,2]);
@@ -623,6 +638,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).isDisabled(),true);
     assert.equal(await page.getByRole('button',{name:'无效数据',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'无效数据',exact:true}).click();
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     await page.getByRole('button',{name:'视频损坏',exact:true}).click();
     await page.getByRole('button',{name:'确认无效',exact:true}).click();
     await page.getByRole('button',{name:'录制 002 待审',exact:true}).waitFor();
@@ -633,6 +649,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByRole('button',{name:'录制 001 无效',exact:true}).click();
     await page.getByText('此相机没有本段源文件',{exact:true}).waitFor();
     await page.getByRole('button',{name:'异常数据',exact:true}).click();
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     assert.equal(await page.getByRole('dialog',{name:'选择异常原因',exact:true}).getByRole('button',{name:'数据缺失',exact:true}).count(),0);
     await page.getByRole('button',{name:'部分数据缺失',exact:true}).click();
     await page.getByRole('button',{name:'保存修改',exact:true}).click();
@@ -644,6 +661,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.locator('video').count(),7,'a recording with no videos retains all missing camera slots');
     assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).isDisabled(),true);
     await page.getByRole('button',{name:'无效数据',exact:true}).click();
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     await page.getByRole('button',{name:'数据缺失',exact:true}).click();
     await page.getByRole('button',{name:'确认无效',exact:true}).click();
     assert.equal(await page.evaluate(()=>window.fixtureBatch.recordings[0].decision.reason),'数据缺失');
@@ -663,7 +681,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='decide').length),1);
     await page.evaluate(()=>window.fixtureListFails=false);
     await page.getByRole('button',{name:'刷新外发批次',exact:true}).click();
-    await page.getByText(/已由 reviewer1 .* 判为有效/).waitFor();
+    await page.getByRole('button',{name:'录制 002 待审',exact:true}).and(page.locator('[aria-pressed=true]')).waitFor();
     assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='decide').length),1,'read reconciliation never resubmits a conclusion');
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__outbound`);
     await page.getByRole('button',{name:'领取并打开'}).first().waitFor();
@@ -723,6 +741,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.waitForFunction(()=>!document.querySelector('.outbound-anomalous-button')?.disabled);
     await page.getByRole('button',{name:'异常数据',exact:true}).click();
     await page.getByRole('dialog',{name:'选择异常原因',exact:true}).waitFor();
+    await page.getByRole('button',{name:'常用原因',exact:true}).click();
     await page.getByRole('button',{name:'添加常用原因',exact:true}).click();
     await page.getByLabel('新增常用异常原因',{exact:true}).fill('部分片段无实际动作');
     await page.getByRole('button',{name:'保存常用项',exact:true}).click();
@@ -738,6 +757,43 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByRole('button',{name:'无效数据',exact:true}).click();
     assert.equal(await page.getByRole('button',{name:'部分片段无实际动作',exact:true}).count(),0,'anomalous and invalid retain independent persisted common reasons');
     await page.getByRole('button',{name:'取消',exact:true}).click();
+    await page.evaluate(()=>{
+      window.fixtureReasonHistory.invalid=['旧无效一','旧无效二','旧无效三','旧无效四'];
+      window.fixtureReasonHistory.anomalous=['仅异常历史'];
+      window.fixtureDecisionError='OUTBOUND_REQUEST_FAILED: DATABASE_UNAVAILABLE';
+    });
+    await page.getByRole('button',{name:'无效数据',exact:true}).click();
+    const invalidDialog=page.getByRole('dialog',{name:'选择无效原因',exact:true});
+    await invalidDialog.getByRole('button',{name:'展开历史（4 条）'}).waitFor();
+    assert.equal(await invalidDialog.getByRole('group',{name:'历史输入'}).getByRole('button').count(),3);
+    assert.equal(await invalidDialog.getByRole('button',{name:'仅异常历史',exact:true}).count(),0);
+    await invalidDialog.getByRole('button',{name:'展开历史（4 条）'}).click();
+    await invalidDialog.getByRole('button',{name:'旧无效四',exact:true}).click();
+    const draft=invalidDialog.getByLabel('一次性原因');
+    assert.equal(await draft.inputValue(),'旧无效四');
+    const saves=await page.evaluate(()=>window.fixtureCalls.filter(input=>input.action==='save-reason-option').length);
+    await draft.fill('二号录制的一次性无效原因');
+    await page.evaluate(()=>window.fixtureListFails=true);
+    await invalidDialog.getByRole('button',{name:'确认无效',exact:true}).click();
+    await invalidDialog.getByRole('button',{name:'核对审核结果',exact:true}).waitFor();
+    assert.equal(await draft.inputValue(),'二号录制的一次性无效原因');
+    assert.equal(await invalidDialog.getByRole('button',{name:'确认无效',exact:true}).isDisabled(),true);
+    await page.evaluate(()=>{window.fixtureListFails=false;window.fixtureDecisionError='OUTBOUND_REQUEST_FAILED: OUTBOUND_WRITE_BUSY';});
+    await invalidDialog.getByRole('button',{name:'核对审核结果',exact:true}).click();
+    await invalidDialog.getByRole('alert').filter({hasText:'当前结论尚未保存'}).waitFor();
+    await invalidDialog.getByRole('button',{name:'确认无效',exact:true}).click();
+    await invalidDialog.getByRole('alert').filter({hasText:'本次结论未提交'}).waitFor();
+    assert.equal(await draft.inputValue(),'二号录制的一次性无效原因');
+    await page.evaluate(()=>window.fixtureDecisionError=null);
+    await invalidDialog.getByRole('button',{name:'确认无效',exact:true}).click();
+    await invalidDialog.waitFor({state:'detached'});
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(input=>input.action==='save-reason-option').length),saves);
+    assert.equal(await page.evaluate(()=>window.fixtureReasonHistory.invalid[0]),'二号录制的一次性无效原因');
+    await page.getByRole('button',{name:'异常数据',exact:true}).click();
+    await page.getByRole('button',{name:'仅异常历史',exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'二号录制的一次性无效原因',exact:true}).count(),0);
+    await page.getByRole('button',{name:'取消',exact:true}).click();
+
     const session=await page.context().newCDPSession(page);
     await session.send('Emulation.setCPUThrottlingRate',{rate:6});
     await page.evaluate(()=>{window.switchHeartbeat=[];let last=performance.now();window.switchTimer=setInterval(()=>{const now=performance.now();window.switchHeartbeat.push(now-last);last=now;},50);window.retiredSwitchPlayers=[];});
