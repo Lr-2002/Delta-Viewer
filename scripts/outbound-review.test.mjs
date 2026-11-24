@@ -76,7 +76,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
       window.fixtureMediaAllowed = location.pathname!=="/__outbound";
       window.fixtureReasonOptions = [];
       window.fixtureAnomalousReasonOptions = [];
-      window.fixtureBatch = { id: 'star-batch', name: '星炬 11.8 幼儿园', version: 0, claim: null, total: 2,
+      window.fixtureBatch = { id: 'star-batch', name: '星炬 11.8 幼儿园', customerId:'star', version: 0, claim: null, total: 2,
         reviewed: 0, valid: 0, invalid: 0, anomalous:0, decisionValues:['valid','invalid','anomalous'], rate: null, recordings: [7, 7].map((cameraCount, index) => ({
           id: `upload_fixture_00${index + 1}`, name: `录制 00${index + 1}`, decision: null,
           videos: Array.from({ length: cameraCount }, (_, segment) => ({ segment, label: `${["cam0","cam1","cam2","t265_left","t265_right","extension_left","extension_right"][segment]??"cam"+segment}/video.mp4`, size: 1024, sha256: null })),
@@ -97,13 +97,17 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
           try {
           if(window.fixtureHoldList)await new Promise(resolve=>window.fixtureReleaseList=resolve);
           if(window.fixtureListFails)throw Error('OUTBOUND_USER_CENTER_TIMEOUT');
-          const batches=[structuredClone(window.fixtureBatch), ...(window.fixtureExtraBatches ? [1,2,3].map(i=>({...structuredClone(window.fixtureBatch),id:'other-'+i,name:'其他批次 '+i,
+          const batches=[structuredClone(window.fixtureBatch), ...(window.fixtureExtraBatches ? [1,2,3].map(i=>({...structuredClone(window.fixtureBatch),id:'other-'+i,name:'其他批次 '+i,customerId:i===1?'sjz':'star',
             ...(i===2 ? {claim:'reviewer2',reviewed:2,valid:1,invalid:0,anomalous:1,rate:.5} : i===3 ? {claim:'reviewer2',reviewedElsewhere:[window.fixtureBatch.recordings[0].id]} : {})})) : [])]
             .filter(batch=>!input.datasetId||input.datasetId===batch.id);
           if(window.fixtureNewBatch)batches.push({...structuredClone(window.fixtureBatch),id:'new-upload',name:'新完成的星炬上传'});
           if(input.summary)for(const batch of batches)batch.recordings=[];
           const progress=batches.reduce((sum,batch)=>({total:sum.total+batch.total,reviewed:sum.reviewed+batch.reviewed,valid:sum.valid+batch.valid,invalid:sum.invalid+batch.invalid,anomalous:sum.anomalous+batch.anomalous}),{total:0,reviewed:0,valid:0,invalid:0,anomalous:0});
-          return {batches,progress,reasonOptions:[...window.fixtureReasonOptions],anomalousReasonOptions:[...window.fixtureAnomalousReasonOptions]};
+          const companies=[{id:'star',name:'星矩'},{id:'sjz',name:'石家庄'},{id:'yc',name:'源初'}];
+          const companyProgress=Object.fromEntries(companies.map(({id})=>[id,batches.filter(batch=>batch.customerId===id).reduce((sum,b)=>
+            ({total:sum.total+b.total,reviewed:sum.reviewed+b.reviewed,valid:sum.valid+b.valid,invalid:sum.invalid+b.invalid,anomalous:sum.anomalous+b.anomalous}),
+            {total:0,reviewed:0,valid:0,invalid:0,anomalous:0})]));
+          return {batches,progress,companies,companyProgress,reasonOptions:[...window.fixtureReasonOptions],anomalousReasonOptions:[...window.fixtureAnomalousReasonOptions]};
           }finally{window.fixtureListActive--;}
         }
         if (input.action === 'claim' && window.fixtureHoldClaim) await new Promise(resolve=>window.fixtureReleaseClaim=resolve);
@@ -147,6 +151,17 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     const filter=page.getByRole('button',{name:'未审核',exact:true});
     const total=page.getByRole('progressbar',{name:'审核进度',exact:true});
     assert.equal(await total.getAttribute('aria-valuetext'),'2 / 8');
+    const company=page.getByRole('combobox',{name:'供应商',exact:true});
+    await company.selectOption('sjz');
+    assert.equal(await page.locator('.outbound-task-list article').count(),1);
+    assert.equal(await page.getByText('其他批次 1',{exact:true}).count(),1);
+    assert.equal(await total.getAttribute('aria-valuetext'),'0 / 2');
+    await company.selectOption('yc');
+    assert.equal(await page.getByText('暂无可审核批次',{exact:true}).count(),1);
+    assert.equal(await total.getAttribute('aria-valuetext'),'0 / 0');
+    await company.selectOption('star');
+    assert.equal(await total.getAttribute('aria-valuetext'),'2 / 6');
+    await company.selectOption('');
     assert.equal(await page.getByText('已审有效率 50%',{exact:true}).count(),1);
     await filter.click();
     assert.equal(await filter.getAttribute('aria-pressed'),'true');
@@ -742,7 +757,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.addInitScript(()=>window.fixtureListFails=true);
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__outbound`);
     await page.getByText('批次读取失败，将自动重试，也可点击刷新。',{exact:true}).waitFor();
-    assert.equal(await page.getByText('暂无可审核的星矩公司批次',{exact:true}).count(),0,'failed fetch cannot be presented as an empty queue');
+    assert.equal(await page.getByText('暂无可审核批次',{exact:true}).count(),0,'failed fetch cannot be presented as an empty queue');
     await page.evaluate(()=>window.fixtureListFails=false);await page.getByRole('button',{name:'刷新外发批次',exact:true}).click();
     await page.locator('.outbound-task-list article').first().waitFor();const countBeforeFailure=await page.locator('.outbound-task-list article').count();
     await page.evaluate(()=>window.fixtureListFails=true);await page.getByRole('button',{name:'刷新外发批次',exact:true}).click();

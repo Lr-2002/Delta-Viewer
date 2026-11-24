@@ -228,6 +228,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.15.3": "外发审核支持星矩、石家庄和源初，领取列表可按供应商筛选。",
   "1.14.5": "骨架片段新增标注来源选择，支持读取腾讯纯骨架结果；人工增删改统一保存到 skeleton.description.json，保留来源文件及并发保护。",
   "1.14.6": "加快任务中心打开 NAS 大批次，显示已扫描的记录目录数量。",
   "1.15.0": "设备页显示直连地址，版本检查自动重试并区分电脑连接、源站响应和上次升级结果。",

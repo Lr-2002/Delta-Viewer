@@ -684,7 +684,7 @@ for (const [category, zh, en] of [["invalid", "无效", "invalid"], ["anomalous"
   ], { needs: outbound });
 }
 lesson("outbound", "outbound-company", "核对公司范围与处理服务中断", "Check company scope and handle service interruptions", [
-  observe(".outbound-review", "交付平台同步范围", "Delivery platform scope", ["列表按交付平台星矩公司的真实归属同步，不按批次名称猜测。没有看到新完成上传时先刷新；暂时故障会保留已有列表，恢复后继续读取。", "The list follows the configured Xingju company identity on the delivery platform, not keywords in batch names. Refresh for newly completed uploads. Temporary outages retain the list and resume reading after recovery."]),
+  observe(".outbound-review", "交付平台同步范围", "Delivery platform scope", ["在领取列表顶部选择供应商，列表和审核进度随公司切换。没有看到新完成上传时先刷新；暂时故障会保留已有列表。", "Select a supplier above the queue to filter batches and progress by delivery-platform ownership. Refresh for newly completed uploads. Temporary outages retain the list."]),
   observe(".outbound-review", "回执不明时先核对", "Verify an uncertain acknowledgement", ["不要重复提交同一结论；软件先只读核对保存结果。有效需视频全就绪，缺失或读取失败按实际原因处理。", "Do not resubmit the same decision. The app verifies uncertain saves with a read-only check. Valid requires ready videos; report confirmed missing or failed sources accurately."]),
 ], { needs: outbound });
 lesson("updates", "current-installer", "从软件内下载当前平台安装包", "Download an installer inside the app", [

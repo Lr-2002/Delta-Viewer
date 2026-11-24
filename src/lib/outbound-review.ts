@@ -10,9 +10,11 @@ export interface OutboundBatch {
   id: string; name: string; version: number; claim: string | null; total: number; reviewed: number;
   valid: number; invalid: number; anomalous?: number; decisionValues?: OutboundDecisionValue[]; rate: number | null; recordings: OutboundRecording[];
   reviewedElsewhere?: string[];
+  customerId?: string | null;
 }
 export type OutboundReviewSelection = OutboundBatch & {pendingOnly?: boolean};
 export type OutboundProgress = {total: number; reviewed: number; valid: number; invalid: number; anomalous: number};
+export type OutboundCompany = {id: string; name: string};
 export const OUTBOUND_INVALID_REASONS = ["无实际意义动作", "测试数据", "设备没有正确佩戴", "数据缺失", "视频损坏"] as const;
 
 export const OUTBOUND_ANOMALOUS_REASONS = ["部分动作无效", "部分画面遮挡", "部分时段设备佩戴异常", "部分数据缺失", "部分视频损坏"] as const;
@@ -65,7 +67,7 @@ export const fetchOutboundMetadata = (url:string) => outboundCall<{duration:numb
 export const fetchOutboundFrameStep = (url:string) => outboundCall<{frameStep:number|null}>({action:"media-frame-step",url});
 
 const outboundCall = <T,>(input: Record<string, unknown>) => invoke<T>("outbound_review_call", { input });
-type BatchList = { batches: OutboundBatch[]; reasonOptions: string[]; anomalousReasonOptions?:string[]; progress?:OutboundProgress };
+type BatchList = { batches: OutboundBatch[]; reasonOptions: string[]; anomalousReasonOptions?:string[]; progress?:OutboundProgress; companies?:OutboundCompany[]; companyProgress?:Record<string,OutboundProgress> };
 export type OutboundProtocol = {legacyList?:boolean;legacyMutation?:boolean};
 export async function listOutboundBatches(datasetId?: string, protocol?:OutboundProtocol): Promise<BatchList> {
   const legacy=async()=>{const result=await outboundCall<BatchList>({action:"list"});return datasetId?{...result,batches:result.batches.filter(batch=>batch.id===datasetId)}:result;};
@@ -111,6 +113,7 @@ export async function fetchOutboundVideo(batch: OutboundBatch, recording: Outbou
 
 export function outboundError(reason: unknown) {
   const raw = String(reason);
+  if(raw.includes("OUTBOUND_COMPANY_NOT_CONFIGURED"))return "外发审核尚未配置供应商，请联系管理员。";
   if(raw.includes("OUTBOUND_MEDIA_DURATION_INVALID"))return "源视频时长信息无效，不能建立连续时间轴，请联系管理员核对源文件。";
   if(raw.includes("OUTBOUND_MEDIA_INDEX_MISSING"))return "源视频缺少播放索引，可能未完成封装，请联系管理员核对源文件。";
   if(raw.includes("OUTBOUND_MEDIA_CONTAINER_INVALID"))return "源视频容器结构异常，请联系管理员核对源文件。";
@@ -152,7 +155,7 @@ export async function outboundMediaFailure(url:string):Promise<string|null> {
       OUTBOUND_MEDIA_INDEX_MISSING:"源视频缺少播放索引，文件未完整封装；重试无法修复，请联系数据提供方检查原录制。",
       OUTBOUND_MEDIA_CONTAINER_INVALID:"源视频容器结构不完整，请联系数据提供方检查原录制。",
       OUTBOUND_MEDIA_EXPIRED:"视频访问凭证已失效，请重试失败视频；若仍失败，请刷新批次核对领取状态。",
-      OUTBOUND_COMPANY_NOT_CONFIGURED:"外发审核尚未配置星矩公司归属，请联系管理员。",
+      OUTBOUND_COMPANY_NOT_CONFIGURED:"外发审核尚未配置供应商，请联系管理员。",
       OUTBOUND_VIDEO_MISSING:"此录制没有可用视频，可选择缺失原因提交异常或无效。",
       OUTBOUND_MEDIA_TIMEOUT:"视频读取超时，请检查网络后重试失败视频。",
       OUTBOUND_MEDIA_NETWORK:"视频传输中断，请检查网络后重试失败视频。",

@@ -5,7 +5,7 @@ import type {UserIdentity} from "../types";
 import {changeOutboundBatch,fetchOutboundVideo,releaseOutboundVideos,outboundMediaFailure,listOutboundBatches,OUTBOUND_INVALID_REASONS,OUTBOUND_ANOMALOUS_REASONS,outboundError,outboundResultUncertain,outboundVideoParts,outboundTimeline,fetchOutboundMetadata,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording,type OutboundProtocol,type OutboundDecisionValue} from "../lib/outbound-review";
 import {OutboundVideoLoader} from "../lib/outbound-video-loader";
 import {OutboundPlayback} from "../lib/outbound-playback";
-import {fetchOutboundFrameStep,type OutboundProgress,type OutboundReviewSelection} from "../lib/outbound-review";
+import {fetchOutboundFrameStep,type OutboundCompany,type OutboundProgress,type OutboundReviewSelection} from "../lib/outbound-review";
 import {useShortcuts} from "../lib/use-shortcuts";
 import {matchShortcut,shortcutBlocked} from "../lib/shortcuts";
 import {OutboundReasonDialog} from "./OutboundReasonDialog";
@@ -97,6 +97,12 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   const framePending=useRef(false);
   const [batches,setBatches]=useState<OutboundBatch[]>(initialBatch?[initialBatch]:[]);
   const [progress,setProgress]=useState<OutboundProgress>();
+  const [companies,setCompanies]=useState<OutboundCompany[]>([]);
+  const [companyProgress,setCompanyProgress]=useState<Record<string,OutboundProgress>>({});
+  const companyPreference=`d1.outbound-company:${currentUser.username}`;
+  const [companyId,setCompanyId]=useState(()=>{
+    try{return sessionStorage.getItem(companyPreference)??"";}catch{return "";}
+  });
   const [pendingOnly,setPendingOnly]=useState(Boolean(initialBatch?.pendingOnly));
   const [anomalousReasonOptions,setAnomalousReasonOptions]=useState<string[]>(initialBatch?.anomalousReasonOptions??[]);
   const [reasonOptions,setReasonOptions]=useState<string[]>(initialBatch?.reasonOptions??[]);
@@ -215,7 +221,11 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
       const value=await listOutboundBatches(view==="workspace"?batchId:undefined,protocol);
       if(generation!==listGeneration.current)return;
       setBatches(value.batches);
-      if(view==="tasks")setProgress(value.progress);
+      if(view==="tasks"){
+        setProgress(value.progress);
+        setCompanies((value.companies??[]).filter(company=>company.name));
+        setCompanyProgress(value.companyProgress??{});
+      }
       setReasonOptions(value.reasonOptions??[]);
       setAnomalousReasonOptions(value.anomalousReasonOptions??[]);
       setUnconfirmed(previous=>Object.fromEntries(Object.entries(previous).filter(([id])=>!value.batches.some(item=>item.id===id))));
@@ -577,16 +587,23 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   }
 
   const recordingList=batch?<RecordingList recordings={visibleRecordings} selectedId={recording?.id??""} disabled={busy||workspaceBusy} onSelect={setRecordingId}/>:null;
-  const visibleBatches=pendingOnly ? batches.filter(item=>item.total>item.reviewed+(item.reviewedElsewhere?.length??0)) : batches;
+  const selectedCompany=companies.some(company=>company.id===companyId)?companyId:"";
+  const filteredBatches=selectedCompany?batches.filter(item=>item.customerId===selectedCompany):batches;
+  const visibleBatches=pendingOnly ? filteredBatches.filter(item=>item.total>item.reviewed+(item.reviewedElsewhere?.length??0)) : filteredBatches;
+  const visibleProgress=selectedCompany?companyProgress[selectedCompany]??{total:0,reviewed:0,valid:0,invalid:0,anomalous:0}:progress;
   if(view==="tasks")return <section className="outbound-review" aria-label={t("外发审核任务")}>
     <div className="outbound-toolbar"><strong>{t("外发审核")}</strong><span>{lastUpdated ? t("自动同步 · {0}", [tr(new Date(lastUpdated).toLocaleTimeString(localeTag(),{hour12:false}))]) : t("按交付批次领取任务")}</span><button className="button button-secondary" type="button" aria-label={t("刷新外发批次")} disabled={loading||Object.keys(pendingTasks).length>0||workspaceBusy} onClick={()=>void load()}><RefreshCw size={16}/></button></div>
     <div className="outbound-queue-overview">
-      {progress ? <QueueProgress progress={progress}/> : <span className="outbound-progress-status">{lastUpdated||error ? t("总进度暂不可用") : t("正在读取交付批次…")}</span>}
+      {visibleProgress ? <QueueProgress progress={visibleProgress}/> : <span className="outbound-progress-status">{lastUpdated||error ? t("总进度暂不可用") : t("正在读取交付批次…")}</span>}
+      {companies.length>0&&<label className="outbound-company-filter">{t("供应商")}<select value={selectedCompany} onChange={event=>{
+        const id=event.target.value;setCompanyId(id);openIntent.current++;
+        try{sessionStorage.setItem(companyPreference,id);}catch{/* The current filter still applies. */}
+      }}><option value="">{t("全部公司")}</option>{companies.map(company=><option key={company.id} value={company.id}>{company.name}</option>)}</select></label>}
       <PendingFilter enabled={pendingOnly} onToggle={()=>setPendingOnly(value=>!value)}/>
     </div>
     {tr(error&&<div className="outbound-error" role="alert">{tr(error)}</div>)}
     {tr(notice&&<div className="outbound-notice" role="status">{tr(notice)}</div>)}
-    {loading&&!batches.length ? <div className="outbound-empty">{t("正在读取交付批次…")}</div> : !batches.length ? <div className="outbound-empty">{error ? t("批次读取失败，将自动重试，也可点击刷新。") : t("暂无可审核的星矩公司批次")}</div> :
+    {loading&&!batches.length ? <div className="outbound-empty">{t("正在读取交付批次…")}</div> : !filteredBatches.length ? <div className="outbound-empty">{error&&!batches.length ? t("批次读取失败，将自动重试，也可点击刷新。") : t("暂无可审核批次")}</div> :
       !visibleBatches.length ? <div className="outbound-empty">{t("没有未审核录制")}</div> :
       <div className="outbound-task-list">{visibleBatches.map(item => {
         const pending = pendingTasks[item.id];
@@ -596,6 +613,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
         return <article key={item.id} aria-busy={Boolean(pending)}>
           <div>
             <div className="outbound-task-title"><strong>{item.name}</strong>{complete && <BatchComplete />}</div>
+            {!selectedCompany&&item.customerId&&<small>{companies.find(company=>company.id===item.customerId)?.name}</small>}
             <p>{t("已审") + " "}{item.reviewed}/{item.total}{" " + t("· 有效") + " "}{item.valid}{" " + t("· 无效") + " "}{item.invalid}{" · " + t("异常") + " "}{item.anomalous??0}{item.rate===null ? "" : t(" · 合格率 {0}%", [Math.round(item.rate*100)])}</p>
             <small>{item.claim ? t("由 {0} 领取", [item.claim]) : t("未领取")}{pendingOnly && ` · ${t("未审核 {0} 条",[item.total-item.reviewed-(item.reviewedElsewhere?.length??0)])}`}</small>
             {feedback && <p className={feedback.error ? "outbound-task-error" : "outbound-task-feedback"} role={feedback.error ? "alert" : "status"}>{tr(feedback.message)}</p>}
