@@ -417,30 +417,50 @@ test("Type-C diagnostic port limitation remains explicit",async()=>{
 async function nativePageFixture(context,htmlOverride){
   await desktopPhysicalContractFixture(context);
   await context.addInitScript(()=>{window.nativePageCalls=[];window.wifiConnectCalls=[];window.pageApiCalls=[];window.pageFixtureMode="success";window.wifiFixtureConnected=false;});
-  const pageHtml=htmlOverride??`<!doctype html><html><head><script src="/assets/device.js" defer></script></head>
+  const pageHtml=htmlOverride??`<!doctype html><html lang="zh-CN"><head><script src="/device-language.js" defer></script><script src="/assets/device.js" defer></script></head>
     <body><h1>DOHC 设备状态</h1><p id="deviceId"></p><p id="cameraRows"></p>
-    <button id="language">English</button><output id="language-result"></output></body></html>`;
+    <button type="button" id="device-language" aria-label="中文 / English"></button></body></html>`;
   const provisioning=`<!doctype html><html><body><h1>设备维护</h1>
     <form method="post" action="/configure"><label>Wi-Fi 名称<input name="ssid" required></label>
     <label>Wi-Fi 密码<input type="password" name="password" required></label><button>连接网络</button></form>
     <button id="ota-relay">在线下载并升级</button><input id="ota-file" type="file"><button id="ota-submit">上传并升级</button>
     </body></html>`;
+  const languages=new Map();
+  const statusPageTitles={zh:"DOHC 设备状态",en:"DOHC Device Status"};
   await context.route(/^http:\/\/(?:10\.1\.30\.114|192\.168\.4\.1|192\.168\.1\.100)\//,async route=>{
     const url=new URL(route.request().url());
     if(url.pathname==="/favicon.ico")return route.fulfill({status:204});
     if(url.pathname==="/maintenance")return route.fulfill({contentType:"text/html",body:"<main>Device maintenance</main>"});
     if(url.pathname==="/"){
       const mode=await context.pages()[0].evaluate(()=>window.pageFixtureMode);
-      const body = mode==="provisioning"?provisioning:
-        mode==="updated-firmware"?pageHtml.replace(">English<",">Language (firmware update)<"):pageHtml;
+      const body = mode==="provisioning"?provisioning:languages.get(url.origin)==="en"
+        ?pageHtml.replace('lang="zh-CN"','lang="en"').replace(statusPageTitles.zh,statusPageTitles.en)
+        :pageHtml;
       return route.fulfill({contentType:"text/html; charset=utf-8",body});
+    }
+    if(url.pathname==="/device-language.js"){
+      const mode=await context.pages()[0].evaluate(()=>window.pageFixtureMode);
+      return route.fulfill({contentType:"application/javascript",body:`
+        const button=document.querySelector("#device-language");
+        const language=document.documentElement.lang==="en"?"en":"zh";
+        button.textContent=language==="en"?"中文":${JSON.stringify(mode==="updated-firmware"?"Language (firmware update)":"English")};
+        button.addEventListener("click",async()=>{
+          const response=await fetch("/api/v1/language",{
+            method:"PUT",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({language:language==="en"?"zh":"en"})
+          });
+          if(response.ok) location.reload();
+        });
+      `});
+    }
+    if(url.pathname==="/api/v1/language" && route.request().method()==="PUT"){
+      const {language}=route.request().postDataJSON();
+      assert.ok(language==="zh" || language==="en");
+      languages.set(url.origin,language);
+      return route.fulfill({json:{language}});
     }
     if(url.pathname==="/assets/device.js")return route.fulfill({contentType:"application/javascript",body:`
       try { parent.hacked=true; } catch {}
-      document.querySelector("#language").onclick=async()=>{
-        const reply=await fetch("/api/v1/new-language?switch=en");
-        document.querySelector("#language-result").textContent=await reply.text();
-      };
       const status=async()=>{
         const value=await (await fetch("/status")).json();
         document.querySelector("#deviceId").textContent=value.device_id;
@@ -448,7 +468,6 @@ async function nativePageFixture(context,htmlOverride){
       };
       status();setInterval(status,250);
     `});
-    if(url.pathname==="/api/v1/new-language" && url.search==="?switch=en")return route.fulfill({body:"Language updated"});
     if(url.pathname==="/configure" && route.request().method()==="POST")return route.fulfill({status:202,contentType:"text/html; charset=utf-8",body:"<h1>设备正在连接所选 Wi-Fi</h1>"});
     if(url.pathname==="/status"){
       const camera=await context.pages()[0].evaluate(()=>window.fixtureCamera??"STREAMING");
@@ -527,8 +546,11 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       assert.equal(await iframe.getAttribute("sandbox"),"allow-scripts allow-same-origin allow-forms allow-modals allow-downloads");
       assert.equal(await page.evaluate(()=>window.hacked),undefined);
       assert.equal(await page.evaluate(()=>document.querySelector("iframe[title='D1 设备页面']").contentDocument),null);
-      await frame.getByRole("button",{name:"English",exact:true}).click();
-      await frame.getByText("Language updated",{exact:true}).waitFor();
+      const languageButton=frame.getByRole("button",{name:"中文 / English",exact:true});
+      await languageButton.filter({hasText:"English"}).click();
+      await frame.getByRole("heading",{name:"DOHC Device Status",exact:true}).waitFor();
+      await languageButton.filter({hasText:"中文"}).click();
+      await frame.getByRole("heading",{name:"DOHC 设备状态",exact:true}).waitFor();
       await page.evaluate(()=>window.fixtureCamera="RECONNECTING");
       await frame.getByText("RECONNECTING",{exact:true}).waitFor();
       assert.equal(await page.evaluate(()=>window.pageApiCalls.some(api=>api.path.includes("language"))),false);
@@ -536,7 +558,7 @@ test("Wi-Fi recommendations and routed LAN/AP native pages retain back navigatio
       await noOverflow(page);await page.screenshot({path:resolve(reportRoot,`native-lan-${viewport.width}.png`),fullPage:true});
       await page.evaluate(()=>window.pageFixtureMode="updated-firmware");
       await page.getByRole("button",{name:"刷新页面",exact:true}).click();
-      await frame.getByRole("button",{name:"Language (firmware update)",exact:true}).waitFor();
+      await languageButton.filter({hasText:"Language (firmware update)"}).waitFor();
       assert.equal(await page.evaluate(()=>window.nativePageCalls.length),2);
       await page.evaluate(()=>window.pageFixtureMode="success");
       await page.getByRole("button",{name:"返回设备管理",exact:true}).click();
