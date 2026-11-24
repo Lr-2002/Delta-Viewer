@@ -78,6 +78,8 @@ Search and preview the original term, target and scope before applying changes. 
 
 Open Versions and updates inside the app, choose automatic, company LAN or GitHub and check for updates. Inspect stable or candidate source, notes and current status. After download and verification, save work and explicitly choose whether to restart and install.
 
+When the computer is online, open Versions and updates in Offline mode to check GitHub for the latest official release. Update this computer in the app, or choose Windows x64, macOS for Apple silicon, or Ubuntu 22.04+ x64 to download the full installer in your browser.
+
 Manual installer download is separate from the updater. Choose an available platform and destination, then locate and run the completed installer yourself. Previews can offer only platforms already built. Version history provides past installers and rollback instructions. Download availability does not imply a stable release or a guarantee that all performance issues are resolved.
 
 

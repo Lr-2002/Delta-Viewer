@@ -111,9 +111,14 @@ async fn lan() -> AppResult<Candidate> {
     from_lan_manifest(serde_json::from_slice(&bytes).map_err(update_check_error)?)
 }
 
-async fn github(note: Option<String>) -> AppResult<Candidate> {
+pub(super) async fn github(note: Option<String>, latest_link: bool) -> AppResult<Candidate> {
     let client = super::client(CHECK_TIMEOUT)?;
-    let (version, url, release) = discover_release(&client).await?;
+    let (version, url, release) = if latest_link {
+        let (version, url) = discover_latest_link().await?;
+        (version, url, None)
+    } else {
+        discover_release(&client).await?
+    };
     let manifest = serde_json::from_slice(&bounded_get(&client, url, MAX_METADATA_BYTES).await?)
         .map_err(update_check_error)?;
     validate_manifest(&manifest, &version, release.as_ref())?;
@@ -129,12 +134,13 @@ async fn github(note: Option<String>) -> AppResult<Candidate> {
 pub(super) async fn resolve(source: UpdateSource) -> AppResult<Candidate> {
     match source {
         UpdateSource::Lan => lan().await,
-        UpdateSource::Github => github(None).await,
+        UpdateSource::Github => github(None, false).await,
         UpdateSource::Auto => match lan().await {
             Ok(candidate) => Ok(candidate),
-            Err(error) => github(Some(format!(
-                "公司内网未就绪，已改用 GitHub。内网原因：{error}"
-            )))
+            Err(error) => github(
+                Some(format!("公司内网未就绪，已改用 GitHub。内网原因：{error}")),
+                false,
+            )
             .await
             .map_err(|github| update_check_error(format!("公司内网：{error}；GitHub：{github}"))),
         },

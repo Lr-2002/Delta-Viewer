@@ -228,6 +228,7 @@ interface ReleaseHistoryEntry {
 const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url).href;
 
 const RELEASE_SUMMARIES_ZH: Record<string, string> = {
+  "1.15.4": "离线模式支持手动检查 GitHub 最新正式版，更新窗口提供三种系统的安装包。",
   "1.15.3": "外发审核支持星矩、石家庄和源初，领取列表可按供应商筛选。",
   "1.14.5": "骨架片段新增标注来源选择，支持读取腾讯纯骨架结果；人工增删改统一保存到 skeleton.description.json，保留来源文件及并发保护。",
   "1.14.6": "加快任务中心打开 NAS 大批次，显示已扫描的记录目录数量。",
@@ -2131,7 +2132,7 @@ function App() {
 
   const currentUser = authStatus.currentUser;
   const shortcutButton = <button className="icon-button" type="button" title={t("快捷键设置")} aria-label={t("快捷键设置")} onClick={() => setShortcutsOpen(true)}><Keyboard size={17}/></button>;
-  const updateControls = (taskBusy: boolean) => <>{!IS_DEVELOPMENT_EDITION ? <AppUpdates version={APP_VERSION}
+  const updateControls = (taskBusy: boolean) => <>{!IS_DEVELOPMENT_EDITION ? <AppUpdates key={workspaceMode} version={APP_VERSION} githubOnly={isOfflineWorkspace}
     currentSummary={tr(RELEASE_SUMMARIES_ZH[APP_VERSION]) ?? t("查看本次版本的改进与修复。")}
     currentNotes={releaseHistory.find(item => item.version === APP_VERSION)?.notes ?? []} busy={taskBusy}
     onDownload={downloadAvailableUpdate} onInstall={installAvailableUpdate} onViewHistory={() => setReleaseHistoryOpen(true)} /> : null}</>;
@@ -2294,7 +2295,7 @@ function App() {
             {shortcutButton}
             <button className="icon-button version-history-trigger" type="button" onClick={() => setReleaseHistoryOpen(true)} title={t("查看历史版本")} aria-label={t("查看历史版本")}><BookOpenText size={16}/></button>
           </>}
-          {isManagedWorkspace && currentUser && !showManagement ? updateControls(busy) : null}
+          {currentUser && !showManagement ? updateControls(busy) : null}
           {managerSection === "data" ? <DataWorkspaceMore account={isManagedWorkspace ? currentUser : null}
                 onEdit={isManagedWorkspace && currentUser?.role === "operator" ? () => setProfileEditorOpen(true) : undefined}>
                 <div className="data-more-group">

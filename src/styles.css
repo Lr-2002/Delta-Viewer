@@ -1676,6 +1676,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .app-update-notes { max-height: 38dvh; overflow: auto; margin: 20px 0; padding-right: 8px; }
 .app-update-notes pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }
 .app-update-notes li { margin-bottom: 8px; line-height: 1.6; }
+.update-installer-section { border-top: 1px solid var(--line, #ddd); padding-top: 12px; }
+.update-installer-section h3 { margin: 0 0 9px; }
+.update-installer-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.update-installer-options .button small { color: var(--muted); }
 .app-update-dialog footer { justify-content: flex-end; border-top: 1px solid var(--line, #ddd); margin-top: 18px; padding-top: 18px; }
 .app-update-dialog .muted { font-size: 13.44px; overflow-wrap: anywhere; }
 .update-error { color: #a32828; line-height: 1.6; overflow-wrap: anywhere; }

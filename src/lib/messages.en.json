@@ -1,4 +1,9 @@
 {
+  "离线模式支持手动检查 GitHub 最新正式版，更新窗口提供三种系统的安装包。": "Offline mode supports manual checks for the latest official GitHub release and offers three platform installers.",
+  "正在检查 GitHub 最新正式版…": "Checking the latest official GitHub release…",
+  "选择系统下载 v{0} 安装包": "Choose your system to download the v{0} installer",
+  "macOS（Apple 芯片）": "macOS (Apple silicon)",
+  "无法打开 GitHub 安装包链接，请稍后重试": "Could not open the GitHub installer link. Try again shortly.",
   "设备页显示直连地址，版本检查自动重试并区分电脑连接、源站响应和上次升级结果。": "The device page shows its direct address. Update checks retry automatically and distinguish network connection, server response and the previous upgrade result.",
   "电脑连接 OTA 源站超时（{0}）。请检查电脑能否访问升级服务所在网络。": "This computer timed out connecting to the OTA server ({0}). Check whether it can reach the update service network.",
   "读取 OTA 源站响应内容超时（{0}）。请稍后重试；若持续出现，请联系管理员。": "The OTA response body timed out ({0}). Try again shortly. Contact your administrator if this persists.",

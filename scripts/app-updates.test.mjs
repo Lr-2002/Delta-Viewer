@@ -271,3 +271,54 @@ test('LAN download selection persists, failed checks clear stale actions, and fa
   assert.equal(await page.evaluate(()=>window.downloads),1);assert.equal(await page.evaluate(()=>window.installs),0);
   assert.equal(await choice.isDisabled(),true,'a verified ready package retains its selected version and transport');
 });
+
+test('offline workspace checks GitHub only on demand and offers three official installers', async t => {
+  const server = await createServer({logLevel: 'error', server: {host: '127.0.0.1', port: 0}});
+  await server.listen();
+  t.after(() => server.close());
+  const browser = await chromium.launch({executablePath: process.env.PLAYWRIGHT_CHROMIUM ?? chromium.executablePath(), headless: true});
+  t.after(() => browser.close());
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await context.addInitScript(version => {
+    localStorage.setItem('delta.updates.download-source', 'lan');
+    localStorage.setItem('delta.updates.release-notes.seen', version);
+    window.updateChecks = [];
+    window.installerLinks = [];
+  }, appVersion);
+  await context.route('**/src/lib/backend.ts', async route => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const body = original.replace(/(export async function checkForAppUpdate\([^]*?\) \{)/, '$1\n' +
+      `window.updateChecks.push(source); return {currentVersion:${JSON.stringify(appVersion)},latestVersion:${JSON.stringify(appVersion)},available:false,ready:false,notes:null,downloadSource:"github"};`);
+    assert.notEqual(body, original);
+    await route.fulfill({response, body});
+  });
+  await page.goto(server.resolvedUrls.local[0]);
+  await page.getByRole('button', {name: '离线模式'}).first().click();
+  const entry = page.getByRole('button', {name: '版本与更新', exact: true});
+  await entry.waitFor();
+  assert.deepEqual(await page.evaluate(() => window.updateChecks), []);
+  await page.evaluate(() => {
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (command, payload) => {
+        if (command === 'plugin:opener|open_url') window.installerLinks.push(payload.url);
+      },
+    };
+  });
+  await entry.click();
+  const dialog = page.getByRole('dialog', {name: '版本与更新详情'});
+  await dialog.getByRole('heading', {name: `选择系统下载 v${appVersion} 安装包`}).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.updateChecks), ['github']);
+  assert.equal(await dialog.getByLabel('更新下载线路').count(), 0);
+  for (const name of [/Windows x64/, /macOS/, /Ubuntu 22.04/]) {
+    await dialog.getByRole('button', {name}).click();
+  }
+  const base = `https://github.com/Lr-2002/Delta-Viewer/releases/download/v${appVersion}/Delta-Viewer_${appVersion}_UNSIGNED_`;
+  assert.deepEqual(await page.evaluate(() => window.installerLinks), [
+    base + 'windows-x64-setup.exe',
+    base + 'macos-arm64.dmg',
+    base + 'ubuntu-22.04%2B-x64.deb',
+  ]);
+  assert.equal(await dialog.getByRole('button', {name: '保存并重启更新'}).count(), 0);
+});

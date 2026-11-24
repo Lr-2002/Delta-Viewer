@@ -11,6 +11,14 @@
     "dialog:allow-open",
     "dialog:allow-message",
     "opener:allow-open-path",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {"url": "https://github.com/Lr-2002/Delta-Viewer/releases/download/v*/Delta-Viewer_*_UNSIGNED_windows-x64-setup.exe"},
+        {"url": "https://github.com/Lr-2002/Delta-Viewer/releases/download/v*/Delta-Viewer_*_UNSIGNED_macos-arm64.dmg"},
+        {"url": "https://github.com/Lr-2002/Delta-Viewer/releases/download/v*/Delta-Viewer_*_UNSIGNED_ubuntu-22.04%2B-x64.deb"}
+      ]
+    },
     "opener:allow-reveal-item-in-dir"
   ]
 }

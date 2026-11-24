@@ -248,6 +248,33 @@ fn version_from_latest_redirect(location: &str) -> AppResult<String> {
             .ok_or_else(|| update_manifest_error("最新 Release 跳转不是正式版本标签"))?,
     )
 }
+async fn discover_latest_link() -> AppResult<(String, Url)> {
+    let client = Client::builder()
+        .https_only(true)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(CHECK_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("Delta-Viewer/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(update_check_error)?;
+    let url = Url::parse(&format!("{REPOSITORY}/releases/latest")).map_err(update_check_error)?;
+    let response = network::head(&client, &url).await?;
+    if !response.status().is_redirection() {
+        return Err(update_check_error(format!(
+            "官方最新 Release 查询返回 {}",
+            response.status()
+        )));
+    }
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| update_manifest_error("最新 Release 没有版本跳转"))?;
+    let version = version_from_latest_redirect(location)?;
+    let url = asset_url(&version, "latest.json")?;
+    Ok((version, url))
+}
+
 async fn discover_release(client: &Client) -> AppResult<(String, Url, Option<Release>)> {
     let api_result = async {
         let release: Release = serde_json::from_slice(
@@ -266,36 +293,9 @@ async fn discover_release(client: &Client) -> AppResult<(String, Url, Option<Rel
     match api_result {
         Ok(result) => Ok(result),
         Err(api_error) => {
-            // The public latest redirect also selects a published stable Release.
-            // No token or HTML scrape is needed when anonymous API quotas run out.
-            let fallback = async {
-                let client = Client::builder()
-                    .https_only(true)
-                    .connect_timeout(Duration::from_secs(10))
-                    .timeout(CHECK_TIMEOUT)
-                    .redirect(reqwest::redirect::Policy::none())
-                    .user_agent(concat!("Delta-Viewer/", env!("CARGO_PKG_VERSION")))
-                    .build()
-                    .map_err(update_check_error)?;
-                let url = Url::parse(&format!("{REPOSITORY}/releases/latest"))
-                    .map_err(update_check_error)?;
-                let response = network::head(&client, &url).await?;
-                if !response.status().is_redirection() {
-                    return Err(update_check_error(format!(
-                        "官方最新 Release 查询返回 {}",
-                        response.status()
-                    )));
-                }
-                let location = response
-                    .headers()
-                    .get(reqwest::header::LOCATION)
-                    .and_then(|v| v.to_str().ok())
-                    .ok_or_else(|| update_manifest_error("最新 Release 没有版本跳转"))?;
-                let version = version_from_latest_redirect(location)?;
-                let url = asset_url(&version, "latest.json")?;
-                Ok((version, url, None))
-            }
-            .await;
+            let fallback = discover_latest_link()
+                .await
+                .map(|(version, url)| (version, url, None));
             fallback.map_err(|error: AppError| {
                 update_check_error(format!(
                     "GitHub API: {api_error}; 官方 Release 备用查询: {error}"
@@ -309,11 +309,16 @@ pub async fn check(
     app: &AppHandle,
     state: &UpdateState,
     requested: UpdateSource,
+    github_only: bool,
 ) -> AppResult<AppUpdateInfo> {
     *state.0.lock().map_err(update_check_error)? = None;
     let current_version = app.package_info().version.to_string();
-    let (stable, preview) = tokio::join!(lan::resolve(requested), candidate::resolve(app));
-    let candidate = candidate::choose(stable, preview)?;
+    let candidate = if github_only {
+        lan::github(None, true).await?
+    } else {
+        let (stable, preview) = tokio::join!(lan::resolve(requested), candidate::resolve(app));
+        candidate::choose(stable, preview)?
+    };
     let lan::Candidate {
         version,
         manifest,
@@ -378,12 +383,13 @@ pub async fn check(
     Ok(info)
 }
 
-fn selected(state: &UpdateState) -> AppResult<SelectedUpdate> {
+fn selected(state: &UpdateState, github_only: bool) -> AppResult<SelectedUpdate> {
     state
         .0
         .lock()
         .map_err(update_check_error)?
         .clone()
+        .filter(|selection| !github_only || matches!(selection.route, lan::DownloadRoute::Github))
         .ok_or_else(|| update_manifest_error("请先检查并选择最新正式版本"))
 }
 fn update_entry(update: &Update) -> AppResult<&serde_json::Value> {
@@ -493,8 +499,9 @@ pub async fn download(
     state: &UpdateState,
     operation_id: u64,
     cancelled: &AtomicBool,
+    github_only: bool,
 ) -> AppResult<()> {
-    let SelectedUpdate { update, route } = selected(state)?;
+    let SelectedUpdate { update, route } = selected(state, github_only)?;
     check_cancelled(cancelled)?;
     let expected = expected_download_bytes(&update)?;
     let started = Instant::now();
@@ -547,9 +554,10 @@ pub async fn install(
     app: &AppHandle,
     state: &UpdateState,
     cancelled: &AtomicBool,
+    github_only: bool,
 ) -> AppResult<()> {
     check_cancelled(cancelled)?;
-    let SelectedUpdate { update, .. } = selected(state)?;
+    let SelectedUpdate { update, .. } = selected(state, github_only)?;
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         // Re-read, rehash and reverify the staged file immediately before install.
@@ -820,11 +828,10 @@ mod tests {
     #[ignore = "explicit live GitHub package download and signature check; no installation"]
     fn live_official_release_download() {
         tauri::async_runtime::block_on(async {
+            let lan::Candidate {
+                version, manifest, ..
+            } = lan::github(None, true).await.unwrap();
             let client = client(DOWNLOAD_TIMEOUT).unwrap();
-            let (version, url, release) = discover_release(&client).await.unwrap();
-            let metadata = bounded_get(&client, url, MAX_METADATA_BYTES).await.unwrap();
-            let manifest: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
-            validate_manifest(&manifest, &version, release.as_ref()).unwrap();
             let entry = &manifest["platforms"][platform_target().unwrap()];
             let expected = entry["size"].as_u64().unwrap();
             let url = Url::parse(entry["url"].as_str().unwrap()).unwrap();

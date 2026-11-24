@@ -763,10 +763,9 @@ async fn check_for_app_update(
     auth: State<'_, AuthState>,
     source: Option<updater::UpdateSource>,
 ) -> Result<AppUpdateInfo, String> {
-    auth.require_managed_user()
-        .map_err(|error| error.to_string())?;
+    let github_only = app_update_requires_github(&auth)?;
     require_stable_update_channel()?;
-    updater::check(&app, &updates, source.unwrap_or_default())
+    updater::check(&app, &updates, source.unwrap_or_default(), github_only)
         .await
         .map_err(|error| error.to_string())
 }
@@ -779,7 +778,7 @@ async fn download_app_update(
     updates: State<'_, updater::UpdateState>,
     operation_id: u64,
 ) -> Result<(), String> {
-    auth.require_managed_user().map_err(|e| e.to_string())?;
+    let github_only = app_update_requires_github(&auth)?;
     require_stable_update_channel()?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
@@ -790,7 +789,7 @@ async fn download_app_update(
         "下载应用更新",
         updater::RELEASE_API,
     );
-    updater::download(&app, &updates, operation_id, &cancelled)
+    updater::download(&app, &updates, operation_id, &cancelled, github_only)
         .await
         .map_err(|e| e.to_string())
 }
@@ -803,7 +802,7 @@ async fn install_app_update(
     updates: State<'_, updater::UpdateState>,
     operation_id: u64,
 ) -> Result<bool, String> {
-    auth.require_managed_user().map_err(|e| e.to_string())?;
+    let github_only = app_update_requires_github(&auth)?;
     require_stable_update_channel()?;
     let task = control.start(operation_id)?;
     let cancelled = task.cancelled();
@@ -814,11 +813,16 @@ async fn install_app_update(
         "验证缓存并安装更新",
         updater::RELEASE_API,
     );
-    updater::install(&app, &updates, &cancelled)
+    updater::install(&app, &updates, &cancelled, github_only)
         .await
         .map_err(|e| e.to_string())?;
     drop(task);
     app.restart();
+}
+
+fn app_update_requires_github(auth: &AuthState) -> Result<bool, String> {
+    auth.require_user().map_err(|error| error.to_string())?;
+    Ok(auth.workspace_mode().map_err(|error| error.to_string())? == Some(WorkspaceMode::Offline))
 }
 
 fn require_stable_update_channel() -> Result<(), String> {
