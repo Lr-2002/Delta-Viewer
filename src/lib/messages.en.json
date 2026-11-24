@@ -1,4 +1,10 @@
 {
+  "设备页显示直连地址，版本检查自动重试并区分电脑连接、源站响应和上次升级结果。": "The device page shows its direct address. Update checks retry automatically and distinguish network connection, server response and the previous upgrade result.",
+  "电脑连接 OTA 源站超时（{0}）。请检查电脑能否访问升级服务所在网络。": "This computer timed out connecting to the OTA server ({0}). Check whether it can reach the update service network.",
+  "读取 OTA 源站响应内容超时（{0}）。请稍后重试；若持续出现，请联系管理员。": "The OTA response body timed out ({0}). Try again shortly. Contact your administrator if this persists.",
+  "等待 OTA 源站响应超时（{0}）。请稍后重试；若持续出现，请联系管理员。": "The OTA server took too long to respond ({0}). Try again shortly. Contact your administrator if this persists.",
+  "读取 OTA 发布信息超时。请检查电脑网络后重试。": "Reading OTA release information timed out. Check the computer's network connection and retry.",
+  "{0} · {1} 次请求 · {2} ms": "{0} · {1} attempts · {2} ms",
   "正在打开设备页面…": "Opening the device page…",
   "设备管理直接载入设备 IP 原页，实时显示固件提供的语言切换、配置和运行状态。": "Device Management loads the device IP page directly, including firmware-provided language controls, configuration and live status.",
   "骨架片段新增标注来源选择，支持读取腾讯纯骨架结果；人工增删改统一保存到 skeleton.description.json，保留来源文件及并发保护。": "Skeleton segments can select annotation sources, including Tencent skeleton-only results. Human edits save to skeleton.description.json while preserving source files and conflict protection.",

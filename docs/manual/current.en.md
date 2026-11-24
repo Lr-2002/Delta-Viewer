@@ -26,6 +26,8 @@ The existing support-report upload is a separate, explicitly confirmed action. N
 
 Device application updates and Manager updates have separate entry points. Device updates use SSH to the actual device IP for all three connection modes. Stop recording, self-test and stress tests; keep power and connectivity stable. Follow the reported voltage, temperature and runtime conditions and charge a low battery first. An up-to-date result requires no reinstall. Distinguish an OTA-origin timeout from a device connection failure. Transfer completion does not prove installation success: check the final running version and result.
 
+The computer reads the update channel over its current network route. If connecting times out, check access to the update service. If the response times out, retry. Technical Details shows the request address and elapsed time.
+
 ## Loading and playback
 
 Select a data folder on an SD card, external drive or NAS for direct reading. Check the loaded path, row states and operation history. Click to select, then double-click or use the keyboard to open a recording; a full copy is unnecessary. Full validation and export checks remain separate actions.

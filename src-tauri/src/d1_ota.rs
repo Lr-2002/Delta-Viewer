@@ -11,7 +11,8 @@ const MANIFEST_SCHEMA: &str = "dohc.ota.release-manifest.v1";
 const SIGNATURE_BYTES: usize = 64;
 const MAX_JSON_BYTES: usize = 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
-const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
+const METADATA_TIMEOUT: Duration = Duration::from_secs(7);
+const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(24);
 const PACKAGE_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Serialize)]
@@ -210,7 +211,6 @@ fn client() -> Result<reqwest::Client, String> {
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .read_timeout(Duration::from_secs(30))
-        .timeout(METADATA_TIMEOUT)
         .build()
         .map_err(|_| "OTA_CLIENT_UNAVAILABLE: 无法建立升级服务连接".to_string())
 }
@@ -241,10 +241,14 @@ fn source_resource(path: &str) -> &'static str {
     }
 }
 
-fn source_error(error: reqwest::Error, path: &str) -> String {
+fn source_error(error: reqwest::Error, path: &str, reading_body: bool) -> String {
     let resource = source_resource(path);
-    if error.is_timeout() {
-        format!("OTA_SOURCE_TIMEOUT: OTA 源站连接或响应超时（{resource}）。请稍后重试；若持续出现，请联系管理员检查升级服务。")
+    if error.is_timeout() && error.is_connect() {
+        format!("OTA_SOURCE_CONNECT_TIMEOUT: 电脑连接 OTA 源站超时（{resource}）。请检查电脑能否访问升级服务所在网络。")
+    } else if error.is_timeout() && reading_body {
+        format!("OTA_SOURCE_TIMEOUT: 读取 OTA 源站响应内容超时（{resource}）。请稍后重试；若持续出现，请联系管理员。")
+    } else if error.is_timeout() {
+        format!("OTA_SOURCE_TIMEOUT: 等待 OTA 源站响应超时（{resource}）。请稍后重试；若持续出现，请联系管理员。")
     } else if error.is_connect() {
         format!("OTA_SOURCE_UNREACHABLE: 无法连接 OTA 源站（{resource}）。请检查电脑网络；若网络正常，请联系管理员检查升级服务。")
     } else {
@@ -261,6 +265,7 @@ async fn wait_cancelled(cancelled: &AtomicBool) {
 fn retryable(error: &str) -> bool {
     [
         "OTA_SOURCE_TIMEOUT:",
+        "OTA_SOURCE_CONNECT_TIMEOUT:",
         "OTA_SOURCE_UNREACHABLE:",
         "OTA_SOURCE_INTERRUPTED:",
         "OTA_HTTP_502:",
@@ -278,12 +283,25 @@ async fn fetch_with_etag(
     limit: u64,
     cancelled: &AtomicBool,
 ) -> Result<(Vec<u8>, Option<String>), String> {
-    for attempt in 0..2 {
+    let package = path.contains("/artifacts/");
+    let delays = if package { &[250][..] } else { &[250, 750][..] };
+    let started = Instant::now();
+    for attempt in 0..=delays.len() {
         match fetch_once(client, origin, path, limit, cancelled).await {
-            Err(error) if attempt == 0 && retryable(&error) => {
-                tokio::select! {
-                    _ = wait_cancelled(cancelled) => return Err("OTA_CANCELLED: 升级已取消".into()),
-                    _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+            Err(error) if retryable(&error) => {
+                if let Some(delay) = delays.get(attempt) {
+                    tokio::select! {
+                        _ = wait_cancelled(cancelled) => return Err("OTA_CANCELLED: 升级已取消".into()),
+                        _ = tokio::time::sleep(Duration::from_millis(*delay)) => {}
+                    }
+                } else {
+                    return Err(format!(
+                        "{error}\n{}{} · {} 次请求 · {} ms",
+                        origin.base,
+                        path.split('?').next().unwrap_or(path),
+                        attempt + 1,
+                        started.elapsed().as_millis()
+                    ));
                 }
             }
             result => return result,
@@ -310,7 +328,7 @@ async fn fetch_once(
     };
     let response = tokio::select! {
         _ = wait_cancelled(cancelled) => return Err("OTA_CANCELLED: 升级已取消".into()),
-        response = client.get(url).timeout(timeout).header("Accept", "application/octet-stream").send() => response.map_err(|error| source_error(error, path))?,
+        response = client.get(url).timeout(timeout).header("Accept", "application/octet-stream").send() => response.map_err(|error| source_error(error, path, false))?,
     };
     let status = response.status().as_u16();
     if status != 200 {
@@ -347,7 +365,7 @@ async fn fetch_once(
         let Some(chunk) = next else {
             break;
         };
-        let chunk = chunk.map_err(|error| source_error(error, path))?;
+        let chunk = chunk.map_err(|error| source_error(error, path, true))?;
         if bytes.len() as u64 + chunk.len() as u64 > limit {
             return Err("OTA_RESPONSE_TOO_LARGE: OTA 发布资源超过大小限制，已停止读取，请联系管理员检查发布内容".into());
         }
@@ -693,7 +711,17 @@ pub async fn preview(
     {
         return Err("OTA_DISABLED: 应用升级服务尚未启用".into());
     }
-    let release = resolve(&client()?, &origin()?, cancelled).await?;
+    let source = origin()?;
+    let client = client()?;
+    let release = tokio::time::timeout(VERSION_CHECK_TIMEOUT, resolve(&client, &source, cancelled))
+        .await
+        .map_err(|_| {
+            format!(
+            "OTA_SOURCE_CHECK_TIMEOUT: 读取 OTA 发布信息超时。请检查电脑网络后重试。\n{} · {} s",
+            source.base,
+            VERSION_CHECK_TIMEOUT.as_secs()
+        )
+        })??;
     state.remember(owner, release)
 }
 
@@ -773,12 +801,12 @@ mod tests {
     }
 
     #[test]
-    fn source_gateway_failure_retries_once_but_missing_release_does_not() {
+    fn source_gateway_retries_are_bounded_and_missing_release_is_not_retried() {
         use crate::d1_service_test::{serve, Reply};
         let path = "/ota/v1/channels/factory.json";
         for (codes, expected) in [
-            (vec![503, 200], None),
-            (vec![504, 504], Some("OTA_HTTP_504:")),
+            (vec![503, 504, 200], None),
+            (vec![504, 504, 504], Some("OTA_HTTP_504:")),
             (vec![404], Some("OTA_HTTP_404:")),
         ] {
             let (base, worker) = serve(
@@ -795,7 +823,7 @@ mod tests {
             );
             let result = tauri::async_runtime::block_on(fetch(
                 &client().unwrap(),
-                &Origin { base },
+                &Origin { base: base.clone() },
                 path,
                 100,
                 &AtomicBool::new(false),
@@ -804,6 +832,9 @@ mod tests {
                 let error = result.unwrap_err();
                 assert!(error.starts_with(code), "{error}");
                 assert!(error.contains("管理员"));
+                if codes.len() > 1 {
+                    assert!(error.contains(&format!("{base}{path} · 3 次请求")));
+                }
             } else {
                 assert_eq!(result.unwrap(), b"fixture");
             }

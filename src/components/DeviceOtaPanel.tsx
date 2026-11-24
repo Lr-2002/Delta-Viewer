@@ -32,6 +32,7 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
   const [historyError,setHistoryError]=useState("");
   const [selectedLog,setSelectedLog]=useState<string|null>(null);
   const operation=useRef<Operation|null>(null);
+  const submittedOperation=useRef<string|null>(null);
   const generation=useRef(0);
   const confirming=useRef(false);
   const statusRevision=useRef(0);
@@ -46,6 +47,7 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
 
   useEffect(()=>{
     generation.current++;
+    submittedOperation.current=null;
     setDevice(null);setDeviceError("");setObservedAt(null);setPreview(null);setNotice(null);setCheckError("");
     if(!request||!connected||!service?.enabled)return;
     let active=true;let timer:ReturnType<typeof setTimeout>|undefined;
@@ -62,7 +64,7 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
   },[request,connected,service?.enabled]);
 
   async function run<T>(kind:"preview"|"submit",task:(owner:Operation)=>Promise<T>):Promise<T|undefined>{
-    if(busy||working)return;
+    if(busy||working||operation.current)return;
     const owner=beginOperation();if(!owner){onError("请先完成当前任务。");return;}
     const current=generation.current;
     operation.current=owner;setWorking(kind);
@@ -95,7 +97,7 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
     finally{confirming.current=false;}
     setNotice(null);
     const result=await run("submit",async owner=>submitOtaToDevice(request,owner.id,preview.previewId));
-    if(result&&current===generation.current){setNotice(result);}
+    if(result&&current===generation.current){submittedOperation.current=result.operationId;setNotice(result);}
   }
 
   const enabled=service?.enabled??false;
@@ -103,8 +105,10 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
   const canUpgrade=enabled&&connected&&!!request&&device?.available===true&&!device.active&&device.state!=="UNKNOWN"&&!awaitingOperation;
   const upToDate=!!device?.finalState&&device.state==="UP_TO_DATE"&&device.result==="UP_TO_DATE"&&!!preview&&device.releaseTarget===preview.releaseId&&device.currentVersion===preview.version&&device.currentReleaseId===preview.releaseId;
   const currentVersion=device?.currentVersion??device?.releaseBefore;
-  const stateLabel=awaitingOperation?"等待设备开始升级":device?.state==="UP_TO_DATE"?(upToDate?"已是最新":preview?"有新版本":"上次检查无需升级"):device?.state?(otaStateLabels[device.state]??device.state):null;
   const failed=!awaitingOperation&&device?.finalState&&(device.state==="FAILED"||device.state==="ROLLBACK_FAILED");
+  const priorFailure=failed&&(device.previousResult||!submittedOperation.current||device.operationId!==submittedOperation.current);
+  const stateLabel=awaitingOperation?"等待设备开始升级":priorFailure?"上次升级失败":device?.state==="UP_TO_DATE"?(upToDate?"已是最新":preview?"有新版本":"上次检查无需升级"):device?.state?(otaStateLabels[device.state]??device.state):null;
+  const checkSummary=checkError.split("\n",1)[0].replace(/^[A-Z][A-Z0-9_]+:\s*/,"");
   const submissionFinished=!!notice?.operationId&&device?.operationId===notice.operationId&&device.finalState;
 
   return <section className="manager-ota" aria-label={t("DOHC 应用升级")}>
@@ -122,7 +126,11 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
       <div><span>{t("升级操作")}</span><strong>{tr((notice?.operationId??device?.operationId)?.slice(0,12)) || t("无")}</strong></div>
     </div>}
     {tr(deviceError&&connected&&<p className="manager-ota-error" role="alert"><AlertCircle size={15}/>{tr(deviceError)}</p>)}
-    {tr(checkError&&<div className="manager-ota-failure" role="alert"><p className="manager-ota-error"><AlertCircle size={17}/><strong>{t("未能完成版本检查")}</strong></p><p>{checkError.startsWith("OTA_DOWNLOAD_TIMEOUT:") ? t("OTA 源站连接或响应超时。请稍后重试；若持续出现，请联系管理员检查升级服务。") : tr(checkError.replace(/^[A-Z][A-Z0-9_]+:\s*/,""))}</p><details><summary>{t("技术详情")}</summary><p>{tr(checkError)}</p></details></div>)}
+    {checkError&&<div className="manager-ota-failure" role="alert">
+      <p className="manager-ota-error"><AlertCircle size={17}/><strong>{t("未能完成版本检查")}</strong></p>
+      <p>{checkError.startsWith("OTA_DOWNLOAD_TIMEOUT:") ? t("OTA 源站连接或响应超时。请稍后重试；若持续出现，请联系管理员检查升级服务。") : tr(checkSummary)}</p>
+      <details><summary>{t("技术详情")}</summary>{checkError.split("\n").map((line,index)=><p key={index}>{tr(line)}</p>)}</details>
+    </div>}
     {working==="preview"&&<p className="manager-ota-note" role="status">{checkStage==="source" ? t("正在读取最新版本…") : t("正在核对设备版本…")}</p>}
     {tr(device?.logError&&<p className="manager-ota-error" role="alert">{tr(device.logError)}</p>)}
     {tr(device?.guidance&&!failed&&!awaitingOperation&&device.state!=="UP_TO_DATE"&&<p className="manager-ota-note">{tr(device.guidance)}</p>)}
@@ -143,7 +151,7 @@ export function DeviceOtaPanel({request,connected,busy,beginOperation,onError}:P
     {notice&&!submissionFinished&&!upToDate&&<p className="manager-ota-note" role="status"><Info size={17}/>{tr(notice.message)}</p>}
     {!awaitingOperation&&device?.finalState&&device.state==="SUCCESS"&&device.result==="PASS"&&<p className="manager-ota-success" role="status"><CheckCircle2 size={17}/>{t("设备报告升级成功。")}{device.releaseTarget ? t("目标版本 {0}。", [tr(device.targetVersion) ?? tr(device.releaseTarget)]) : ""}</p>}
     {failed&&<div className="manager-ota-failure" role="alert">
-      <p className="manager-ota-error"><AlertCircle size={17}/><strong>{device.previousResult ? t("上次升级失败") : t("升级失败")}</strong></p>
+      <p className="manager-ota-error"><AlertCircle size={17}/><strong>{priorFailure ? t("上次升级失败") : t("升级失败")}</strong></p>
       <p>{tr(device.guidance) || tr(device.detail)}</p>
       {tr((device.failureCodes?.length>0||device.reason)&&<details><summary>{t("技术详情")}</summary>
         {device.failureCodes?.length>0&&<p>{tr(device.failureCodes.join("、"))}</p>}

@@ -28,7 +28,7 @@ export function DevicePageView({
       <button className="button button-secondary" disabled={busy} onClick={onBack}>
         <ArrowLeft size={17}/>{t("返回设备管理")}
       </button>
-      <div><strong>{t("设备页面 ·") + " "}{page.address}</strong></div>
+      <div><strong>{t("设备页面 ·") + " "}{page.address}</strong><span>{address}</span></div>
       <button className="button button-secondary" disabled={busy || activePanel !== "device"} onClick={onRefresh}>
         <RefreshCw size={17} className={busy ? "spin" : undefined}/>{t("刷新页面")}
       </button>
@@ -48,6 +48,7 @@ export function DevicePageView({
       src={address}
       title={t("D1 设备页面")}
       sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
+      allow="local-network-access 'src'; local-network 'src'"
       referrerPolicy="no-referrer"
       onLoad={() => setLoadedPage(loadKey)}
     />

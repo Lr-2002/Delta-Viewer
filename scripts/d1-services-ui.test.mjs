@@ -68,7 +68,7 @@ test('OTA status becomes unavailable on disconnect; all three modes query SSH st
       await page.getByRole('button',{name:'开始升级',exact:true}).click();
       assert.equal(await page.evaluate(()=>window.confirmCalls),1);assert.equal(await page.evaluate(()=>window.submitCalls),0);
       await page.evaluate(()=>{window.otaStatus={available:true,state:'FAILED',result:'FAIL',operationId:'early-failure',releaseBefore:'1.1.1',releaseTarget:null,targetVersion:null,active:false,finalState:true,previousResult:true,failureCodes:['OTA_TRUST_ROOT_MISSING'],reason:'release trust root is unavailable',guidance:'设备缺少发布验签公钥，升级尚未进入安装。需要通过设备维护入口恢复可信公钥后再重试；等待或重新上传不能解决。',detail:'上一次升级未成功，请查看设备提示'};});
-      await page.getByText('上次升级失败',{exact:true}).waitFor();
+      await page.locator('.manager-ota-failure').getByText('上次升级失败',{exact:true}).waitFor();
       assert.equal(await page.locator('.manager-ota-failure').count(),1);
       assert.equal(await page.getByText('设备缺少发布验签公钥',{exact:false}).count(),1);
       assert.equal(await page.getByText('设备报告升级成功。',{exact:false}).count(),0);
@@ -101,11 +101,14 @@ test('OTA status becomes unavailable on disconnect; all three modes query SSH st
       await page.getByRole('button',{name:'检查最新版本',exact:true}).click();
       await page.getByRole('button',{name:'开始升级',exact:true}).waitFor();
       assert.equal(await page.getByText('当前已是最新版本 1.0.0，无需升级。',{exact:true}).count(),0,'a historical current result cannot override the actual running build');
-      await page.evaluate(()=>{window.previewError='OTA_SOURCE_TIMEOUT: OTA 源站连接或响应超时（版本通道）。请稍后重试；若持续出现，请联系管理员检查升级服务。';});
+      await page.evaluate(()=>{window.previewError='OTA_SOURCE_CONNECT_TIMEOUT: 电脑连接 OTA 源站超时（版本通道）。请检查电脑能否访问升级服务所在网络。\nhttp://fixtures.invalid:4174/ota/v1/channels/factory.json · 3 次请求 · 16000 ms';});
       const checksBefore=await page.evaluate(()=>window.checkCalls);
       await page.getByRole('button',{name:'检查最新版本',exact:true}).click();
       await page.getByText('未能完成版本检查',{exact:true}).waitFor();
-      await page.getByText('OTA 源站连接或响应超时（版本通道）。请稍后重试；若持续出现，请联系管理员检查升级服务。',{exact:true}).waitFor();
+      await page.getByText('电脑连接 OTA 源站超时（版本通道）。请检查电脑能否访问升级服务所在网络。',{exact:true}).waitFor();
+      const details=page.locator('.manager-ota-failure details');
+      await details.locator('summary').click();
+      await details.getByText('http://fixtures.invalid:4174/ota/v1/channels/factory.json · 3 次请求 · 16000 ms',{exact:true}).waitFor();
       assert.equal(await page.evaluate(()=>window.checkCalls),checksBefore,'source failure never starts the device action');
       assert.equal(await page.getByRole('button',{name:'开始升级',exact:true}).count(),0,'failed refresh discards the previous preview');
       assert.equal(await page.locator('.manager-ota-status').getByText('读取失败',{exact:true}).count(),0,'source error does not mark the connected device as disconnected');
