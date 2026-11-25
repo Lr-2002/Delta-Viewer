@@ -543,6 +543,11 @@ export interface MachineReview {
   reviewer: string;
 }
 
+export interface BatchRejectionResult {
+  review: MachineReview | null;
+  skipped: { source: "sessionQc" | "humanResult" | "reviewState" | "localQueue"; file: string | null; status: string; reason: string; reviewer: string; updatedAtMs: number } | null;
+}
+
 export interface PendingSourceReviewStatus {
   pending: number;
   ready: boolean;

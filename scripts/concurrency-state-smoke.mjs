@@ -377,8 +377,8 @@ try {
             ] } };
           case "reject_pending_machine_review":
             (calls.batchRejections ??= []).push(args);
-            if (window.__concurrencyMock.failMediaLoad) return { revision: 1, status: 'rejected' };
-            return args.sourcePath.endsWith('episode-2') ? null : { revision: 1, status: 'rejected' };
+            if (window.__concurrencyMock.failMediaLoad) return { review: { revision: 1, status: 'rejected' }, skipped: null };
+            return args.sourcePath.endsWith('episode-2') ? { review: null, skipped: { source: 'sessionQc', file: 'session.json', status: 'approved', reason: '', reviewer: '', updatedAtMs: 0 } } : { review: { revision: 1, status: 'rejected' }, skipped: null };
           case "read_task_index": {
             const batch = { name: 'batch', relativePath: 'batch', batchKey: 'a'.repeat(64), session: false, status: 'pending', total: 2, reviewed: 0, approved: 0, rejected: 0, errors: 0, incomplete: false, children: [] };
             return { catalog: { sourceRoot: '/source', tree: { ...batch, name: 'source', relativePath: '', children: [batch] } }, server: { completedAtMs: Date.now(), heartbeatAtMs: Date.now(), running: false } };
@@ -701,7 +701,7 @@ try {
   await page.getByRole('checkbox', {name:'选择 episode-1', exact:true}).check();
   await toolbar.getByRole('button', {name:'批量不通过', exact:true}).click();
   const rejectDialog = page.locator('.batch-rejection-dialog');
-  await rejectDialog.getByText('待处理 1 条', {exact:true}).waitFor();
+  await rejectDialog.getByText('已选 1 条', {exact:true}).waitFor();
   assert.equal(await page.getByRole('button', {name:'选择数据目录', exact:true}).isDisabled(), true);
   await rejectDialog.getByRole('button', {name:'无效数据', exact:true}).click();
   await rejectDialog.getByRole('checkbox').check();

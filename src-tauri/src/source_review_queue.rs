@@ -57,6 +57,15 @@ pub struct PendingStatus {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SubmittedReviewSummary {
+    pub status: String,
+    pub rejection_reason: String,
+    pub reviewer: String,
+    pub error: String,
+    pub created_at_ms: u64,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PublishResult {
     pub written: usize,
     pub remaining: usize,
@@ -160,12 +169,38 @@ pub fn contains_submitted(
     username: &str,
     path: &str,
 ) -> AppResult<bool> {
+    Ok(submitted_review(root, service, username, path)?.is_some())
+}
+pub fn submitted_review(
+    root: &Path,
+    service: &str,
+    username: &str,
+    path: &str,
+) -> AppResult<Option<SubmittedReviewSummary>> {
     let paths = path_aliases(root, path)?;
     let collation = if cfg!(windows) { "NOCASE" } else { "BINARY" };
-    open(root)?.query_row(
-        &format!("SELECT EXISTS(SELECT 1 FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND instr(lower(source_name),'skeleton')=0 AND {PUBLISHABLE})"),
-        params![service, username, serde_json::to_string(&paths)?], |r|r.get(0),
-    ).map_err(failure)
+    let raw: Option<String> = open(root)?
+        .query_row(
+            &format!("SELECT payload FROM source_reviews WHERE service=? AND username=? AND source_path COLLATE {collation} IN (SELECT value FROM json_each(?)) AND instr(lower(source_name),'skeleton')=0 AND {PUBLISHABLE} ORDER BY rowid DESC LIMIT 1"),
+            params![service, username, serde_json::to_string(&paths)?], |r|r.get(0),
+        )
+        .optional()
+        .map_err(failure)?;
+    raw.map(|raw| {
+        let entry: DeferredReview = serde_json::from_str(&raw).map_err(failure)?;
+        Ok(SubmittedReviewSummary {
+            status: entry.request.status.unwrap_or_else(|| "pending".into()),
+            rejection_reason: entry.request.rejection_reason.unwrap_or_default(),
+            reviewer: entry.audit["reviewerName"]
+                .as_str()
+                .or_else(|| entry.audit["reviewer"].as_str())
+                .unwrap_or(username)
+                .to_string(),
+            error: entry.error,
+            created_at_ms: entry.created_at_ms,
+        })
+    })
+    .transpose()
 }
 /// A batch rejection has no selected machine source. Recover its conclusion
 /// across source pickers without treating its empty segment list as edits.

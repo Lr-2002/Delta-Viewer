@@ -43,11 +43,11 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
         if(command==='reject_pending_machine_review') {
           window.fixture.calls.push(args);
           if(window.fixture.full) throw Error('REVIEW_STORAGE_FULL: NAS 空间不足');
-          if(window.fixture.existing) return null;
+          if(window.fixture.existing) return {review:null,skipped:{source:'localQueue',file:null,status:'rejected',reason:'无效数据',reviewer:'审核员甲',updatedAtMs:1}};
           if(window.fixture.delay) await new Promise(resolve=>window.fixture.finish=resolve);
-          if(args.sourcePath.endsWith('/2')) return null;
+          if(args.sourcePath.endsWith('/2')) throw Error('BATCH_REVIEW_SKIPPED:{"source":"sessionQc","file":"session.json","status":"rejected","reason":"原因来自 session.json","reviewer":"审核员乙","updatedAtMs":2}');
           if(args.sourcePath.endsWith('/3')) throw Error('目录只读，未保存');
-          return {revision:1,revisionLabel:'fixture-v1',status:'rejected'};
+          return {review:{revision:1,revisionLabel:'fixture-v1',status:'rejected'},skipped:null};
         }
         throw Error(command);
       }};
@@ -88,6 +88,7 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
     await page.screenshot({path:'artifacts/batch-rejection/mobile.png'});
     await confirm.evaluate(button=>{button.click();button.click();});
     await page.getByText('成功 1 · 本机待写 0 · 跳过 1 · 失败 1 · 未执行 0',{exact:true}).waitFor();
+    await page.getByText('来源：session.json 的 QC · 结论为不通过 · 审核员乙 · 原因来自 session.json').waitFor();
     assert.equal(await page.evaluate(()=>window.fixture.calls.length),3);
     assert.equal(await page.evaluate(()=>window.fixture.audit.filter(e=>e.action==='rejected').length),1);
     assert.equal(await page.evaluate(()=>window.fixture.audit[0].details.reason),'其他原因：轨迹不动，统一检查确认无效');
@@ -122,6 +123,7 @@ test('batch rejection requires warning confirmation and reason, skips reviewed d
     await page.evaluate(()=>{window.fixture.full=false;window.fixture.existing=true;window.showBatch();});
     await page.getByRole('button',{name:'其他原因',exact:true}).click();await reason.fill('无效数据');await acknowledge.check();await confirm.click();
     await page.getByText('成功 0 · 本机待写 0 · 跳过 3 · 失败 0 · 未执行 0',{exact:true}).waitFor();
+    assert.equal(await page.getByText('来源：本机待写回队列，请在原电脑打开「查看待写结果」 · 结论为不通过 · 审核员甲 · 无效数据').count(),3);
     assert.equal(await page.evaluate(()=>window.fixture.local.length),3,'existing local results cannot be overwritten by repeat batch');
     await page.getByRole('button',{name:'完成',exact:true}).click();
     await page.evaluate(()=>{window.fixture.scanError=true;window.showBatch(true);});

@@ -2284,7 +2284,7 @@ async fn reject_pending_machine_review(
     reason: String,
     operation_id: u64,
     commit_event: Option<(String, u64)>,
-) -> Result<Option<machine_review::ReviewState>, String> {
+) -> Result<machine_review::RejectionResult, String> {
     let user = auth.require_user().map_err(|error| error.to_string())?;
     if user.role.as_deref() != Some("operator") {
         return Err("REVIEWER_REQUIRED".into());
@@ -2301,23 +2301,37 @@ async fn reject_pending_machine_review(
         source_path.clone(),
         user.username.clone(),
     );
-    let already_submitted = tauri::async_runtime::spawn_blocking(move || {
-        if source_review_queue::contains_submitted(&data, &service, &username, &path)? {
-            return Ok::<_, error::AppError>(true);
-        }
-        Ok(false)
+    let submitted = tauri::async_runtime::spawn_blocking(move || {
+        source_review_queue::submitted_review(&data, &service, &username, &path)
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
-    if already_submitted {
-        return Ok(None);
+    if let Some(submitted) = submitted {
+        return Ok(machine_review::RejectionResult::skipped(
+            machine_review::RejectionSkip {
+                source: "localQueue".into(),
+                file: None,
+                status: submitted.status,
+                reason: format!(
+                    "{}{}",
+                    submitted.rejection_reason,
+                    if submitted.error.is_empty() {
+                        String::new()
+                    } else {
+                        format!("；写回状态：{}", submitted.error)
+                    }
+                ),
+                reviewer: submitted.reviewer,
+                updated_at_ms: submitted.created_at_ms,
+            },
+        ));
     }
     ensure_review_storage_responsive(&source_path).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let _task = task;
         if let Some(event) = commit_event {
-            return machine_review::reject_pending_deferred(
+            return machine_review::reject_pending_deferred_detailed(
                 &data_root,
                 Path::new(&source_path),
                 &reason,
@@ -2326,7 +2340,7 @@ async fn reject_pending_machine_review(
                 event,
             );
         }
-        machine_review::reject_pending_for_user(
+        machine_review::reject_pending_for_user_detailed(
             &data_root,
             Path::new(&source_path),
             &reason,

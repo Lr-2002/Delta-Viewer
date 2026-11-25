@@ -8,6 +8,8 @@ pub enum AppError {
     NoEpisodes(String),
     #[error("无效的数据流: {0}")]
     InvalidStream(String),
+    #[error("BATCH_REVIEW_SKIPPED:{0}")]
+    BatchRejectionSkipped(String),
     #[error("任务已取消")]
     Cancelled,
     #[error("I/O 错误: {0}")]

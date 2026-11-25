@@ -134,6 +134,40 @@ pub struct ReviewView {
     pub qc_content_hash: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectionSkip {
+    pub source: String,
+    pub file: Option<String>,
+    pub status: String,
+    pub reason: String,
+    pub reviewer: String,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectionResult {
+    pub review: Option<ReviewState>,
+    pub skipped: Option<RejectionSkip>,
+}
+
+impl RejectionResult {
+    fn saved(review: ReviewState) -> Self {
+        Self {
+            review: Some(review),
+            skipped: None,
+        }
+    }
+
+    pub fn skipped(evidence: RejectionSkip) -> Self {
+        Self {
+            review: None,
+            skipped: Some(evidence),
+        }
+    }
+}
+
 pub fn view_for_source(root: &Path, source: Option<&str>, review: ReviewState) -> ReviewView {
     if source.is_some_and(machine_annotation::is_skeleton_source) {
         return ReviewView {
@@ -1506,29 +1540,132 @@ pub fn save_with_event_for_user(
     save_for_user_mode(data_root, request, reviewer, username, None, event)
 }
 
-fn pending_qc(root: &Path) -> AppResult<bool> {
-    let root = crate::dataset_layout::resolve(root)?;
-    let session: Value = machine_annotation::read_bytes(&root.join("session.json"))?
-        .map(|bytes| serde_json::from_slice(&bytes))
-        .transpose()?
-        .unwrap_or_else(|| json!({}));
+fn reviewed_at_ms(value: &Value) -> u64 {
+    value
+        .as_str()
+        .and_then(|value| {
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+        })
+        .map_or(0, |date| {
+            (date.unix_timestamp_nanos().max(0) / 1_000_000) as u64
+        })
+}
+
+fn read_session(root: &Path) -> AppResult<Option<Vec<u8>>> {
+    machine_annotation::read_bytes(&root.join("session.json"))
+}
+
+fn session_qc_evidence(session: &Value) -> AppResult<Option<RejectionSkip>> {
     if !session.is_object() {
         return Err(failure("session.json 不是对象"));
     }
-    match session.get("qc") {
-        None | Some(Value::Null) => Ok(true),
-        Some(Value::String(qc)) => match qc.trim() {
-            "" | "待审核" | "未审核" => Ok(true),
-            "通过" | "不通过" => Ok(false),
-            value if value.starts_with("不通过：") || value.starts_with("不通过:") => {
-                Ok(false)
-            }
-            _ => Err(failure("QC 结果无法识别，未修改")),
-        },
-        _ => Err(failure("QC 结果无法识别，未修改")),
+    let qc = match session.get("qc") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(qc)) => qc.trim(),
+        _ => return Err(failure("QC 结果无法识别，未修改")),
+    };
+    let reason = qc
+        .strip_prefix("不通过：")
+        .or_else(|| qc.strip_prefix("不通过:"));
+    let status = match qc {
+        "" | "待审核" | "未审核" => return Ok(None),
+        "通过" => "approved",
+        "不通过" => "rejected",
+        _ if reason.is_some() => "rejected",
+        _ => return Err(failure("QC 结果无法识别，未修改")),
+    };
+    Ok(Some(RejectionSkip {
+        source: "sessionQc".into(),
+        file: Some("session.json".into()),
+        status: status.into(),
+        reason: session["qcRejectionReason"]
+            .as_str()
+            .or(reason)
+            .unwrap_or_default()
+            .into(),
+        reviewer: session["reviewerName"].as_str().unwrap_or_default().into(),
+        updated_at_ms: reviewed_at_ms(&session["reviewedAt"]),
+    }))
+}
+
+fn session_rejection_skip(root: &Path) -> AppResult<Option<RejectionSkip>> {
+    let session = read_session(root)?
+        .map(|bytes| serde_json::from_slice(&bytes))
+        .transpose()?
+        .unwrap_or_else(|| json!({}));
+    session_qc_evidence(&session)
+}
+
+fn pending_qc(root: &Path) -> AppResult<bool> {
+    Ok(session_rejection_skip(&crate::dataset_layout::resolve(root)?)?.is_none())
+}
+
+fn legacy_output_name(annotation: &MachineAnnotation) -> &'static str {
+    if annotation.source_name == machine_annotation::FLASH_SOURCE {
+        LEGACY_FLASH_OUTPUT
+    } else {
+        LEGACY_OUTPUT
     }
 }
 
+fn human_rejection_skip(root: &Path, name: &str, bytes: &[u8]) -> AppResult<Option<RejectionSkip>> {
+    let Ok(document) = serde_json::from_slice::<Value>(bytes) else {
+        return Ok(None);
+    };
+    let human = &document["_human_review"];
+    if let Some(status @ ("approved" | "rejected")) = human["status"].as_str() {
+        return Ok(Some(RejectionSkip {
+            source: "humanResult".into(),
+            file: Some(name.into()),
+            status: status.into(),
+            reason: human["rejectionReason"]
+                .as_str()
+                .or_else(|| human["reason"].as_str())
+                .unwrap_or_default()
+                .into(),
+            reviewer: human["reviewer"].as_str().unwrap_or_default().into(),
+            updated_at_ms: human["updatedAtMs"]
+                .as_u64()
+                .unwrap_or_else(|| reviewed_at_ms(&human["reviewedAt"])),
+        }));
+    }
+    // Older/shared technical records are meaningful only for the exact output bytes.
+    let output = root.join(name);
+    let state = technical_review(&output, &blake3::hash(bytes).to_hex())?;
+    Ok(state
+        .filter(|state| matches!(state.status.as_str(), "approved" | "rejected"))
+        .map(|state| RejectionSkip {
+            source: "reviewState".into(),
+            file: Some(
+                technical_path(&output)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            status: state.status,
+            reason: state.rejection_reason,
+            reviewer: state.reviewer,
+            updated_at_ms: state.updated_at_ms,
+        }))
+}
+
+fn selected_rejection_skip(
+    root: &Path,
+    annotation: &MachineAnnotation,
+) -> AppResult<Option<RejectionSkip>> {
+    let primary = output_name(annotation, root);
+    if let Some(bytes) = machine_annotation::read_bytes(&root.join(primary))? {
+        return human_rejection_skip(root, primary, &bytes);
+    }
+    let legacy = legacy_output_name(annotation);
+    match machine_annotation::read_bytes(&root.join(legacy))? {
+        Some(bytes) => human_rejection_skip(root, legacy, &bytes),
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
 pub fn reject_pending_for_user(
     data_root: &Path,
     root: &Path,
@@ -1536,6 +1673,16 @@ pub fn reject_pending_for_user(
     reviewer: &str,
     username: &str,
 ) -> AppResult<Option<ReviewState>> {
+    Ok(reject_pending_for_user_detailed(data_root, root, reason, reviewer, username)?.review)
+}
+
+pub fn reject_pending_for_user_detailed(
+    data_root: &Path,
+    root: &Path,
+    reason: &str,
+    reviewer: &str,
+    username: &str,
+) -> AppResult<RejectionResult> {
     reject_pending_mode(data_root, root, reason, reviewer, username, None)
 }
 
@@ -1547,6 +1694,20 @@ pub fn reject_pending_deferred(
     username: &str,
     deferred: (String, u64),
 ) -> AppResult<Option<ReviewState>> {
+    Ok(
+        reject_pending_deferred_detailed(data_root, root, reason, reviewer, username, deferred)?
+            .review,
+    )
+}
+
+pub fn reject_pending_deferred_detailed(
+    data_root: &Path,
+    root: &Path,
+    reason: &str,
+    reviewer: &str,
+    username: &str,
+    deferred: (String, u64),
+) -> AppResult<RejectionResult> {
     let session: Value = machine_annotation::read_bytes(&root.join("session.json"))?
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?
@@ -1558,7 +1719,7 @@ pub fn reject_pending_deferred(
         && session["reviewerUsername"] == username
         && session["qc"] == format!("不通过：{reason}")
     {
-        return Ok(Some(serde_json::from_value(
+        return Ok(RejectionResult::saved(serde_json::from_value(
             json!({"sourceHash":"", "revision":0,"segments":[],"published":true,"outputHash":null,"updatedAtMs":deferred.1,"reviewer":reviewer,"reviewerUsername":username,"status":"rejected","rejectionReason":reason,"versionId":expected,"revisionLabel":session["revision"]}),
         )?));
     }
@@ -1572,10 +1733,11 @@ fn reject_pending_mode(
     reviewer: &str,
     username: &str,
     deferred: Option<(String, u64)>,
-) -> AppResult<Option<ReviewState>> {
+) -> AppResult<RejectionResult> {
     let reason = validated_rejection_reason("rejected", Some(reason))?;
-    if !pending_qc(root)? {
-        return Ok(None);
+    let resolved = crate::dataset_layout::resolve(root)?;
+    if let Some(skip) = session_rejection_skip(&resolved)? {
+        return Ok(RejectionResult::skipped(skip));
     }
     // An unreadable annotation or capture can still receive a QC-only rejection.
     let annotation = machine_annotation::load_for_review(root, None).unwrap_or(None);
@@ -1592,8 +1754,10 @@ fn reject_pending_mode(
             && current.status == "rejected"
             && current.rejection_reason == reason
     });
-    if current.output_hash.is_some() && current.status != "pending" && !own_partial {
-        return Ok(None);
+    if !own_partial {
+        if let Some(skip) = selected_rejection_skip(&resolved, &annotation)? {
+            return Ok(RejectionResult::skipped(skip));
+        }
     }
     if validate(&annotation, &current.segments).is_err() {
         // Batch rejection must remain usable for damaged/unreconciled data.
@@ -1624,8 +1788,10 @@ fn reject_pending_mode(
         None,
     );
     match result {
-        Err(AppError::Message(message)) if message == "BATCH_REVIEW_SKIPPED" => Ok(None),
-        result => result.map(Some),
+        Err(AppError::BatchRejectionSkipped(skip)) => {
+            Ok(RejectionResult::skipped(serde_json::from_str(&skip)?))
+        }
+        result => result.map(RejectionResult::saved),
     }
 }
 
@@ -1638,13 +1804,17 @@ fn reject_pending_without_media(
     reviewer: &str,
     username: &str,
     deferred: Option<(String, u64)>,
-) -> AppResult<Option<ReviewState>> {
+) -> AppResult<RejectionResult> {
     let _guard = SAVE_LOCK.lock().map_err(|_| failure("保存锁不可用"))?;
     let root = crate::dataset_layout::resolve(root)?.canonicalize()?;
     let write_root = storage::review_write_root(&root)?;
     let _output_lock = lock_file(&write_root.join(".description.lock"))?;
-    if !pending_qc(&write_root)? {
-        return Ok(None);
+    let session_path = write_root.join("session.json");
+    let session_bytes =
+        read_session(&write_root)?.ok_or_else(|| failure("未找到 session.json，未修改"))?;
+    let mut session: Value = serde_json::from_slice(&session_bytes)?;
+    if let Some(skip) = session_qc_evidence(&session)? {
+        return Ok(RejectionResult::skipped(skip));
     }
     for name in [
         OUTPUT,
@@ -1653,22 +1823,10 @@ fn reject_pending_without_media(
         LEGACY_FLASH_OUTPUT,
     ] {
         if let Some(bytes) = machine_annotation::read_bytes(&write_root.join(name))? {
-            if let Ok(document) = serde_json::from_slice::<Value>(&bytes) {
-                if matches!(
-                    document["_human_review"]["status"].as_str(),
-                    Some("approved" | "rejected")
-                ) {
-                    return Ok(None);
-                }
+            if let Some(skip) = human_rejection_skip(&write_root, name, &bytes)? {
+                return Ok(RejectionResult::skipped(skip));
             }
         }
-    }
-    let session_path = write_root.join("session.json");
-    let session_bytes = machine_annotation::read_bytes(&session_path)?
-        .ok_or_else(|| failure("未找到 session.json，未修改"))?;
-    let mut session: Value = serde_json::from_slice(&session_bytes)?;
-    if !session.is_object() {
-        return Err(failure("session.json 不是对象，未修改"));
     }
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).map_err(|_| failure("无法生成唯一质检版本号"))?;
@@ -1716,7 +1874,7 @@ fn reject_pending_without_media(
         .ok_or_else(|| failure("session.qcReviewers 必须是对象，未修改"))?
         .insert(username.into(), shared);
     atomic_json(&session_path, &session)?;
-    Ok(Some(ReviewState {
+    Ok(RejectionResult::saved(ReviewState {
         special_tags: Vec::new(),
         recovery_warnings: Vec::new(),
         reviewer_username: username.into(),
@@ -1898,8 +2056,12 @@ fn save_for_user_mode(
             ));
         }
     }
-    if only_pending && !pending_qc(&write_root)? {
-        return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
+    if only_pending {
+        if let Some(skip) = session_rejection_skip(&write_root)? {
+            return Err(AppError::BatchRejectionSkipped(serde_json::to_string(
+                &skip,
+            )?));
+        }
     }
     if (machine_annotation::read_bytes(&write_root.join(output))?
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -1916,9 +2078,12 @@ fn save_for_user_mode(
             && request.status.as_deref() == Some("rejected")
             && Some(current.rejection_reason.as_str()) == request.rejection_reason.as_deref()
     });
-    if only_pending && current.output_hash.is_some() && current.status != "pending" && !own_partial
-    {
-        return Err(AppError::Message("BATCH_REVIEW_SKIPPED".into()));
+    if only_pending && !own_partial {
+        if let Some(skip) = selected_rejection_skip(&write_root, &annotation)? {
+            return Err(AppError::BatchRejectionSkipped(serde_json::to_string(
+                &skip,
+            )?));
+        }
     }
     let previous_draft = machine_annotation::read_bytes(&draft)?
         .map(|bytes| serde_json::from_slice::<ReviewState>(&bytes))
@@ -3497,8 +3662,55 @@ mod tests {
         assert!(
             reject_pending_without_media(&f.root, "无效数据", "Reviewer", "alice", None)
                 .unwrap()
+                .review
                 .is_none()
         );
+    }
+
+    #[test]
+    fn detailed_batch_skip_identifies_session_and_human_result_files() {
+        let fixture = Fixture::new(0, true);
+        fs::remove_file(fixture.root.join(machine_annotation::DEFAULT_SOURCE)).unwrap();
+        fs::write(
+            fixture.root.join("session.json"),
+            r#"{"qc":"不通过：重复录制","reviewerName":"张审核"}"#,
+        )
+        .unwrap();
+        let session = reject_pending_for_user_detailed(
+            &fixture.local,
+            &fixture.root,
+            "无效数据",
+            "新审核员",
+            "alice",
+        )
+        .unwrap();
+        let session_skip = session.skipped.unwrap();
+        assert_eq!(session_skip.source, "sessionQc");
+        assert_eq!(session_skip.file.as_deref(), Some("session.json"));
+        assert_eq!(session_skip.status, "rejected");
+        assert_eq!(session_skip.reason, "重复录制");
+        assert_eq!(session_skip.reviewer, "张审核");
+
+        fs::write(fixture.root.join("session.json"), b"{}").unwrap();
+        fs::write(
+            fixture.root.join(OUTPUT),
+            r#"{"_human_review":{"status":"rejected","reviewer":"李审核","reason":"相机画面异常"}}"#,
+        )
+        .unwrap();
+        let human = reject_pending_for_user_detailed(
+            &fixture.local,
+            &fixture.root,
+            "无效数据",
+            "新审核员",
+            "alice",
+        )
+        .unwrap();
+        let human_skip = human.skipped.unwrap();
+        assert_eq!(human_skip.source, "humanResult");
+        assert_eq!(human_skip.file.as_deref(), Some(OUTPUT));
+        assert_eq!(human_skip.reason, "相机画面异常");
+        assert_eq!(human_skip.reviewer, "李审核");
+        assert_eq!(fs::read(fixture.root.join("session.json")).unwrap(), b"{}");
     }
 
     #[test]

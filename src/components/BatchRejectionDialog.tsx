@@ -1,9 +1,10 @@
-import { t, tr, useLanguage } from "../lib/i18n";
+import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { rejectPendingMachineReview } from "../lib/backend";
 import { AlertTriangle, LoaderCircle, Square, X } from "lucide-react";
 import { cancelTaskCenterScan, scanTaskCenter, type TaskNode } from "../lib/task-center";
 import { RejectionReasons } from "./RejectionReasons";
+import type { BatchRejectionResult } from "../types";
 
 export interface RejectionTarget { path: string; name: string }
 interface Props {
@@ -13,7 +14,16 @@ interface Props {
   onSaved: (path: string) => void;
   onClose: () => void;
 }
-type Result = RejectionTarget & { status: "rejected" | "local" | "skipped" | "failed"; message: string };
+type Result = RejectionTarget & { status: "rejected" | "local" | "skipped" | "failed"; message: string; evidence?: NonNullable<BatchRejectionResult["skipped"]> };
+
+function skipDetails(evidence: NonNullable<BatchRejectionResult["skipped"]>) {
+  const source = evidence.source === "sessionQc" ? t("来源：session.json 的 QC")
+    : evidence.source === "localQueue" ? t("来源：本机待写回队列，请在原电脑打开「查看待写结果」")
+    : t("来源：{0} 中的人工审核记录", [evidence.file]);
+  const conclusion = evidence.status === "approved" ? t("结论为通过") : evidence.status === "rejected" ? t("结论为不通过") : "";
+  const time = evidence.updatedAtMs > 0 ? new Date(evidence.updatedAtMs).toLocaleString(localeTag()) : "";
+  return [source, conclusion, evidence.reviewer, tr(evidence.reason), time].filter(Boolean).join(" · ");
+}
 
 export function BatchRejectionDialog({ username, folder, selected, onSaved, onClose }: Props) {
   useLanguage();
@@ -70,8 +80,8 @@ export function BatchRejectionDialog({ username, folder, selected, onSaved, onCl
       const started = performance.now();
       try {
         const result = await rejectPendingMachineReview(target.path, target.name, savedReason, Math.max(0, Math.round(performance.now() - started)));
-        if (!result) completed.push({...target, status:"skipped", message:"已有审核结论（含本机待写结果），保留原结果"});
-        else if (result.pendingSourceWrite) { completed.push({...target, status:"local", message:"已保存本机，待写回 NAS；用户中心接收后计入审核统计"}); onSaved(target.path); }
+        if (result.skipped) completed.push({...target, status:"skipped", message:"已有审核结论", evidence:result.skipped});
+        else if (result.review?.pendingSourceWrite) { completed.push({...target, status:"local", message:"已保存本机，待写回 NAS；用户中心接收后计入审核统计"}); onSaved(target.path); }
         else {
           completed.push({...target, status:"rejected", message:"已保存不通过"});
           onSaved(target.path);
@@ -94,13 +104,16 @@ export function BatchRejectionDialog({ username, folder, selected, onSaved, onCl
       <header><h2 id="batch-rejection-title">{folder ? t("文件夹不通过") : t("批量不通过")}</h2><button type="button" className="icon-button" title={t("关闭")} aria-label={t("关闭批量不通过")} disabled={busy} onClick={onClose}><X size={18} /></button></header>
       <p className="batch-rejection-warning"><AlertTriangle size={18} />{t("此操作会将待处理数据标记为不通过，并记录审核人和原因。已有审核结果保持不变。")}</p>
       {tr(folder && <p className="batch-rejection-path">{folder}</p>)}
-      <p role="status">{preparing ? t("正在检查目录 QC · {0}", [tr(progress)]) : t("待处理 {0} 条{1}", [targets.length, excluded ? t(" · 已排除已审核或异常数据 {0} 条", [excluded]) : ""])}</p>
+      <p role="status">{preparing ? t("正在检查目录 QC · {0}", [tr(progress)]) : selected ? t("已选 {0} 条", [targets.length]) : t("待处理 {0} 条{1}", [targets.length, excluded ? t(" · 已排除已审核或异常数据 {0} 条", [excluded]) : ""])}</p>
       <RejectionReasons key={username} username={username} value={reasonChoice} onChange={setReasonChoice} disabled={busy || finished} />
       {reasonChoice === "其他原因" && <label className="rejection-detail">{t("其他原因")}<textarea autoFocus aria-label={t("批量不通过原因")} required maxLength={1000} value={reason} disabled={busy || finished} onChange={event => setReason(event.target.value)} /></label>}
       <label className="batch-rejection-confirm"><input type="checkbox" checked={confirmed} disabled={busy || finished} onChange={event => setConfirmed(event.target.checked)} />{t("我已确认这些未审核数据应判为不通过")}</label>
       {tr(error && <p role="alert" className="task-center-error">{tr(error)}</p>)}
       {(running || finished) && <p role="status">{t("成功") + " "}{success}{" " + t("· 本机待写") + " "}{local}{" " + t("· 跳过") + " "}{skipped}{" " + t("· 失败") + " "}{failed}{" " + t("· 未执行") + " "}{targets.length - results.length}{running ? t(" · {0}", [tr(progress)]) : ""}</p>}
-      {results.length > 0 && <ul className="batch-rejection-results">{results.map(item => <li key={item.path} className={item.status === "failed" ? "task-qc-error" : ""}><span>{item.name}</span><span>{tr(item.message)}</span></li>)}</ul>}
+      {results.length > 0 && <ul className="batch-rejection-results">{results.map(item => <li key={item.path} className={item.status === "failed" ? "task-qc-error" : ""}>
+        <span title={item.path}>{item.name}</span><span>{tr(item.message)}</span>
+        {item.evidence && <small className="batch-rejection-evidence">{skipDetails(item.evidence)}<br />{item.path}</small>}
+      </li>)}</ul>}
       <footer>{busy ? <button type="button" className="button button-secondary" onClick={() => void cancel()}><Square size={14} />{t("停止")}</button> : <button type="button" className="button button-secondary" onClick={onClose}>{finished ? t("完成") : t("取消")}</button>}
         {!finished && <button type="submit" className="button button-primary" disabled={busy || Boolean(error) || !targets.length || !confirmed || !resolvedReason}>{busy ? <LoaderCircle className="spin" size={16} /> : <X size={16} />}{t("确认不通过")}</button>}</footer>
     </form>
