@@ -485,10 +485,10 @@ lesson("outbound", "outbound-list", "查看、刷新、领取和释放外发批�
   on("领取并打开", "Claim and open"), observe(".outbound-progress", "已审、有效、无效、异常和合格率", "Reviewed, valid, invalid, anomalous and pass rate"),
   on("释放批次", "Release batch", finishNote),
 ], { needs: ["用测试账号打开尚未领取且媒体可读的外发测试批次。", "Use a test account with an unclaimed outbound test batch and readable media."], writes: true });
-lesson("outbound", "outbound-pending", "查看总进度并筛选未审核录制", "Check overall progress and filter unreviewed recordings", [
+lesson("outbound", "outbound-pending", "查看总进度并按审核结论筛选录制", "Check progress and filter recordings by decision", [
   outboundTab, observe(".outbound-queue-progress", "审核进度和已审有效率", "Review progress and valid rate", ["同一原始录制只计一次，已审有效率为有效条数除以已审条数。", "Each original recording counts once. The rate divides valid by reviewed recordings."]),
-  c(".outbound-queue-overview .outbound-pending-filter[aria-pressed=false]", "未审核", "Unreviewed"),
-  c(".outbound-queue-overview .outbound-pending-filter[aria-pressed=true]", "恢复完整列表", "Restore the full list"),
+  f(".outbound-conclusion-filter", "按审核结论筛选", "Filter by review decision", ["选择有效、无效、异常或未审核。匹配的录制在各批次下直接展开。", "Choose Valid, Invalid, Anomalous or Unreviewed. Matching recordings appear under their batches."]),
+  observe(".outbound-task-list", "查看录制和原因", "Read recording details and reasons", ["无效和异常录制会显示已保存的原因。可再选择一个已有原因，列表按原因数量降序并显示占比。选择全部结论恢复批次汇总。", "Invalid and anomalous recordings show their saved reasons. Use Reason to narrow the list, sorted by count with percentages. Select All decisions to restore the batch summary."]),
 ], { needs: outbound });
 lesson("outbound", "outbound-play", "切换录制和分段、同步播放并返回任务", "Switch recordings and parts, play in sync and return", [
   c(".outbound-recordings button:not(:disabled)", "选择测试录制", "Select a test recording"),

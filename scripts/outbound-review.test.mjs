@@ -100,8 +100,20 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
           if(window.fixtureHoldList)await new Promise(resolve=>window.fixtureReleaseList=resolve);
           if(window.fixtureListFails)throw Error('OUTBOUND_USER_CENTER_TIMEOUT');
           const batches=[structuredClone(window.fixtureBatch), ...(window.fixtureExtraBatches ? [1,2,3].map(i=>({...structuredClone(window.fixtureBatch),id:'other-'+i,name:'其他批次 '+i,customerId:i===1?'sjz':'star',
-            ...(i===2 ? {claim:'reviewer2',reviewed:2,valid:1,invalid:0,anomalous:1,rate:.5} : i===3 ? {claim:'reviewer2',reviewedElsewhere:[window.fixtureBatch.recordings[0].id]} : {})})) : [])]
+            ...(i===2 ? {claim:'reviewer2',reviewed:2,valid:1,invalid:0,anomalous:1,rate:.5,recordings:window.fixtureBatch.recordings.map((row,index)=>({...row,decision:{value:index?'anomalous':'valid',reason:index?'部分画面遮挡':undefined}}))}
+              : i===3 ? {claim:'reviewer2',reviewedElsewhere:[window.fixtureBatch.recordings[0].id]} : {})})) : [])]
             .filter(batch=>!input.datasetId||input.datasetId===batch.id);
+          if (window.fixtureInvalidBatch && (!input.datasetId || input.datasetId==='invalid-batch')) batches.push({
+            ...structuredClone(window.fixtureBatch),id:'invalid-batch',name:'无效样本批次',customerId:'sjz',claim:'reviewer2',
+            total:3,reviewed:3,valid:0,invalid:3,anomalous:0,rate:0,
+            recordings:[...window.fixtureBatch.recordings.map((row,index)=>({...row,decision:{value:'invalid',reason:index?' 镜头持续黑屏 ':'镜头持续黑屏'}})),
+              {id:'invalid-with-no-reason',name:'未填写原因的录制',decision:{value:'invalid'}}],
+          });
+          if (window.fixtureInvalidBatch && (!input.datasetId || input.datasetId==='another-invalid-batch')) batches.push({
+            ...structuredClone(window.fixtureBatch),id:'another-invalid-batch',name:'另一无效样本批次',customerId:'sjz',claim:'reviewer2',
+            total:1,reviewed:1,valid:0,invalid:1,anomalous:0,rate:0,
+            recordings:[{id:'bad-recording',name:'无效样本 004',decision:{value:'invalid',reason:'设备没有正确佩戴'}}],
+          });
           if(window.fixtureNewBatch)batches.push({...structuredClone(window.fixtureBatch),id:'new-upload',name:'新完成的星炬上传'});
           if(input.summary)for(const batch of batches)batch.recordings=[];
           const progress=batches.reduce((sum,batch)=>({total:sum.total+batch.total,reviewed:sum.reviewed+batch.reviewed,valid:sum.valid+batch.valid,invalid:sum.invalid+batch.invalid,anomalous:sum.anomalous+batch.anomalous}),{total:0,reviewed:0,valid:0,invalid:0,anomalous:0});
@@ -156,6 +168,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.getByRole('button',{name:'有效数据',exact:true}).count(),0);
     await page.getByRole('button',{name:'领取并打开'}).first().waitFor();
     const filter=page.getByRole('button',{name:'未审核',exact:true});
+    const conclusion=page.getByRole('combobox',{name:'审核结论',exact:true});
     const total=page.getByRole('progressbar',{name:'审核进度',exact:true});
     assert.equal(await total.getAttribute('aria-valuetext'),'2 / 8');
     const company=page.getByRole('combobox',{name:'供应商',exact:true});
@@ -170,11 +183,47 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await total.getAttribute('aria-valuetext'),'2 / 6');
     await company.selectOption('');
     assert.equal(await page.getByText('已审有效率 50%',{exact:true}).count(),1);
-    await filter.click();
-    assert.equal(await filter.getAttribute('aria-pressed'),'true');
+    const expanded = page.getByRole('list',{name:'符合筛选条件的录制'});
+    await conclusion.selectOption('valid');
+    await expanded.getByText('录制 001',{exact:true}).waitFor();
+    assert.equal(await expanded.getByRole('listitem').count(),1);
+    await conclusion.selectOption('anomalous');
+    await expanded.getByText('原因：部分画面遮挡',{exact:true}).waitFor();
+    assert.equal(await expanded.getByRole('listitem').count(),1);
+    const reasonFilter=page.getByRole('combobox',{name:'原因',exact:true});
+    await reasonFilter.selectOption('部分画面遮挡');
+    await page.evaluate(()=>{window.fixtureInvalidBatch=true;window.dispatchEvent(new Event('focus'));});
+    await conclusion.selectOption('invalid');
+    await expanded.getByText('原因：镜头持续黑屏',{exact:true}).first().waitFor();
+    assert.equal(await expanded.getByText('原因：未填写原因',{exact:true}).count(),1);
+    await reasonFilter.locator('option[value="设备没有正确佩戴"]').waitFor({state:'attached'});
+    assert.equal(await reasonFilter.inputValue(),'');
+    const reasonLabels=()=>reasonFilter.locator('option').allTextContents();
+    assert.deepEqual(await reasonLabels(),['全部原因','镜头持续黑屏 · 2 条 · 50%','设备没有正确佩戴 · 1 条 · 25%']);
+    const beforeReasonFilter=await page.evaluate(()=>window.fixtureCalls.filter(call=>call.action==='list'&&call.datasetId).length);
+    await reasonFilter.selectOption('镜头持续黑屏');
+    assert.equal(await expanded.getByRole('listitem').count(),2);
+    assert.equal((await reasonLabels())[1],'镜头持续黑屏 · 2 条 · 50%');
+    assert.equal(await page.getByText('另一无效样本批次',{exact:true}).count(),0);
+    await reasonFilter.selectOption('设备没有正确佩戴');
+    assert.equal(await expanded.getByRole('listitem').count(),1);
+    assert.equal(await page.getByText('无效样本批次',{exact:true}).count(),0);
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(call=>call.action==='list'&&call.datasetId).length),beforeReasonFilter);
+    await company.selectOption('star');
+    await page.getByText('没有符合筛选条件的录制',{exact:true}).waitFor();
+    await company.selectOption('sjz');
+    await expanded.getByText('原因：镜头持续黑屏',{exact:true}).first().waitFor();
+    assert.equal(await reasonFilter.inputValue(),'');
+    await page.evaluate(()=>{window.fixtureInvalidBatch=false;window.dispatchEvent(new Event('focus'));});
+    await page.getByText('无效样本批次',{exact:true}).waitFor({state:'detached'});
+    await company.selectOption('');
+    await conclusion.selectOption('pending');
+    assert.equal(await reasonFilter.count(),0);
     assert.equal(await page.getByText('其他批次 2',{exact:true}).count(),0);
     const other=page.locator('article').filter({hasText:'其他批次 3'});
-    assert.equal(await other.getByText(/未审核 1 条/).count(),1);
+    await other.getByRole('listitem').getByText('录制 002',{exact:true}).waitFor();
+    assert.equal(await other.getByRole('listitem').count(),1);
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.some(call=>call.action==='video-url')),false);
     assert.equal(await other.getByRole('button',{name:'审核员处理中'}).isDisabled(),true);
     for(const viewport of [{width:1440,height:920},{width:960,height:680},{width:390,height:844}]){
       await page.setViewportSize(viewport);
@@ -182,7 +231,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
       if(process.env.OUTBOUND_SCREENSHOT_DIR){mkdirSync(process.env.OUTBOUND_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.OUTBOUND_SCREENSHOT_DIR,`queue-${viewport.width}.png`)});}
     }
     await page.setViewportSize({width:1280,height:800});
-    await filter.click();
+    await conclusion.selectOption('');
     await page.getByText('其他批次 2',{exact:true}).waitFor();
     await page.evaluate(()=>{window.fixtureHoldList=true;window.dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('focus'));});
     await page.waitForFunction(()=>typeof window.fixtureReleaseList==='function');
@@ -196,10 +245,11 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.getByText('新完成的星炬上传',{exact:true}).isVisible(),true,'failed background refresh preserves the existing queue');
     await page.evaluate(()=>{window.fixtureListFails=false;window.fixtureNewBatch=false;window.dispatchEvent(new Event('focus'));});
     await page.getByText('新完成的星炬上传',{exact:true}).waitFor({state:'detached'});
-    const initialLists=await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='list').length);
-    await filter.click();
+    await conclusion.selectOption('pending');
+    await expanded.first().waitFor();
     await page.getByRole('button', { name: '领取并打开' }).first().click();
     await page.waitForFunction(()=>typeof window.fixtureReleaseClaim==='function');
+    const initialLists=await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='list'&&!x.datasetId).length);
     assert.equal(await page.locator('.outbound-task-actions .spin').count(),1,'only the selected batch shows progress');
     assert.equal(await page.getByRole('button',{name:'领取并打开'}).nth(1).isDisabled(),false,'unrelated batches remain actionable while this batch is pending');
     await page.evaluate(()=>{window.fixtureExtraBatches=false;window.fixtureHoldClaim=false;window.fixtureReleaseClaim();});
@@ -217,7 +267,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
       && [...document.querySelectorAll('video')].every(video => video.readyState >= 3));
     await page.waitForFunction(()=>!document.querySelector('.outbound-valid-button')?.disabled);
     assert.deepEqual(await page.evaluate(()=>[...new Set(window.fixtureCalls.filter(call=>call.action==='video-url').map(call=>call.mediaLane))].sort()),[0,1,2,3,4,5,6],'each of the seven cameras selects its independent native origin');
-    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='list').length),initialLists,'workspace does not refetch every batch');
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(x=>x.action==='list'&&!x.datasetId).length),initialLists,'workspace does not refetch every batch');
     const displayCalls=await page.evaluate(()=>window.fixtureCalls.length);
     const primary=page.locator('.outbound-video-item.is-primary');
     const primarySource=await primary.locator('video').getAttribute('src');
