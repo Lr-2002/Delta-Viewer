@@ -73,7 +73,6 @@ struct Route {
     released: AtomicBool,
     // Verified object metadata only; every block still rechecks live authority.
     verified: Mutex<Option<(u64, Option<String>)>>,
-    inspected: tokio::sync::Mutex<Option<bool>>,
     failure: Mutex<Option<&'static str>>,
 }
 // Drive upstream bodies even while the browser applies socket backpressure.
@@ -225,7 +224,6 @@ impl OutboundMediaServer {
                 created: Instant::now(),
                 released: AtomicBool::new(false),
                 verified: Mutex::new(None),
-                inspected: tokio::sync::Mutex::new(None),
                 failure: Mutex::new(None),
             }),
         );
@@ -435,18 +433,13 @@ impl OutboundMediaServer {
                                 .ok_or(())?,
                         )
                         .ok_or_else(|| route.fail("OUTBOUND_MEDIA_DURATION_INVALID"))?;
-                        // A parsed movie header also proves the container has
-                        // an index. Reuse that check for playback on this route.
-                        let mut inspected = route.inspected.lock().await;
                         let mut verified = route.verified.lock().map_err(|_| ())?;
-                        if inspected.is_none()
-                            && verified
-                                .as_ref()
-                                .is_none_or(|prior| prior.0 == total && prior.1 == first.etag)
-                        {
-                            *verified = Some((total, first.etag.clone()));
-                            *inspected = Some(true);
+                        let actual = (total, first.etag.clone());
+                        if verified.as_ref().is_some_and(|prior| prior != &actual) {
+                            route.fail("OUTBOUND_MEDIA_INTEGRITY");
+                            return Err(());
                         }
+                        *verified = Some(actual);
                         return Ok(duration);
                     }
                     offset += size;
@@ -530,9 +523,6 @@ impl OutboundMediaServer {
         request: &Request,
         writer: &mut OwnedWriteHalf,
     ) -> Result<(), ()> {
-        if request.method == "GET" {
-            self.inspect_mp4(route).await?;
-        }
         let open = request
             .range
             .as_deref()
@@ -777,54 +767,6 @@ impl OutboundMediaServer {
             etag,
             body,
         })
-    }
-    async fn inspect_mp4(&self, route: &Route) -> Result<(), ()> {
-        let mut inspected = route.inspected.lock().await;
-        if let Some(valid) = *inspected {
-            return if valid { Ok(()) } else { Err(()) };
-        }
-        // Skip media payload by declared box lengths. A missing end index must
-        // never cause WebView2 to download hundreds of MiB looking for it.
-        let first = self.part(route, 0, 65535, None).await?;
-        let total = first.total;
-        let etag = first.etag.as_deref();
-        let mut offset = 0_u64;
-        for _ in 0..64 {
-            if offset == total {
-                route.fail("OUTBOUND_MEDIA_INDEX_MISSING");
-                *inspected = Some(false);
-                return Err(());
-            }
-            let extra;
-            let bytes = if offset.saturating_add(16) <= first.body.len() as u64 {
-                &first.body[offset as usize..offset as usize + 16]
-            } else {
-                extra = self
-                    .part(
-                        route,
-                        offset,
-                        offset.saturating_add(15).min(total - 1),
-                        Some((total, etag)),
-                    )
-                    .await?;
-                &extra.body[..]
-            };
-            let header = mp4_box(bytes, offset, total);
-            let Some((size, kind)) = header else {
-                route.fail("OUTBOUND_MEDIA_CONTAINER_INVALID");
-                *inspected = Some(false);
-                return Err(());
-            };
-            if &kind == b"moov" {
-                *route.verified.lock().map_err(|_| ())? = Some((total, first.etag.clone()));
-                *inspected = Some(true);
-                return Ok(());
-            }
-            offset += size;
-        }
-        // Unusual containers beyond the inspection budget remain decoder-owned.
-        *inspected = Some(true);
-        Ok(())
     }
 }
 fn mp4_children(mut bytes: &[u8]) -> Option<Vec<([u8; 4], &[u8])>> {
@@ -1128,7 +1070,6 @@ mod tests {
                 created: Instant::now(),
                 released: AtomicBool::new(false),
                 verified: Mutex::new(None),
-                inspected: tokio::sync::Mutex::new(None),
                 failure: Mutex::new(None),
             }),
         );
@@ -1562,23 +1503,6 @@ mod tests {
                 .unwrap();
             let server = OutboundMediaServer::with_client(client.clone()).unwrap();
             let auth = auth();
-            let url = fixture_route(&server, &auth, origin);
-            let route = server
-                .routes
-                .lock()
-                .unwrap()
-                .get(&"a".repeat(64))
-                .unwrap()
-                .clone();
-            server.inspect_mp4(&route).await.unwrap();
-            assert!(
-                read_bytes.load(Ordering::SeqCst) <= 65552,
-                "tail index is found by skipping 512 MiB of payload"
-            );
-            let before = read_bytes.load(Ordering::SeqCst);
-            server.inspect_mp4(&route).await.unwrap();
-            assert_eq!(read_bytes.load(Ordering::SeqCst), before);
-            assert_eq!(server.status(&auth, &url).unwrap(), None);
             for (value, code) in [
                 (1, "OUTBOUND_MEDIA_INDEX_MISSING"),
                 (2, "OUTBOUND_MEDIA_CONTAINER_INVALID"),
@@ -1588,15 +1512,26 @@ mod tests {
                 mode.store(value, Ordering::SeqCst);
                 read_bytes.store(0, Ordering::SeqCst);
                 let url = fixture_route(&server, &auth, origin);
-                assert!(client
-                    .get(&url)
-                    .header("Range", "bytes=0-")
-                    .send()
+                assert!(server
+                    .metadata(&auth, &url)
                     .await
-                    .is_err());
+                    .unwrap_err()
+                    .to_string()
+                    .contains(code));
                 assert_eq!(server.status(&auth, &url).unwrap(), Some(code));
                 assert!(read_bytes.load(Ordering::SeqCst) <= 65536);
+                if value < 3 {
+                    let response = client
+                        .get(&url)
+                        .header("Range", "bytes=0-15")
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status().as_u16(), 206);
+                    assert_eq!(response.bytes().await.unwrap().len(), 16);
+                }
             }
+            let url = fixture_route(&server, &auth, origin);
             let other = self::auth();
             let (user, _) = other.managed_session().unwrap();
             other
@@ -1664,7 +1599,6 @@ mod tests {
                     let mut routes = server.routes.lock().unwrap();
                     let route = Arc::get_mut(routes.values_mut().next().unwrap()).unwrap();
                     route.plan = ReadPlan::for_lane(lane);
-                    *route.inspected.get_mut() = Some(true);
                     *route.verified.get_mut().unwrap() =
                         Some((RESPONSE_BYTES, Some("\"fixture\"".into())));
                 }

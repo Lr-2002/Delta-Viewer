@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export interface OutboundVideo { segment: number; label: string; size: number; sha256: string | null }
+export interface OutboundVideo { segment: number; label: string; size: number; sha256: string | null; part?: number }
 export type OutboundDecisionValue = "valid" | "invalid" | "anomalous";
-export type OutboundReviewValue = OutboundDecisionValue | "exclude-damaged";
+export type OutboundReviewValue = OutboundDecisionValue | "exclude-damaged" | "restore-damaged" | "set-damaged-segments";
 export interface OutboundDecision { value: OutboundDecisionValue; reason?: string; actor: string; at: string }
-export interface OutboundRecording { id: string; name: string; videos: OutboundVideo[]; decision: OutboundDecision | null }
+export interface OutboundRecording { id: string; name: string; videos: OutboundVideo[]; decision: OutboundDecision | null; excludedParts?: number[]; cutDatasetId?: string }
 export interface OutboundBatch {
   reasonOptions?: string[];
   anomalousReasonOptions?: string[];
@@ -13,7 +13,10 @@ export interface OutboundBatch {
   reviewedElsewhere?: string[];
   customerId?: string | null;
   supportsDamageExclusion?: boolean;
+  supportsSegmentExclusion?: boolean;
   excludedRecordingIds?: string[];
+  recoverableExclusionCount?: number;
+  recoverableExclusions?: Pick<OutboundRecording, "id" | "name">[];
 }
 export type OutboundReviewSelection = OutboundBatch & {pendingOnly?: boolean};
 export type OutboundProgress = {total: number; reviewed: number; valid: number; invalid: number; anomalous: number};
@@ -45,7 +48,7 @@ export function outboundVideoParts(videos: OutboundVideo[]) {
   });
   // A missing file must leave a hole in its real part, not shift the next
   // camera segment into the wrong time interval.
-  const partOf = (file: OutboundVideo, index: number) => Number(/-(\d+)\.mp4$/i.exec(file.label)?.[1] ?? index);
+  const partOf = (file: OutboundVideo, index: number) => file.part ?? Number(/-(\d+)\.mp4$/i.exec(file.label)?.[1] ?? index);
   const keyed = new Map(cameraNames.map(camera => [camera, new Map((cameras.get(camera)??[]).map((file, index) => [partOf(file, index), file]))]));
   const partNumbers = [...new Set([...keyed.values()].flatMap(files => [...files.keys()]))].sort((a, b) => a - b);
   return { cameraCount: cameraNames.length, sourceCameraCount: cameras.size, cameras: cameraNames, primaryCamera: "cam0", partNumbers,
@@ -89,11 +92,11 @@ export const saveOutboundReasonOption = (reason: string, category:"invalid"|"ano
   outboundCall<{ reasonOptions: string[] }>({ action: "save-reason-option", reason, category,...(remove?{remove:true}:{}) });
 export const listOutboundReasonHistory = (category: "invalid" | "anomalous") =>
   outboundCall<{ reasons: string[] }>({action:"list",reasonHistory:category});
-export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: OutboundReviewValue, reason?: string, protocol?:OutboundProtocol, reasonSource?:"one-time") {
+export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: OutboundReviewValue, reason?: string, protocol?:OutboundProtocol, reasonSource?:"one-time", excludedParts?:number[]) {
   const input={action,datasetId:batch.id,version:batch.version,
-    ...(recordingId?{recordingId,value,...(reason?{reason,reasonCategory:value,...(reasonSource?{reasonSource}:{})}:{})}:{})};
-  // Keep a full claim response so entering the workspace needs no second read.
-  const compact=action!=="claim"&&!protocol?.legacyMutation;
+    ...(recordingId?{recordingId,value,...(excludedParts?{excludedParts}:{}),...(reason?{reason,reasonCategory:value,...(reasonSource?{reasonSource}:{})}:{})}:{})};
+  // Claim and restore can introduce recordings whose video lists are not in memory.
+  const compact=action!=="claim"&&value!=="restore-damaged"&&value!=="set-damaged-segments"&&!protocol?.legacyMutation;
   let result:{batch:OutboundBatch};
   try { result=await outboundCall({...input,...(compact?{compact:true}:{})}); }
   catch(error) {
@@ -136,6 +139,8 @@ export function outboundError(reason: unknown) {
   if (raw.includes("AUTH_REQUIRED") || raw.includes("OUTBOUND_HTTP_401")) return "登录会话已失效，请保存当前工作后重新登录。";
   if (raw.includes("OUTBOUND_ACCOUNT_CHANGED")) return "登录账号或权限已变化，请重新打开任务中心核对。";
   if (raw.includes("OUTBOUND_NOT_CONFIGURED")) return "外发审核服务尚未开通，请联系管理员。";
+  if (raw.includes("OUTBOUND_SEGMENT_CONFLICT")) return "请在最初排除片段的批次中修改选择。";
+  if (raw.includes("OUTBOUND_DAMAGE_STILL_EXCLUDED")) return "本条还有其他排除记录，请联系管理员核对。";
   if (raw.includes("OUTBOUND_ALREADY_CLAIMED")) return "此批次已被其他审核员领取。";
   if (raw.includes("OUTBOUND_VERSION_CONFLICT")) return "批次状态已更新，请刷新后重试。";
   if (raw.includes("OUTBOUND_NOT_OWNER")) return "请先领取此批次。";
