@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export interface OutboundVideo { segment: number; label: string; size: number; sha256: string | null }
 export type OutboundDecisionValue = "valid" | "invalid" | "anomalous";
+export type OutboundReviewValue = OutboundDecisionValue | "exclude-damaged";
 export interface OutboundDecision { value: OutboundDecisionValue; reason?: string; actor: string; at: string }
 export interface OutboundRecording { id: string; name: string; videos: OutboundVideo[]; decision: OutboundDecision | null }
 export interface OutboundBatch {
@@ -11,13 +12,16 @@ export interface OutboundBatch {
   valid: number; invalid: number; anomalous?: number; decisionValues?: OutboundDecisionValue[]; rate: number | null; recordings: OutboundRecording[];
   reviewedElsewhere?: string[];
   customerId?: string | null;
+  supportsDamageExclusion?: boolean;
+  excludedRecordingIds?: string[];
 }
 export type OutboundReviewSelection = OutboundBatch & {pendingOnly?: boolean};
 export type OutboundProgress = {total: number; reviewed: number; valid: number; invalid: number; anomalous: number};
 export type OutboundCompany = {id: string; name: string};
-export const OUTBOUND_INVALID_REASONS = ["无实际意义动作", "测试数据", "设备没有正确佩戴", "数据缺失", "视频损坏"] as const;
+export const OUTBOUND_INVALID_REASONS = ["无实际意义动作", "测试数据", "设备没有正确佩戴", "数据缺失"] as const;
 
-export const OUTBOUND_ANOMALOUS_REASONS = ["部分动作无效", "部分画面遮挡", "部分时段设备佩戴异常", "部分数据缺失", "部分视频损坏"] as const;
+export const OUTBOUND_ANOMALOUS_REASONS = ["部分动作无效", "部分画面遮挡", "部分时段设备佩戴异常", "部分数据缺失"] as const;
+export const isOutboundDamageReason = (reason: string) => ["视频损坏", "部分视频损坏"].includes(reason.trim());
 
 export const OUTBOUND_CAMERAS = ["cam0", "cam1", "cam2", "t265_left", "t265_right", "extension_left", "extension_right"] as const;
 
@@ -85,7 +89,7 @@ export const saveOutboundReasonOption = (reason: string, category:"invalid"|"ano
   outboundCall<{ reasonOptions: string[] }>({ action: "save-reason-option", reason, category,...(remove?{remove:true}:{}) });
 export const listOutboundReasonHistory = (category: "invalid" | "anomalous") =>
   outboundCall<{ reasons: string[] }>({action:"list",reasonHistory:category});
-export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: OutboundDecisionValue, reason?: string, protocol?:OutboundProtocol, reasonSource?:"one-time") {
+export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" | "release" | "decide", recordingId?: string, value?: OutboundReviewValue, reason?: string, protocol?:OutboundProtocol, reasonSource?:"one-time") {
   const input={action,datasetId:batch.id,version:batch.version,
     ...(recordingId?{recordingId,value,...(reason?{reason,reasonCategory:value,...(reasonSource?{reasonSource}:{})}:{})}:{})};
   // Keep a full claim response so entering the workspace needs no second read.
@@ -93,7 +97,7 @@ export async function changeOutboundBatch(batch: OutboundBatch, action: "claim" 
   let result:{batch:OutboundBatch};
   try { result=await outboundCall({...input,...(compact?{compact:true}:{})}); }
   catch(error) {
-    if(!compact||!String(error).includes("OUTBOUND_REQUEST_INVALID"))throw error;
+    if(value==="exclude-damaged"||!compact||!String(error).includes("OUTBOUND_REQUEST_INVALID"))throw error;
     if(protocol)protocol.legacyMutation=true;
     result=await outboundCall(input);
   }

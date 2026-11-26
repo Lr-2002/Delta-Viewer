@@ -148,7 +148,13 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
             window.fixtureReasonHistory[input.value]=[input.reason,...history.filter(reason=>reason!==input.reason)];
           }
           const recording = window.fixtureBatch.recordings.find(row => row.id === input.recordingId);
-          recording.decision = { value: input.value, ...(input.reason ? { reason: input.reason } : {}), actor: 'reviewer1', at: new Date().toISOString() };
+          if(input.value==='exclude-damaged'){
+            (window.fixtureBatch.excludedRecordingIds??=[]).push(recording.id);
+            window.fixtureBatch.recordings=window.fixtureBatch.recordings.filter(row=>row!==recording);
+            window.fixtureBatch.total--;
+          }else{
+            recording.decision = { value: input.value, ...(input.reason ? { reason: input.reason } : {}), actor: 'reviewer1', at: new Date().toISOString() };
+          }
           const reviewed = window.fixtureBatch.recordings.filter(row => row.decision);
           window.fixtureBatch.reviewed = reviewed.length;
           window.fixtureBatch.valid = reviewed.filter(row => row.decision.value === 'valid').length;
@@ -689,11 +695,12 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.getByRole('button',{name:'无效数据',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'无效数据',exact:true}).click();
     await page.getByRole('button',{name:'常用原因',exact:true}).click();
-    await page.getByRole('button',{name:'视频损坏',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'视频损坏',exact:true}).count(),0);
+    await page.getByRole('button',{name:'数据缺失',exact:true}).click();
     await page.getByRole('button',{name:'确认无效',exact:true}).click();
     await page.getByRole('button',{name:'录制 002 待审',exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'录制 002 待审',exact:true}).getAttribute('aria-pressed'),'true');
-    assert.equal(await page.evaluate(()=>window.fixtureBatch.recordings[0].decision.reason),'视频损坏');
+    assert.equal(await page.evaluate(()=>window.fixtureBatch.recordings[0].decision.reason),'数据缺失');
     await page.evaluate(()=>{window.fixtureVideoFails=false;window.fixtureMediaCode=null;window.fixtureBatch.recordings[0].videos=window.fixtureBatch.recordings[0].videos.slice(0,6);});
     await page.getByRole('button',{name:'刷新外发批次'}).click();
     await page.getByRole('button',{name:'录制 001 无效',exact:true}).click();
@@ -716,6 +723,26 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await page.getByRole('button',{name:'确认无效',exact:true}).click();
     assert.equal(await page.evaluate(()=>window.fixtureBatch.recordings[0].decision.reason),'数据缺失');
     assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(row=>row.action==='decide').length),3,'source failures do not replay review writes');
+    await page.evaluate(()=>{
+      window.fixtureBatch.supportsDamageExclusion=true;
+      window.fixtureUncertainAction='decide';
+      window.confirm=async()=>false;
+    });
+    await page.getByRole('button',{name:'刷新外发批次'}).click();
+    await page.getByRole('button',{name:'录制 001 无效',exact:true}).click();
+    await page.getByRole('button',{name:'视频损坏，排除本条',exact:true}).click();
+    const exclusion=page.getByRole('dialog',{name:'视频损坏，排除本条',exact:true});
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.some(row=>row.value==='exclude-damaged')),false);
+    await exclusion.getByRole('button',{name:'取消',exact:true}).click();
+    await exclusion.waitFor({state:'hidden'});
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.some(row=>row.value==='exclude-damaged')),false);
+    await page.getByRole('button',{name:'视频损坏，排除本条',exact:true}).click();
+    await exclusion.getByRole('button',{name:'确认排除',exact:true}).click();
+    await page.getByText('已排除损坏录制。',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'录制 002 待审',exact:true}).and(page.locator('[aria-pressed=true]')).waitFor();
+    assert.equal(await page.getByRole('button',{name:/录制 001/}).count(),0);
+    assert.deepEqual(await page.evaluate(()=>[window.fixtureBatch.total,window.fixtureBatch.reviewed,window.fixtureBatch.invalid,
+      window.fixtureCalls.filter(row=>row.value==='exclude-damaged').length]),[1,0,0,1]);
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__outbound`);
     await page.getByRole('button',{name:'领取并打开'}).first().waitFor();
     await page.evaluate(()=>{window.fixtureHoldClaim=false;window.fixtureUncertainAction='claim';window.fixtureMediaAllowed=true;window.fixtureSlowSegment=null;});

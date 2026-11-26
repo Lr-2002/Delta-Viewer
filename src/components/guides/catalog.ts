@@ -505,7 +505,7 @@ lesson("outbound", "outbound-picture", "切换铺满 / 完整画面并放大", "
   c(":fullscreen .outbound-expand", "退出相机全屏", "Exit camera fullscreen"),
 ], { needs: outbound });
 lesson("outbound", "outbound-failure", "识别相机缺失和重试失败视频", "Identify missing cameras and retry failed videos", [
-  observe(".outbound-video-grid,.outbound-video-stage", "就绪、加载、缺失或失败状态", "Ready, loading, missing or failed status", ["缺少 MP4 索引、网络异常和票据过期会有不同提示。有效数据必须全部视频就绪；明确缺失或读取失败可填写实际原因提交异常或无效。仅加载中不代表文件损坏。", "Missing MP4 indexes, network errors and expired tickets have different messages. Valid requires all videos ready. Confirmed missing or failed sources can be marked anomalous or invalid with an accurate reason. Loading alone does not prove corruption."]),
+  observe(".outbound-video-grid,.outbound-video-stage", "就绪、加载、缺失或失败状态", "Ready, loading, missing or failed status", ["缺少 MP4 索引、网络异常和票据过期会有不同提示。确认文件损坏后，可选择「视频损坏，排除本条」。批次进度和交付平台统计会同步扣除这条录制。", "Missing MP4 indexes, network errors and expired tickets have different messages. After confirming file damage, select Exclude damaged recording. Batch progress and delivery statistics will omit the recording."]),
   on("重试失败视频", "Retry failed videos"),
 ], { needs: ["打开带有可重试媒体故障的外发测试录制。", "Use an outbound test recording with a retryable media failure."] });
 lesson("outbound", "outbound-valid", "判为有效并核对下一条", "Mark valid and verify progression", [
