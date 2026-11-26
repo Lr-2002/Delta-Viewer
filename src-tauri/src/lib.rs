@@ -32,6 +32,7 @@ mod model;
 mod mp4_clock;
 mod mp4_preview_cache;
 mod operation_history;
+mod outbound_clip;
 mod outbound_media;
 mod outbound_review;
 mod playback_cache;
@@ -1654,6 +1655,35 @@ async fn outbound_review_call(
     )
     .await
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn outbound_clip_export(
+    app: AppHandle,
+    auth: State<'_, AuthState>,
+    media: State<'_, Option<outbound_media::OutboundMediaServer>>,
+    control: State<'_, TaskControl>,
+    request: outbound_clip::ClipRequest,
+    operation_id: u64,
+) -> Result<outbound_clip::ClipResult, String> {
+    auth.require_managed_user().map_err(|e| e.to_string())?;
+    let data = app_data_root(&app)?;
+    let media = media
+        .inner()
+        .as_ref()
+        .ok_or("OUTBOUND_MEDIA_TRANSPORT_UNAVAILABLE")?;
+    let guard = control.start(operation_id)?;
+    outbound_clip::export(
+        &app,
+        &data,
+        auth.inner(),
+        media,
+        request,
+        operation_id,
+        &guard.cancelled(),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3360,6 +3390,7 @@ pub fn run() {
             cloud_qc_configure,
             cloud_qc_call,
             outbound_review_call,
+            outbound_clip_export,
             cloud_qc_fetch,
             cloud_qc_sync,
             cloud_qc_pending,

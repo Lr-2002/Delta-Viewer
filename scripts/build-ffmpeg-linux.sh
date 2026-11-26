@@ -90,12 +90,12 @@ export TZ=UTC
     --disable-x86asm \
     --enable-ffmpeg \
     --enable-protocol=file,pipe \
-    --enable-demuxer=rawvideo \
+    --enable-demuxer=rawvideo,mov \
     --enable-muxer=mp4 \
-    --enable-decoder=rawvideo \
-    --enable-encoder=mpeg4 \
-    --enable-parser=mjpeg,mpeg4video \
-    --enable-filter=format,scale
+    --enable-decoder=rawvideo,h264,hevc,mpeg4,mjpeg,aac \
+    --enable-encoder=mpeg4,aac \
+    --enable-parser=mjpeg,mpeg4video,h264,hevc,aac \
+    --enable-filter=format,scale,pad,setsar,setpts,aformat,aresample,atrim,asetpts,apad,anullsrc,concat
   make -j"$(nproc)" ffmpeg
 )
 

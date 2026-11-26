@@ -84,12 +84,12 @@ export TZ=UTC
     --disable-x86asm \
     --enable-ffmpeg \
     --enable-protocol=file,pipe \
-    --enable-demuxer=image2 \
+    --enable-demuxer=image2,mov \
     --enable-muxer=mp4 \
-    --enable-decoder=mjpeg \
-    --enable-encoder=mpeg4 \
-    --enable-parser=mjpeg,mpeg4video \
-    --enable-filter=format,scale
+    --enable-decoder=mjpeg,h264,hevc,mpeg4,aac \
+    --enable-encoder=mpeg4,aac \
+    --enable-parser=mjpeg,mpeg4video,h264,hevc,aac \
+    --enable-filter=format,scale,pad,setsar,setpts,aformat,aresample,atrim,asetpts,apad,anullsrc,concat
   make -j"$(sysctl -n hw.ncpu)" ffmpeg
 )
 

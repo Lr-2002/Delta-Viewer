@@ -474,6 +474,66 @@ impl OutboundMediaServer {
         }
         Ok(())
     }
+
+    pub(crate) async fn download_clip_source(
+        &self,
+        auth: &AuthState,
+        url: &str,
+        expected_size: u64,
+        expected_digest: Option<&str>,
+        destination: &std::path::Path,
+    ) -> AppResult<()> {
+        use sha2::{Digest, Sha256};
+        let session = auth.managed_session()?;
+        let route = self
+            .routes
+            .lock()
+            .map_err(|_| invalid())?
+            .get(&self.local_token(url)?)
+            .filter(|route| route.session == session && route.valid())
+            .cloned()
+            .ok_or_else(invalid)?;
+        let error = || AppError::Message("OUTBOUND_CLIP_SOURCE_READ".into());
+        let first = self
+            .part(&route, 0, PART - 1, None)
+            .await
+            .map_err(|_| error())?;
+        if first.total != expected_size {
+            return Err(error());
+        }
+        let mut output = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .await?;
+        let mut digest = Sha256::new();
+        output.write_all(&first.body).await?;
+        digest.update(&first.body);
+        let tasks = (first.end + 1..expected_size)
+            .step_by(PART as usize)
+            .map(|start| {
+                self.spawn_part(
+                    &route,
+                    start,
+                    (start + PART - 1).min(expected_size - 1),
+                    expected_size,
+                    first.etag.clone(),
+                )
+            });
+        let mut chunks = stream::iter(tasks).buffered(4);
+        while let Some(chunk) = chunks.next().await {
+            let chunk = chunk.map_err(|_| error())?;
+            output.write_all(&chunk.body).await?;
+            digest.update(&chunk.body);
+        }
+        output.flush().await?;
+        if !route.valid()
+            || expected_digest.is_some_and(|hash| format!("{:x}", digest.finalize()) != hash)
+        {
+            return Err(error());
+        }
+        Ok(())
+    }
     async fn serve(&self, mut socket: TcpStream) -> std::io::Result<()> {
         socket.set_nodelay(true)?;
         let Ok(Ok(request)) =
@@ -769,7 +829,7 @@ impl OutboundMediaServer {
         })
     }
 }
-fn mp4_children(mut bytes: &[u8]) -> Option<Vec<([u8; 4], &[u8])>> {
+pub(crate) fn mp4_children(mut bytes: &[u8]) -> Option<Vec<([u8; 4], &[u8])>> {
     let mut children = Vec::new();
     while !bytes.is_empty() {
         if children.len() >= 128 {
@@ -786,7 +846,7 @@ fn mp4_children(mut bytes: &[u8]) -> Option<Vec<([u8; 4], &[u8])>> {
     }
     Some(children)
 }
-fn mp4_child<'a>(bytes: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
+pub(crate) fn mp4_child<'a>(bytes: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
     mp4_children(bytes)?
         .into_iter()
         .find_map(|(k, p)| (&k == kind).then_some(p))
@@ -877,7 +937,7 @@ fn composition_clock(table: &[u8], delta: i64, samples: i64) -> Option<()> {
         .all(|pair| pair[0].1 == pair[1].0)
         .then_some(())
 }
-fn movie_clock(payload: &[u8]) -> Option<f64> {
+pub(crate) fn movie_clock(payload: &[u8]) -> Option<f64> {
     let (scale_at, duration_at, wide) = match payload.first()? {
         0 => (12, 16, false),
         1 => (20, 24, true),
@@ -897,7 +957,7 @@ fn movie_clock(payload: &[u8]) -> Option<f64> {
     let seconds = ticks as f64 / f64::from(scale);
     (seconds.is_finite() && seconds > 0.).then_some(seconds)
 }
-fn mp4_box(bytes: &[u8], offset: u64, total: u64) -> Option<(u64, [u8; 4])> {
+pub(crate) fn mp4_box(bytes: &[u8], offset: u64, total: u64) -> Option<(u64, [u8; 4])> {
     let kind = bytes.get(4..8)?.try_into().ok()?;
     let size = u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?);
     let size = match size {
