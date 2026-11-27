@@ -75,6 +75,13 @@ export const fetchOutboundMetadata = (url:string) => outboundCall<{duration:numb
 export const fetchOutboundFrameStep = (url:string) => outboundCall<{frameStep:number|null}>({action:"media-frame-step",url});
 
 const outboundCall = <T,>(input: Record<string, unknown>) => invoke<T>("outbound_review_call", { input });
+export type OutboundCacheVideo = {url:string;size:number;sha256:string};
+export type OutboundCacheStatus = {bytes:number;limited:boolean;cleanupFailed:boolean};
+export const cacheOutboundVideos = (videos:OutboundCacheVideo[]) => outboundCall({action:"media-cache",videos});
+export const pauseOutboundCache = () => outboundCall({action:"media-cache-pause"});
+export const outboundCacheStatus = (clear=false) =>
+  outboundCall<OutboundCacheStatus>({action:clear?"media-cache-clear":"media-cache-status"});
+
 export type OutboundTrimTarget = {datasetId:string;recordingId:string;operationId:string};
 export type OutboundTrimRequest = OutboundTrimTarget & {
   version:number;sourceRevision:string;description:string;parts:[number,[number,number][]][];
@@ -161,6 +168,7 @@ export function outboundError(reason: unknown) {
       OUTBOUND_TRIM_BUSY:"原始归档正在处理其他剪切，请稍后重试。",
       OUTBOUND_TRIM_COMMITTING:"原始归档正在更新，请稍后刷新。",
       OUTBOUND_TRIM_INTERRUPTED:"剪切保存已中断，可重试继续保存。",
+      OUTBOUND_TRIM_STATUS_UNCONFIRMED:"暂未确认剪切保存结果。可点击保存再次核对原操作。",
       OUTBOUND_TRIM_FAILED:"剪切保存失败，请重试。",
       OUTBOUND_TRIM_SOURCE_CHANGED:"源视频在剪切期间发生变化，请刷新后重试。",
       OUTBOUND_TRIM_RANGE_INVALID:"剪切范围无效，请调整分割位置后再保存。",

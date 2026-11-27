@@ -14,6 +14,32 @@ pub async fn call(
         .as_str()
         .ok_or_else(|| AppError::Message("OUTBOUND_REQUEST_INVALID".into()))?
         .to_owned();
+    if matches!(
+        action.as_str(),
+        "media-cache" | "media-cache-pause" | "media-cache-status" | "media-cache-clear"
+    ) {
+        let media = media
+            .ok_or_else(|| AppError::Message("OUTBOUND_MEDIA_TRANSPORT_UNAVAILABLE".into()))?;
+        auth.managed_session()?;
+        if action == "media-cache-pause" {
+            media.pause_prefetch();
+            return Ok(serde_json::json!({}));
+        }
+        if action == "media-cache" {
+            let videos = serde_json::from_value(input["videos"].take())
+                .map_err(|_| AppError::Message("OUTBOUND_REQUEST_INVALID".into()))?;
+            media.prefetch(data.to_path_buf(), auth, videos)?;
+            return Ok(serde_json::json!({}));
+        }
+        let media = media.clone();
+        let data = data.to_path_buf();
+        let status = tokio::task::spawn_blocking(move || {
+            media.cache_status(&data, action == "media-cache-clear")
+        })
+        .await
+        .map_err(|_| AppError::Message("OUTBOUND_CACHE_UNAVAILABLE".into()))??;
+        return Ok(serde_json::json!(status));
+    }
     if matches!(action.as_str(), "media-metadata" | "media-frame-step") {
         if input.as_object().is_none_or(|object| object.len() != 2) {
             return Err(AppError::Message("OUTBOUND_REQUEST_INVALID".into()));

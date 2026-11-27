@@ -22,6 +22,23 @@ test('rapid recording changes share four in-flight tickets, drop superseded queu
  select('closed');await flush();loader.cancel();for(const item of pending.splice(0))item.resolve('url:'+item.item);
  await flush();assert.equal(released.length,8);assert.equal(loaded.length,7);assert.equal(calls.length,15);
 });
+test('later MP4 clock reads wait for the current recording to produce frames',async()=>{
+ const loader=new OutboundVideoLoader(()=>{}),calls=[];
+ let completed=0;
+ const replace=items=>loader.replace(items,async item=>{calls.push(item);return item},()=>{},()=>{},()=>completed++,1);
+ replace(['first camera','later clock']);
+ await flush();
+ assert.deepEqual(calls,['first camera']);
+ assert.equal(completed,0);
+ replace(['next camera','next clock']);
+ await flush();
+ assert.deepEqual(calls,['first camera','next camera']);
+ loader.resume();
+ await flush();
+ assert.deepEqual(calls,['first camera','next camera','next clock']);
+ assert.equal(completed,1);
+});
+
 test('a failed camera is reported once and cannot block the next recording',async()=>{
  const loader=new OutboundVideoLoader(()=>{}),failed=[],loaded=[];let done=0;
  loader.replace([0,1,2,3,4],async item=>{if(item===2)throw Error('synthetic');return String(item)},(item)=>loaded.push(item),(item)=>failed.push(item),()=>done++);

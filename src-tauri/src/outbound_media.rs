@@ -3,20 +3,22 @@ use crate::{
     error::{AppError, AppResult},
     identity::AuthState,
     model::UserIdentity,
+    outbound_cache::{CacheFile, CacheStatus, CacheVideo, OutboundCache},
 };
 use futures_util::{stream, StreamExt};
 use reqwest::{Client, Response, Url};
 use std::{
     collections::HashMap,
     net::SocketAddr,
+    path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     net::{tcp::OwnedWriteHalf, TcpListener, TcpStream},
     sync::Semaphore,
 };
@@ -33,6 +35,9 @@ pub struct OutboundMediaServer {
     addresses: Arc<Vec<SocketAddr>>,
     routes: Arc<Mutex<HashMap<String, Arc<Route>>>>,
     client: Client,
+    cache: Arc<OutboundCache>,
+    cache_generation: Arc<AtomicU64>,
+    cache_slot: Arc<Semaphore>,
 }
 #[derive(Clone, Copy)]
 struct ReadPlan {
@@ -74,6 +79,7 @@ struct Route {
     // Verified object metadata only; every block still rechecks live authority.
     verified: Mutex<Option<(u64, Option<String>)>>,
     failure: Mutex<Option<&'static str>>,
+    cached: Mutex<Option<Arc<CacheFile>>>,
 }
 // Drive upstream bodies even while the browser applies socket backpressure.
 // Dropping a browser request still aborts its bounded in-flight reads.
@@ -163,6 +169,9 @@ impl OutboundMediaServer {
             addresses,
             routes: Arc::default(),
             client,
+            cache: Arc::default(),
+            cache_generation: Arc::default(),
+            cache_slot: Arc::new(Semaphore::new(1)),
         };
         // The limit belongs to the whole transport, not to each camera origin.
         let slots = Arc::new(Semaphore::new(16));
@@ -186,6 +195,15 @@ impl OutboundMediaServer {
                 }
             });
         }
+        let routes = server.routes.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                if let Ok(mut active) = routes.lock() {
+                    active.retain(|_, route| route.valid());
+                }
+            }
+        });
         Ok(server)
     }
     pub fn register(
@@ -225,6 +243,7 @@ impl OutboundMediaServer {
                 released: AtomicBool::new(false),
                 verified: Mutex::new(None),
                 failure: Mutex::new(None),
+                cached: Mutex::new(None),
             }),
         );
         Ok(format!("http://{address}{PREFIX}{token}"))
@@ -475,6 +494,218 @@ impl OutboundMediaServer {
         Ok(())
     }
 
+    pub fn prefetch(
+        &self,
+        data: PathBuf,
+        auth: &AuthState,
+        videos: Vec<CacheVideo>,
+    ) -> AppResult<()> {
+        let session = auth.managed_session()?;
+        if videos.len() > 14 {
+            return Err(invalid());
+        }
+        let routes = self.routes.lock().map_err(|_| invalid())?;
+        let work = videos
+            .into_iter()
+            .filter_map(|video| {
+                let token = self.local_token(&video.url).ok()?;
+                let route = routes.get(&token)?.clone();
+                (route.session == session
+                    && video.sha256.len() == 64
+                    && video.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .then_some((route, video))
+            })
+            .collect::<Vec<_>>();
+        let generation = self.cache_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let server = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let _permit = server.cache_slot.acquire().await;
+            for (route, video) in work {
+                let current = || {
+                    server.cache_generation.load(Ordering::Relaxed) == generation && route.valid()
+                };
+                if !current() {
+                    continue;
+                }
+                if route.cached.lock().is_ok_and(|cached| cached.is_some()) {
+                    continue;
+                }
+                let Some(file) = server.cache.reserve(&data, video.size) else {
+                    continue;
+                };
+                let file = Arc::new(file);
+                if let Ok(mut cached) = route.cached.lock() {
+                    if !current() {
+                        continue;
+                    }
+                    *cached = Some(file.clone());
+                }
+                let download = server.copy_to_disk(
+                    &route,
+                    video.size,
+                    Some(&video.sha256),
+                    &file.path,
+                    Some(&file),
+                );
+                let complete = tokio::select! {
+                    result = download => result.is_ok(),
+                    _ = async {
+                        while current() {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    } => false,
+                };
+                if !complete || !current() {
+                    if let Ok(mut cached) = route.cached.lock() {
+                        if cached
+                            .as_ref()
+                            .is_some_and(|active| Arc::ptr_eq(active, &file))
+                        {
+                            cached.take();
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
+    pub fn pause_prefetch(&self) {
+        self.cache_generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn cache_status(&self, data: &Path, clear: bool) -> AppResult<CacheStatus> {
+        if clear {
+            self.cache_generation.fetch_add(1, Ordering::Relaxed);
+            for route in self.routes.lock().map_err(|_| invalid())?.values() {
+                if let Ok(mut cached) = route.cached.lock() {
+                    if let Some(file) = cached.take() {
+                        file.retire();
+                    }
+                }
+            }
+            self.cache.reset_warning();
+        }
+        self.cache.maintain(data, clear)
+    }
+
+    pub fn start_cache_maintenance(&self, data: PathBuf) {
+        let cache = self.cache.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let data = data.clone();
+                let cache = cache.clone();
+                let _ = tokio::task::spawn_blocking(move || cache.maintain(&data, false)).await;
+                tokio::time::sleep(Duration::from_secs(900)).await;
+            }
+        });
+    }
+
+    pub fn close_cache(&self) {
+        self.cache_generation.fetch_add(1, Ordering::Relaxed);
+        self.cache.close();
+    }
+
+    async fn serve_cached(
+        &self,
+        route: &Arc<Route>,
+        cached: &CacheFile,
+        request: &Request,
+        prefix: u64,
+        bounds: (u64, u64),
+        writer: &mut OwnedWriteHalf,
+    ) -> Result<(), ()> {
+        let (offset, end) = bounds;
+        // Each read starts with the same remote authority and source check
+        // used by a fresh stream. Paused browser ranges recheck it as they run.
+        self.authorize_cached(route, cached.size).await?;
+        let range = request.range.as_ref().map(|_| (offset, end, cached.size));
+        headers(
+            writer,
+            if range.is_some() { 206 } else { 200 },
+            end - offset + 1,
+            range,
+        )
+        .await?;
+        if request.method == "HEAD" {
+            return Ok(());
+        }
+        let cached_end = prefix.min(end + 1);
+        let mut position = offset;
+        let mut buffer = vec![0; PART as usize];
+        let mut checked = Instant::now();
+        while position < cached_end && position < cached.available() {
+            if checked.elapsed() >= Duration::from_secs(5) {
+                self.authorize_cached(route, cached.size).await?;
+                checked = Instant::now();
+            }
+            let wanted = (cached_end - position).min(PART) as usize;
+            let read = async {
+                let mut file = tokio::fs::File::open(&cached.path).await?;
+                file.seek(std::io::SeekFrom::Start(position)).await?;
+                file.read_exact(&mut buffer[..wanted]).await
+            };
+            // Drop the disk handle before writing to a possibly paused
+            // browser. Clearing the file can then switch the range to upstream.
+            if read.await.is_err() {
+                break;
+            }
+            write_body(writer, &buffer[..wanted], route).await?;
+            position += wanted as u64;
+        }
+        if position <= end {
+            let etag = route
+                .verified
+                .lock()
+                .map_err(|_| ())?
+                .as_ref()
+                .and_then(|entry| entry.1.clone());
+            let chunks = (position..=end)
+                .step_by(route.plan.bytes as usize)
+                .map(|start| {
+                    self.spawn_part(
+                        route,
+                        start,
+                        (start + route.plan.bytes - 1).min(end),
+                        cached.size,
+                        etag.clone(),
+                    )
+                });
+            let mut chunks = stream::iter(chunks).buffered(route.plan.parallel);
+            while let Some(chunk) = chunks.next().await {
+                write_body(writer, &chunk?.body, route).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn authorize_cached(&self, route: &Route, size: u64) -> Result<(), ()> {
+        let response = self
+            .client
+            .head(route.url.clone())
+            .send()
+            .await
+            .map_err(|_| ())?;
+        let length = response
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        if response.status() != 200 || length != Some(size) || !route.valid() {
+            route.fail(match response.status().as_u16() {
+                401 | 403 => "OUTBOUND_MEDIA_EXPIRED",
+                404 => "OUTBOUND_VIDEO_NOT_FOUND",
+                409 | 412 => "OUTBOUND_SOURCE_CHANGED",
+                429 | 503 => "OUTBOUND_MEDIA_BUSY",
+                502 | 504 => "OUTBOUND_MEDIA_UPSTREAM",
+                200 => "OUTBOUND_MEDIA_INTEGRITY",
+                _ => "OUTBOUND_MEDIA_RESPONSE_INVALID",
+            });
+            return Err(());
+        }
+        Ok(())
+    }
+
     pub(crate) async fn download_clip_source(
         &self,
         auth: &AuthState,
@@ -483,7 +714,6 @@ impl OutboundMediaServer {
         expected_digest: Option<&str>,
         destination: &std::path::Path,
     ) -> AppResult<()> {
-        use sha2::{Digest, Sha256};
         let session = auth.managed_session()?;
         let route = self
             .routes
@@ -493,13 +723,37 @@ impl OutboundMediaServer {
             .filter(|route| route.session == session && route.valid())
             .cloned()
             .ok_or_else(invalid)?;
+        self.copy_to_disk(&route, expected_size, expected_digest, destination, None)
+            .await
+    }
+
+    async fn copy_to_disk(
+        &self,
+        route: &Arc<Route>,
+        expected_size: u64,
+        expected_digest: Option<&str>,
+        destination: &Path,
+        cache: Option<&CacheFile>,
+    ) -> AppResult<()> {
+        use sha2::{Digest, Sha256};
         let error = || AppError::Message("OUTBOUND_CLIP_SOURCE_READ".into());
         let first = self
-            .part(&route, 0, PART - 1, None)
+            .part(route, 0, PART - 1, None)
             .await
             .map_err(|_| error())?;
         if first.total != expected_size {
             return Err(error());
+        }
+        if cache.is_some() {
+            let mut verified = route.verified.lock().map_err(|_| error())?;
+            let source = (first.total, first.etag.clone());
+            if verified
+                .as_ref()
+                .is_some_and(|previous| previous != &source)
+            {
+                return Err(error());
+            }
+            *verified = Some(source);
         }
         let mut output = tokio::fs::OpenOptions::new()
             .write(true)
@@ -509,28 +763,42 @@ impl OutboundMediaServer {
         let mut digest = Sha256::new();
         output.write_all(&first.body).await?;
         digest.update(&first.body);
+        let mut written = first.body.len() as u64;
+        if let Some(cache) = cache.filter(|_| written < expected_size) {
+            output.flush().await?;
+            cache.publish(written);
+        }
         let tasks = (first.end + 1..expected_size)
             .step_by(PART as usize)
             .map(|start| {
                 self.spawn_part(
-                    &route,
+                    route,
                     start,
                     (start + PART - 1).min(expected_size - 1),
                     expected_size,
                     first.etag.clone(),
                 )
             });
-        let mut chunks = stream::iter(tasks).buffered(4);
+        let mut chunks = stream::iter(tasks).buffered(if cache.is_some() { 3 } else { 4 });
         while let Some(chunk) = chunks.next().await {
             let chunk = chunk.map_err(|_| error())?;
             output.write_all(&chunk.body).await?;
             digest.update(&chunk.body);
+            written += chunk.body.len() as u64;
+            if let Some(cache) = cache.filter(|_| written < expected_size) {
+                output.flush().await?;
+                cache.publish(written);
+                tokio::time::sleep(Duration::from_millis(35)).await;
+            }
         }
         output.flush().await?;
         if !route.valid()
             || expected_digest.is_some_and(|hash| format!("{:x}", digest.finalize()) != hash)
         {
             return Err(error());
+        }
+        if let Some(cache) = cache {
+            cache.publish(written);
         }
         Ok(())
     }
@@ -583,6 +851,19 @@ impl OutboundMediaServer {
         request: &Request,
         writer: &mut OwnedWriteHalf,
     ) -> Result<(), ()> {
+        let cached = route.cached.lock().map_err(|_| ())?.clone();
+        if let Some(file) = cached {
+            let prefix = file.available();
+            let requested = match &request.range {
+                Some(value) => requested_range(value, file.size),
+                None => Some((0, file.size - 1)),
+            };
+            if let Some((offset, end)) = requested.filter(|(offset, _)| *offset < prefix) {
+                return self
+                    .serve_cached(route, &file, request, prefix, (offset, end), writer)
+                    .await;
+            }
+        }
         let open = request
             .range
             .as_deref()
@@ -1131,6 +1412,7 @@ mod tests {
                 released: AtomicBool::new(false),
                 verified: Mutex::new(None),
                 failure: Mutex::new(None),
+                cached: Mutex::new(None),
             }),
         );
         format!("http://{}{PREFIX}{token}", server.addresses[0])
@@ -1266,6 +1548,125 @@ mod tests {
             .copied()
             .unwrap_or((i % 251) as u8)
     }
+    #[test]
+    fn cache_serves_authorized_ranges_and_clears_back_to_streaming() {
+        use sha2::{Digest, Sha256};
+
+        test_runtime(async {
+            let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let origin = fixture.local_addr().unwrap();
+            let data = b"camera playback bytes";
+            let gets = Arc::new(AtomicUsize::new(0));
+            let remote_gets = gets.clone();
+            let authorized = Arc::new(AtomicBool::new(true));
+            let remote_authorized = authorized.clone();
+            let upstream = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = fixture.accept().await {
+                    let request = read_request(&mut socket).await.unwrap();
+                    let authorized = remote_authorized.load(Ordering::Relaxed);
+                    let total = data.len() as u64;
+                    let mut reply = Vec::new();
+                    if !authorized {
+                        reply.extend_from_slice(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    } else if request.method == "HEAD" {
+                        reply.extend_from_slice(format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n").as_bytes());
+                    } else {
+                        remote_gets.fetch_add(1, Ordering::Relaxed);
+                        let (start, end) =
+                            requested_range(request.range.as_deref().unwrap(), total).unwrap();
+                        reply.extend_from_slice(format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nConnection: close\r\n\r\n", end-start+1).as_bytes());
+                        reply.extend_from_slice(&data[start as usize..=end as usize]);
+                    }
+                    socket.write_all(&reply).await.unwrap();
+                }
+            });
+            let client = Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap();
+            let server = OutboundMediaServer::with_client(client.clone()).unwrap();
+            let auth = auth();
+            let url = fixture_route(&server, &auth, origin);
+            let mut random = [0; 16];
+            getrandom::fill(&mut random).unwrap();
+            let path =
+                std::env::temp_dir().join(format!("outbound-cache-test-{}", blake3::hash(&random)));
+            std::fs::create_dir(&path).unwrap();
+            server
+                .prefetch(
+                    path.clone(),
+                    &auth,
+                    vec![CacheVideo {
+                        url: url.clone(),
+                        size: data.len() as u64,
+                        sha256: format!("{:x}", Sha256::digest(data)),
+                    }],
+                )
+                .unwrap();
+            let token = server.local_token(&url).unwrap();
+            let route = server.routes.lock().unwrap().get(&token).unwrap().clone();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while !route
+                    .cached
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|file| file.available() == file.size)
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let read = || client.get(&url).header("Range", "bytes=3-9").send();
+            assert_eq!(
+                &read().await.unwrap().bytes().await.unwrap()[..],
+                &data[3..=9]
+            );
+            assert_eq!(
+                gets.load(Ordering::Relaxed),
+                1,
+                "warm seek uses the local body"
+            );
+            authorized.store(false, Ordering::Relaxed);
+            assert!(
+                read().await.is_err(),
+                "cached bytes require a valid remote ticket"
+            );
+            authorized.store(true, Ordering::Relaxed);
+            assert_eq!(server.cache_status(&path, true).unwrap().bytes, 0);
+            assert_eq!(
+                &read().await.unwrap().bytes().await.unwrap()[..],
+                &data[3..=9]
+            );
+            assert_eq!(
+                gets.load(Ordering::Relaxed),
+                2,
+                "clear falls back to streaming"
+            );
+            let partial = server.cache.reserve(&path, data.len() as u64).unwrap();
+            std::fs::write(&partial.path, &data[..8]).unwrap();
+            partial.publish(8);
+            *route.cached.lock().unwrap() = Some(Arc::new(partial));
+            assert_eq!(server.cache_status(&path, false).unwrap().bytes, 8);
+            assert_eq!(
+                &read().await.unwrap().bytes().await.unwrap()[..],
+                &data[3..=9]
+            );
+            assert_eq!(
+                gets.load(Ordering::Relaxed),
+                3,
+                "range stitches the local prefix and remote suffix"
+            );
+            assert_eq!(server.cache_status(&path, true).unwrap().bytes, 0);
+            server.close_cache();
+            std::fs::remove_dir(path.join("outbound-playback-cache-v1")).unwrap();
+            std::fs::remove_dir(path).unwrap();
+            upstream.abort();
+        });
+    }
+
     #[test]
     fn paused_browser_body_does_not_expire_healthy_upstream_reads() {
         test_runtime(async {

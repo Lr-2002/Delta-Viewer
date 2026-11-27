@@ -32,6 +32,7 @@ mod model;
 mod mp4_clock;
 mod mp4_preview_cache;
 mod operation_history;
+mod outbound_cache;
 mod outbound_clip;
 mod outbound_media;
 mod outbound_review;
@@ -3317,6 +3318,16 @@ pub fn run() {
         .manage(outbound_media_server)
         .manage(playback_cache::PlaybackCache::default())
         .manage(review_catalog::ReviewCatalogCache::default())
+        .setup(|app| {
+            if let (Some(media), Ok(data)) = (
+                app.state::<Option<outbound_media::OutboundMediaServer>>()
+                    .inner(),
+                base_app_data_root(app.handle()),
+            ) {
+                media.start_cache_maintenance(data);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             d1_availability,
             d1_renew_usb_address,
@@ -3453,6 +3464,12 @@ pub fn run() {
                 // Tauri exits the process directly, so managed-state Drop is
                 // insufficient for normal-exit cleanup.
                 app.state::<playback_cache::PlaybackCache>().clear();
+                if let Some(media) = app
+                    .state::<Option<outbound_media::OutboundMediaServer>>()
+                    .inner()
+                {
+                    media.close_cache();
+                }
             }
         });
 }

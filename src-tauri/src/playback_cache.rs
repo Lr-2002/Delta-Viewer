@@ -60,9 +60,24 @@ impl Stamp {
     }
 }
 
-struct DirectoryLease {
-    path: PathBuf,
+pub(crate) struct DirectoryLease {
+    pub(crate) path: PathBuf,
     lock: Option<File>,
+}
+
+impl DirectoryLease {
+    pub(crate) fn create(root: &Path) -> AppResult<Self> {
+        private_directory(root)?;
+        let path = root.join(format!("episode-{}", new_id()?));
+        private_directory(&path)?;
+        private_file(&path.join(".owner"))?.write_all(MARKER)?;
+        let lock = private_file(&path.join(".lease"))?;
+        FileExt::try_lock_exclusive(&lock)?;
+        Ok(Self {
+            path,
+            lock: Some(lock),
+        })
+    }
 }
 
 impl Drop for DirectoryLease {
@@ -152,10 +167,18 @@ fn remove_owned_directory(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn cleanup_unused(root: &Path) -> AppResult<u64> {
+pub(crate) fn cleanup_unused(root: &Path) -> AppResult<u64> {
+    cleanup_unused_except(root, None).map(|(bytes, _)| bytes)
+}
+
+pub(crate) fn cleanup_unused_except(root: &Path, exclude: Option<&Path>) -> AppResult<(u64, bool)> {
     let mut retained_bytes = 0_u64;
+    let mut cleanup_failed = false;
     for item in fs::read_dir(root)? {
         let item = item?;
+        if exclude.is_some_and(|path| path == item.path()) {
+            continue;
+        }
         let name = item.file_name().to_string_lossy().into_owned();
         let id = name
             .strip_prefix("episode-")
@@ -177,13 +200,17 @@ fn cleanup_unused(root: &Path) -> AppResult<u64> {
             if remove_owned_directory(&item.path()).is_ok() {
                 continue;
             }
+            cleanup_failed = true;
         }
-        for file in files {
+        for file in files
+            .iter()
+            .filter(|path| path.extension().is_some_and(|ext| ext == "mp4"))
+        {
             retained_bytes =
                 retained_bytes.saturating_add(fs::metadata(file).map(|m| m.len()).unwrap_or(0));
         }
     }
-    Ok(retained_bytes)
+    Ok((retained_bytes, cleanup_failed))
 }
 
 impl PlaybackCache {

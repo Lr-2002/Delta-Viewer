@@ -2,14 +2,14 @@ import { localeTag, t, tr, useLanguage } from "../lib/i18n";
 import {memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState,type CSSProperties,type VideoHTMLAttributes} from "react";
 import {ArrowLeft,AlertTriangle,CheckCircle2,ChevronRight,Expand,Film,ListFilter,LoaderCircle,Minimize,Pause,Play,RefreshCw,Scissors,Video,Volume2,VolumeX,XCircle} from "lucide-react";
 import type {UserIdentity} from "../types";
-import {changeOutboundBatch,fetchOutboundVideo,releaseOutboundVideos,outboundMediaFailure,listOutboundBatches,OUTBOUND_INVALID_REASONS,OUTBOUND_ANOMALOUS_REASONS,outboundError,outboundResultUncertain,resumeOutboundTrim,outboundTrimStatus,outboundVideoParts,outboundTimeline,fetchOutboundMetadata,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording,type OutboundProtocol} from "../lib/outbound-review";
+import {cacheOutboundVideos,pauseOutboundCache,outboundCacheStatus,type OutboundCacheStatus,changeOutboundBatch,fetchOutboundVideo,releaseOutboundVideos,outboundMediaFailure,listOutboundBatches,OUTBOUND_INVALID_REASONS,OUTBOUND_ANOMALOUS_REASONS,outboundError,outboundResultUncertain,resumeOutboundTrim,outboundTrimStatus,outboundVideoParts,outboundTimeline,fetchOutboundMetadata,saveOutboundReasonOption,type OutboundBatch,type OutboundRecording,type OutboundProtocol} from "../lib/outbound-review";
 import {OutboundVideoLoader} from "../lib/outbound-video-loader";
 import {OutboundPlayback} from "../lib/outbound-playback";
 import {fetchOutboundFrameStep,isOutboundDamageReason,type OutboundCompany,type OutboundProgress,type OutboundReviewSelection,type OutboundReviewValue} from "../lib/outbound-review";
 import {useShortcuts} from "../lib/use-shortcuts";
 import {matchShortcut,shortcutBlocked} from "../lib/shortcuts";
 import {OutboundReasonDialog} from "./OutboundReasonDialog";
-import {OutboundClipEditor, type ClipRange, type OutboundClipSpan} from "./OutboundClipEditor";
+import {OutboundClipEditor, updateClipRanges, type ClipRange, type OutboundClipSpan} from "./OutboundClipEditor";
 import {OutboundBatchConclusions, OutboundConclusionFilter, batchConclusionCount, batchMatchesReason, outboundConclusionReasons, useOutboundBatchDetails, type ConclusionFilter} from "./OutboundTaskConclusions";
 import "./outbound-review.css";
 
@@ -27,6 +27,21 @@ function isComplete(batch: OutboundBatch) {
 
 function BatchComplete() {
   return <span className="outbound-batch-complete"><CheckCircle2 size={17} aria-hidden="true" />{t("审核完成")}</span>;
+}
+
+function TrimSaveStatus() {
+  const [started]=useState(()=>performance.now());
+  const [elapsed,setElapsed]=useState(0);
+  useEffect(()=>{
+    const timer=window.setInterval(()=>setElapsed(Math.floor((performance.now()-started)/1000)),1000);
+    return()=>window.clearInterval(timer);
+  },[started]);
+  return <div className="outbound-trim-saving" role="status">
+    <LoaderCircle size={16} className="spin" aria-hidden="true"/>
+    <div><strong>{t("正在剪切并更新原始归档…")}</strong>
+      <span>{t("交付平台正在处理视频。原文件更新完成后可继续审核。")}</span></div>
+    <time aria-label={t("已等待 {0}",[tr(formatTime(elapsed))])}>{tr(formatTime(elapsed))}</time>
+  </div>;
 }
 
 function QueueProgress({progress}: {progress:OutboundProgress}) {
@@ -75,17 +90,23 @@ function ReviewVideo({segment,onAttach,src,...props}:VideoHTMLAttributes<HTMLVid
   return <video ref={element} {...props}/>;
 }
 
-function ReviewSeekBar({position,duration,disabled,onSeek}:{position:number;duration:number;disabled:boolean;onSeek:(position:number)=>void}){
+function ReviewSeekBar({position,duration,disabled,onSeek,onScrubStart,onScrubCancel}:{position:number;duration:number;disabled:boolean;onSeek:(position:number,resume?:boolean)=>void;onScrubStart:()=>boolean;onScrubCancel:(resume:boolean)=>void}){
   const dragging=useRef(false);
+  const resumeAfterScrub=useRef(false);
   const [draft,setDraft]=useState<number|null>(null);
   const stop=(commit:boolean,value:number)=>{
     if(!dragging.current)return;
     dragging.current=false;setDraft(null);
-    if(commit&&!disabled)onSeek(value);
+    if(commit&&!disabled)onSeek(value,resumeAfterScrub.current);
+    else onScrubCancel(resumeAfterScrub.current);
   };
   return <input type="range" aria-label={t("视频播放位置")} min={0} max={duration||1} step={0.01}
     value={Math.max(0,Math.min(draft??position,duration||1))} disabled={disabled}
-    onPointerDown={()=>{dragging.current=true;}}
+    onPointerDown={event=>{
+      dragging.current=true;
+      resumeAfterScrub.current=onScrubStart();
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }}
     onPointerUp={event=>stop(true,Number(event.currentTarget.value))}
     onPointerCancel={event=>stop(false,Number(event.currentTarget.value))}
     onBlur={event=>stop(false,Number(event.currentTarget.value))}
@@ -156,6 +177,9 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   const [highSpeedBrowsing,setHighSpeedBrowsing]=useState(false);
   const [buffering,setBuffering]=useState(false);
   const [playbackStalled,setPlaybackStalled]=useState(false);
+  const [cacheStatus,setCacheStatus]=useState<OutboundCacheStatus|null>(null);
+  const [cacheActivity,setCacheActivity]=useState(0);
+  const [scrubbing,setScrubbing]=useState(false);
   const [muted,setMuted]=useState(true);
   const [primaryFilled,setPrimaryFilled]=useState(true);
   const [fullscreenCamera,setFullscreenCamera]=useState<string|null>(null);
@@ -209,7 +233,9 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   const fullDuration=timeline.complete?timeline.duration:0;
   const partDuration=Math.max(0,...partVideos.map(video=>measured[video.segment]??0));
   const seekDuration=fullDuration||partDuration;
-  const seekPosition=fullDuration?partOffset+position:position;
+  const pendingPlayhead=pendingStart.current;
+  const displayedPosition=pendingPlayhead?.part===partIndex ? pendingPlayhead.position : position;
+  const seekPosition=fullDuration?partOffset+displayedPosition:displayedPosition;
   const missingSequence=sourceParts.some((part,index)=>part!==sourceParts[0]+index);
   const missingByPart=useMemo(()=>grouped.parts.map(files=>grouped.cameras.filter(camera=>!files.some(file=>file.camera===camera))),[grouped]);
   const missingSource=missingSequence||missingByPart.some(cameras=>cameras.length>0);
@@ -229,8 +255,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   const canDecide=Boolean(recording&&canChangeBatch);
   const activeClip=clip?.recordingId===recording?.id&&clip?.version===batch?.version?clip:null;
   const canOpenClip=Boolean(isOwner&&!busy&&!workspaceBusy&&!suspended&&!workspaceUnconfirmed&&grouped.parts.length);
-  const canEditEntireRecording=canOpenClip&&timeline.complete;
-  const clipPosition=seekPosition;
+  const clipPosition=fullDuration?seekPosition:partOffset+displayedPosition;
   const cutAt=Math.round(clipPosition*1000);
   const currentKept=activeClip?.ranges.find(range=>range.end>cutAt);
   let keptEnd=currentKept?.end??0;
@@ -243,7 +268,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   const nextTime=nextRange ? Math.max(seam,nextRange.start)/1000 : undefined;
   const nextIndex=nextTime===undefined ? -1 : timeline.spans.findIndex(span=>nextTime<span.offset+span.duration);
   const nextPosition=nextTime===undefined||nextIndex<0 ? 0 : nextTime-timeline.spans[nextIndex].offset;
-  const warmKey=nextIndex>=0 && seam-cutAt<=Math.max(5000, speed*2000) && seam>=cutAt
+  const warmKey=timeline.complete&&nextIndex>=0 && seam-cutAt<=Math.max(9000, speed*3000) && seam>=cutAt
     ? `${recording?.id}:${nextIndex}:${Math.round(nextPosition*1000)}` : null;
   useEffect(()=>{
     if(!warmKey||!batch||!recording||!isOwner||suspended||clipBusy)return;
@@ -279,12 +304,14 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     playback.current?.play(true);
   },[videoState?.bank]);
 
-  const nearSeam=playing&&seam-cutAt<=speed*650;
+  const nearSeam=playing&&seam>=cutAt&&seam-cutAt<=speed*520;
   useEffect(()=>{
     if(!nearSeam||!preparedPlayback)return;
-    const primary=grouped.parts[preparedPlayback.part]?.find(video=>video.camera===grouped.primaryCamera);
-    const player=primary&&preparedPlayers.current.get(primary.segment);
-    if(player)primePrepared(player,preparedPlayback);
+    const timers=grouped.parts[preparedPlayback.part].map((video,index)=>window.setTimeout(()=>{
+      const player=preparedPlayers.current.get(video.segment);
+      if(player?.classList.contains("outbound-warm-video"))primePrepared(player,preparedPlayback);
+    },index*43));
+    return()=>timers.forEach(timer=>window.clearTimeout(timer));
   },[nearSeam,preparedPlayback,grouped]);
 
   function finishTrim(next:OutboundBatch){
@@ -311,6 +338,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
 
   function toggleClip(){
     if(clipBusy)return;
+    setScrubbing(false);
     if(clipIntent||activeClip){setClipIntent(false);setClip(null);}
     else if(canOpenClip)setClipIntent(true);
   }
@@ -382,21 +410,84 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     requestGeneration.current++;setVideoState(null);setOpening(false);setPartIndex(0);setReasonDialog(null);
   },[batch?.id]);
   useEffect(()=>{requestGeneration.current++;setVideoState(null);setOpening(false);setPartIndex(0);pendingStart.current=null;recovery.current=null;setTransitionIntent(false);setPlaybackStalled(false);setTimelineState({recordingId,source:recording?.videos,durations:{},failed:{},probeFailed:{}});},[recordingId,recording?.videos]);
-  useEffect(()=>{setReasonDialog(null);setDamageTarget(null);setClipIntent(false);setClip(null);setError("");},[recordingId]);
+  useEffect(()=>{setReasonDialog(null);setDamageTarget(null);setClipIntent(false);setClip(null);setScrubbing(false);setError("");},[recordingId]);
 
   useEffect(()=>{
     if(view==="workspace"&&recording&&isOwner&&!suspended)void openVideos(0);
     return()=>{requestGeneration.current++;ticketLoader.cancel();playback.current?.pause();releaseVideos();};
   },[view,batch?.id,recording?.id,recording?.videos,isOwner,suspended]);
   useEffect(()=>{if(suspended)playback.current?.pause();},[suspended]);
+  const loadingFirstFrames=Boolean(activeVideoState&&partVideos.some(video=>
+    activeVideoState.urls[video.segment]&&!activeVideoState.ready.includes(video.segment)&&!activeVideoState.failed[video.segment]));
+  useEffect(()=>{
+    if(!activeVideoState||opening||suspended)return;
+    if(!loadingFirstFrames){ticketLoader.resume();return;}
+    const generation=requestGeneration.current;
+    const timer=window.setTimeout(()=>{
+      if(requestGeneration.current===generation)ticketLoader.resume();
+    },12000);
+    return()=>window.clearTimeout(timer);
+  },[activeVideoState?.recordingId,activeVideoState?.part,opening,loadingFirstFrames,suspended,ticketLoader]);
+
   useEffect(()=>{
     if(!currentPartReady||!recording)return;
     setTimelineState(previous=>previous.recordingId===recording.id&&previous.source===recording.videos
       &&partIndex<(previous.firstPlayablePart??Infinity)?{...previous,firstPlayablePart:partIndex}:previous);
   },[currentPartReady,recording?.id,recording?.videos,partIndex]);
+  const nativePlayback = Object.values(activeVideoState?.urls??{}).some(url=>url.startsWith("http://127.0.0.1:"));
+  function pauseBackgroundCache(){
+    if(!nativePlayback)return;
+    setCacheActivity(previous=>previous+1);
+    void pauseOutboundCache().catch(()=>{});
+  }
+  useEffect(()=>{
+    if(!nativePlayback||!playbackReady||playing||buffering||opening||scrubbing||clipIntent||activeClip||suspended||clipBusy)return;
+    const files = [...partVideos,...(grouped.parts[partIndex+1]??[])];
+    let timer=window.setTimeout(cacheWhenIdle,8000);
+    function cacheWhenIdle(){
+      if(document.hidden)return;
+      if([...players.current.values()].some(video=>video.seeking||video.readyState<2)){
+        timer=window.setTimeout(cacheWhenIdle,1000);
+        return;
+      }
+      const videos=files.flatMap(file=>{
+        const url=activeVideoState?.urls[file.segment]??nextPartTickets.current.get(file.segment)?.url;
+        return url&&file.sha256 ? [{url,size:file.size,sha256:file.sha256}] : [];
+      });
+      if(videos.length)void cacheOutboundVideos(videos).catch(()=>{});
+    }
+    return()=>window.clearTimeout(timer);
+  },[nativePlayback,playbackReady,playing,buffering,opening,scrubbing,clipIntent,activeClip,suspended,clipBusy,cacheActivity,partVideos,grouped.parts,partIndex,activeVideoState?.urls]);
+
+  useEffect(()=>{
+    if(!nativePlayback)return;
+    const stopBackgroundCache=()=>{
+      if(playing||document.hidden)void pauseOutboundCache().catch(()=>{});
+    };
+    stopBackgroundCache();
+    document.addEventListener("visibilitychange",stopBackgroundCache);
+    return()=>document.removeEventListener("visibilitychange",stopBackgroundCache);
+  },[nativePlayback,playing]);
+
+  useEffect(()=>{
+    if(!nativePlayback)return;
+    let active=true;
+    async function check(){
+      try{
+        const status=await outboundCacheStatus();
+        if(active)setCacheStatus(status);
+      }catch{
+        if(active)setCacheStatus(previous=>({...previous,bytes:previous?.bytes??0,limited:previous?.limited??false,cleanupFailed:true}));
+      }
+    }
+    void check();
+    const timer=window.setInterval(()=>void check(),30_000);
+    return()=>{active=false;window.clearInterval(timer);};
+  },[nativePlayback,recordingId]);
+
   useEffect(()=>{playback.current?.setMaster(partVideos.find(video=>video.camera===grouped.primaryCamera)?.segment??null);},[partVideos,grouped.primaryCamera]);
   ended.current=()=>{
-    if (activeClip) {
+    if (activeClip&&timeline.complete) {
       const boundary = Math.round((partOffset + partDuration) * 1000);
       const next = activeClip.ranges.find(range => range.end > boundary);
       if (next && partIndex + 1 < grouped.parts.length) seek(Math.max(boundary, next.start) / 1000, true);
@@ -528,8 +619,8 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     const { key, position: target } = prepared;
     if(player.seeking||player.readyState<3||Math.abs(player.currentTime-target)>.02||primedPlayers.current.get(player)===key)return;
     primedPlayers.current.set(player,key);
-    // Run the standby decoder through the playback handoff. At the lowest
-    // rate its clock advances by at most one frame before it becomes active.
+    // Start decoding close to the handoff and keep the standby clock within
+    // one frame of the cut while the visible video finishes.
     const stop=()=>{
       clearTimeout(deadline);
       clearInterval(progress);
@@ -567,6 +658,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   }
   async function openVideos(nextPart=partIndex,target=0,resume=false){
     if(!batch||!recording||!isOwner||clipBusy||recording.pendingTrimOperation)return;
+    pauseBackgroundCache();
     setPlaybackStalled(false);
     const generation=++requestGeneration.current;retryPositions.current.clear();
     const files=grouped.parts[nextPart]??[];
@@ -585,8 +677,8 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     const active=new Set(files.map(file=>file.segment));let remaining=pending.length;
     const upcoming=grouped.parts[nextPart+1]??[];
     const upcomingIds=new Set(upcoming.map(file=>file.segment));
-    // Current cameras get tickets first. Other parts only read their MP4 clock,
-    // in the same four-request budget, with no hidden video/decoder per file.
+    // Keep later MP4 clock reads behind the visible part's first frames.
+    // Clock reads share the same ticket budget and never create decoders.
     const probes=[...upcoming,...grouped.parts.flat().filter(file=>!active.has(file.segment)&&!upcomingIds.has(file.segment)&&(!measured[file.segment]||probeFailures[file.segment]))];
     const settled=(file:typeof files[number])=>{if(active.has(file.segment)&&--remaining===0)setOpening(false);};
     ticketLoader.replace([...pending,...probes],async video=>{
@@ -619,7 +711,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
         setTimelineState(previous=>({...previous,recordingId:recording.id,source:recording.videos,[field]:{...previous[field],[video.segment]:message}}));
       }
       settled(video);
-    },()=>{if(generation===requestGeneration.current)setOpening(false);});
+    },()=>{if(generation===requestGeneration.current)setOpening(false);},pending.length);
   }
 
   function mediaFailed(segment:number,label:string,player:HTMLVideoElement){
@@ -681,30 +773,46 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   }
   function updateClock(){playback.current?.refresh();}
   function seek(value:number,resume=playing||transitionIntent){
+    pauseBackgroundCache();
     if(!timeline.complete){
-      if(partDuration>0){pendingStart.current=null;playback.current?.seek(Math.max(0,Math.min(value,partDuration)));}
+      if(partDuration>0)seekPart(partIndex,Math.max(0,Math.min(value,partDuration)),resume);
       return;
     }
     const target=Math.max(0,Math.min(value,timeline.duration));
     const index=timeline.spans.findIndex((span,i)=>target<span.offset+span.duration||i===timeline.spans.length-1);
-    const local=target-timeline.spans[index].offset;
+    seekPart(index,target-timeline.spans[index].offset,resume);
+  }
+  function seekPart(index:number,local:number,resume:boolean){
     if(resume&&activeClip&&promotePrepared(index,local))return;
-    if(index===partIndex&&pendingStart.current?.part===index){pendingStart.current.position=local;pendingStart.current.resume=resume;setTransitionIntent(resume);}
+    if(index===partIndex&&pendingStart.current?.part===index){
+      pendingStart.current.position=local;
+      pendingStart.current.resume=resume;
+      setPosition(local);
+      setTransitionIntent(resume);
+    }
     else if(index===partIndex){playback.current?.seek(local);if(resume&&!playing)playback.current?.play();}
     else void openVideos(index,local,resume);
   }
-  function seekClip(value:number,resume=false){seek(value,resume);}
+  function seekClip(value:number,resume=false){
+    if(timeline.complete){seek(value,resume);return;}
+    pauseBackgroundCache();
+    const known=timeline.spans.flatMap((span,index)=>span.known?[{...span,index}]:[]);
+    const target=known.find(span=>value>=span.offset&&value<span.offset+span.duration)??known.at(-1);
+    if(target)seekPart(target.index,Math.max(0,Math.min(value-target.offset,target.duration)),resume);
+  }
   reachClipBoundary.current=()=>{
     if(nextTime!==undefined){seekClip(nextTime,true);return;}
     pauseForClip();
     seekClip(seam/1000);
   };
   useLayoutEffect(()=>{
-    const boundary=activeClip&&currentKept&&currentKept.start<=cutAt&&seam<partEnd ? (seam/1000-partOffset) : undefined;
+    const canTransitionAtPartEnd=preparedPlayback?.part===nextIndex;
+    const boundary=timeline.complete&&activeClip&&currentKept&&currentKept.start<=cutAt&&(seam<partEnd||canTransitionAtPartEnd)
+      ? (seam/1000-partOffset) : undefined;
     playback.current?.setBoundary(boundary,()=>reachClipBoundary.current());
-  },[activeClip,currentKept,partIndex,partOffset,partEnd,seam,Boolean(currentKept&&currentKept.start<=cutAt)]);
+  },[timeline.complete,activeClip,currentKept,partIndex,partOffset,partEnd,seam,nextIndex,preparedPlayback?.part,Boolean(currentKept&&currentKept.start<=cutAt)]);
   useEffect(()=>{
-    if(!activeClip||!playing||pendingStart.current||opening||deferredPlay.current)return;
+    if(!timeline.complete||!activeClip?.ranges.length||!playing||pendingStart.current||opening||deferredPlay.current)return;
     const current=Math.round(clipPosition*1000);
     const next=activeClip.ranges.find(range=>range.end>current);
     if(!next){
@@ -713,35 +821,46 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
     }else if(current<next.start){
       seekClip(next.start/1000,true);
     }
-  },[activeClip,clipPosition,playing,opening,partIndex]);
+  },[timeline.complete,activeClip,clipPosition,playing,opening,partIndex]);
   function pauseForClip(){
+    pauseBackgroundCache();
     if(pendingStart.current)pendingStart.current.resume=false;
     setTransitionIntent(false);
     playback.current?.pause();
   }
-  useEffect(()=>{
-    if(!clipIntent||clip||!recording||!batch||!canEditEntireRecording)return;
-    pauseForClip();
-    const ranges:ClipRange[]=[];
+  function clipSpans(){
     let shortened=false;
     const spans=grouped.parts.map((files,index)=>{
-      const durations=files.map(file=>Math.round(measured[file.segment]*1000));
-      const common=Math.min(...durations);
-      const start=Math.round(timeline.spans[index].offset*1000);
-      const end=start+common;
-      const previous=ranges.at(-1);
-      if(previous?.end===start)previous.end=end;
-      else ranges.push({start,end});
-      shortened ||= Math.max(...durations)-common>20;
-      return {part:grouped.partNumbers[index],offset:start/1000,duration:common/1000};
+      const durations=files.map(file=>Math.round((measured[file.segment]??0)*1000));
+      const common=durations.length?Math.min(...durations):0;
+      shortened ||= common>0&&Math.max(...durations)-common>20;
+      return {part:grouped.partNumbers[index],offset:timeline.spans[index].offset,duration:common/1000};
     });
+    return {spans,shortened};
+  }
+
+  useEffect(()=>{
+    if(!clipIntent||clip||!recording||!batch||!canOpenClip)return;
+    pauseForClip();
+    const {spans,shortened}=clipSpans();
+    const ranges=updateClipRanges([],[],spans);
     const duration=ranges.reduce((total,range)=>total+range.end-range.start,0)/1000;
     setClip({recordingId:recording.id,version:batch.version,spans,duration,ranges,shortened});
-  },[clipIntent,clip,canEditEntireRecording,batch?.version,recording?.id,timeline]);
+  },[clipIntent,clip,canOpenClip,batch?.version,recording?.id,grouped,timeline]);
+
+  useEffect(()=>{
+    if(!clip||clip.recordingId!==recording?.id||clip.version!==batch?.version)return;
+    const {spans,shortened}=clipSpans();
+    if(spans.every((span,index)=>span.part===clip.spans[index]?.part&&span.offset===clip.spans[index]?.offset&&span.duration===clip.spans[index]?.duration))return;
+    const duration=spans.reduce((total,span)=>total+Math.round(span.duration*1000),0)/1000;
+    setClip(previous=>previous&&previous.recordingId===recording.id&&previous.version===batch.version
+      ?{...previous,spans,duration,ranges:updateClipRanges(previous.ranges,previous.spans,spans),shortened}:previous);
+  },[clip?.recordingId,clip?.version,clip?.spans,timeline,recording?.id,batch?.version]);
   function togglePlayback(){
     if(clipBusy)return;
+    pauseBackgroundCache();
     if(playing||transitionIntent){if(pendingStart.current)pendingStart.current.resume=false;setTransitionIntent(false);playback.current?.pause();}
-    else if(activeClip){
+    else if(activeClip&&timeline.complete&&activeClip.ranges.length){
       const current=Math.round(clipPosition*1000);
       const next=activeClip.ranges.find(range=>range.end>current);
       if(!next||current<next.start)seekClip((next??activeClip.ranges[0]).start/1000,true);
@@ -944,26 +1063,31 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
   </section>;
   return <section className="outbound-review is-workspace" aria-label={t("外发审核工作区")}>
     <div className="outbound-toolbar"><strong><Film size={17}/>{t("外发审核")}</strong><div className="outbound-progress"><span>{t("已审") + " "}<b>{batch?.reviewed ?? 0}</b> / {batch?.total ?? 0}</span><progress aria-label={t("批次审核进度")} max={batch?.total||1} value={batch?.reviewed??0}/><span>{t("有效") + " "}{batch?.valid ?? 0}{" " + t("· 无效") + " "}{batch?.invalid ?? 0}{" · " + t("异常") + " "}{batch?.anomalous??0}</span></div><button className="button button-secondary" type="button" aria-label={t("刷新外发批次")} title={t("刷新外发批次")} disabled={loading||busy||clipBusy||workspaceBusy} onClick={()=>void load()}>{loading ? <LoaderCircle size={16} className="spin"/> : <RefreshCw size={16}/>}</button></div>
+    {clipBusy&&<TrimSaveStatus/>}
     {tr(error&&<div className="outbound-error outbound-error-summary" role="alert">{tr(error)}</div>)}{tr(notice&&<div className="outbound-notice" role="status">{tr(notice)}</div>)}
     {loading&&!batches.length ? <div className="outbound-empty"><LoaderCircle size={18} className="spin"/>{t("正在读取交付批次…")}</div> : !batches.length ? <div className="outbound-empty">{error ? t("批次读取失败，将自动重试，也可点击刷新。") : t("暂无可审核的星矩公司批次")}</div> : <div className="outbound-layout">
       <aside className="outbound-recording-sidebar"><header><strong>{t("录制列表")}</strong><span>{visibleRecordings.length}{" " + t("条")}</span></header><PendingFilter enabled={pendingOnly} disabled={busy||clipBusy||workspaceBusy} onToggle={()=>setPendingOnly(value=>!value)}/>{recordingList}<button className="button button-secondary" disabled={busy||clipBusy||workspaceBusy} onClick={onReturnToTasks}><ArrowLeft size={15}/>{t("返回任务中心")}</button></aside>
       {batch&&<div className="outbound-detail">
         <header><div><div className="outbound-task-title"><h3>{batch.name}</h3>{!workspaceUnconfirmed && isComplete(batch) && <BatchComplete />}</div><p>{t("合格率") + " "}{batch.rate===null ? t("待统计") : t("{0}%", [Math.round(batch.rate*100)])} · {batch.reviewed}/{batch.total}{" " + t("条")}</p></div>
-          {isOwner&&Boolean(batch.recoverableExclusions?.length)&&<button className="button button-secondary" type="button"
-            disabled={!canChangeBatch} onClick={()=>{setError("");setShowExcluded(true);}}>{t("已排除录制（{0}）",[batch.recoverableExclusions?.length??0])}</button>}
-          {isOwner ? <button className="button button-secondary" type="button" disabled={busy||clipBusy||workspaceBusy||workspaceUnconfirmed} onClick={()=>void act("release")} title={t("释放后其他审核员可领取")}>{t("释放批次")}</button> : (!batch.claim || !isComplete(batch) || workspaceUnconfirmed) && <button className="button button-primary" type="button" disabled={busy||workspaceBusy||workspaceUnconfirmed||Boolean(batch.claim)} onClick={()=>void act("claim")}>{busy ? <LoaderCircle size={16} className="spin"/> : null}{batch.claim ? t("审核员处理中") : t("领取批次")}</button>}
+          <div className="outbound-batch-actions">
+            {isOwner&&Boolean(batch.recoverableExclusions?.length)&&<button className="button button-secondary" type="button"
+              disabled={!canChangeBatch} onClick={()=>{setError("");setShowExcluded(true);}}>{t("已排除录制（{0}）",[batch.recoverableExclusions?.length??0])}</button>}
+            {isOwner ? <button className="button button-secondary" type="button" disabled={busy||clipBusy||workspaceBusy||workspaceUnconfirmed} onClick={()=>void act("release")} title={t("释放后其他审核员可领取")}>{t("释放批次")}</button> : (!batch.claim || !isComplete(batch) || workspaceUnconfirmed) && <button className="button button-primary" type="button" disabled={busy||workspaceBusy||workspaceUnconfirmed||Boolean(batch.claim)} onClick={()=>void act("claim")}>{busy ? <LoaderCircle size={16} className="spin"/> : null}{batch.claim ? t("审核员处理中") : t("领取批次")}</button>}
+          </div>
         </header>
         {pendingOnly&&!visibleRecordings.length ? <div className="outbound-empty">{t("当前批次没有未审核数据")}</div> : batch.recordings.length>0 ? <>
 
           {recording&&<section className="outbound-player" aria-label={t("原始视频审核")}>
-            <div className="outbound-player-heading"><div><strong>{recording.name}</strong><span>{t("{0}/{1} 路源视频", [partVideos.length, grouped.cameraCount])}{sourceParts.length>1 ? t(" · 第 {0} 段，共 {1} 段", [partNumber(partIndex), sourceParts.length]) : ""}</span></div>
+            <div className="outbound-player-heading"><div className="outbound-player-identity"><strong>{recording.name}</strong><span>{t("{0}/{1} 路源视频", [partVideos.length, grouped.cameraCount])}{sourceParts.length>1 ? t(" · 第 {0} 段，共 {1} 段", [partNumber(partIndex), sourceParts.length]) : ""}</span></div>
+              <div className="outbound-media-actions">
               {isOwner&&recording.pendingTrimOperation&&<button className="button button-secondary" type="button" onClick={()=>void resumeTrim()} disabled={!canChangeBatch}>{t(clipBusy?"正在剪切并更新原始归档…":"继续保存剪切")}</button>}
               {isOwner&&!recording.pendingTrimOperation&&<button className="button button-secondary outbound-cut-button" type="button"
                 aria-expanded={clipIntent} disabled={clipBusy||(!clipIntent&&!canOpenClip)} onClick={toggleClip}>
                 <Scissors size={16}/>{t("视频剪切")}
               </button>}
               {playbackStalled&&isOwner&&<button className="button button-secondary" type="button" disabled={opening||busy||clipBusy||workspaceBusy||suspended} onClick={reconnectVideos}><RefreshCw size={16}/>{t("重连视频")}</button>}
-              {isOwner&&(!videoState||hasVideoFailures||hasProbeFailures)&&<button className="button button-secondary" type="button" disabled={opening||busy||clipBusy||workspaceBusy||suspended||!recording.videos.length} onClick={()=>void (videoState?retryFailedVideos():openVideos(partIndex,position))}>{opening ? <LoaderCircle size={16} className="spin"/> : <Play size={16}/>}{!videoState?t("打开原始视频"):hasVideoFailures?t("重试失败视频"):t("重试读取时长")}</button>}
+              {isOwner&&(!videoState||hasVideoFailures)&&<button className="button button-secondary" type="button" disabled={opening||busy||clipBusy||workspaceBusy||suspended||!recording.videos.length} onClick={()=>void (videoState?retryFailedVideos():openVideos(partIndex,position))}>{opening ? <LoaderCircle size={16} className="spin"/> : <Play size={16}/>}{!videoState?t("打开原始视频"):t("重试失败视频")}</button>}
+              </div>
             </div>
             {excludedParts.length>0&&<p className="outbound-playback-status" role="status">{t("已排除片段 {0}",[excludedParts.map(part=>sourceParts.indexOf(part)+1).join(t("、"))])}</p>}
             {clipIntent&&!activeClip&&<p role="status">{t(hasProbeFailures||hasVideoFailures
@@ -983,6 +1107,7 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
               </div>}
               {hasProbeFailures&&<div className="outbound-source-issues" role="status">
                 <strong>{t("后台未能确认分段时长")}</strong>
+                {isOwner&&!hasVideoFailures&&<button type="button" disabled={opening||busy||clipBusy||workspaceBusy||suspended} onClick={()=>void retryFailedVideos()}><RefreshCw size={13}/>{t("重试读取时长")}</button>}
                 {grouped.parts.map((files,index)=>{
                   const issues=files.filter(file=>probeFailures[file.segment]);
                   if(!issues.length)return null;
@@ -1010,8 +1135,11 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
               <div className="outbound-video-stage">{[
                 <ReviewVideo key={state?.bank??"playing"} segment={video?.segment??-cameraIndex-1} onAttach={attachPlayer} src={video?state?.urls[video.segment]:undefined} aria-label={tr(cameraName(camera))} playsInline muted={!primary||muted} preload="auto" onCanPlay={()=>{if(video)markReady(video.segment);}} onLoadedMetadata={event=>{
                   if(!video)return;
-                  const player=event.currentTarget,target=retryPositions.current.get(video.segment);
-                  if(target!==undefined){player.currentTime=target;retryPositions.current.delete(video.segment);}
+                  const player=event.currentTarget;
+                  const pending=pendingStart.current;
+                  const target=retryPositions.current.get(video.segment)??(pending?.part===partIndex?pending.position:undefined);
+                  if(target!==undefined&&target>0)player.currentTime=Math.min(target,player.duration);
+                  retryPositions.current.delete(video.segment);
                   rememberDuration(video.segment,player.duration);updateClock();
                 }} onError={event=>{if(video&&state?.urls[video.segment])mediaFailed(video.segment,video.label,event.currentTarget);}}/>,
                 warmUrl&&nextVideo&&preparedPlayback&&<ReviewVideo key={preparedPlayback.bank} segment={nextVideo.segment} src={warmUrl}
@@ -1030,16 +1158,31 @@ function OutboundReviewSession({reasonPreferenceOwner,currentUser,workspaceBusy=
                 ? <OutboundClipEditor key={`${batch.id}:${recording.id}:${batch.version}`}
                     datasetId={batch.id} recordingId={recording.id} version={batch.version}
                     sourceRevision={recording.sourceRevision??""}
-                    initialDescription={recording.trimDescription} canSave={Boolean(batch.supportsSourceTrim)}
+                    initialDescription={recording.trimDescription} canSave={Boolean(batch.supportsSourceTrim)} timelineReady={timeline.complete}
                     onSaved={finishTrim}
                     position={clipPosition} duration={activeClip.duration} ranges={activeClip.ranges}
                     shortened={activeClip.shortened}
                     onEdit={ranges=>setClip(previous=>previous?{...previous,ranges}:previous)}
-                    spans={activeClip.spans} pause={pauseForClip}
-                    seek={seekClip}
+                    spans={activeClip.spans} pendingSpans={activeClip.spans.filter(span=>span.duration<=0).length} totalSpans={activeClip.spans.length} pause={pauseForClip}
+                    seek={seekClip} onScrubbing={setScrubbing}
                     disabled={busy||workspaceBusy||suspended||workspaceUnconfirmed} onBusy={setClipBusy}/>
-                : <ReviewSeekBar key={`${recording.id}:${partIndex}:${Boolean(fullDuration)}`} position={seekPosition}
-                    duration={seekDuration} disabled={!seekDuration||!playbackReady||suspended||busy||clipBusy||workspaceBusy} onSeek={seek}/>}
+                : <ReviewSeekBar key={recording.id} position={seekPosition}
+                    duration={seekDuration} disabled={!seekDuration||suspended||busy||clipBusy||workspaceBusy}
+                    onScrubStart={()=>{
+                      setScrubbing(true);
+                      pauseBackgroundCache();
+                      const resume=playing||transitionIntent;
+                      if(resume)playback.current?.pause();
+                      return resume;
+                    }}
+                    onScrubCancel={resume=>{setScrubbing(false);if(resume&&!suspended)playback.current?.play();}}
+                    onSeek={(value,resume)=>{setScrubbing(false);seek(value,resume);}}/>}
+              {nativePlayback&&cacheStatus&&<button className="button button-secondary outbound-cache-clear" type="button"
+                title={t("清理外发视频缓存")} onClick={()=>void outboundCacheStatus(true).then(setCacheStatus).catch(()=>{
+                  setCacheStatus({...cacheStatus,cleanupFailed:true});
+                })}>
+                {cacheStatus.cleanupFailed ? t("缓存清理失败，点击重试") : cacheStatus.limited ? t("缓存空间不足，点击清理") : t("清理缓存")}
+              </button>}
               <span className="outbound-playback-status" role="status">
                 {buffering ? <><LoaderCircle size={13} className="spin"/>{t("正在缓冲")}</>
                   : opening ? t("已就绪 {0}/{1}", [videoState?.ready.length ?? 0, partVideos.length])
