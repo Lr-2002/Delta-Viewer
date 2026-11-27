@@ -2094,6 +2094,9 @@ async fn defer_machine_review(
     auth: State<'_, AuthState>,
     entry: source_review_queue::DeferredReview,
 ) -> Result<machine_review::ReviewView, String> {
+    if auth.workspace_mode().map_err(|e| e.to_string())? == Some(WorkspaceMode::Offline) {
+        return Err(entry.error);
+    }
     let data = app_data_root(&app)?;
     let (user, service) =
         user_center::source_review_owner(&data, auth.inner()).map_err(|e| e.to_string())?;
@@ -2122,7 +2125,12 @@ async fn get_pending_source_reviews(
         if let Some(paths) = source_paths {
             source_review_queue::status_for_paths(&data, &service, &user.username, &paths)
         } else {
-            source_review_queue::status(&data, &service, &user.username, check_storage)
+            source_review_queue::status(
+                &data,
+                &service,
+                &user.username,
+                check_storage && service != "offline-local-v1",
+            )
         }
     })
     .await

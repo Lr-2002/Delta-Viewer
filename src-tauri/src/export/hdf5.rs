@@ -187,7 +187,7 @@ impl ExportAdapter for Hdf5Adapter {
                 return Err(AppError::Cancelled);
             }
             let stream_files =
-                collect_stream_files(context.source, &stream.name, &context.cancelled)?;
+                collect_stream_files(context.media_root, &stream.name, &context.cancelled)?;
             let frames = stream_files
                 .frames
                 .into_iter()

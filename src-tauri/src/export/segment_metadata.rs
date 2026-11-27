@@ -209,6 +209,7 @@ mod tests {
         };
         let mut context = ExportContext {
             source: &source,
+            media_root: &source,
             destination_parent: &root,
             data: &data,
             range: ExportRange {

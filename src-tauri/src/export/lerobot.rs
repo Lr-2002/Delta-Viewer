@@ -72,7 +72,7 @@ impl ExportAdapter for LeRobotV2Adapter {
             encode_video(
                 VideoEncodeJob {
                     ffmpeg: &ffmpeg,
-                    source: &context.source.join(&stream.name),
+                    source: &context.media_root.join(&stream.name),
                     destination: &video_path,
                     first_frame: stream.first_frame.unwrap_or(0),
                     frame_count: stream.frame_count,

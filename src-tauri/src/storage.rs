@@ -585,8 +585,25 @@ fn replace_file_platform(source: &Path, destination: &Path) -> std::io::Result<(
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination
+    // Rust opens long files using extended Windows paths. Use the same form
+    // for MoveFileExW, including the longer sibling name used before a save.
+    let parent = source
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+        .canonicalize()?;
+    let source: Vec<u16> = parent
+        .join(source.file_name().ok_or(std::io::ErrorKind::InvalidInput)?)
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let destination: Vec<u16> = parent
+        .join(
+            destination
+                .file_name()
+                .ok_or(std::io::ErrorKind::InvalidInput)?,
+        )
         .as_os_str()
         .encode_wide()
         .chain(Some(0))

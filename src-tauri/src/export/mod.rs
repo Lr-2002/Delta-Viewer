@@ -23,6 +23,7 @@ use walkdir::WalkDir;
 
 pub struct ExportContext<'a> {
     pub source: &'a Path,
+    pub media_root: &'a Path,
     pub destination_parent: &'a Path,
     pub data: &'a EpisodeData,
     pub range: ExportRange,
@@ -83,18 +84,9 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         app,
         cancelled,
     } = job;
-    if source::is_segment_episode(source_path) {
-        return Err(AppError::Message(
-            "segment BIN 或混合 MP4/BIN 记录当前支持只读扫描、检查与回放；MCAP、HDF5 和 LeRobot 导出尚未适配按偏移读取该源格式".into(),
-        ));
-    }
-    if source::is_mp4_episode(source_path) {
-        return Err(AppError::Message(
-            "MP4 记录当前支持只读扫描与回放；MCAP、HDF5 和 LeRobot 导出尚未适配该源格式".into(),
-        ));
-    }
     let started = Instant::now();
-    let source_data = source::load_episode(source_path, app, cancelled)?;
+    let index = source::scan_episode_index(source_path, app, cancelled)?;
+    let source_data = source::load_episode_with_index(source_path, &index, cancelled)?;
     let full_range = episode_range(&source_data)?;
     let range = requested_range.unwrap_or(full_range);
     validate_range(range, full_range)?;
@@ -113,7 +105,34 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         destination_parent,
         source_data.summary.total_bytes,
     )?;
-    let data = select_episode_data(source_path, &source_data, range, cancelled)?;
+    let staged = if index.segment.is_some() || source::is_mp4_episode(source_path) {
+        Some(stage_export_jpegs(
+            source_path,
+            destination_parent,
+            &index,
+            &source_data,
+            range,
+            app,
+            cancelled,
+        )?)
+    } else {
+        None
+    };
+    let media_root = staged
+        .as_ref()
+        .map_or(source_path, |stage| stage.0.as_path());
+    let mut data = select_episode_data(media_root, &source_data, range, cancelled)?;
+    if staged.is_some() {
+        data.summary.streams.retain(|stream| stream.frame_count > 0);
+        if data.summary.streams.is_empty() {
+            return Err(AppError::Message("所选帧范围内没有可导出的相机画面".into()));
+        }
+        storage::require_export_destination(
+            source_path,
+            destination_parent,
+            data.summary.total_bytes,
+        )?;
+    }
     let provenance = export_provenance(&data, annotation, exported_by)?;
     let frame_ids = data
         .states
@@ -122,6 +141,7 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         .collect();
     let context = ExportContext {
         source: source_path,
+        media_root,
         destination_parent,
         data: &data,
         range,
@@ -168,6 +188,108 @@ pub(crate) fn export_episode(job: ExportJob<'_>) -> AppResult<ExportResult> {
         range,
         state_count: data.states.len() as u64,
     })
+}
+
+struct StagedJpegs(PathBuf);
+
+impl Drop for StagedJpegs {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn stage_export_jpegs(
+    root: &Path,
+    destination: &Path,
+    index: &source::EpisodeIndex,
+    data: &EpisodeData,
+    range: ExportRange,
+    app: Option<&AppHandle>,
+    cancelled: &AtomicBool,
+) -> AppResult<StagedJpegs> {
+    let ids = data
+        .states
+        .iter()
+        .filter_map(|state| u64::try_from(state.frame_id).ok())
+        .filter(|id| range.contains(*id))
+        .collect::<BTreeSet<_>>();
+    let directory = partial_sibling(&destination.join("export-frames"));
+    fs::create_dir(&directory)?;
+    let staged = StagedJpegs(directory);
+    let started = Instant::now();
+    for (position, stream) in data.summary.streams.iter().enumerate() {
+        if stream.frame_count == 0 {
+            continue;
+        }
+        let target = staged.0.join(&stream.name);
+        fs::create_dir(&target)?;
+        source::emit_progress(
+            app,
+            crate::model::ProgressPayload {
+                task: "export".into(),
+                phase: format!("读取导出画面 {}", stream.name),
+                current: position as u64 + 1,
+                total: data.summary.streams.len() as u64,
+                bytes_done: 0,
+                total_bytes: data.summary.total_bytes,
+                current_path: root.display().to_string(),
+                elapsed_ms: started.elapsed().as_millis(),
+            },
+        );
+        if let Some(segment) = index
+            .segment
+            .as_ref()
+            .filter(|segment| segment.streams.contains_key(&stream.name))
+        {
+            for frame in &segment.streams[&stream.name] {
+                if ids.contains(&frame.frame_id) {
+                    check_export_cancelled(cancelled)?;
+                    fs::write(
+                        target.join(format!("{}.jpg", frame.frame_id)),
+                        crate::segment_bin::read_frame_at(segment, frame)?,
+                    )?;
+                }
+            }
+        } else if source::is_mp4_stream(root, &stream.name) {
+            let (Some(first), Some(last)) = (stream.first_frame, stream.last_frame) else {
+                continue;
+            };
+            let start = first.max(range.start_frame);
+            let end = last.min(range.end_frame);
+            if start > end {
+                continue;
+            }
+            let mut remaining = ids.range(start..=end).peekable();
+            while let Some(&start) = remaining.peek().copied() {
+                check_export_cancelled(cancelled)?;
+                let frames = source::read_mp4_export_batch(root, &stream.name, start, end, app)?;
+                let last_decoded = frames.last().map(|frame| frame.0).ok_or_else(|| {
+                    AppError::Message(format!("{} 未解码出导出帧 {start}", stream.name))
+                })?;
+                for (id, bytes) in frames {
+                    if ids.contains(&id) {
+                        fs::write(target.join(format!("{id}.jpg")), bytes.as_slice())?;
+                    }
+                }
+                while remaining.next_if(|id| **id <= last_decoded).is_some() {}
+            }
+        } else if let Some(files) = index.stream_files.get(&stream.name) {
+            for (id, path) in &files.frames {
+                if ids.contains(id) {
+                    check_export_cancelled(cancelled)?;
+                    fs::copy(path, target.join(format!("{id}.jpg")))?;
+                }
+            }
+        }
+    }
+    Ok(staged)
+}
+
+fn check_export_cancelled(cancelled: &AtomicBool) -> AppResult<()> {
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(AppError::Cancelled);
+    }
+    Ok(())
 }
 
 fn export_provenance(
@@ -451,9 +573,126 @@ mod tests {
     use prost::Message as ProstMessage;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    #[ignore = "uses FFmpeg to generate and read back real MP4 frames"]
+    fn mp4_export_crosses_source_segments_in_all_three_formats() {
+        let ffmpeg = super::lerobot::find_ffmpeg(None).unwrap();
+        let fixture = test_output("mp4-export");
+        let root = fixture.join("recording");
+        let output = fixture.join("output");
+        fs::create_dir_all(root.join(".session_meta")).unwrap();
+        fs::create_dir(&output).unwrap();
+        let mut streams = serde_json::Map::new();
+        for name in STREAM_NAMES
+            .into_iter()
+            .chain(["extension_left", "extension_right"])
+        {
+            fs::create_dir(root.join(name)).unwrap();
+            for (part, color) in ["red", "blue"].into_iter().enumerate() {
+                let result = Command::new(&ffmpeg)
+                    .args([
+                        "-v",
+                        "error",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        &format!("color=c={color}:s=160x120:r=30:d=1"),
+                        "-c:v",
+                        "mpeg4",
+                        "-threads",
+                        "1",
+                    ])
+                    .arg(root.join(format!("{name}/{part}.mp4")))
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+            streams.insert(
+                name.into(),
+                serde_json::json!({"fps":30,"frame_count":60,"width":160,"height":120,
+                "segments":[{"path":format!("{name}/0.mp4")},{"path":format!("{name}/1.mp4")}]}),
+            );
+        }
+        fs::write(
+            root.join(".session_meta/manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "storage_format":"h264-split-mp4-v1","segment_seconds":1,"streams":streams
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let states = (0..60).map(|frame| serde_json::json!({
+            "frame_id":frame, "capture_time_ns":1_793_000_000_000_000_000_u64 + frame * 33_333_333,
+            "position":[1,0,0], "velocity":[0,0,0], "quaternion":[0,0,0,1], "euler":[0,0,0], "omega":[0,0,0], "confidence":1
+        }).to_string() + "\n").collect::<String>();
+        fs::write(root.join("states.jsonl"), states).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let report = validation::validate_episode(&root, None, &cancelled).unwrap();
+        let actor = UserIdentity {
+            username: "local".into(),
+            display_name: "Local".into(),
+            can_manage: false,
+            role: None,
+        };
+        let clip = ExportRange {
+            start_frame: 27,
+            end_frame: 32,
+        };
+        for format in [
+            ExportFormat::Mcap,
+            ExportFormat::Hdf5,
+            ExportFormat::LerobotV2,
+        ] {
+            let result = export_episode(ExportJob {
+                format,
+                source_path: &root,
+                destination_parent: &output,
+                validation_report: &report,
+                annotation: None,
+                exported_by: &actor,
+                acknowledge_warnings: true,
+                requested_range: Some(clip),
+                app: None,
+                cancelled: &cancelled,
+            })
+            .unwrap();
+            assert_eq!(result.state_count, 6);
+            let path = Path::new(&result.output_path);
+            match format {
+                ExportFormat::Mcap => {
+                    let bytes = fs::read(path).unwrap();
+                    let summary = mcap::Summary::read(&bytes).unwrap().unwrap();
+                    assert_eq!(summary.channels.len(), 9);
+                    assert_eq!(summary.stats.unwrap().message_count, 54);
+                    let frames = mcap::MessageStream::new(&bytes)
+                        .unwrap()
+                        .map(Result::unwrap)
+                        .filter(|entry| entry.channel.topic == "/dohc/camera/cam0")
+                        .map(|entry| CompressedImage::decode(entry.data.as_ref()).unwrap())
+                        .collect::<Vec<_>>();
+                    assert_eq!(frames.len(), 6);
+                    for (index, frame) in frames.iter().enumerate() {
+                        let image = image::load_from_memory(&frame.data).unwrap().into_rgb8();
+                        let [red, _, blue] = image.get_pixel(0, 0).0;
+                        assert_eq!(red > blue, index < 3);
+                    }
+                }
+                ExportFormat::Hdf5 => verify_hdf5(path, 6, None),
+                ExportFormat::LerobotV2 => verify_lerobot(path, 6, None),
+            }
+        }
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 3);
+        fs::remove_dir_all(fixture).unwrap();
+    }
 
     #[test]
     #[ignore = "requires DOHC_SAMPLE_ROOT and FFmpeg"]

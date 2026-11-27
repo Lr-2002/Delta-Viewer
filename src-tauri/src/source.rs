@@ -213,6 +213,7 @@ fn indexed_episode_roots(
     Ok(Some(children))
 }
 
+#[cfg(test)]
 pub fn load_episode(
     root: &Path,
     app: Option<&AppHandle>,
@@ -607,8 +608,41 @@ pub(crate) fn read_mp4_preview_batch(
     start_frame_id: u64,
     app: Option<&AppHandle>,
 ) -> AppResult<Vec<(u64, Arc<Vec<u8>>)>> {
-    const TIMELINE_FRAMES_PER_BATCH: u64 = 240;
+    read_mp4_frame_batch(
+        root,
+        stream,
+        start_frame_id,
+        start_frame_id.saturating_add(239),
+        app,
+        true,
+    )
+}
 
+pub(crate) fn read_mp4_export_batch(
+    root: &Path,
+    stream: &str,
+    start_frame_id: u64,
+    end_frame_id: u64,
+    app: Option<&AppHandle>,
+) -> AppResult<Vec<(u64, Arc<Vec<u8>>)>> {
+    read_mp4_frame_batch(
+        root,
+        stream,
+        start_frame_id,
+        end_frame_id.min(start_frame_id.saturating_add(47)),
+        app,
+        false,
+    )
+}
+
+fn read_mp4_frame_batch(
+    root: &Path,
+    stream: &str,
+    start_frame_id: u64,
+    end_frame_id: u64,
+    app: Option<&AppHandle>,
+    preview: bool,
+) -> AppResult<Vec<(u64, Arc<Vec<u8>>)>> {
     let manifest = read_mp4_manifest(root)?
         .ok_or_else(|| AppError::Message("当前记录不是 MP4 视频格式".into()))?;
     let stream_info = manifest
@@ -650,8 +684,8 @@ pub(crate) fn read_mp4_preview_batch(
     }
     let declared_first_timestamp = first_target as f64 / fps;
     let segment_index = (declared_first_timestamp / segment_seconds).floor() as usize;
-    let mut timeline_targets = Vec::with_capacity(TIMELINE_FRAMES_PER_BATCH as usize);
-    for frame_id in start_frame_id..start_frame_id.saturating_add(TIMELINE_FRAMES_PER_BATCH) {
+    let mut timeline_targets = Vec::new();
+    for frame_id in start_frame_id..=end_frame_id {
         let target = target_for(frame_id);
         if target >= frame_count {
             break;
@@ -676,22 +710,38 @@ pub(crate) fn read_mp4_preview_batch(
     if !is_regular_file(&video_path) {
         return Err(AppError::MissingPath(video_path.display().to_string()));
     }
+    if !preview && !video_path.canonicalize()?.starts_with(root.canonicalize()?) {
+        return Err(AppError::Message(format!(
+            "MP4 分段不在当前记录内: {relative_path}"
+        )));
+    }
     let media_fps = probed_mp4_fps(&video_path, app).unwrap_or(fps);
-    let local_timestamp = first_target as f64 / media_fps.max(1.0)
+    let mut local_timestamp = first_target as f64 / media_fps.max(1.0)
         - segment_index as f64 * segment_seconds * fps / media_fps.max(1.0);
-    let downscale = stream_info
-        .get("width")
-        .and_then(|value| value.as_u64())
-        .is_some_and(|width| width > 1280);
+    if !preview {
+        // Keep the intended CFR sample on the included side of timestamp rounding.
+        local_timestamp = (local_timestamp - 0.25 / media_fps.max(1.0)).max(0.0);
+    }
+    let downscale = preview
+        && stream_info
+            .get("width")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|width| width > 1280);
     let mut failures = Vec::new();
     for ffmpeg in crate::export::lerobot::ffmpeg_candidates(app) {
         let mut command = Command::new(&ffmpeg);
+        if !preview {
+            command.args(["-nostdin", "-xerror", "-threads", "2"]);
+        }
         command
             .args(["-v", "error", "-ss", &format!("{local_timestamp:.6}"), "-i"])
             .arg(&video_path)
             .args(["-frames:v", &decode_count.to_string()]);
         if downscale {
             command.args(["-vf", "scale=1280:-2"]);
+        }
+        if !preview {
+            command.args(["-fps_mode", "passthrough", "-threads", "2"]);
         }
         let output = command
             .args([
@@ -700,7 +750,7 @@ pub(crate) fn read_mp4_preview_batch(
                 "-vcodec",
                 "mjpeg",
                 "-q:v",
-                "5",
+                if preview { "5" } else { "2" },
                 "pipe:1",
             ])
             .output();

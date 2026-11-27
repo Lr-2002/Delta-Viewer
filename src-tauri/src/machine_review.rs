@@ -4889,7 +4889,7 @@ mod tests {
     }
 
     #[test]
-    fn offline_mode_conclusion_is_durable_without_any_company_event_outbox() {
+    fn offline_review_saves_to_source_and_reports_failure_without_queuing() {
         use crate::source_review_queue as queue;
         let f = Fixture::new(0, false);
         fs::write(f.root.join("session.json"), br#"{"qc":""}"#).unwrap();
@@ -4900,18 +4900,28 @@ mod tests {
         let user = auth.require_user().unwrap();
         let state = load(&data, &f.root).unwrap();
         let entry = action_entry(&f, &state, "approved");
-        let original_id = entry.audit["eventId"].clone();
-        let saved =
-            queue::submit_action_with_probe(&data, "offline-local-v1", &user, entry, &|_| {
-                Err(failure("REVIEW_STORAGE_FULL: isolated test"))
-            })
-            .unwrap();
-        assert!(saved.pending_source_write);
+        queue::submit_action_with_probe(
+            &data,
+            "offline-local-v1",
+            &user,
+            action_entry(&f, &state, "pending"),
+            &|_| Ok(()),
+        )
+        .unwrap();
+        let failed = queue::submit_action_with_probe(
+            &data,
+            "offline-local-v1",
+            &user,
+            entry.clone(),
+            &|_| Err(failure("REVIEW_STORAGE_FULL: isolated test")),
+        );
+        assert!(failed.is_err());
+        assert!(!f.root.join(OUTPUT).exists());
         assert_eq!(
             queue::status(&data, "offline-local-v1", &user.username, false)
                 .unwrap()
                 .pending,
-            1
+            0
         );
         assert_eq!(
             crate::review_outbox::status(&data, "offline-local-v1", &user.username)
@@ -4929,7 +4939,36 @@ mod tests {
         .unwrap()
         .is_none());
         let original = queue::list(&data, "offline-local-v1", &user.username).unwrap();
-        assert_eq!(original[0].audit["eventId"], original_id);
+        assert!(original[0].is_action_draft());
+        let saved =
+            queue::submit_action_with_probe(&data, "offline-local-v1", &user, entry, &|_| Ok(()))
+                .unwrap();
+        assert!(!saved.pending_source_write);
+        assert!(queue::list(&data, "offline-local-v1", &user.username)
+            .unwrap()
+            .is_empty());
+        assert_eq!(f.output()["_human_review"]["reviewer"], "离线本机");
+        assert!(auth.require_managed_user().is_err());
+    }
+
+    #[test]
+    fn offline_can_restore_a_result_queued_by_an_old_version() {
+        use crate::source_review_queue as queue;
+        let f = Fixture::new(0, false);
+        fs::write(f.root.join("session.json"), br#"{"qc":""}"#).unwrap();
+        let auth = crate::identity::AuthState::default();
+        auth.set_workspace_mode(Some(crate::model::WorkspaceMode::Offline))
+            .unwrap();
+        let data = auth.data_root(&f.local).unwrap();
+        let user = auth.require_user().unwrap();
+        let state = load(&data, &f.root).unwrap();
+        queue::store(
+            &data,
+            "offline-local-v1",
+            &user.username,
+            action_entry(&f, &state, "approved"),
+        )
+        .unwrap();
         let published = queue::publish_with_probe(
             &data,
             "offline-local-v1",
@@ -4948,6 +4987,22 @@ mod tests {
             0
         );
         assert!(auth.require_managed_user().is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn review_save_atomically_replaces_a_file_past_windows_max_path() {
+        let f = Fixture::new(0, true);
+        let directory = f.temp.join("a".repeat(115)).join("b".repeat(115));
+        fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("result.pending.json");
+        assert!(file.to_string_lossy().len() > 260);
+        atomic_json(&file, &json!({"revision": 1})).unwrap();
+        atomic_json(&file, &json!({"revision": 2})).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(file).unwrap()).unwrap()["revision"],
+            2
+        );
     }
 
     #[test]

@@ -225,7 +225,7 @@ impl ExportAdapter for McapAdapter {
             if state.frame_id >= 0 {
                 for stream in &context.data.summary.streams {
                     let frame_path = context
-                        .source
+                        .media_root
                         .join(&stream.name)
                         .join(format!("{}.jpg", state.frame_id));
                     if !is_regular_file(&frame_path) {
@@ -269,13 +269,17 @@ impl ExportAdapter for McapAdapter {
         }
         writer.finish().map_err(map_error)?;
         drop(writer);
-        verify_mcap(&partial, written)?;
+        verify_mcap(&partial, written, image_channels.keys().map(String::as_str))?;
         storage::publish_noreplace(&partial, &output)?;
         Ok(output)
     }
 }
 
-fn verify_mcap(path: &Path, expected_messages: u64) -> AppResult<()> {
+fn verify_mcap<'a>(
+    path: &Path,
+    expected_messages: u64,
+    cameras: impl Iterator<Item = &'a str>,
+) -> AppResult<()> {
     let mut file = File::open(path)?;
     let file_size = file.metadata()?.len();
     let mut reader = SummaryReader::new_with_options(
@@ -301,19 +305,12 @@ fn verify_mcap(path: &Path, expected_messages: u64) -> AppResult<()> {
     let topics = summary
         .channels
         .values()
-        .map(|channel| channel.topic.as_str())
+        .map(|channel| channel.topic.clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let expected = [
-        "/dohc/state",
-        "/dohc/pose",
-        "/dohc/camera/cam0",
-        "/dohc/camera/cam1",
-        "/dohc/camera/cam2",
-        "/dohc/camera/t265_left",
-        "/dohc/camera/t265_right",
-    ]
-    .into_iter()
-    .collect::<std::collections::BTreeSet<_>>();
+    let expected = ["/dohc/state".to_owned(), "/dohc/pose".to_owned()]
+        .into_iter()
+        .chain(cameras.map(|camera| format!("/dohc/camera/{camera}")))
+        .collect::<std::collections::BTreeSet<_>>();
     let schemas = summary
         .schemas
         .values()

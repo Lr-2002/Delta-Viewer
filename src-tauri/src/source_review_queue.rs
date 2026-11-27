@@ -37,6 +37,7 @@ impl DeferredReview {
 // Drafts remain durable/recoverable, but are never eligible for NAS writeback,
 // including pending action entries made by an older client.
 const PUBLISHABLE: &str = "(instr(lower(source_name),'skeleton')>0 OR coalesce(json_extract(payload,'$.request.status'),'pending')!='pending')";
+const OFFLINE_SERVICE: &str = "offline-local-v1";
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingItem {
@@ -481,7 +482,7 @@ fn enqueue_receipt(
             params![service, username, id],
         )
         .map_err(failure)?;
-    if inserted > 0 && service != "offline-local-v1" {
+    if inserted > 0 && service != OFFLINE_SERVICE {
         review_outbox::enqueue_with(db, service, username, &[audit])?;
     }
     Ok(())
@@ -908,6 +909,9 @@ pub(crate) fn publish_entry(
         Some(&state.revision_label),
     )?;
     tx.execute("DELETE FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=? AND event_id=?",params![service,user.username,entry.request.source_path,entry.request.source_name.as_deref().unwrap_or(""),entry.audit["eventId"].as_str().unwrap_or("")]).map_err(failure)?;
+    if service == OFFLINE_SERVICE && !entry.only_pending {
+        tx.execute(&format!("DELETE FROM source_reviews WHERE service=? AND username=? AND source_path=? AND source_name=? AND NOT {PUBLISHABLE}"),params![service,user.username,entry.request.source_path,entry.request.source_name.as_deref().unwrap_or("")]).map_err(failure)?;
+    }
     tx.commit().map_err(failure)?;
     Ok(state)
 }
@@ -944,6 +948,35 @@ pub(crate) fn submit_action_with_probe(
         return Err(failure("动作本机草稿入口不接受骨架或批量请求"));
     }
     let mut entry = entry;
+    if service == OFFLINE_SERVICE && !entry.is_action_draft() {
+        let _lock = owner_lock(root, service, &user.username)?;
+        if let Some(draft) = get(
+            root,
+            service,
+            &user.username,
+            &entry.request.source_path,
+            entry.request.source_name.as_deref(),
+        )?
+        .filter(DeferredReview::is_action_draft)
+        {
+            entry.request.source_path = draft.request.source_path;
+            entry.request.expected_revision = draft.request.expected_revision;
+            entry.request.source_hash = draft.request.source_hash;
+            entry.output_hash = draft.output_hash;
+            entry.qc_content_hash = draft.qc_content_hash;
+        }
+        if contains_submitted(root, service, &user.username, &entry.request.source_path)? {
+            return Err(AppError::Message(
+                "SOURCE_REVIEW_CONFLICT: 请先恢复这条录制的旧本机审核结果。".into(),
+            ));
+        }
+        let state = publish_entry(root, service, user, &entry, probe)?;
+        return Ok(machine_review::view_for_source(
+            Path::new(&entry.request.source_path),
+            entry.request.source_name.as_deref(),
+            state,
+        ));
+    }
     if !entry.is_action_draft() {
         if let Some(previous) = get(
             root,

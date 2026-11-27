@@ -9,6 +9,7 @@ import type { BatchRejectionResult } from "../types";
 export interface RejectionTarget { path: string; name: string }
 interface Props {
   username: string;
+  offline?: boolean;
   folder?: string;
   selected?: RejectionTarget[];
   onSaved: (path: string) => void;
@@ -16,16 +17,16 @@ interface Props {
 }
 type Result = RejectionTarget & { status: "rejected" | "local" | "skipped" | "failed"; message: string; evidence?: NonNullable<BatchRejectionResult["skipped"]> };
 
-function skipDetails(evidence: NonNullable<BatchRejectionResult["skipped"]>) {
+function skipDetails(evidence: NonNullable<BatchRejectionResult["skipped"]>, offline: boolean) {
   const source = evidence.source === "sessionQc" ? t("来源：session.json 的 QC")
-    : evidence.source === "localQueue" ? t("来源：本机待写回队列，请在原电脑打开「查看待写结果」")
+    : evidence.source === "localQueue" ? offline ? t("旧本机结论 · 可恢复") : t("来源：本机待写回队列，请在原电脑打开「查看待写结果」")
     : t("来源：{0} 中的人工审核记录", [evidence.file]);
   const conclusion = evidence.status === "approved" ? t("结论为通过") : evidence.status === "rejected" ? t("结论为不通过") : "";
   const time = evidence.updatedAtMs > 0 ? new Date(evidence.updatedAtMs).toLocaleString(localeTag()) : "";
   return [source, conclusion, evidence.reviewer, tr(evidence.reason), time].filter(Boolean).join(" · ");
 }
 
-export function BatchRejectionDialog({ username, folder, selected, onSaved, onClose }: Props) {
+export function BatchRejectionDialog({ username, offline = false, folder, selected, onSaved, onClose }: Props) {
   useLanguage();
   const [targets, setTargets] = useState<RejectionTarget[]>(selected ?? []);
   const [preparing, setPreparing] = useState(Boolean(folder));
@@ -79,7 +80,7 @@ export function BatchRejectionDialog({ username, folder, selected, onSaved, onCl
       setProgress(target.name);
       const started = performance.now();
       try {
-        const result = await rejectPendingMachineReview(target.path, target.name, savedReason, Math.max(0, Math.round(performance.now() - started)));
+        const result = await rejectPendingMachineReview(target.path, target.name, savedReason, Math.max(0, Math.round(performance.now() - started)), offline);
         if (result.skipped) completed.push({...target, status:"skipped", message:"已有审核结论", evidence:result.skipped});
         else if (result.review?.pendingSourceWrite) { completed.push({...target, status:"local", message:"已保存本机，待写回 NAS；用户中心接收后计入审核统计"}); onSaved(target.path); }
         else {
@@ -112,7 +113,7 @@ export function BatchRejectionDialog({ username, folder, selected, onSaved, onCl
       {(running || finished) && <p role="status">{t("成功") + " "}{success}{" " + t("· 本机待写") + " "}{local}{" " + t("· 跳过") + " "}{skipped}{" " + t("· 失败") + " "}{failed}{" " + t("· 未执行") + " "}{targets.length - results.length}{running ? t(" · {0}", [tr(progress)]) : ""}</p>}
       {results.length > 0 && <ul className="batch-rejection-results">{results.map(item => <li key={item.path} className={item.status === "failed" ? "task-qc-error" : ""}>
         <span title={item.path}>{item.name}</span><span>{tr(item.message)}</span>
-        {item.evidence && <small className="batch-rejection-evidence">{skipDetails(item.evidence)}<br />{item.path}</small>}
+        {item.evidence && <small className="batch-rejection-evidence">{skipDetails(item.evidence, offline)}<br />{item.path}</small>}
       </li>)}</ul>}
       <footer>{busy ? <button type="button" className="button button-secondary" onClick={() => void cancel()}><Square size={14} />{t("停止")}</button> : <button type="button" className="button button-secondary" onClick={onClose}>{finished ? t("完成") : t("取消")}</button>}
         {!finished && <button type="submit" className="button button-primary" disabled={busy || Boolean(error) || !targets.length || !confirmed || !resolvedReason}>{busy ? <LoaderCircle className="spin" size={16} /> : <X size={16} />}{t("确认不通过")}</button>}</footer>

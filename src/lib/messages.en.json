@@ -1,4 +1,13 @@
 {
+  "Parquet + 相机 MP4 + 片段 Metadata": "Parquet, camera MP4s, and segment metadata",
+  "旧本机结论": "Legacy local decision",
+  "旧本机结论 · 可恢复": "Legacy local decision · recoverable",
+  "旧审核结果已保存到对应的录制目录。": "Legacy review results were saved to their recording folders.",
+  "旧版本有 {0} 条审核结果留在本机。恢复后保存到对应录制目录。": "{0} review results from an earlier version are stored on this computer. Recover them to save them to their recording folders.",
+  "恢复旧审核结果": "Recover legacy review results",
+  "正在恢复…": "Recovering…",
+  "所选帧范围内没有可导出的相机画面": "There are no camera frames to export in the selected range",
+  "请先使用「恢复旧审核结果」处理这条录制的本机结论。": "Select Recover legacy review results to restore this recording’s local decision.",
   "常用原因": "Common reasons",
   "已选常用原因 · {0}": "Common reason selected · {0}",
   "一次性原因": "One-time reason",

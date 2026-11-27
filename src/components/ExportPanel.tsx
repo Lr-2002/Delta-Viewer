@@ -42,7 +42,7 @@ const FORMATS: Array<{
     id: "lerobot_v2",
     name: "LeRobot v2.1",
     extension: "dataset/",
-    contents: "Parquet + 5 路 MP4 + 片段 Metadata",
+    contents: "Parquet + 相机 MP4 + 片段 Metadata",
     icon: Bot,
   },
 ];

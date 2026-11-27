@@ -19,6 +19,7 @@ import "./text-quality.css";
 interface Props {
   data: EpisodeData;
   username: string;
+  offline?: boolean;
   busy: boolean;
   suspended?: boolean;
   onReviewSaved?: (review: MachineReview) => void;
@@ -83,7 +84,7 @@ export function MachineAnnotationPanel(props: Props) {
   </div>;
 }
 
-function MachineAnnotationEditor({ data, username, busy, suspended = false, sourceName, onSourceBusy, onComplete, onReviewSaved, onUnsavedChange, playback, channel, onChannelChange }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void; channel: "action" | "skeleton"; onChannelChange: (channel: "action" | "skeleton") => void }) {
+function MachineAnnotationEditor({ data, username, busy, offline = false, suspended = false, sourceName, onSourceBusy, onComplete, onReviewSaved, onUnsavedChange, playback, channel, onChannelChange }: Props & { sourceName?: string; onSourceBusy: (busy: boolean) => void; channel: "action" | "skeleton"; onChannelChange: (channel: "action" | "skeleton") => void }) {
   useLanguage();
   const shortcutBindings = useShortcuts();
   const root = data.summary.root;
@@ -224,10 +225,10 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
               saved = await saveMachineReview(root, state.sourceHash, state.revision, next.segments, loadedSource.current, next.status, next.rejectionReason, [deferredAudit.eventId, deferredAudit.occurredAtMs], { base: state, audit: deferredAudit }, next.specialTags);
             } catch (cause) {
               const message = String(cause);
-              if (!skeletonMode || !/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|SOURCE_REVIEW_DEFERRED|I\/O 错误/.test(message)) throw cause;
+              if (offline || !skeletonMode || !/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|SOURCE_REVIEW_DEFERRED|I\/O 错误/.test(message)) throw cause;
               saved = await deferMachineReview({ sourcePath: root, sourceName: loadedSource.current, sourceHash: state.sourceHash, expectedRevision: state.revision, segments: next.segments, specialTags: next.specialTags, status: next.status, rejectionReason: next.rejectionReason }, state, message, deferredAudit);
             }
-            if (!saved.pendingSourceWrite && (skeletonMode || !isTauriRuntime())) {
+            if (!offline && !saved.pendingSourceWrite && (skeletonMode || !isTauriRuntime())) {
               deferredAudit.details.revision = saved.revisionLabel ?? String(saved.revision);
               deferredAudit.details.value = await reviewReceiptValue(root, deferredAudit, "nas", loadedSource.current);
               enqueueCommittedReviewEvent(deferredAudit);
@@ -287,7 +288,7 @@ function MachineAnnotationEditor({ data, username, busy, suspended = false, sour
       setFrame(segments.find((item) => !item.deleted)?.startFrame ?? 0);
       if (!skeletonMode && state.pendingSourceWrite && ["approved", "rejected"].includes(state.status ?? "")) {
         setExistingConclusion(true);
-        setRecoveryMessages(["已有审核结论保存在本机，等待写回数据目录。片段暂时只读，请先在上方待写回入口处理；应急草稿保留，未覆盖原结论。"]);
+        setRecoveryMessages([offline ? "请先使用「恢复旧审核结果」处理这条录制的本机结论。" : "已有审核结论保存在本机，等待写回数据目录。片段暂时只读，请先在上方待写回入口处理；应急草稿保留，未覆盖原结论。"]);
         return;
       }
       const ownRaw = localStorage.getItem(recoveryKey());

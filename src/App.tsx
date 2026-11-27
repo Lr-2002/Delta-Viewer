@@ -2373,7 +2373,7 @@ function App() {
         </div>
       ) : null}
 
-      {batchRejection && <BatchRejectionDialog username={reviewStorageUsername} {...batchRejection} onSaved={handleBatchRejectionSaved} onClose={() => {
+      {batchRejection && <BatchRejectionDialog username={reviewStorageUsername} offline={isOfflineWorkspace} {...batchRejection} onSaved={handleBatchRejectionSaved} onClose={() => {
         setBatchRejection(null);
         setBatchReviewRevision(value => value + 1);
       }} />}
@@ -2463,7 +2463,7 @@ function App() {
               displayedEpisodes.map((episode) => <EpisodeListRow
                 key={episode.root} episode={episode} selected={selectedEpisode?.root === episode.root}
                 sourceState={episodeSourceStates[episode.root] ?? "available"}
-                savedAnnotation={annotationTags[episode.root]} reviewStatus={reviewedEpisodes[episode.root]} pendingReviewStatus={pendingReviewEpisodes[episode.root]} busy={busy}
+                savedAnnotation={annotationTags[episode.root]} reviewStatus={reviewedEpisodes[episode.root]} pendingReviewStatus={pendingReviewEpisodes[episode.root]} offline={isOfflineWorkspace} busy={busy}
                 rejectionSelectable={currentUser?.role === "operator"}
                 rejectionSelected={Boolean(batchRejectionSelection[episode.root])}
                 actions={episodeActions} buttonRefs={episodeButtonRefs}
@@ -2490,7 +2490,7 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${authStatus.userCenter.serviceId}:${currentUser.username}`} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || showManagement || managerSection !== "data"} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice("本机结果已写回数据目录；联网工作区的操作记录后台补传，任务中心等待服务器读取 QC 更新。"); }} />}
+          {currentUser?.role === "operator" && <SourceReviewNotice key={`source:${workspaceMode}:${authStatus.userCenter.serviceId}:${currentUser.username}`} offline={isOfflineWorkspace} owner={{username:currentUser.username,serviceId:authStatus.userCenter.serviceId ?? ""}} disabled={busy || reviewHasUnsaved || showManagement || managerSection !== "data"} onBusy={setSourcePublishing} onWritten={() => { setBatchReviewRevision(value => value + 1); setNotice(isOfflineWorkspace ? "旧审核结果已保存到对应的录制目录。" : "本机结果已写回数据目录；联网工作区的操作记录后台补传，任务中心等待服务器读取 QC 更新。"); }} />}
 
           {data || view === "batch" ? (
             <>
@@ -2637,7 +2637,7 @@ function App() {
                           onChange={event => seekFrame(event.currentTarget.valueAsNumber)} />
                         <p role="status">{t("正在读取视频与编辑记录，请稍候。")}</p>
                       </section>
-                    </div> : <ReviewPanel username={reviewStorageUsername} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement || managerSection !== "data"} busy={busy || showManagement || managerSection !== "data" || annotationReadyRoot !== data.summary.root}
+                    </div> : <ReviewPanel username={reviewStorageUsername} offline={isOfflineWorkspace} key={`machine:${data.summary.root}:${batchReviewRevision}`} data={data} suspended={showManagement || managerSection !== "data"} busy={busy || showManagement || managerSection !== "data" || annotationReadyRoot !== data.summary.root}
                       playback={{ frame: currentFrame, onSeek: seekFrame, onPause: () => setPlaying(false), onPlay: playSegment, onToggle: togglePlayback, controls: (
 <>
                           {playbackControls}
@@ -2787,7 +2787,7 @@ function EmptyWorkspace({
 // Keep the NAS catalog out of the per-frame video render work. Action refs
 // retain current application state without invalidating every row on a tick.
 const EpisodeListRow = memo(function EpisodeListRow({
-  episode, selected, sourceState, savedAnnotation, reviewStatus, pendingReviewStatus, busy, actions, buttonRefs, rejectionSelectable, rejectionSelected,
+  episode, selected, sourceState, savedAnnotation, reviewStatus, pendingReviewStatus, offline, busy, actions, buttonRefs, rejectionSelectable, rejectionSelected,
 }: {
   episode: EpisodeSummary;
   selected: boolean;
@@ -2795,6 +2795,7 @@ const EpisodeListRow = memo(function EpisodeListRow({
   savedAnnotation?: EpisodeAnnotation;
   reviewStatus?: "pending" | "approved" | "rejected";
   pendingReviewStatus?: string;
+  offline: boolean;
   busy: boolean;
   rejectionSelectable: boolean;
   rejectionSelected: boolean;
@@ -2838,7 +2839,7 @@ const EpisodeListRow = memo(function EpisodeListRow({
         {reviewStatus && !pendingReviewStatus ? <span className="episode-annotation-tag" aria-label={t("已审核")}>{t("我已审·")}{reviewStatus === "pending" ? t("待复审") : reviewStatus === "approved" ? t("通过") : t("不通过")}</span> : null}
         <EpisodeSourceMark state={sourceState} /><ChevronRight size={15} />
       </span>
-      {tr(pendingReviewStatus && <span className="episode-annotation-tag episode-local-pending" aria-label={pendingReviewStatus === "pending" ? t("本机草稿") : t("本机待写回")}>{pendingReviewStatus === "pending" ? t("本机草稿 · 待审核") : pendingReviewStatus === "conflict" ? t("本机结论冲突 · 待核对") : t("本机{0} · 待写回 NAS", [pendingReviewStatus === "approved" ? t("通过") : t("不通过")])}</span>)}
+      {tr(pendingReviewStatus && <span className="episode-annotation-tag episode-local-pending" aria-label={pendingReviewStatus === "pending" ? t("本机草稿") : offline ? t("旧本机结论") : t("本机待写回")}>{pendingReviewStatus === "pending" ? t("本机草稿 · 待审核") : pendingReviewStatus === "conflict" ? t("本机结论冲突 · 待核对") : offline ? t("旧本机结论 · 可恢复") : t("本机{0} · 待写回 NAS", [pendingReviewStatus === "approved" ? t("通过") : t("不通过")])}</span>)}
       <span className="episode-item-meta">{episode.indexed ? t("{0} states · {1}", [episode.stateCount, tr(formatBytes(episode.totalBytes))]) : episode.stateCount ? t("{0} states · 快速预览", [episode.stateCount]) : t("待读取")}</span>
       <span className="stream-dots">{episode.streams.map((stream) => <i
         className={episode.indexed ? stream.frameCount ? "dot-ok" : "dot-error" : stream.frameCount ? "dot-ok" : ""}

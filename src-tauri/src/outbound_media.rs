@@ -29,6 +29,7 @@ const PART: u64 = 1024 * 1024;
 // The read plans independently bound in-flight memory; response length never
 // determines an allocation. Local origins continue sharing their 16 slots.
 const LIFETIME: Duration = Duration::from_secs(3600);
+const CACHE_RECHECK: Duration = Duration::from_secs(5);
 type Session = (UserIdentity, String);
 #[derive(Clone)]
 pub struct OutboundMediaServer {
@@ -611,14 +612,13 @@ impl OutboundMediaServer {
         route: &Arc<Route>,
         cached: &CacheFile,
         request: &Request,
-        prefix: u64,
         bounds: (u64, u64),
         writer: &mut OwnedWriteHalf,
     ) -> Result<(), ()> {
         let (offset, end) = bounds;
-        // Each read starts with the same remote authority and source check
-        // used by a fresh stream. Paused browser ranges recheck it as they run.
-        self.authorize_cached(route, cached.size).await?;
+        self.authorize_cached(route, cached.size)
+            .await
+            .map_err(|_| ())?;
         let range = request.range.as_ref().map(|_| (offset, end, cached.size));
         headers(
             writer,
@@ -630,28 +630,29 @@ impl OutboundMediaServer {
         if request.method == "HEAD" {
             return Ok(());
         }
-        let cached_end = prefix.min(end + 1);
         let mut position = offset;
-        let mut buffer = vec![0; PART as usize];
-        let mut checked = Instant::now();
-        while position < cached_end && position < cached.available() {
-            if checked.elapsed() >= Duration::from_secs(5) {
-                self.authorize_cached(route, cached.size).await?;
-                checked = Instant::now();
-            }
-            let wanted = (cached_end - position).min(PART) as usize;
-            let read = async {
-                let mut file = tokio::fs::File::open(&cached.path).await?;
-                file.seek(std::io::SeekFrom::Start(position)).await?;
-                file.read_exact(&mut buffer[..wanted]).await
+        let local = async {
+            let Ok(mut file) = tokio::fs::File::open(&cached.path).await else {
+                return Ok(());
             };
-            // Drop the disk handle before writing to a possibly paused
-            // browser. Clearing the file can then switch the range to upstream.
-            if read.await.is_err() {
-                break;
+            if file.seek(std::io::SeekFrom::Start(offset)).await.is_err() {
+                return Ok(());
             }
-            write_body(writer, &buffer[..wanted], route).await?;
-            position += wanted as u64;
+            let mut buffer = vec![0; PART as usize];
+            while position <= end && cached.available() == cached.size {
+                let wanted = (end - position + 1).min(PART) as usize;
+                if file.read_exact(&mut buffer[..wanted]).await.is_err() {
+                    break;
+                }
+                write_body(writer, &buffer[..wanted], route).await?;
+                position += wanted as u64;
+            }
+            Ok::<(), ()>(())
+        };
+        tokio::select! {
+            biased;
+            result = self.recheck_cached(route, cached.size) => result?,
+            result = local => result?,
         }
         if position <= end {
             let etag = route
@@ -679,13 +680,34 @@ impl OutboundMediaServer {
         Ok(())
     }
 
-    async fn authorize_cached(&self, route: &Route, size: u64) -> Result<(), ()> {
+    async fn recheck_cached(&self, route: &Route, size: u64) -> Result<(), ()> {
+        // Keep checking a paused or backpressured reader without making each
+        // disk write wait on the remote server.
+        let mut checks =
+            tokio::time::interval_at(tokio::time::Instant::now() + CACHE_RECHECK, CACHE_RECHECK);
+        checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            checks.tick().await;
+            match tokio::time::timeout(CACHE_RECHECK, self.authorize_cached(route, size)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(CacheAuthorityError::Denied)) => return Err(()),
+                Ok(Err(CacheAuthorityError::Retry)) | Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
+        }
+    }
+
+    async fn authorize_cached(&self, route: &Route, size: u64) -> Result<(), CacheAuthorityError> {
         let response = self
             .client
             .head(route.url.clone())
             .send()
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| CacheAuthorityError::Retry)?;
+        if matches!(response.status().as_u16(), 429 | 500 | 502 | 503 | 504) {
+            return Err(CacheAuthorityError::Retry);
+        }
         let length = response
             .headers()
             .get("content-length")
@@ -701,7 +723,7 @@ impl OutboundMediaServer {
                 200 => "OUTBOUND_MEDIA_INTEGRITY",
                 _ => "OUTBOUND_MEDIA_RESPONSE_INVALID",
             });
-            return Err(());
+            return Err(CacheAuthorityError::Denied);
         }
         Ok(())
     }
@@ -852,15 +874,14 @@ impl OutboundMediaServer {
         writer: &mut OwnedWriteHalf,
     ) -> Result<(), ()> {
         let cached = route.cached.lock().map_err(|_| ())?.clone();
-        if let Some(file) = cached {
-            let prefix = file.available();
+        if let Some(file) = cached.filter(|file| file.available() == file.size) {
             let requested = match &request.range {
                 Some(value) => requested_range(value, file.size),
                 None => Some((0, file.size - 1)),
             };
-            if let Some((offset, end)) = requested.filter(|(offset, _)| *offset < prefix) {
+            if let Some(bounds) = requested {
                 return self
-                    .serve_cached(route, &file, request, prefix, (offset, end), writer)
+                    .serve_cached(route, &file, request, bounds, writer)
                     .await;
             }
         }
@@ -1258,6 +1279,11 @@ struct Part {
     end: u64,
     etag: Option<String>,
     body: Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CacheAuthorityError {
+    Denied,
+    Retry,
 }
 async fn write_body(writer: &mut OwnedWriteHalf, body: &[u8], route: &Route) -> Result<(), ()> {
     if !route.valid() {
@@ -1657,12 +1683,97 @@ mod tests {
             assert_eq!(
                 gets.load(Ordering::Relaxed),
                 3,
-                "range stitches the local prefix and remote suffix"
+                "an unfinished file uses the normal stream for the whole range"
             );
             assert_eq!(server.cache_status(&path, true).unwrap().bytes, 0);
             server.close_cache();
             std::fs::remove_dir(path.join("outbound-playback-cache-v1")).unwrap();
             std::fs::remove_dir(path).unwrap();
+            upstream.abort();
+        });
+    }
+
+    #[test]
+    fn cached_playback_continues_while_the_remote_ticket_check_is_pending() {
+        test_runtime(async {
+            let size = 24 * PART;
+            let fixture = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let origin = fixture.local_addr().unwrap();
+            let rechecking = Arc::new(tokio::sync::Notify::new());
+            let check_started = rechecking.clone();
+            let upstream = tokio::spawn(async move {
+                let (mut socket, _) = fixture.accept().await.unwrap();
+                assert_eq!(read_request(&mut socket).await.unwrap().method, "HEAD");
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                drop(socket);
+                let (mut socket, _) = fixture.accept().await.unwrap();
+                assert_eq!(read_request(&mut socket).await.unwrap().method, "HEAD");
+                check_started.notify_one();
+                // Leave the recheck pending while the browser drains the file.
+                std::future::pending::<()>().await;
+                drop(socket);
+            });
+            let client = Client::builder().no_proxy().build().unwrap();
+            let server = OutboundMediaServer::with_client(client.clone()).unwrap();
+            let auth = auth();
+            let url = fixture_route(&server, &auth, origin);
+            let route = server.routes.lock().unwrap()[&server.local_token(&url).unwrap()].clone();
+            let mut random = [0; 16];
+            getrandom::fill(&mut random).unwrap();
+            let path =
+                std::env::temp_dir().join(format!("outbound-cache-test-{}", blake3::hash(&random)));
+            let file = server.cache.reserve(&path, size).unwrap();
+            std::fs::File::create(&file.path)
+                .unwrap()
+                .set_len(size)
+                .unwrap();
+            file.publish(size);
+            *route.cached.lock().unwrap() = Some(Arc::new(file));
+
+            let response = client
+                .get(url)
+                .header("Range", "bytes=0-")
+                .send()
+                .await
+                .unwrap();
+            let mut body = response.bytes_stream();
+            tokio::time::timeout(
+                CACHE_RECHECK + Duration::from_secs(2),
+                rechecking.notified(),
+            )
+            .await
+            .expect("ticket recheck runs while the browser is paused");
+            let mut received = 0;
+            let deadline = tokio::time::Instant::now() + CACHE_RECHECK + Duration::from_secs(2);
+            let mut slow_reader = true;
+            while tokio::time::Instant::now() < deadline {
+                if let Some(bytes) = body.next().await {
+                    received += bytes.unwrap().len() as u64;
+                    if slow_reader {
+                        slow_reader = false;
+                        tokio::time::sleep(CACHE_RECHECK + Duration::from_secs(1)).await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                } else {
+                    break;
+                }
+            }
+            assert!(received > 0 && received < size);
+            if let Some(bytes) = body.next().await {
+                received += bytes.unwrap().len() as u64;
+            } else {
+                panic!("the local response ended during a slow ticket recheck");
+            }
+            while let Some(bytes) = body.next().await {
+                received += bytes.unwrap().len() as u64;
+            }
+            assert_eq!(
+                received, size,
+                "retrying a slow ticket check keeps the local stream alive"
+            );
+            server.cache_status(&path, true).unwrap();
+            server.close_cache();
+            std::fs::remove_dir_all(path).unwrap();
             upstream.abort();
         });
     }

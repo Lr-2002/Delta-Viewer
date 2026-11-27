@@ -807,7 +807,7 @@ export const getPendingSourceReviews = (checkStorage = false, sourcePaths?: stri
   ? invoke<import("../types").PendingSourceReviewStatus>("get_pending_source_reviews", { checkStorage, sourcePaths })
   : Promise.resolve({ pending: 0, ready: false, storageError: "", items: [] });
 export const publishPendingSourceReviews = () => invoke<import("../types").SourceReviewPublishResult>("publish_pending_source_reviews", { operationId: Date.now() });
-export async function rejectPendingMachineReview(sourcePath: string, name: string, reason: string, elapsedMs: number): Promise<import("../types").BatchRejectionResult> {
+export async function rejectPendingMachineReview(sourcePath: string, name: string, reason: string, elapsedMs: number, offline = false): Promise<import("../types").BatchRejectionResult> {
   const event = { eventId: crypto.randomUUID(), sessionId: crypto.randomUUID(), episodeKey: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sourcePath))), byte => byte.toString(16).padStart(2, "0")).join(""), episodeName: name.slice(0, 256), action: "rejected" as const, occurredAtMs: Date.now(), elapsedMs, details: { reason, target: "批量不通过 · 本机待写回" } };
   let result: import("../types").BatchRejectionResult;
   if (!isTauriRuntime()) {
@@ -822,6 +822,7 @@ export async function rejectPendingMachineReview(sourcePath: string, name: strin
     const error = String(cause);
     const skipped = error.match(/BATCH_REVIEW_SKIPPED:(\{.*\})/s);
     if (skipped) return { review: null, skipped: JSON.parse(skipped[1]) as NonNullable<import("../types").BatchRejectionResult["skipped"]> };
+    if (offline) throw cause;
     if (!/REVIEW_STORAGE_|SOURCE_UNAVAILABLE|I\/O 错误/.test(String(cause))) throw cause;
     try {
       const review = await deferMachineReview({ sourcePath, sourceHash: "", expectedRevision: 0, segments: [], status: "rejected", rejectionReason: reason }, { outputHash: null } as import("../types").MachineReview, String(cause), event, true);
@@ -831,7 +832,7 @@ export async function rejectPendingMachineReview(sourcePath: string, name: strin
       return invoke<import("../types").BatchRejectionResult>("reject_pending_machine_review", { sourcePath, reason, operationId: Date.now(), commitEvent: [event.eventId, event.occurredAtMs] });
     }
   }
-  if (result.review) {
+  if (result.review && !offline) {
     try {
       const { recordCommittedReviewEvent, reviewReceiptValue } = await import("./review-audit");
       event.details.target = "批量不通过";

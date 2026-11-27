@@ -5,7 +5,7 @@ import { getPendingSourceReviews, publishPendingSourceReviews } from "../lib/bac
 import type { PendingSourceReviewStatus } from "../types";
 import { WRITEBACK_ACTIVITY, type WritebackActivity } from "../lib/writeback-coordination";
 
-export function SourceReviewNotice({ disabled, onBusy, onWritten, owner }: { disabled: boolean; onBusy: (busy: boolean) => void; onWritten: () => void; owner?: {username:string;serviceId:string} }) {
+export function SourceReviewNotice({ disabled, onBusy, onWritten, owner, offline = false }: { disabled: boolean; onBusy: (busy: boolean) => void; onWritten: () => void; owner?: {username:string;serviceId:string}; offline?: boolean }) {
   useLanguage();
   const [status, setStatus] = useState<PendingSourceReviewStatus | null>(null);
   const [error, setError] = useState("");
@@ -23,7 +23,7 @@ export function SourceReviewNotice({ disabled, onBusy, onWritten, owner }: { dis
     if (running.current) return;
     running.current = true;
     try {
-      const next = await getPendingSourceReviews(checkStorage);
+      const next = await getPendingSourceReviews(checkStorage && !offline);
       if (!alive.current) return;
       setStatus(next); setQueryError("");
       if (next.ready && next.pending && !dismissed.current && !blocked.current && !managed.current && !document.querySelector("dialog[open]")) { manual.current=false; setOpen(true); }
@@ -32,6 +32,7 @@ export function SourceReviewNotice({ disabled, onBusy, onWritten, owner }: { dis
     finally { running.current = false; }
   }
   useEffect(() => {
+    if (offline) return;
     const coordinate = (event: Event) => {
       const activity = (event as CustomEvent<WritebackActivity>).detail;
       if (!owner || !activity || activity.username!==owner.username || activity.serviceId!==owner.serviceId) return;
@@ -44,15 +45,15 @@ export function SourceReviewNotice({ disabled, onBusy, onWritten, owner }: { dis
     };
     window.addEventListener(WRITEBACK_ACTIVITY,coordinate);
     return()=>window.removeEventListener(WRITEBACK_ACTIVITY,coordinate);
-  }, [owner?.username,owner?.serviceId]);
+  }, [owner?.username,owner?.serviceId,offline]);
   useEffect(() => {
     alive.current = true;
     void refresh();
     const update = () => void refresh();
-    const timer = window.setInterval(update, 30000);
+    const timer = offline ? undefined : window.setInterval(update, 30000);
     window.addEventListener("source-review-pending", update);
     return () => { alive.current = false; clearInterval(timer); window.removeEventListener("source-review-pending", update); };
-  }, []);
+  }, [offline]);
   useEffect(() => {
     if (busy) {
       const protect = (event: BeforeUnloadEvent) => { event.preventDefault(); };
@@ -65,14 +66,23 @@ export function SourceReviewNotice({ disabled, onBusy, onWritten, owner }: { dis
     running.current = true; publishing.current=true; setBusy(true); onBusy(true); setError("");
     try {
       const result = await publishPendingSourceReviews();
-      setError(result.errors.length ? `${result.written} 条已写回，${result.remaining} 条仍在本机。${result.errors.join("；")}` : "");
+      setError(result.errors.length ? offline ? result.errors.join("；") : `${result.written} 条已写回，${result.remaining} 条仍在本机。${result.errors.join("；")}` : "");
       if (result.written) onWritten();
       if (!result.remaining) setOpen(false);
       dismissed.current = true;
-    } catch (cause) { setError(`待写结果仍保留在本机：${String(cause)}`); }
+    } catch (cause) { setError(offline ? String(cause) : `待写结果仍保留在本机：${String(cause)}`); }
     finally { running.current = false; publishing.current=false; setBusy(false); onBusy(false); void refresh(false); }
   }
   const issue = [error, queryError].filter(Boolean).join("；");
+  if (offline) {
+    if (!status?.pending) return null;
+    return <div className="source-review-notice" role="status">
+      <AlertTriangle size={17} />
+      <span>{t("旧版本有 {0} 条审核结果留在本机。恢复后保存到对应录制目录。", [status.pending])}</span>
+      <button className="button button-secondary" disabled={busy || disabled} onClick={() => void publish()}>{busy ? t("正在恢复…") : t("恢复旧审核结果")}</button>
+      {error && <p className="machine-message">{tr(error)}</p>}
+    </div>;
+  }
   if (!status?.pending && !issue) return null;
   return <>
     <div className="source-review-notice" role="status"><AlertTriangle size={17} /><span><strong>{status?.pending ? t("{0} 条结果已保存本机，待写回数据目录", [status.pending]) : t("本机待写结果状态未知，请重新检查")}</strong><br />{status?.ready ? t("存储检查已通过，可确认写回。") : t("后台每 30 秒检查存储恢复；恢复后提醒确认写回。")}{t("任务进度以 NAS 已写入 QC 为准。")}</span><button className="button button-secondary" onClick={() => { manual.current=true; setOpen(true); void refresh(); }}>{t("查看待写结果")}</button></div>
