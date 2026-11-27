@@ -18,7 +18,10 @@ test('combinations, overlapping workspaces, digit prefixes and corrupt preferenc
   assert.equal(validShortcut('Ctrl+Shift+KeyJ'),true);assert.equal(validShortcut('Shift+Ctrl+KeyJ'),false);
   assert.ok(shortcutConflicts({...DEFAULT_SHORTCUTS,faster:'Digit1'}).some(pair=>pair.includes('label1')));
   assert.ok(shortcutConflicts({...DEFAULT_SHORTCUTS,togglePlayback:'Digit1'}).some(pair=>pair.includes('label12')));
-  assert.equal(shortcutConflicts({...DEFAULT_SHORTCUTS,mute:'KeyX'}).length,0,'outbound is a separate workspace');
+  assert.equal(shortcutConflicts({...DEFAULT_SHORTCUTS,splitSegment:'KeyM'}).length,0,'outbound is a separate workspace');
+  assert.equal(normalizeShortcuts({nextRecording:'KeyJ'}).outboundNextRecording,'KeyJ');
+  assert.equal(normalizeShortcuts({nextRecording:'KeyJ',outboundNextRecording:'KeyK'}).outboundNextRecording,'KeyK');
+  assert.equal(normalizeShortcuts({nextRecording:'KeyX',splitSegment:'KeyJ'}).outboundClipSplit,'','preserve a legacy outbound assignment to X');
   assert.deepEqual(normalizeShortcuts({nextRecording:'Ctrl+KeyW'}),DEFAULT_SHORTCUTS);
   assert.equal(normalizeShortcuts({nextRecording:''}).nextRecording,'');
   assert.deepEqual(labelShortcutCandidates({...DEFAULT_SHORTCUTS,label1:'F2'},'1',12),[10,11,12]);
@@ -85,6 +88,10 @@ test('settings save per account and service, show conflicts, restore and retain 
     await dialog.getByRole('button',{name:'恢复上一条数据默认快捷键'}).click();
     await setKey(page,'播放／暂停','F5');await dialog.getByText('此组合键由系统或窗口使用，请选择其他按键。').waitFor();
     await page.keyboard.press('Escape');await setKey(page,'播放／暂停','k');
+    assert.equal(await dialog.getByRole('button',{name:'清除主相机静音／恢复声音快捷键'}).count(),0);
+    await dialog.getByRole('button',{name:'外发审核',exact:true}).click();
+    await setKey(page,'下一条数据','Control+j');
+    await setKey(page,'播放／暂停','l');
     await dialog.getByRole('button',{name:'清除主相机静音／恢复声音快捷键'}).click();
     mkdirSync('artifacts/shortcuts',{recursive:true});
     for(const [width,height] of [[1440,920],[960,680],[390,844]]){
@@ -96,7 +103,8 @@ test('settings save per account and service, show conflicts, restore and retain 
     await dialog.getByRole('button',{name:'保存快捷键'}).click();
     assert.equal(await page.evaluate(()=>window.bindings.nextRecording),'Ctrl+KeyJ');
     assert.equal(await page.evaluate(()=>window.originalVideo===document.querySelector('video')),true,'settings must not remount playback');
-    await page.reload();await ready(page);assert.equal(await page.evaluate(()=>window.bindings.togglePlayback),'KeyK');
+    await page.reload();await ready(page);
+    assert.deepEqual(await page.evaluate(()=>[window.bindings.togglePlayback,window.bindings.outboundTogglePlayback]),['KeyK','KeyL']);
     for(const owner of ['service-a:bob','service-b:alice','offline:local:v1']){
       await page.evaluate(owner=>window.switchOwner(owner),owner);
       await page.waitForFunction(()=>window.bindings.nextRecording==='PageDown');
@@ -123,7 +131,7 @@ test('outbound navigation and playback never submit a review; frame lookup canno
     await bodyKey(page,'PageUp');await ready(page);
     await bodyKey(page,'ArrowDown');await page.waitForFunction(()=>[...document.querySelectorAll('video')].every(v=>v.src.endsWith('8')||v.src.endsWith('9')||v.src.endsWith('a')||v.src.endsWith('b')||v.src.endsWith('c')||v.src.endsWith('d')||v.src.endsWith('e')));await ready(page);
     await bodyKey(page,'ArrowUp');await ready(page);
-    await page.getByRole('button',{name:'快捷键设置',exact:true}).click();await setKey(page,'下一条数据','Control+j');await setKey(page,'播放／暂停','k');await page.getByRole('button',{name:'保存快捷键'}).click();
+    await page.getByRole('button',{name:'快捷键设置',exact:true}).click();await page.getByRole('dialog',{name:'快捷键设置'}).getByRole('button',{name:'外发审核',exact:true}).click();await setKey(page,'下一条数据','Control+j');await setKey(page,'播放／暂停','k');await page.getByRole('button',{name:'保存快捷键'}).click();
     await bodyKey(page,'PageDown');assert.match(await selected(page),/recording-1/);
     await page.getByLabel('输入测试').focus();await page.keyboard.press('Control+j');assert.match(await selected(page),/recording-1/);
     await page.evaluate(()=>window.setWorkspaceBusy(true));await page.waitForFunction(()=>document.querySelector('.outbound-recordings button').disabled);await bodyKey(page,'Control+j');assert.match(await selected(page),/recording-1/);await page.evaluate(()=>window.setWorkspaceBusy(false));await page.waitForFunction(()=>!document.querySelector('.outbound-recordings button').disabled);
@@ -142,6 +150,53 @@ test('outbound navigation and playback never submit a review; frame lookup canno
     await bodyKey(page,'Control+j');await ready(page);await page.evaluate(()=>window.releaseFrame());
     await page.waitForFunction(()=>document.querySelector('video').currentTime<.01);
     assert.equal(await page.evaluate(()=>window.calls.some(c=>['claim','release','decide','save-reason-option'].includes(c.action))),false);
+    assert.deepEqual(errors,[]);
+  }finally{await page.close();}
+});
+
+test('outbound X splits at the timeline playhead and same-file trims promote decoded media',async()=>{
+  const {page,errors}=await fixture();
+  try{
+    await bodyKey(page,'x');
+    assert.equal(await page.getByRole('slider',{name:'剪切播放位置'}).count(),0);
+    await page.getByRole('button',{name:'视频剪切',exact:true}).click();
+    const timeline=page.getByRole('slider',{name:'剪切播放位置'});
+    const pieces=page.locator('.outbound-clip-piece');
+    await timeline.fill('1250');
+    await timeline.press('x');
+    assert.equal(await pieces.count(),2);
+    await timeline.fill('2500');
+    await timeline.press('x');
+    assert.equal(await pieces.count(),3);
+    await pieces.nth(1).press('Enter');
+    await page.getByRole('button',{name:'删除选中片段',exact:true}).click();
+    await timeline.fill('750');
+    await page.waitForFunction(()=>{
+      const videos=[...document.querySelectorAll('.outbound-warm-video')];
+      return videos.length===7&&videos.every(v=>v.readyState>=3&&v.paused&&!v.seeking&&Math.abs(v.currentTime-2.5)<.07);
+    });
+    await page.evaluate(()=>{
+      window.warmClipPlayers=[...document.querySelectorAll('.outbound-warm-video')];
+      window.activeClipPlayer=document.querySelector('video:not(.outbound-warm-video)');
+      window.lastOldFrame=0;
+      window.firstNewFrame=0;
+      const watch=(_,metadata)=>{
+        window.lastOldFrame=metadata.presentationTime;
+        if (window.activeClipPlayer.isConnected)window.activeClipPlayer.requestVideoFrameCallback(watch);
+      };
+      window.activeClipPlayer.requestVideoFrameCallback(watch);
+      const warm=window.warmClipPlayers[0];
+      const watchWarm=(_,metadata)=>{
+        if(!warm.className)window.firstNewFrame=metadata.presentationTime;
+        else if(warm.isConnected)warm.requestVideoFrameCallback(watchWarm);
+      };
+      warm.requestVideoFrameCallback(watchWarm);
+    });
+    await bodyKey(page,'Space');
+    await page.waitForFunction(()=>window.warmClipPlayers.every(v=>v.isConnected&&!v.className&&!v.paused&&v.currentTime>=2.5));
+    await page.waitForFunction(()=>window.firstNewFrame>0);
+    const gap=await page.evaluate(()=>window.firstNewFrame-window.lastOldFrame);
+    assert.ok(gap>=0&&gap<180,`same-file cut should avoid a buffering gap on the 10 fps fixture, observed ${gap.toFixed(1)} ms`);
     assert.deepEqual(errors,[]);
   }finally{await page.close();}
 });

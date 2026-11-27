@@ -383,3 +383,5 @@
 .outbound-transport-clipping > .browse-control { order: 2; }
 .outbound-clip-progress { order: 6; flex: 1 0 100%; color: var(--muted); font-size: 11px; }
 .outbound-clip-error { order: 7; flex: 1 0 100%; }
+
+.is-workspace .outbound-video-item .outbound-warm-video { position: absolute; inset: 0; opacity: .001; pointer-events: none; }

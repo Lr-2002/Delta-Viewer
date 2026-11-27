@@ -1246,7 +1246,7 @@ export async function createUserCenter(inputConfiguration, dataRoot, logger = co
         if (!session) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         if (!outboundReview) return sendJson(response, 503, { error: "OUTBOUND_NOT_CONFIGURED" });
         if (request.method !== "POST") return sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
-        const input = await parseJsonBody(request, 4096);
+        const input = await parseJsonBody(request, 16384);
         const latest = await authorize(request);
         if (!latest) return sendJson(response, 401, { error: "AUTH_REQUIRED" });
         const controller = new AbortController();

@@ -1,20 +1,35 @@
 export type ShortcutScope = "data" | "review" | "outbound";
 export interface ShortcutDefinition { id: string; label: string; group: string; scopes: ShortcutScope[]; defaultKey: string }
-const all: ShortcutScope[] = ["data", "review", "outbound"];
+const all: ShortcutScope[] = ["data", "review"];
 export const SHORTCUT_LABEL_LIMIT = 80;
-export const SHORTCUTS: ShortcutDefinition[] = [
+const sharedShortcuts: ShortcutDefinition[] = [
   {id:"previousRecording",label:"上一条数据",group:"数据导航",scopes:all,defaultKey:"PageUp"},
   {id:"nextRecording",label:"下一条数据",group:"数据导航",scopes:all,defaultKey:"PageDown"},
   {id:"togglePlayback",label:"播放／暂停",group:"视频回放",scopes:all,defaultKey:"Space"},
   {id:"previousFrame",label:"上一帧／边界向前一帧",group:"视频回放",scopes:all,defaultKey:"ArrowLeft"},
   {id:"nextFrame",label:"下一帧／边界向后一帧",group:"视频回放",scopes:all,defaultKey:"ArrowRight"},
-  {id:"previousSegment",label:"上一片段",group:"视频回放",scopes:["review","outbound"],defaultKey:"ArrowUp"},
-  {id:"nextSegment",label:"下一片段",group:"视频回放",scopes:["review","outbound"],defaultKey:"ArrowDown"},
+  {id:"previousSegment",label:"上一片段",group:"视频回放",scopes:["review"],defaultKey:"ArrowUp"},
+  {id:"nextSegment",label:"下一片段",group:"视频回放",scopes:["review"],defaultKey:"ArrowDown"},
   {id:"rangeStart",label:"跳到播放范围开头",group:"视频回放",scopes:all,defaultKey:"Home"},
   {id:"rangeEnd",label:"跳到播放范围结尾",group:"视频回放",scopes:all,defaultKey:"End"},
-  {id:"slower",label:"降低播放速度",group:"视频回放",scopes:["data","outbound"],defaultKey:"Minus"},
-  {id:"faster",label:"提高播放速度",group:"视频回放",scopes:["data","outbound"],defaultKey:"Equal"},
+  {id:"slower",label:"降低播放速度",group:"视频回放",scopes:["data"],defaultKey:"Minus"},
+  {id:"faster",label:"提高播放速度",group:"视频回放",scopes:["data"],defaultKey:"Equal"},
+];
+const outboundKey = (id: string) => `outbound${id[0].toUpperCase()}${id.slice(1)}`;
+export const SHORTCUTS: ShortcutDefinition[] = [
+  ...sharedShortcuts,
+  ...sharedShortcuts.map(item => ({
+    ...item,
+    id: outboundKey(item.id),
+    scopes: ["outbound"] as ShortcutScope[],
+    label: item.id === "previousFrame" ? "上一帧" : item.id === "nextFrame" ? "下一帧" : item.label,
+  })),
   {id:"mute",label:"主相机静音／恢复声音",group:"视频回放",scopes:["outbound"],defaultKey:"KeyM"},
+  {id:"outboundClipToggle",label:"打开／关闭外发剪切",group:"外发剪切",scopes:["outbound"],defaultKey:""},
+  {id:"outboundClipSplit",label:"分割外发剪切片段",group:"外发剪切",scopes:["outbound"],defaultKey:"KeyX"},
+  {id:"outboundClipDelete",label:"删除外发剪切片段",group:"外发剪切",scopes:["outbound"],defaultKey:""},
+  {id:"outboundClipUndo",label:"撤销外发剪切",group:"外发剪切",scopes:["outbound"],defaultKey:""},
+  {id:"outboundClipSave",label:"保存外发剪切",group:"外发剪切",scopes:["outbound"],defaultKey:""},
   {id:"clipStart",label:"将当前帧设为裁剪起点",group:"标注与校对",scopes:["data"],defaultKey:"BracketLeft"},
   {id:"clipEnd",label:"将当前帧设为裁剪终点",group:"标注与校对",scopes:["data"],defaultKey:"BracketRight"},
   {id:"splitSegment",label:"在当前帧分割片段",group:"标注与校对",scopes:["review"],defaultKey:"KeyX"},
@@ -55,17 +70,31 @@ export function normalizeShortcuts(value:unknown):ShortcutBindings {
   const result={...DEFAULT_SHORTCUTS};
   if(!value||typeof value!=="object"||Array.isArray(value))return result;
   for(const item of SHORTCUTS){const key=(value as ShortcutBindings)[item.id];if(typeof key==="string"&&(validShortcut(key)||item.id.startsWith("label")&&key===item.defaultKey))result[item.id]=key;}
-  return shortcutConflicts(result).length?{...DEFAULT_SHORTCUTS}:result;
+  const stored = value as ShortcutBindings;
+  for (const item of sharedShortcuts) {
+    const id = outboundKey(item.id);
+    if (!Object.hasOwn(stored, id) && typeof stored[item.id] === "string" && validShortcut(stored[item.id])) {
+      result[id] = stored[item.id];
+    }
+  }
+  const conflicts = shortcutConflicts(result);
+  if (!Object.hasOwn(stored, "outboundClipSplit") && conflicts.some(pair => pair.includes("outboundClipSplit"))) {
+    result.outboundClipSplit = "";
+  }
+  return shortcutConflicts(result).length ? { ...DEFAULT_SHORTCUTS } : result;
 }
 export function matchShortcut(event:KeyboardEvent,bindings:ShortcutBindings,scope:ShortcutScope,actions:string[]):string|undefined {
   if(event.defaultPrevented||event.isComposing||event.keyCode===229)return;
   const chord=shortcutChord(event);if(!chord)return;
-  return SHORTCUTS.find(s=>actions.includes(s.id)&&s.scopes.includes(scope)&&bindings[s.id]===chord)?.id;
+  return actions.find(action => {
+    const id = scope === "outbound" && sharedShortcuts.some(item => item.id === action) ? outboundKey(action) : action;
+    return bindings[id] === chord && SHORTCUTS.some(item => item.id === id && item.scopes.includes(scope));
+  });
 }
-export function shortcutBlocked(event:KeyboardEvent,allowReviewControls=false):boolean {
+export function shortcutBlocked(event:KeyboardEvent,allowReviewControls=false,allowTimeline=false):boolean {
   if(event.defaultPrevented||event.isComposing||event.keyCode===229||document.querySelector("dialog[open], [role='dialog']"))return true;
   const target=event.target instanceof Element?event.target:null;
-  return Boolean(target?.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")||target?.closest("button, a")&&["Enter"," "].includes(event.key)&&!(allowReviewControls&&target.closest(".machine-segment-description, .review-span, .review-edge")));
+  return Boolean(target?.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")&&!(allowTimeline&&target.matches("input[type=range]"))||target?.closest("button, a")&&["Enter"," "].includes(event.key)&&!(allowReviewControls&&target.closest(".machine-segment-description, .review-span, .review-edge")));
 }
 export function formatShortcut(key:string):string {
   const names:Record<string,string>={Space:"Space",ArrowLeft:"←",ArrowRight:"→",ArrowUp:"↑",ArrowDown:"↓",BracketLeft:"[",BracketRight:"]",Minus:"−",Equal:"=",Comma:",",Period:".",Slash:"/",Backslash:"\\",Semicolon:";",Quote:"'",Meta:"Cmd"};

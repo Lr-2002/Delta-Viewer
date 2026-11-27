@@ -18,6 +18,7 @@ export class OutboundPlayback {
   private priming = false;
   private primingUntil = 0;
   private recoveryUntil = 0;
+  private preparedUntil = 0;
   private progressAt = 0;
   private progressPosition = 0;
   private generation = 0;
@@ -26,6 +27,8 @@ export class OutboundPlayback {
   private browsePosition: number | null = null;
   private browseTarget: number | null = null;
   private browseAt = 0;
+  private boundary: { at: number; reached: () => void } | null = null;
+  private boundaryTimer: ReturnType<typeof setTimeout> | undefined;
   private masterId: number | null = null;
   private timer: ReturnType<typeof setInterval>;
 
@@ -48,6 +51,13 @@ export class OutboundPlayback {
         // WebView2 may deliver an old waiting event after decoding recovered.
         // Treating it as a fresh stall flushes all seven healthy decoders.
         if (!this.intent || this.held || player.ended || player.seeking || player.readyState >= 3) return;
+        // Starting a predecoded group can briefly exhaust decoder output
+        // even when the source bytes for the next frames are already local.
+        const prepared = performance.now() < this.preparedUntil;
+        if (prepared && this.hasBuffer(player, Math.min(this.speed * .25, Math.max(0, player.duration - player.currentTime - .04)))) {
+          const master = this.master();
+          if (master && Math.abs(master.currentTime - player.currentTime) < .12) return;
+        }
         if (!this.hasBuffer(player, this.speed * .25)) {
           this.hold(true);
           return;
@@ -162,11 +172,32 @@ export class OutboundPlayback {
     this.publish();
   }
 
-  play() {
+  setBoundary(at?: number, reached?: () => void) {
+    this.boundary = at === undefined || !reached ? null : { at, reached };
+    this.scheduleBoundary();
+  }
+
+  private scheduleBoundary() {
+    clearTimeout(this.boundaryTimer);
+    const boundary = this.boundary;
+    const master = this.master();
+    if (!this.intent || this.held || !boundary || !master || master.seeking || master.paused || this.sampled()) return;
+    const delay = (boundary.at - master.currentTime) * 1000 / this.speed;
+    if (delay <= 4) {
+      this.boundary = null;
+      boundary.reached();
+    } else if (delay <= 220) {
+      this.boundaryTimer = setTimeout(() => this.scheduleBoundary(), Math.max(8, delay));
+    }
+  }
+
+  play(prepared = false) {
     if (!this.players.size) return;
     this.clearDecodeGaps();
     this.intent = true;
-    this.prime();
+    this.preparedUntil = prepared ? performance.now() + 750 : 0;
+    if (prepared) { this.priming = false; this.recoveryUntil = 0; }
+    else this.prime();
     this.starting = null;
     this.generation++;
     const master = this.master()!;
@@ -192,8 +223,10 @@ export class OutboundPlayback {
   }
 
   pause() {
+    clearTimeout(this.boundaryTimer);
     this.clearDecodeGaps();
     this.intent = false;
+    this.preparedUntil = 0;
     this.held = false;
     this.priming = false;
     this.starting = null;
@@ -208,9 +241,11 @@ export class OutboundPlayback {
   }
 
   seek(time: number) {
+    clearTimeout(this.boundaryTimer);
     this.clearDecodeGaps();
     this.starting = null;
     this.generation++;
+    this.preparedUntil = 0;
     this.browsePosition = time;
     this.browseTarget = null;
     this.browseAt = performance.now();
@@ -352,10 +387,12 @@ export class OutboundPlayback {
         }
       }
     }
+    this.scheduleBoundary();
     this.publish();
   }
 
   dispose() {
+    clearTimeout(this.boundaryTimer);
     this.clearDecodeGaps();
     this.intent = false;
     this.generation++;

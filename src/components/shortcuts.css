@@ -1,7 +1,7 @@
 .shortcut-settings { width:min(820px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:20px;border:1px solid var(--border,#ccc);border-radius:8px;color:var(--text,#222);background:var(--panel,#fff);box-sizing:border-box;overflow:auto; }
 .shortcut-settings::backdrop { background:rgb(0 0 0 / 42%); }
 .shortcut-settings[open] { display:flex;flex-direction:column;height:min(860px,calc(100dvh - 32px));overflow:hidden; }
-.shortcut-settings>header,.shortcut-settings>p,.shortcut-settings>label,.shortcut-settings>footer { flex-shrink:0; }
+.shortcut-settings>header,.shortcut-settings>p,.shortcut-settings>label,.shortcut-settings>.shortcut-sections,.shortcut-settings>footer { flex-shrink:0; }
 .shortcut-settings header,.shortcut-settings footer { display:flex;align-items:center;gap:10px; }
 .shortcut-settings header { justify-content:space-between; }
 .shortcut-settings h2 { margin:0;font-size:18px; }
@@ -22,3 +22,7 @@
 .shortcut-settings footer { margin-top:16px;flex-wrap:wrap; }
 .shortcut-settings footer>span { flex:1; }
 @media(max-width:600px){.shortcut-settings {padding:12px;}.shortcut-row {grid-template-columns:minmax(0,1fr) minmax(90px,120px) 28px;}.shortcut-row>.button {grid-column:2;grid-row:auto;}.shortcut-row>.icon-button {grid-column:3;}.shortcut-row>span {grid-row:span 2;}.shortcut-settings footer .button {font-size:11px;}}
+
+.shortcut-sections { display:flex;gap:6px;margin:0 0 12px;padding:3px;width:max-content;border:1px solid var(--border,#ccc);border-radius:6px; }
+.shortcut-sections button[aria-pressed=true] { background:var(--text,#222);color:var(--panel,#fff); }
+.shortcut-sections button[aria-pressed=false] { border-color:transparent; }

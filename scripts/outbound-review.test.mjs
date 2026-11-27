@@ -87,13 +87,13 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
       window.fixtureExtraBatches = location.pathname==="/__outbound";
       window.fixtureHoldClaim = location.pathname==="/__outbound";
       window.fixtureInvoke = async (command, args) => {
-        if(command==='plugin:dialog|open')return '/test-clip-output';
-        if(command==='outbound_clip_export'){
-          window.fixtureClipRequest=args.request;
-          return {outputPath:'/test-clip-output/recording-clip',videoCount:args.request.pieces[0].segments.length};
-        }
         if (command !== 'outbound_review_call') throw Error('Unexpected command ' + command);
         const input = args.input; window.fixtureCalls.push(input);
+        if(input.action==='trim'){
+          window.fixtureClipRequest=input;
+          return {status:'working'};
+        }
+        if(input.action==='trim-status')return {status:'saved',batch:structuredClone(window.fixtureBatch)};
         if(input.action==='release-media')return {released:true};
         if(input.action==='media-status')return {code:window.fixtureMediaCode??null};
         if(input.action==='media-metadata'){const segment=parseInt(input.url.slice(-64),16)-1;if(segment===window.fixtureMetadataFail)throw Error('OUTBOUND_MEDIA_INDEX_MISSING');return {duration:8};}
@@ -622,14 +622,25 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     assert.equal(await page.getByRole('alert').filter({hasText:'以下视频读取失败'}).count(),0,'a duration probe is not a video playback verdict');
     await page.waitForFunction(()=>!document.querySelector('input[aria-label="视频播放位置"]').disabled);
     assert.equal(Number(await slider.getAttribute('max')),8,'a failed later probe leaves the current part seekable');
-    await slider.click({position:{x:(await slider.boundingBox()).width*.5,y:10}});
-    await page.waitForFunction(()=>[...document.querySelectorAll('video')].every(v=>Math.abs(v.currentTime-4)<.4));
+    const clipToggle=page.getByRole('button',{name:'视频剪切',exact:true});
+    await clipToggle.click();
+    await page.getByText('部分视频时长尚未读到，重试后可剪切整条录制。先前可读的片段仍可继续播放。',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('slider',{name:'剪切播放位置'}).count(),0,'never open an editor with only the first part');
+    await slider.fill('8');
+    await page.getByRole('button',{name:'全局播放',exact:true}).click();
+    await page.getByText('7/7 路源视频 · 第 2 段，共 8 段',{exact:true}).waitFor();
+    const wholeClip=page.getByRole('slider',{name:'剪切播放位置'});
+    await wholeClip.waitFor();
+    assert.equal(await wholeClip.getAttribute('max'),'64000','normal playback repairs a missing MP4 clock and the editor opens across all eight source parts');
+    await clipToggle.click();
+    await slider.fill('4');
+    await page.getByText('7/7 路源视频 · 第 1 段，共 8 段',{exact:true}).waitFor();
+    await page.waitForFunction(()=>[...document.querySelectorAll('video')].every(v=>v.readyState>=3&&Math.abs(v.currentTime-4)<.4));
     await page.getByRole('button',{name:'无效数据',exact:true}).click({trial:true});
     await page.getByRole('button',{name:'有效数据',exact:true}).click();
     await page.getByRole('button',{name:'录制 001 有效',exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(call=>call.action==='decide'&&call.value==='valid').length),1,'a background probe failure allows an explicit valid decision');
     await page.evaluate(()=>window.fixtureMetadataFail=null);
-    await page.getByRole('button',{name:'重试读取时长',exact:true}).click();
     await page.waitForFunction(()=>Number(document.querySelector('input[aria-label="视频播放位置"]').max)===64);
     assert.equal(await page.locator('video').count(),7);
     await page.evaluate(()=>{
@@ -783,6 +794,7 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
       window.fixtureCalls.filter(row=>row.value==='exclude-damaged').length]),[2,1,1,1]);
     await page.evaluate(()=>{
       window.fixtureBatch.supportsSegmentExclusion=true;
+      window.fixtureBatch.supportsSourceTrim=true;
       window.fixtureSourceVideos=Array.from({length:21},(_,segment)=>{
         const part=segment%3,camera=['cam0','cam1','cam2','t265_left','t265_right','extension_left','extension_right'][Math.floor(segment/3)];
         return {segment,part,label:camera+'/video-0000'+part+'.mp4',size:1024,sha256:null};
@@ -817,7 +829,8 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await editedSeek.fill('7250');
     await page.getByText(/第 1 段，共 3 段/).waitFor();
     await page.waitForFunction(()=>Number(document.querySelector('.outbound-clip-ruler input')?.value)===7250);
-    await split.click();
+    await editedSeek.press('x');
+    await middle.waitFor();
     await editedSeek.fill('8500');
     await page.getByText(/第 3 段，共 3 段/).waitFor();
     await page.waitForFunction(()=>Number(document.querySelector('.outbound-clip-ruler input')?.value)===8500);
@@ -835,19 +848,22 @@ test('outbound review plays every camera, persists valid and invalid decisions, 
     await removeClip.click();
     await editedSeek.fill('7000');
     await page.getByText(/第 1 段，共 3 段/).waitFor();
+    await page.waitForFunction(()=>{
+      const videos=[...document.querySelectorAll('.outbound-warm-video')];
+      return videos.length===7&&videos.every(v=>v.readyState>=3&&!v.seeking&&Math.abs(v.currentTime-.5)<.04);
+    });
+    await page.evaluate(()=>window.warmClipPlayers=[...document.querySelectorAll('.outbound-warm-video')]);
     await page.getByRole('button',{name:'全局播放',exact:true}).click();
     await page.getByText(/第 3 段，共 3 段/).waitFor();
     await page.waitForFunction(()=>Array.from(document.querySelectorAll('video')).every(v=>v.currentTime>=.5&&!v.paused));
+    assert.equal(await page.evaluate(()=>[...document.querySelectorAll('video')].every((v,i)=>v===window.warmClipPlayers[i])),true,
+      'all seven predecoded players are promoted across source parts without a second load');
     await page.getByRole('button',{name:'暂停',exact:true}).click();
     await editor.getByRole('textbox',{name:'片段描述',exact:true}).fill('跨段剪切');
-    await editor.getByRole('button',{name:'剪切并保存 MP4',exact:true}).click();
-    await editor.getByText('已保存 7 个 MP4 文件',{exact:true}).waitFor();
-    assert.deepEqual(await page.evaluate(()=>window.fixtureClipRequest.pieces),[
-      {part:0,interval:{startMs:0,endMs:7250},segments:[0,3,6,9,12,15,18]},
-      {part:2,interval:{startMs:500,endMs:8000},segments:[2,5,8,11,14,17,20]},
-    ]);
+    await editor.getByRole('button',{name:'保存并替换原视频',exact:true}).click();
+    await page.getByText('剪切已保存，原视频和下载归档已更新。',{exact:true}).waitFor();
+    assert.deepEqual(await page.evaluate(()=>window.fixtureClipRequest.parts),[[0,[[0,7250]]],[2,[[500,8000]]]]);
     assert.equal(await page.evaluate(()=>window.fixtureClipRequest.description),'跨段剪切');
-    await page.getByRole('button',{name:'视频剪切',exact:true}).click();
     await page.getByRole('button',{name:'视频损坏',exact:true}).click();
     await segments.getByRole('checkbox',{name:'第 2 段',exact:true}).uncheck();
     await segments.getByRole('button',{name:'恢复全部片段',exact:true}).click();

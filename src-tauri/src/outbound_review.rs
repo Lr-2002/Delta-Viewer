@@ -54,7 +54,15 @@ pub async fn call(
     }
     if !matches!(
         action.as_str(),
-        "list" | "claim" | "release" | "decide" | "video-url" | "save-reason-option"
+        "list"
+            | "claim"
+            | "release"
+            | "decide"
+            | "video-url"
+            | "save-reason-option"
+            | "trim"
+            | "trim-status"
+            | "trim-resume"
     ) {
         return Err(AppError::Message("OUTBOUND_REQUEST_INVALID".into()));
     }

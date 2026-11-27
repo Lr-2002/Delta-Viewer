@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export interface OutboundVideo { segment: number; label: string; size: number; sha256: string | null; part?: number }
+export interface OutboundVideo { segment: number; label: string; size: number; sha256: string | null; part?: number; duration?: number }
 export type OutboundDecisionValue = "valid" | "invalid" | "anomalous";
 export type OutboundReviewValue = OutboundDecisionValue | "exclude-damaged" | "restore-damaged" | "set-damaged-segments";
 export interface OutboundDecision { value: OutboundDecisionValue; reason?: string; actor: string; at: string }
-export interface OutboundRecording { id: string; name: string; videos: OutboundVideo[]; decision: OutboundDecision | null; excludedParts?: number[]; cutDatasetId?: string }
+export interface OutboundRecording { id: string; name: string; videos: OutboundVideo[]; decision: OutboundDecision | null; excludedParts?: number[]; cutDatasetId?: string; sourceRevision?:string; trimDescription?:string; pendingTrimOperation?:string; removedTrimParts?:number[] }
 export interface OutboundBatch {
   reasonOptions?: string[];
   anomalousReasonOptions?: string[];
@@ -14,6 +14,7 @@ export interface OutboundBatch {
   customerId?: string | null;
   supportsDamageExclusion?: boolean;
   supportsSegmentExclusion?: boolean;
+  supportsSourceTrim?: boolean;
   excludedRecordingIds?: string[];
   recoverableExclusionCount?: number;
   recoverableExclusions?: Pick<OutboundRecording, "id" | "name">[];
@@ -74,6 +75,14 @@ export const fetchOutboundMetadata = (url:string) => outboundCall<{duration:numb
 export const fetchOutboundFrameStep = (url:string) => outboundCall<{frameStep:number|null}>({action:"media-frame-step",url});
 
 const outboundCall = <T,>(input: Record<string, unknown>) => invoke<T>("outbound_review_call", { input });
+export type OutboundTrimTarget = {datasetId:string;recordingId:string;operationId:string};
+export type OutboundTrimRequest = OutboundTrimTarget & {
+  version:number;sourceRevision:string;description:string;parts:[number,[number,number][]][];
+};
+export type OutboundTrimStatus = {status:"working"|"saved"|"interrupted"|"unknown"|"failed";batch?:OutboundBatch;error?:string};
+export const saveOutboundTrim = (input:OutboundTrimRequest) => outboundCall<OutboundTrimStatus>({action:"trim",...input});
+export const resumeOutboundTrim = (input:OutboundTrimTarget) => outboundCall<OutboundTrimStatus>({action:"trim-resume",...input});
+export const outboundTrimStatus = (input:OutboundTrimTarget) => outboundCall<OutboundTrimStatus>({action:"trim-status",...input});
 type BatchList = { batches: OutboundBatch[]; reasonOptions: string[]; anomalousReasonOptions?:string[]; progress?:OutboundProgress; companies?:OutboundCompany[]; companyProgress?:Record<string,OutboundProgress> };
 export type OutboundProtocol = {legacyList?:boolean;legacyMutation?:boolean};
 export async function listOutboundBatches(datasetId?: string, protocol?:OutboundProtocol): Promise<BatchList> {
@@ -148,6 +157,16 @@ export function outboundError(reason: unknown) {
   if (raw.includes("OUTBOUND_REASON_INVALID")) return "请选择常用原因，或输入 1–80 字的一次性原因。";
   if (raw.includes("OUTBOUND_REASON_LIMIT")) return "常用原因数量已满，请联系管理员整理。";
   if (raw.includes("OUTBOUND_USER_CENTER_UNAVAILABLE")) return "用户中心请求未完成，请核对网络和服务状态后重试。";
+  const trimErrors: Record<string,string> = {
+      OUTBOUND_TRIM_BUSY:"原始归档正在处理其他剪切，请稍后重试。",
+      OUTBOUND_TRIM_COMMITTING:"原始归档正在更新，请稍后刷新。",
+      OUTBOUND_TRIM_INTERRUPTED:"剪切保存已中断，可重试继续保存。",
+      OUTBOUND_TRIM_FAILED:"剪切保存失败，请重试。",
+      OUTBOUND_TRIM_SOURCE_CHANGED:"源视频在剪切期间发生变化，请刷新后重试。",
+      OUTBOUND_TRIM_RANGE_INVALID:"剪切范围无效，请调整分割位置后再保存。",
+  };
+  const trimMessage = Object.entries(trimErrors).find(([code])=>raw.includes(code))?.[1];
+  if(trimMessage)return trimMessage;
   return `外发审核暂不可用：${raw}`;
 }
 

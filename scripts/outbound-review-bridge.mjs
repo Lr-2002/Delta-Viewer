@@ -42,9 +42,9 @@ export async function createOutboundReviewBridge(config, serviceId, clock = Date
     },
     async request(user, input, { signal } = {}) {
       if (!input || typeof input !== 'object' || Array.isArray(input) ||
-        !['list', 'claim', 'release', 'decide', 'video-url', 'save-reason-option'].includes(input.action)) throw problem(422, 'OUTBOUND_REQUEST_INVALID');
+        !['list', 'claim', 'release', 'decide', 'video-url', 'save-reason-option', 'trim', 'trim-status', 'trim-resume'].includes(input.action)) throw problem(422, 'OUTBOUND_REQUEST_INVALID');
       const body = Buffer.from(JSON.stringify(input));
-      if (body.length > 4096) throw problem(422, 'OUTBOUND_REQUEST_INVALID');
+      if (body.length > 16384) throw problem(422, 'OUTBOUND_REQUEST_INVALID');
       if (closed || signal?.aborted) throw problem(503, 'OUTBOUND_NETWORK_UNAVAILABLE');
       if (queue.length >= 64) throw problem(503, 'OUTBOUND_BRIDGE_BUSY');
       return new Promise((resolve, reject) => {
